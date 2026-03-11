@@ -23,7 +23,7 @@ const DEFAULT_TIMEOUT = 30_000;
 const RETRY_BASE_DELAY_MS = 500;
 const RETRY_MAX_DELAY_MS = 30_000;
 const RETRYABLE_STATUS = new Set([429, 502, 503, 504]);
-const RETRYABLE_STATUS_POST = new Set([429]);
+const RETRYABLE_STATUS_MUTATING = new Set([429]);
 
 interface ApiResponse<T> {
   data: T;
@@ -204,7 +204,8 @@ export class QURLClient {
       headers["Content-Type"] = "application/json";
     }
 
-    const retryable = method === "POST" ? RETRYABLE_STATUS_POST : RETRYABLE_STATUS;
+    const mutating = method === "POST" || method === "PATCH";
+    const retryable = mutating ? RETRYABLE_STATUS_MUTATING : RETRYABLE_STATUS;
     const serializedBody = body !== undefined ? JSON.stringify(body) : undefined;
     let lastError: Error | undefined;
 

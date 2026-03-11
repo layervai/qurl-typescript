@@ -41,6 +41,7 @@ export interface CreateOutput {
   qurl_link: string;
   qurl_site: string;
   expires_at?: string;
+  one_time_use?: boolean;
 }
 
 /** Input for listing QURLs. */

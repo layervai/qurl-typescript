@@ -629,6 +629,9 @@ describe("QURLClient", () => {
     });
 
     const promise = client.getQuota();
+    // Allow first fetch to resolve, but retry should not fire yet
+    await vi.advanceTimersByTimeAsync(100);
+    expect(fetch).toHaveBeenCalledTimes(1);
     // Advance past the 2000ms Retry-After delay
     await vi.advanceTimersByTimeAsync(2000);
     const result = await promise;
@@ -812,7 +815,7 @@ describe("QURLClient", () => {
     expect((err as TimeoutError).message).toContain("timed out");
   });
 
-  // --- POST-safe retry ---
+  // --- Mutating-safe retry ---
 
   it("does not retry POST on 502", async () => {
     const fetch = mockFetch({
@@ -829,6 +832,24 @@ describe("QURLClient", () => {
     });
 
     await expect(client.create({ target_url: "https://example.com" })).rejects.toThrow(ServerError);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry PATCH on 502", async () => {
+    const fetch = mockFetch({
+      status: 502,
+      body: {
+        error: { title: "Bad Gateway", status: 502, detail: "Upstream error", code: "bad_gateway" },
+      },
+    });
+    const client = new QURLClient({
+      apiKey: "lv_live_test",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch,
+      maxRetries: 2,
+    });
+
+    await expect(client.update("r_abc", { description: "test" })).rejects.toThrow(ServerError);
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 

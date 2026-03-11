@@ -16,6 +16,8 @@ AI agents need to access protected resources — APIs, databases, internal tools
 npm install @layerv/qurl
 ```
 
+> **Note:** This package is ESM-only. It requires Node.js 18+ and `"type": "module"` in your `package.json` (or use `.mjs` extensions).
+
 ## Quick Start
 
 ```typescript
@@ -137,8 +139,8 @@ const client = new QURLClient({
 
 The client automatically retries failed requests with exponential backoff:
 
-- **GET/DELETE/PATCH**: Retries on 429, 502, 503, 504
-- **POST**: Retries only on 429 (to avoid duplicate creates)
+- **GET/DELETE**: Retries on 429, 502, 503, 504
+- **POST/PATCH**: Retries only on 429 (to avoid duplicate side effects)
 - **Network errors**: Always retried
 - **429 responses**: Honors `Retry-After` header
 
