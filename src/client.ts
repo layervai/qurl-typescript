@@ -20,6 +20,8 @@ import { VERSION } from "./version.js";
 const DEFAULT_BASE_URL = "https://api.layerv.ai";
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_TIMEOUT = 30_000;
+const RETRY_BASE_DELAY_MS = 500;
+const RETRY_MAX_DELAY_MS = 30_000;
 const RETRYABLE_STATUS = new Set([429, 502, 503, 504]);
 const RETRYABLE_STATUS_POST = new Set([429]);
 
@@ -303,10 +305,10 @@ export class QURLClient {
 
   private retryDelay(attempt: number, lastError?: Error): number {
     if (lastError instanceof QURLError && lastError.retryAfter) {
-      return Math.min(lastError.retryAfter * 1000, 30_000);
+      return Math.min(lastError.retryAfter * 1000, RETRY_MAX_DELAY_MS);
     }
-    const base = 500 * Math.pow(2, attempt - 1);
+    const base = RETRY_BASE_DELAY_MS * Math.pow(2, attempt - 1);
     const jitter = Math.random() * base * 0.5;
-    return Math.min(base + jitter, 30_000);
+    return Math.min(base + jitter, RETRY_MAX_DELAY_MS);
   }
 }
