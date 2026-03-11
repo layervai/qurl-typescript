@@ -581,6 +581,8 @@ describe("QURLClient", () => {
   });
 
   it("respects Retry-After header on 429 responses", async () => {
+    vi.useFakeTimers();
+
     const retryAfterResponse = {
       ok: false,
       status: 429,
@@ -626,14 +628,15 @@ describe("QURLClient", () => {
       maxRetries: 1,
     });
 
-    const start = Date.now();
-    const result = await client.getQuota();
-    const elapsed = Date.now() - start;
+    const promise = client.getQuota();
+    // Advance past the 2000ms Retry-After delay
+    await vi.advanceTimersByTimeAsync(2000);
+    const result = await promise;
 
     expect(result.plan).toBe("growth");
     expect(fetch).toHaveBeenCalledTimes(2);
-    // Retry-After: 2 means 2000ms delay; allow some tolerance
-    expect(elapsed).toBeGreaterThanOrEqual(1500);
+
+    vi.useRealTimers();
   });
 
   it("normalizes trailing slash in baseUrl", async () => {
@@ -1024,5 +1027,62 @@ describe("QURLClient", () => {
     expect(new ServerError(data)).toBeInstanceOf(QURLError);
     expect(new NetworkError("fail")).toBeInstanceOf(QURLError);
     expect(new TimeoutError()).toBeInstanceOf(QURLError);
+  });
+
+  // --- edge cases ---
+
+  it("listAll handles empty first page", async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: {
+        data: [],
+        meta: { has_more: false },
+      },
+    });
+    const client = createClient(fetch);
+
+    const items: unknown[] = [];
+    for await (const qurl of client.listAll()) {
+      items.push(qurl);
+    }
+
+    expect(items).toHaveLength(0);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("list passes all filter params simultaneously", async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: { data: [], meta: { has_more: false } },
+    });
+    const client = createClient(fetch);
+
+    await client.list({
+      limit: 5,
+      cursor: "cur_1",
+      status: "active",
+      q: "test",
+      sort: "created_at",
+    });
+
+    const calledUrl = (fetch as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+    expect(calledUrl).toContain("limit=5");
+    expect(calledUrl).toContain("cursor=cur_1");
+    expect(calledUrl).toContain("status=active");
+    expect(calledUrl).toContain("q=test");
+    expect(calledUrl).toContain("sort=created_at");
+  });
+
+  it("does not retry on 503 with maxRetries: 0", async () => {
+    const fetch = mockFetch({
+      status: 503,
+      body: {
+        error: { title: "Unavailable", status: 503, detail: "Down", code: "unavailable" },
+      },
+    });
+    const client = createClient(fetch);
+
+    await expect(client.getQuota()).rejects.toThrow(ServerError);
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 });

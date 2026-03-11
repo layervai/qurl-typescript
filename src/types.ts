@@ -47,7 +47,7 @@ export interface CreateOutput {
 export interface ListInput {
   limit?: number;
   cursor?: string;
-  status?: string;
+  status?: QURL["status"];
   q?: string;
   sort?: string;
 }

@@ -142,7 +142,7 @@ export class QURLClient {
 
   /** Delete (revoke) a QURL. */
   async delete(id: string): Promise<void> {
-    await this.request<void>("DELETE", `/v1/qurls/${encodeURIComponent(id)}`);
+    await this.rawRequest("DELETE", `/v1/qurls/${encodeURIComponent(id)}`);
   }
 
   /**
@@ -244,7 +244,7 @@ export class QURLClient {
 
       if (response.ok) {
         if (response.status === 204) {
-          return { data: undefined as T };
+          return { data: undefined as unknown as T };
         }
         const json = (await response.json()) as ApiResponse<T>;
         return json;
