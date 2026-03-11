@@ -55,9 +55,7 @@ export class QURLClient {
   private readonly maxRetries: number;
   private readonly timeout: number;
   private readonly userAgent: string;
-  private readonly debugFn:
-    | ((message: string, data?: Record<string, unknown>) => void)
-    | undefined;
+  private readonly debugFn: ((message: string, data?: Record<string, unknown>) => void) | undefined;
 
   constructor(options: ClientOptions) {
     if (!options.apiKey) {
@@ -131,9 +129,7 @@ export class QURLClient {
   }
 
   /** Iterate over all QURLs, automatically paginating. */
-  async *listAll(
-    input: Omit<ListInput, "cursor"> = {},
-  ): AsyncGenerator<QURL, void, undefined> {
+  async *listAll(input: Omit<ListInput, "cursor"> = {}): AsyncGenerator<QURL, void, undefined> {
     let cursor: string | undefined;
     do {
       const page = await this.list({ ...input, cursor });
@@ -165,11 +161,7 @@ export class QURLClient {
 
   /** Mint a new access link for a QURL. */
   async mintLink(id: string, input?: MintInput): Promise<MintOutput> {
-    return this.request<MintOutput>(
-      "POST",
-      `/v1/qurls/${encodeURIComponent(id)}/mint_link`,
-      input,
-    );
+    return this.request<MintOutput>("POST", `/v1/qurls/${encodeURIComponent(id)}/mint_link`, input);
   }
 
   /**
@@ -233,14 +225,12 @@ export class QURLClient {
           signal: AbortSignal.timeout(this.timeout),
         });
       } catch (err) {
-        const isTimeout =
-          err instanceof DOMException && err.name === "TimeoutError";
+        const isTimeout = err instanceof DOMException && err.name === "TimeoutError";
         lastError = isTimeout
           ? new TimeoutError("Request timed out", { cause: err })
-          : new NetworkError(
-              err instanceof Error ? err.message : String(err),
-              { cause: err instanceof Error ? err : undefined },
-            );
+          : new NetworkError(err instanceof Error ? err.message : String(err), {
+              cause: err instanceof Error ? err : undefined,
+            });
         this.log(`${method} ${url} ${isTimeout ? "timed out" : "network error"}`, {
           error: lastError.message,
         });

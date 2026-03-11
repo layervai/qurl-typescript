@@ -669,7 +669,12 @@ describe("QURLClient", () => {
     const fetch = mockFetch({
       status: 401,
       body: {
-        error: { title: "Unauthorized", status: 401, detail: "Invalid API key", code: "unauthorized" },
+        error: {
+          title: "Unauthorized",
+          status: 401,
+          detail: "Invalid API key",
+          code: "unauthorized",
+        },
       },
     });
     const client = createClient(fetch);
@@ -740,7 +745,12 @@ describe("QURLClient", () => {
       status: 429,
       headers: { "Retry-After": "5" },
       body: {
-        error: { title: "Rate Limited", status: 429, detail: "Too many requests", code: "rate_limited" },
+        error: {
+          title: "Rate Limited",
+          status: 429,
+          detail: "Too many requests",
+          code: "rate_limited",
+        },
       },
     });
     const client = createClient(fetch);
@@ -754,7 +764,12 @@ describe("QURLClient", () => {
     const fetch = mockFetch({
       status: 500,
       body: {
-        error: { title: "Internal Error", status: 500, detail: "Something broke", code: "internal" },
+        error: {
+          title: "Internal Error",
+          status: 500,
+          detail: "Something broke",
+          code: "internal",
+        },
       },
     });
     const client = createClient(fetch);
@@ -822,7 +837,12 @@ describe("QURLClient", () => {
       headers: new Headers({}),
       json: () =>
         Promise.resolve({
-          error: { title: "Bad Gateway", status: 502, detail: "Upstream error", code: "bad_gateway" },
+          error: {
+            title: "Bad Gateway",
+            status: 502,
+            detail: "Upstream error",
+            code: "bad_gateway",
+          },
         }),
       text: () => Promise.resolve(""),
     } satisfies Partial<Response> as Response;
@@ -839,7 +859,10 @@ describe("QURLClient", () => {
       text: () => Promise.resolve(""),
     } satisfies Partial<Response> as Response;
 
-    const fetch = vi.fn().mockResolvedValueOnce(errorResponse).mockResolvedValueOnce(successResponse);
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(errorResponse)
+      .mockResolvedValueOnce(successResponse);
     const client = new QURLClient({
       apiKey: "lv_live_test",
       baseUrl: "https://api.test.layerv.ai",
@@ -877,7 +900,10 @@ describe("QURLClient", () => {
       text: () => Promise.resolve(""),
     } satisfies Partial<Response> as Response;
 
-    const fetch = vi.fn().mockResolvedValueOnce(rateLimitResponse).mockResolvedValueOnce(successResponse);
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(rateLimitResponse)
+      .mockResolvedValueOnce(successResponse);
     const client = new QURLClient({
       apiKey: "lv_live_test",
       baseUrl: "https://api.test.layerv.ai",
