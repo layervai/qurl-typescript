@@ -94,11 +94,11 @@ export class QURLClient {
   /** List QURLs with optional filters. */
   async list(input: ListInput = {}): Promise<ListOutput> {
     const params = new URLSearchParams();
-    if (input.limit != null) params.set("limit", String(input.limit));
-    if (input.cursor != null) params.set("cursor", input.cursor);
-    if (input.status != null) params.set("status", input.status);
-    if (input.q != null) params.set("q", input.q);
-    if (input.sort != null) params.set("sort", input.sort);
+    if (input.limit !== null && input.limit !== undefined) params.set("limit", String(input.limit));
+    if (input.cursor !== null && input.cursor !== undefined) params.set("cursor", input.cursor);
+    if (input.status !== null && input.status !== undefined) params.set("status", input.status);
+    if (input.q !== null && input.q !== undefined) params.set("q", input.q);
+    if (input.sort !== null && input.sort !== undefined) params.set("sort", input.sort);
 
     const query = params.toString();
     const path = query ? `/v1/qurls?${query}` : "/v1/qurls";

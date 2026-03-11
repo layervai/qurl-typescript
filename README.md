@@ -1,5 +1,9 @@
 # @layerv/qurl
 
+[![npm](https://img.shields.io/npm/v/@layerv/qurl)](https://www.npmjs.com/package/@layerv/qurl)
+[![CI](https://github.com/layervai/qurl-typescript/actions/workflows/ci.yml/badge.svg)](https://github.com/layervai/qurl-typescript/actions/workflows/ci.yml)
+[![License](https://img.shields.io/github/license/layervai/qurl-typescript)](LICENSE)
+
 TypeScript SDK for the [QURL API](https://docs.layerv.ai) — secure, time-limited access links for AI agents.
 
 ## Installation
