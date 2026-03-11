@@ -205,6 +205,7 @@ export class QURLClient {
     }
 
     const retryable = method === "POST" ? RETRYABLE_STATUS_POST : RETRYABLE_STATUS;
+    const serializedBody = body !== undefined ? JSON.stringify(body) : undefined;
     let lastError: Error | undefined;
 
     for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
@@ -221,16 +222,17 @@ export class QURLClient {
         response = await this.fetchFn(url, {
           method,
           headers,
-          body: body !== undefined ? JSON.stringify(body) : undefined,
+          body: serializedBody,
           signal: AbortSignal.timeout(this.timeout),
         });
       } catch (err) {
         const isTimeout = err instanceof DOMException && err.name === "TimeoutError";
-        lastError = isTimeout
-          ? new TimeoutError("Request timed out", { cause: err })
-          : new NetworkError(err instanceof Error ? err.message : String(err), {
-              cause: err instanceof Error ? err : undefined,
-            });
+        if (isTimeout) {
+          lastError = new TimeoutError("Request timed out", { cause: err });
+        } else {
+          const cause = err instanceof Error ? err : undefined;
+          lastError = new NetworkError(cause?.message ?? String(err), { cause });
+        }
         this.log(`${method} ${url} ${isTimeout ? "timed out" : "network error"}`, {
           error: lastError.message,
         });
@@ -275,10 +277,7 @@ export class QURLClient {
           detail: json.error.detail,
           invalid_fields: json.error.invalid_fields,
           request_id: json.meta?.request_id,
-          retry_after:
-            response.status === 429
-              ? parseInt(response.headers.get("Retry-After") ?? "", 10) || undefined
-              : undefined,
+          retry_after: this.parseRetryAfter(response),
         };
       }
     } catch {
@@ -291,6 +290,14 @@ export class QURLClient {
       title: response.statusText,
       detail: "",
     };
+  }
+
+  private parseRetryAfter(response: Response): number | undefined {
+    if (response.status !== 429) return undefined;
+    const header = response.headers.get("Retry-After");
+    if (!header) return undefined;
+    const seconds = parseInt(header, 10);
+    return Number.isNaN(seconds) ? undefined : seconds;
   }
 
   private retryDelay(attempt: number, lastError?: Error): number {
