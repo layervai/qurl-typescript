@@ -1,6 +1,16 @@
 import { describe, it, expect, vi } from "vitest";
 import { QURLClient } from "./client.js";
-import { QURLError } from "./errors.js";
+import {
+  AuthenticationError,
+  AuthorizationError,
+  NetworkError,
+  NotFoundError,
+  QURLError,
+  RateLimitError,
+  ServerError,
+  TimeoutError,
+  ValidationError,
+} from "./errors.js";
 
 function mockFetch(response: {
   status: number;
@@ -651,5 +661,342 @@ describe("QURLClient", () => {
       "https://api.test.layerv.ai/v1/quota",
       expect.objectContaining({ method: "GET" }),
     );
+  });
+
+  // --- Error subclass mapping ---
+
+  it("throws AuthenticationError on 401", async () => {
+    const fetch = mockFetch({
+      status: 401,
+      body: {
+        error: { title: "Unauthorized", status: 401, detail: "Invalid API key", code: "unauthorized" },
+      },
+    });
+    const client = createClient(fetch);
+
+    await expect(client.getQuota()).rejects.toThrow(AuthenticationError);
+  });
+
+  it("throws AuthorizationError on 403", async () => {
+    const fetch = mockFetch({
+      status: 403,
+      body: {
+        error: { title: "Forbidden", status: 403, detail: "Missing scope", code: "forbidden" },
+      },
+    });
+    const client = createClient(fetch);
+
+    await expect(client.getQuota()).rejects.toThrow(AuthorizationError);
+  });
+
+  it("throws NotFoundError on 404", async () => {
+    const fetch = mockFetch({
+      status: 404,
+      body: {
+        error: { title: "Not Found", status: 404, detail: "QURL not found", code: "not_found" },
+      },
+    });
+    const client = createClient(fetch);
+
+    const err = await client.get("r_missing").catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(NotFoundError);
+    expect(err).toBeInstanceOf(QURLError);
+  });
+
+  it("throws ValidationError on 400", async () => {
+    const fetch = mockFetch({
+      status: 400,
+      body: {
+        error: {
+          title: "Bad Request",
+          status: 400,
+          detail: "Invalid input",
+          code: "validation_error",
+          invalid_fields: { target_url: "required" },
+        },
+      },
+    });
+    const client = createClient(fetch);
+
+    const err = await client.create({ target_url: "" }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ValidationError);
+    expect((err as ValidationError).invalidFields).toEqual({ target_url: "required" });
+  });
+
+  it("throws ValidationError on 422", async () => {
+    const fetch = mockFetch({
+      status: 422,
+      body: {
+        error: { title: "Unprocessable", status: 422, detail: "Bad entity", code: "unprocessable" },
+      },
+    });
+    const client = createClient(fetch);
+
+    await expect(client.create({ target_url: "bad" })).rejects.toThrow(ValidationError);
+  });
+
+  it("throws RateLimitError on 429", async () => {
+    const fetch = mockFetch({
+      status: 429,
+      headers: { "Retry-After": "5" },
+      body: {
+        error: { title: "Rate Limited", status: 429, detail: "Too many requests", code: "rate_limited" },
+      },
+    });
+    const client = createClient(fetch);
+
+    const err = await client.getQuota().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(RateLimitError);
+    expect((err as RateLimitError).retryAfter).toBe(5);
+  });
+
+  it("throws ServerError on 500", async () => {
+    const fetch = mockFetch({
+      status: 500,
+      body: {
+        error: { title: "Internal Error", status: 500, detail: "Something broke", code: "internal" },
+      },
+    });
+    const client = createClient(fetch);
+
+    await expect(client.getQuota()).rejects.toThrow(ServerError);
+  });
+
+  it("throws ServerError on 503", async () => {
+    const fetch = mockFetch({
+      status: 503,
+      body: {
+        error: { title: "Unavailable", status: 503, detail: "Maintenance", code: "unavailable" },
+      },
+    });
+    const client = createClient(fetch);
+
+    await expect(client.getQuota()).rejects.toThrow(ServerError);
+  });
+
+  // --- Network error wrapping ---
+
+  it("wraps TypeError into NetworkError", async () => {
+    const fetch = vi.fn().mockRejectedValue(new TypeError("fetch failed"));
+    const client = createClient(fetch);
+
+    const err = await client.getQuota().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(NetworkError);
+    expect((err as NetworkError).message).toContain("fetch failed");
+  });
+
+  it("wraps DOMException timeout into TimeoutError", async () => {
+    const fetch = vi.fn().mockRejectedValue(new DOMException("signal timed out", "TimeoutError"));
+    const client = createClient(fetch);
+
+    const err = await client.getQuota().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(TimeoutError);
+    expect((err as TimeoutError).message).toContain("timed out");
+  });
+
+  // --- POST-safe retry ---
+
+  it("does not retry POST on 502", async () => {
+    const fetch = mockFetch({
+      status: 502,
+      body: {
+        error: { title: "Bad Gateway", status: 502, detail: "Upstream error", code: "bad_gateway" },
+      },
+    });
+    const client = new QURLClient({
+      apiKey: "lv_live_test",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch,
+      maxRetries: 2,
+    });
+
+    await expect(client.create({ target_url: "https://example.com" })).rejects.toThrow(ServerError);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries GET on 502", async () => {
+    const errorResponse = {
+      ok: false,
+      status: 502,
+      statusText: "Bad Gateway",
+      headers: new Headers({}),
+      json: () =>
+        Promise.resolve({
+          error: { title: "Bad Gateway", status: 502, detail: "Upstream error", code: "bad_gateway" },
+        }),
+      text: () => Promise.resolve(""),
+    } satisfies Partial<Response> as Response;
+
+    const successResponse = {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      headers: new Headers({}),
+      json: () =>
+        Promise.resolve({
+          data: { plan: "growth", period_start: "2026-03-01", period_end: "2026-04-01" },
+        }),
+      text: () => Promise.resolve(""),
+    } satisfies Partial<Response> as Response;
+
+    const fetch = vi.fn().mockResolvedValueOnce(errorResponse).mockResolvedValueOnce(successResponse);
+    const client = new QURLClient({
+      apiKey: "lv_live_test",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 2,
+    });
+
+    const result = await client.getQuota();
+    expect(result.plan).toBe("growth");
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries POST on 429", async () => {
+    const rateLimitResponse = {
+      ok: false,
+      status: 429,
+      statusText: "Too Many Requests",
+      headers: new Headers({}),
+      json: () =>
+        Promise.resolve({
+          error: { title: "Rate Limited", status: 429, detail: "Slow down", code: "rate_limited" },
+        }),
+      text: () => Promise.resolve(""),
+    } satisfies Partial<Response> as Response;
+
+    const successResponse = {
+      ok: true,
+      status: 201,
+      statusText: "Created",
+      headers: new Headers({}),
+      json: () =>
+        Promise.resolve({
+          data: { resource_id: "r_new", qurl_link: "https://qurl.link/#at_new" },
+        }),
+      text: () => Promise.resolve(""),
+    } satisfies Partial<Response> as Response;
+
+    const fetch = vi.fn().mockResolvedValueOnce(rateLimitResponse).mockResolvedValueOnce(successResponse);
+    const client = new QURLClient({
+      apiKey: "lv_live_test",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 1,
+    });
+
+    const result = await client.create({ target_url: "https://example.com" });
+    expect(result.resource_id).toBe("r_new");
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  // --- listAll auto-pagination ---
+
+  it("paginates through all pages with listAll", async () => {
+    const page1 = {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      headers: new Headers({}),
+      json: () =>
+        Promise.resolve({
+          data: [{ resource_id: "r_1", status: "active" }],
+          meta: { has_more: true, next_cursor: "cursor_abc" },
+        }),
+      text: () => Promise.resolve(""),
+    } satisfies Partial<Response> as Response;
+
+    const page2 = {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      headers: new Headers({}),
+      json: () =>
+        Promise.resolve({
+          data: [{ resource_id: "r_2", status: "active" }],
+          meta: { has_more: false },
+        }),
+      text: () => Promise.resolve(""),
+    } satisfies Partial<Response> as Response;
+
+    const fetch = vi.fn().mockResolvedValueOnce(page1).mockResolvedValueOnce(page2);
+    const client = new QURLClient({
+      apiKey: "lv_live_test",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 0,
+    });
+
+    const ids: string[] = [];
+    for await (const qurl of client.listAll({ status: "active" })) {
+      ids.push(qurl.resource_id);
+    }
+
+    expect(ids).toEqual(["r_1", "r_2"]);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    // Second call should include cursor
+    const secondUrl = (fetch as ReturnType<typeof vi.fn>).mock.calls[1][0] as string;
+    expect(secondUrl).toContain("cursor=cursor_abc");
+  });
+
+  // --- resolve string overload ---
+
+  it("accepts a plain token string in resolve", async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: {
+        data: {
+          target_url: "https://example.com",
+          resource_id: "r_abc",
+          access_grant: { expires_in: 305, granted_at: "2026-03-10T15:30:00Z", src_ip: "1.2.3.4" },
+        },
+      },
+    });
+    const client = createClient(fetch);
+
+    await client.resolve("at_token123");
+
+    const calledBody = (fetch as ReturnType<typeof vi.fn>).mock.calls[0][1].body as string;
+    expect(JSON.parse(calledBody)).toEqual({ access_token: "at_token123" });
+  });
+
+  // --- debug logging ---
+
+  it("calls debug callback on requests", async () => {
+    const debugFn = vi.fn();
+    const fetch = mockFetch({
+      status: 200,
+      body: {
+        data: { plan: "growth", period_start: "2026-03-01", period_end: "2026-04-01" },
+      },
+    });
+
+    const client = new QURLClient({
+      apiKey: "lv_live_test",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch,
+      maxRetries: 0,
+      debug: debugFn,
+    });
+
+    await client.getQuota();
+
+    expect(debugFn).toHaveBeenCalled();
+    const messages = debugFn.mock.calls.map((c: unknown[]) => c[0]);
+    expect(messages.some((m: string) => m.includes("GET"))).toBe(true);
+  });
+
+  // --- error hierarchy ---
+
+  it("all error subclasses extend QURLError", () => {
+    const data = { status: 400, code: "test", title: "Test", detail: "test" };
+    expect(new AuthenticationError(data)).toBeInstanceOf(QURLError);
+    expect(new AuthorizationError(data)).toBeInstanceOf(QURLError);
+    expect(new NotFoundError(data)).toBeInstanceOf(QURLError);
+    expect(new ValidationError(data)).toBeInstanceOf(QURLError);
+    expect(new RateLimitError(data)).toBeInstanceOf(QURLError);
+    expect(new ServerError(data)).toBeInstanceOf(QURLError);
+    expect(new NetworkError("fail")).toBeInstanceOf(QURLError);
+    expect(new TimeoutError()).toBeInstanceOf(QURLError);
   });
 });

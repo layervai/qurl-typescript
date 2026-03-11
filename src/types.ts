@@ -65,9 +65,12 @@ export interface ExtendInput {
   expires_at?: string;
 }
 
-/** Input for updating a QURL. */
+/** Input for updating a QURL — extend expiration, change description, etc. */
 export interface UpdateInput {
+  extend_by?: string;
+  expires_at?: string;
   description?: string;
+  access_policy?: AccessPolicy;
 }
 
 /** Input for minting an access link. */
@@ -146,4 +149,6 @@ export interface ClientOptions {
   timeout?: number;
   /** User-Agent header value. */
   userAgent?: string;
+  /** Enable debug logging. Pass `true` for console.debug, or a custom callback. */
+  debug?: boolean | ((message: string, data?: Record<string, unknown>) => void);
 }

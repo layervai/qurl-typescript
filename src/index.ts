@@ -1,5 +1,17 @@
 export { QURLClient } from "./client.js";
-export { QURLError } from "./errors.js";
+export {
+  AuthenticationError,
+  AuthorizationError,
+  createError,
+  NetworkError,
+  NotFoundError,
+  QURLError,
+  RateLimitError,
+  ServerError,
+  TimeoutError,
+  ValidationError,
+} from "./errors.js";
+export { VERSION } from "./version.js";
 export type {
   AccessGrant,
   AccessPolicy,

@@ -1,4 +1,4 @@
-import { QURLError } from "./errors.js";
+import { createError, NetworkError, QURLError, TimeoutError } from "./errors.js";
 import type {
   ClientOptions,
   CreateInput,
@@ -15,11 +15,13 @@ import type {
   ResolveOutput,
   UpdateInput,
 } from "./types.js";
+import { VERSION } from "./version.js";
 
 const DEFAULT_BASE_URL = "https://api.layerv.ai";
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_TIMEOUT = 30_000;
-const DEFAULT_USER_AGENT = "qurl-typescript-sdk/0.1.0";
+const RETRYABLE_STATUS = new Set([429, 502, 503, 504]);
+const RETRYABLE_STATUS_POST = new Set([429]);
 
 interface ApiResponse<T> {
   data: T;
@@ -51,6 +53,9 @@ export class QURLClient {
   private readonly maxRetries: number;
   private readonly timeout: number;
   private readonly userAgent: string;
+  private readonly debugFn:
+    | ((message: string, data?: Record<string, unknown>) => void)
+    | undefined;
 
   constructor(options: ClientOptions) {
     if (!options.apiKey) {
@@ -61,7 +66,13 @@ export class QURLClient {
     this.fetchFn = options.fetch ?? globalThis.fetch;
     this.maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
     this.timeout = options.timeout ?? DEFAULT_TIMEOUT;
-    this.userAgent = options.userAgent ?? DEFAULT_USER_AGENT;
+    this.userAgent = options.userAgent ?? `qurl-typescript/${VERSION}`;
+
+    if (options.debug === true) {
+      this.debugFn = (msg, data) => console.debug(`[qurl] ${msg}`, data ?? "");
+    } else if (typeof options.debug === "function") {
+      this.debugFn = options.debug;
+    }
   }
 
   /** Returns a JSON-safe representation with the API key masked. */
@@ -81,6 +92,12 @@ export class QURLClient {
     return "***";
   }
 
+  private log(message: string, data?: Record<string, unknown>): void {
+    this.debugFn?.(message, data);
+  }
+
+  // --- Public API ---
+
   /** Create a new QURL. */
   async create(input: CreateInput): Promise<CreateOutput> {
     return this.request<CreateOutput>("POST", "/v1/qurl", input);
@@ -91,7 +108,7 @@ export class QURLClient {
     return this.request<QURL>("GET", `/v1/qurls/${encodeURIComponent(id)}`);
   }
 
-  /** List QURLs with optional filters. */
+  /** List QURLs with optional filters (single page). */
   async list(input: ListInput = {}): Promise<ListOutput> {
     const params = new URLSearchParams();
     if (input.limit !== null && input.limit !== undefined) params.set("limit", String(input.limit));
@@ -111,33 +128,59 @@ export class QURLClient {
     };
   }
 
+  /** Iterate over all QURLs, automatically paginating. */
+  async *listAll(
+    input: Omit<ListInput, "cursor"> = {},
+  ): AsyncGenerator<QURL, void, undefined> {
+    let cursor: string | undefined;
+    do {
+      const page = await this.list({ ...input, cursor });
+      for (const qurl of page.qurls) {
+        yield qurl;
+      }
+      cursor = page.next_cursor;
+    } while (cursor);
+  }
+
   /** Delete (revoke) a QURL. */
   async delete(id: string): Promise<void> {
     await this.request<void>("DELETE", `/v1/qurls/${encodeURIComponent(id)}`);
   }
 
-  /** Extend a QURL's expiration. */
+  /**
+   * Extend a QURL's expiration.
+   *
+   * Convenience method — equivalent to `update(id, input)`.
+   */
   async extend(id: string, input: ExtendInput): Promise<QURL> {
-    return this.request<QURL>("PATCH", `/v1/qurls/${encodeURIComponent(id)}`, input);
+    return this.update(id, input);
   }
 
-  /** Update a QURL's mutable properties. */
+  /** Update a QURL — extend expiration, change description, etc. */
   async update(id: string, input: UpdateInput): Promise<QURL> {
     return this.request<QURL>("PATCH", `/v1/qurls/${encodeURIComponent(id)}`, input);
   }
 
   /** Mint a new access link for a QURL. */
   async mintLink(id: string, input?: MintInput): Promise<MintOutput> {
-    return this.request<MintOutput>("POST", `/v1/qurls/${encodeURIComponent(id)}/mint_link`, input);
+    return this.request<MintOutput>(
+      "POST",
+      `/v1/qurls/${encodeURIComponent(id)}/mint_link`,
+      input,
+    );
   }
 
   /**
    * Resolve a QURL access token (headless).
+   *
    * Triggers an NHP knock to open firewall access for the caller's IP.
    * Requires `qurl:resolve` scope on the API key.
+   *
+   * Accepts a plain token string or a `ResolveInput` object.
    */
-  async resolve(input: ResolveInput): Promise<ResolveOutput> {
-    return this.request<ResolveOutput>("POST", "/v1/resolve", input);
+  async resolve(input: ResolveInput | string): Promise<ResolveOutput> {
+    const body = typeof input === "string" ? { access_token: input } : input;
+    return this.request<ResolveOutput>("POST", "/v1/resolve", body);
   }
 
   /** Get quota and usage information. */
@@ -167,29 +210,45 @@ export class QURLClient {
       headers["Content-Type"] = "application/json";
     }
 
+    const retryable = method === "POST" ? RETRYABLE_STATUS_POST : RETRYABLE_STATUS;
     let lastError: Error | undefined;
 
     for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
       if (attempt > 0) {
         const delay = this.retryDelay(attempt, lastError);
+        this.log(`Retry ${attempt}/${this.maxRetries} after ${delay}ms`, { method, url });
         await new Promise((resolve) => setTimeout(resolve, delay));
       }
+
+      this.log(`${method} ${url}`);
 
       let response: Response;
       try {
         response = await this.fetchFn(url, {
           method,
           headers,
-          body: body ? JSON.stringify(body) : undefined,
+          body: body !== undefined ? JSON.stringify(body) : undefined,
           signal: AbortSignal.timeout(this.timeout),
         });
-      } catch (networkError) {
-        lastError = networkError instanceof Error ? networkError : new Error(String(networkError));
+      } catch (err) {
+        const isTimeout =
+          err instanceof DOMException && err.name === "TimeoutError";
+        lastError = isTimeout
+          ? new TimeoutError("Request timed out", { cause: err })
+          : new NetworkError(
+              err instanceof Error ? err.message : String(err),
+              { cause: err instanceof Error ? err : undefined },
+            );
+        this.log(`${method} ${url} ${isTimeout ? "timed out" : "network error"}`, {
+          error: lastError.message,
+        });
         if (attempt < this.maxRetries) {
           continue;
         }
         throw lastError;
       }
+
+      this.log(`${method} ${url} → ${response.status}`);
 
       if (response.ok) {
         if (response.status === 204) {
@@ -200,9 +259,9 @@ export class QURLClient {
       }
 
       const errorData = await this.parseError(response);
-      const err = new QURLError(errorData);
+      const err = createError(errorData);
 
-      if (this.isRetryable(response.status) && attempt < this.maxRetries) {
+      if (retryable.has(response.status) && attempt < this.maxRetries) {
         lastError = err;
         continue;
       }
@@ -242,13 +301,9 @@ export class QURLClient {
     };
   }
 
-  private isRetryable(status: number): boolean {
-    return status === 429 || status === 502 || status === 503 || status === 504;
-  }
-
   private retryDelay(attempt: number, lastError?: Error): number {
     if (lastError instanceof QURLError && lastError.retryAfter) {
-      return lastError.retryAfter * 1000;
+      return Math.min(lastError.retryAfter * 1000, 30_000);
     }
     const base = 500 * Math.pow(2, attempt - 1);
     const jitter = Math.random() * base * 0.5;
