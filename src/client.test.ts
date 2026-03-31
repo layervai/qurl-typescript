@@ -1194,4 +1194,116 @@ describe("QURLClient", () => {
     await expect(client.getQuota()).rejects.toThrow(ServerError);
     expect(fetch).toHaveBeenCalledTimes(1);
   });
+
+  // --- Batch create ---
+
+  it("throws on empty batch create", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+    const client = createClient(fetch);
+
+    await expect(client.batchCreate({ items: [] })).rejects.toThrow("at least 1 item");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("throws when batch create exceeds 100 items", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+    const client = createClient(fetch);
+    const items = Array.from({ length: 101 }, (_, i) => ({
+      target_url: `https://example.com/${i}`,
+    }));
+
+    await expect(client.batchCreate({ items })).rejects.toThrow("at most 100 items");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("batch creates QURLs successfully", async () => {
+    const fetch = mockFetch({
+      status: 201,
+      body: {
+        data: {
+          succeeded: 2,
+          failed: 0,
+          results: [
+            {
+              index: 0,
+              success: true,
+              resource_id: "r_batch1",
+              qurl_link: "https://qurl.link/#at_b1",
+              qurl_site: "https://r_batch1.qurl.site",
+              expires_at: "2026-04-01T00:00:00Z",
+            },
+            {
+              index: 1,
+              success: true,
+              resource_id: "r_batch2",
+              qurl_link: "https://qurl.link/#at_b2",
+              qurl_site: "https://r_batch2.qurl.site",
+              expires_at: "2026-04-01T00:00:00Z",
+            },
+          ],
+        },
+      },
+    });
+
+    const client = createClient(fetch);
+    const result = await client.batchCreate({
+      items: [
+        { target_url: "https://example.com/1", expires_in: "24h" },
+        { target_url: "https://example.com/2", expires_in: "48h" },
+      ],
+    });
+
+    expect(result.succeeded).toBe(2);
+    expect(result.failed).toBe(0);
+    expect(result.results).toHaveLength(2);
+    expect(result.results[0].resource_id).toBe("r_batch1");
+    expect(result.results[1].resource_id).toBe("r_batch2");
+    expect(fetch).toHaveBeenCalledWith(
+      "https://api.test.layerv.ai/v1/qurls/batch",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("batch creates QURLs with partial failure", async () => {
+    const fetch = mockFetch({
+      status: 207,
+      body: {
+        data: {
+          succeeded: 1,
+          failed: 1,
+          results: [
+            {
+              index: 0,
+              success: true,
+              resource_id: "r_batch_ok",
+              qurl_link: "https://qurl.link/#at_ok",
+              qurl_site: "https://r_batch_ok.qurl.site",
+              expires_at: "2026-04-01T00:00:00Z",
+            },
+            {
+              index: 1,
+              success: false,
+              error: { code: "validation_error", message: "Invalid target_url" },
+            },
+          ],
+        },
+      },
+    });
+
+    const client = createClient(fetch);
+    const result = await client.batchCreate({
+      items: [
+        { target_url: "https://example.com/ok", expires_in: "24h" },
+        { target_url: "", expires_in: "24h" },
+      ],
+    });
+
+    expect(result.succeeded).toBe(1);
+    expect(result.failed).toBe(1);
+    expect(result.results[0].success).toBe(true);
+    expect(result.results[0].resource_id).toBe("r_batch_ok");
+    expect(result.results[1].success).toBe(false);
+    expect(result.results[1].error?.code).toBe("validation_error");
+    expect(result.results[1].error?.message).toBe("Invalid target_url");
+  });
 });

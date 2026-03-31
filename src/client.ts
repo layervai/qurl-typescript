@@ -120,8 +120,14 @@ export class QURLClient {
     return this.request<CreateOutput>("POST", "/v1/qurls", input);
   }
 
-  /** Batch create multiple QURLs. */
+  /** Batch create multiple QURLs (1-100 items). */
   async batchCreate(input: BatchCreateInput): Promise<BatchCreateOutput> {
+    if (input.items.length === 0) {
+      throw new Error("batchCreate requires at least 1 item");
+    }
+    if (input.items.length > 100) {
+      throw new Error(`batchCreate accepts at most 100 items, got ${input.items.length}`);
+    }
     return this.request<BatchCreateOutput>("POST", "/v1/qurls/batch", input);
   }
 
@@ -140,19 +146,9 @@ export class QURLClient {
    */
   async list(input: ListInput = {}): Promise<ListOutput> {
     const params = new URLSearchParams();
-    if (input.limit !== null && input.limit !== undefined) params.set("limit", String(input.limit));
-    if (input.cursor !== null && input.cursor !== undefined) params.set("cursor", input.cursor);
-    if (input.status !== null && input.status !== undefined) params.set("status", input.status);
-    if (input.q !== null && input.q !== undefined) params.set("q", input.q);
-    if (input.sort !== null && input.sort !== undefined) params.set("sort", input.sort);
-    if (input.created_after !== null && input.created_after !== undefined)
-      params.set("created_after", input.created_after);
-    if (input.created_before !== null && input.created_before !== undefined)
-      params.set("created_before", input.created_before);
-    if (input.expires_before !== null && input.expires_before !== undefined)
-      params.set("expires_before", input.expires_before);
-    if (input.expires_after !== null && input.expires_after !== undefined)
-      params.set("expires_after", input.expires_after);
+    for (const [key, value] of Object.entries(input)) {
+      if (value !== null && value !== undefined) params.set(key, String(value));
+    }
 
     const query = params.toString();
     const path = query ? `/v1/qurls?${query}` : "/v1/qurls";
