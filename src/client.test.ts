@@ -60,7 +60,7 @@ describe("QURLClient", () => {
     expect(result.resource_id).toBe("r_abc123def45");
     expect(result.qurl_link).toBe("https://qurl.link/#at_test");
     expect(fetch).toHaveBeenCalledWith(
-      "https://api.test.layerv.ai/v1/qurl",
+      "https://api.test.layerv.ai/v1/qurls",
       expect.objectContaining({ method: "POST" }),
     );
   });

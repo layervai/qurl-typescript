@@ -1,3 +1,10 @@
+/** AI agent access control policy. */
+export interface AIAgentPolicy {
+  block_all?: boolean;
+  deny_categories?: string[];
+  allow_categories?: string[];
+}
+
 /** Access control policy for a QURL. */
 export interface AccessPolicy {
   ip_allowlist?: string[];
@@ -6,6 +13,7 @@ export interface AccessPolicy {
   geo_denylist?: string[];
   user_agent_allow_regex?: string;
   user_agent_deny_regex?: string;
+  ai_agent_policy?: AIAgentPolicy;
 }
 
 /** An individual access token within a QURL. */
@@ -45,28 +53,33 @@ export interface CreateInput {
   expires_in?: string;
   one_time_use?: boolean;
   max_sessions?: number;
-  description?: string;
-  metadata?: Record<string, string>;
+  session_duration?: string;
+  label?: string;
   access_policy?: AccessPolicy;
   custom_domain?: string;
 }
 
 /** Response from creating a QURL. */
 export interface CreateOutput {
+  qurl_id: string;
   resource_id: string;
   qurl_link: string;
   qurl_site: string;
   expires_at?: string;
-  one_time_use?: boolean;
+  label?: string;
 }
 
 /** Input for listing QURLs. */
 export interface ListInput {
   limit?: number;
   cursor?: string;
-  status?: QURL["status"];
+  status?: string;
   q?: string;
   sort?: string;
+  created_after?: string;
+  created_before?: string;
+  expires_before?: string;
+  expires_after?: string;
 }
 
 /** Response from listing QURLs. */
@@ -87,12 +100,18 @@ export interface UpdateInput {
   extend_by?: string;
   expires_at?: string;
   description?: string;
-  access_policy?: AccessPolicy;
+  tags?: string[];
 }
 
 /** Input for minting an access link. */
 export interface MintInput {
+  expires_in?: string;
   expires_at?: string;
+  label?: string;
+  one_time_use?: boolean;
+  max_sessions?: number;
+  session_duration?: string;
+  access_policy?: AccessPolicy;
 }
 
 /** Response from minting an access link. */
@@ -132,13 +151,37 @@ export interface Quota {
     resolve_per_minute: number;
     max_active_qurls: number;
     max_tokens_per_qurl: number;
+    max_expiry_seconds: number;
   };
   usage?: {
     qurls_created: number;
     active_qurls: number;
-    active_qurls_percent: number;
+    active_qurls_percent: number | null;
     total_accesses: number;
   };
+}
+
+/** Input for batch creating QURLs. */
+export interface BatchCreateInput {
+  items: CreateInput[];
+}
+
+/** Result for a single item in a batch create response. */
+export interface BatchItemResult {
+  index: number;
+  success: boolean;
+  resource_id?: string;
+  qurl_link?: string;
+  qurl_site?: string;
+  expires_at?: string;
+  error?: { code: string; message: string };
+}
+
+/** Response from batch creating QURLs. */
+export interface BatchCreateOutput {
+  succeeded: number;
+  failed: number;
+  results: BatchItemResult[];
 }
 
 /** API error from the QURL service (RFC 7807). */

@@ -1,6 +1,8 @@
 import { createError, NetworkError, QURLError, TimeoutError } from "./errors.js";
 import type {
   AccessToken,
+  BatchCreateInput,
+  BatchCreateOutput,
   ClientOptions,
   CreateInput,
   CreateOutput,
@@ -115,7 +117,12 @@ export class QURLClient {
 
   /** Create a new QURL. */
   async create(input: CreateInput): Promise<CreateOutput> {
-    return this.request<CreateOutput>("POST", "/v1/qurl", input);
+    return this.request<CreateOutput>("POST", "/v1/qurls", input);
+  }
+
+  /** Batch create multiple QURLs. */
+  async batchCreate(input: BatchCreateInput): Promise<BatchCreateOutput> {
+    return this.request<BatchCreateOutput>("POST", "/v1/qurls/batch", input);
   }
 
   /** Gets a protected URL and its access tokens. */
@@ -138,6 +145,14 @@ export class QURLClient {
     if (input.status !== null && input.status !== undefined) params.set("status", input.status);
     if (input.q !== null && input.q !== undefined) params.set("q", input.q);
     if (input.sort !== null && input.sort !== undefined) params.set("sort", input.sort);
+    if (input.created_after !== null && input.created_after !== undefined)
+      params.set("created_after", input.created_after);
+    if (input.created_before !== null && input.created_before !== undefined)
+      params.set("created_before", input.created_before);
+    if (input.expires_before !== null && input.expires_before !== undefined)
+      params.set("expires_before", input.expires_before);
+    if (input.expires_after !== null && input.expires_after !== undefined)
+      params.set("expires_after", input.expires_after);
 
     const query = params.toString();
     const path = query ? `/v1/qurls?${query}` : "/v1/qurls";
