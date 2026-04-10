@@ -118,7 +118,10 @@ export class QURLClient {
     return raw;
   }
 
-  /** Lists protected URLs. Each QURL groups access tokens sharing the same target URL. */
+  /**
+   * Lists protected URLs. Each QURL groups access tokens sharing the same target URL.
+   * Note: list items include qurl_count but not access_tokens (too expensive at scale).
+   */
   async list(input: ListInput = {}): Promise<ListOutput> {
     const params = new URLSearchParams();
     if (input.limit !== null && input.limit !== undefined) params.set("limit", String(input.limit));

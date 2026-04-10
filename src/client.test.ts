@@ -74,7 +74,8 @@ describe("QURLClient", () => {
           target_url: "https://example.com",
           status: "active",
           qurl_count: 2,
-          access_tokens: [
+          // API wire format uses "qurls"; client.get() maps to "access_tokens"
+          qurls: [
             {
               qurl_id: "at_token1",
               status: "active",
