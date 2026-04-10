@@ -8,19 +8,35 @@ export interface AccessPolicy {
   user_agent_deny_regex?: string;
 }
 
+/** An individual access token within a QURL. */
+export interface AccessToken {
+  qurl_id: string;
+  label?: string;
+  status: "active" | "consumed" | "expired" | "revoked";
+  one_time_use: boolean;
+  max_sessions: number;
+  session_duration: number;
+  access_policy?: AccessPolicy;
+  use_count: number;
+  qurl_site?: string;
+  created_at: string;
+  expires_at: string;
+}
+
 /** A QURL resource as returned by the API. */
 export interface QURL {
   resource_id: string;
   target_url: string;
   status: "active" | "consumed" | "revoked" | "expired";
-  created_at: string;
-  expires_at?: string;
-  one_time_use: boolean;
-  max_sessions?: number;
   description?: string;
+  tags?: string[];
+  custom_domain?: string;
   qurl_site?: string;
   qurl_link?: string;
-  access_policy?: AccessPolicy;
+  qurl_count?: number;
+  access_tokens?: AccessToken[];
+  created_at: string;
+  expires_at?: string;
 }
 
 /** Input for creating a QURL. */

@@ -1,5 +1,6 @@
 import { createError, NetworkError, QURLError, TimeoutError } from "./errors.js";
 import type {
+  AccessToken,
   ClientOptions,
   CreateInput,
   CreateOutput,
@@ -103,12 +104,21 @@ export class QURLClient {
     return this.request<CreateOutput>("POST", "/v1/qurl", input);
   }
 
-  /** Get a QURL by ID. */
+  /** Gets a protected URL and its access tokens. */
   async get(id: string): Promise<QURL> {
-    return this.request<QURL>("GET", `/v1/qurls/${encodeURIComponent(id)}`);
+    // API returns per-token array as "qurls"; SDK exposes as "access_tokens" for clarity.
+    const raw = await this.request<QURL & { qurls?: AccessToken[] }>(
+      "GET",
+      `/v1/qurls/${encodeURIComponent(id)}`,
+    );
+    if (raw.qurls && !raw.access_tokens) {
+      raw.access_tokens = raw.qurls;
+      delete (raw as unknown as Record<string, unknown>).qurls;
+    }
+    return raw;
   }
 
-  /** List QURLs with optional filters (single page). */
+  /** Lists protected URLs. Each QURL groups access tokens sharing the same target URL. */
   async list(input: ListInput = {}): Promise<ListOutput> {
     const params = new URLSearchParams();
     if (input.limit !== null && input.limit !== undefined) params.set("limit", String(input.limit));

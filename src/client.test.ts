@@ -65,7 +65,7 @@ describe("QURLClient", () => {
     );
   });
 
-  it("gets a QURL", async () => {
+  it("gets a QURL with access tokens", async () => {
     const fetch = mockFetch({
       status: 200,
       body: {
@@ -73,6 +73,29 @@ describe("QURLClient", () => {
           resource_id: "r_abc123def45",
           target_url: "https://example.com",
           status: "active",
+          qurl_count: 2,
+          access_tokens: [
+            {
+              qurl_id: "at_token1",
+              status: "active",
+              one_time_use: false,
+              max_sessions: 3,
+              session_duration: 300,
+              use_count: 1,
+              created_at: "2026-03-10T10:00:00Z",
+              expires_at: "2026-03-20T10:00:00Z",
+            },
+            {
+              qurl_id: "at_token2",
+              status: "consumed",
+              one_time_use: true,
+              max_sessions: 1,
+              session_duration: 300,
+              use_count: 1,
+              created_at: "2026-03-10T10:00:00Z",
+              expires_at: "2026-03-20T10:00:00Z",
+            },
+          ],
           created_at: "2026-03-10T10:00:00Z",
         },
       },
@@ -83,6 +106,13 @@ describe("QURLClient", () => {
 
     expect(result.resource_id).toBe("r_abc123def45");
     expect(result.status).toBe("active");
+    expect(result.qurl_count).toBe(2);
+    expect(result.access_tokens).toHaveLength(2);
+    expect(result.access_tokens![0].qurl_id).toBe("at_token1");
+    expect(result.access_tokens![0].one_time_use).toBe(false);
+    expect(result.access_tokens![0].max_sessions).toBe(3);
+    expect(result.access_tokens![1].status).toBe("consumed");
+    expect(result.access_tokens![1].one_time_use).toBe(true);
   });
 
   it("lists QURLs", async () => {

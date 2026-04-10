@@ -15,6 +15,7 @@ export { VERSION } from "./version.js";
 export type {
   AccessGrant,
   AccessPolicy,
+  AccessToken,
   ClientOptions,
   CreateInput,
   CreateOutput,
