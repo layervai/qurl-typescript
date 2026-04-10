@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -64,24 +67,12 @@ jobs:
             *) TRIGGER_TEXT="$TRIGGER" ;;
           esac
 
-          if [[ "$TEST_RESULT" == "success" ]]; then
-            COLOR="#36a64f"; EMOJI="white_check_mark"
-            HEADER="QURL TypeScript SDK Build"; STATUS_TEXT="successful"
-          elif [[ "$TEST_RESULT" == "failure" ]]; then
-            COLOR="#dc3545"; EMOJI="x"
-            HEADER="QURL TypeScript SDK Build"; STATUS_TEXT="failed"
-          elif [[ "$TEST_RESULT" == "cancelled" ]]; then
-            COLOR="#ffc107"; EMOJI="warning"
-            HEADER="QURL TypeScript SDK Build"; STATUS_TEXT="cancelled"
-          else
-            COLOR="#ffc107"; EMOJI="warning"
-            HEADER="QURL TypeScript SDK Build"; STATUS_TEXT="incomplete"
-          fi
-
+          HEADER="QURL TypeScript SDK Build"
           case "$TEST_RESULT" in
-            success) TEST_EMOJI=":white_check_mark:" ;;
-            failure) TEST_EMOJI=":x:" ;;
-            *) TEST_EMOJI=":warning:" ;;
+            success)  COLOR="#36a64f"; EMOJI=":white_check_mark:"; STATUS_TEXT="successful" ;;
+            failure)  COLOR="#dc3545"; EMOJI=":x:";                STATUS_TEXT="failed" ;;
+            cancelled) COLOR="#ffc107"; EMOJI=":warning:";         STATUS_TEXT="cancelled" ;;
+            *)        COLOR="#ffc107"; EMOJI=":warning:";          STATUS_TEXT="incomplete" ;;
           esac
 
           FIRST_LINE=$(echo "$COMMIT_MESSAGE" | head -n1 | cut -c1-100)
@@ -95,16 +86,15 @@ jobs:
             --arg sha "$SHORT_SHA" \
             --arg trigger "$TRIGGER_TEXT" \
             --arg actor "$GH_ACTOR" \
-            --arg test_emoji "$TEST_EMOJI" \
             --arg commit "$FIRST_LINE" \
             --arg commit_url "$COMMIT_URL" \
             --arg workflow_url "$WORKFLOW_URL" \
             '{attachments: [{color: $color, blocks: [
-              {type: "section", text: {type: "mrkdwn", text: (":\($emoji): *\($header)* \($status)")}},
+              {type: "section", text: {type: "mrkdwn", text: ("\($emoji) *\($header)* \($status)")}},
               {type: "section", fields: [
                 {type: "mrkdwn", text: ("*Branch:*\n`\($branch)` (\($sha))")},
                 {type: "mrkdwn", text: ("*Trigger:*\n\($trigger) by \($actor)")},
-                {type: "mrkdwn", text: ("*Tests:*\n\($test_emoji)")},
+                {type: "mrkdwn", text: ("*Tests:*\n\($emoji)")},
                 {type: "mrkdwn", text: "*SDK:*\nTypeScript"}
               ]},
               {type: "section", text: {type: "mrkdwn", text: ("*Commit:* `\($commit)`")}},
