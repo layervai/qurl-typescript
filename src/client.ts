@@ -260,7 +260,9 @@ export class QURLClient {
             error: lastError.message,
           },
         );
-        if (attempt < this.maxRetries) continue;
+        if (attempt < this.maxRetries) {
+          continue;
+        }
         throw lastError;
       }
 
