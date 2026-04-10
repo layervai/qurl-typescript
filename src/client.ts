@@ -142,9 +142,9 @@ export class QURLClient {
     const query = params.toString();
     const path = query ? `/v1/qurls?${query}` : "/v1/qurls";
 
-    const { data, meta } = await this.rawRequest<QURL[]>("GET", path);
+    const { data, meta } = await this.rawRequest<(QURL & { qurls?: AccessToken[] })[]>("GET", path);
     return {
-      qurls: data,
+      qurls: data.map(QURLClient.mapQurlsField),
       next_cursor: meta?.next_cursor,
       has_more: meta?.has_more ?? false,
     };

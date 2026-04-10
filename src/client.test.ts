@@ -236,6 +236,41 @@ describe("QURLClient", () => {
     );
   });
 
+  it("update maps qurls to access_tokens", async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: {
+        data: {
+          resource_id: "r_abc123def45",
+          target_url: "https://example.com",
+          status: "active",
+          description: "Updated",
+          qurl_count: 1,
+          qurls: [
+            {
+              qurl_id: "q_abc12345678",
+              status: "active",
+              one_time_use: false,
+              max_sessions: 5,
+              session_duration: 300,
+              use_count: 0,
+              created_at: "2026-03-10T10:00:00Z",
+              expires_at: "2026-03-20T10:00:00Z",
+            },
+          ],
+          created_at: "2026-03-10T10:00:00Z",
+        },
+      },
+    });
+
+    const client = createClient(fetch);
+    const result = await client.update("r_abc123def45", { description: "Updated" });
+
+    expect(result.access_tokens).toHaveLength(1);
+    expect(result.access_tokens![0].qurl_id).toBe("q_abc12345678");
+    expect((result as Record<string, unknown>).qurls).toBeUndefined();
+  });
+
   it("resolves a QURL token", async () => {
     const fetch = mockFetch({
       status: 200,
