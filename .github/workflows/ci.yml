@@ -54,8 +54,7 @@ jobs:
           SHORT_SHA="${GH_SHA:0:7}"
           COMMIT_URL="${GH_SERVER_URL}/${GH_REPOSITORY}/commit/${GH_SHA}"
 
-          TRIGGER="$GH_EVENT_NAME"
-          case "$TRIGGER" in
+          case "$GH_EVENT_NAME" in
             push)
               if echo "$COMMIT_MESSAGE" | head -n1 | grep -q "Merge pull request"; then
                 TRIGGER_TEXT="PR merge"
@@ -63,8 +62,7 @@ jobs:
                 TRIGGER_TEXT="Push"
               fi
               ;;
-            workflow_dispatch) TRIGGER_TEXT="Manual" ;;
-            *) TRIGGER_TEXT="$TRIGGER" ;;
+            *) TRIGGER_TEXT="$GH_EVENT_NAME" ;;
           esac
 
           HEADER="QURL TypeScript SDK Build"
@@ -76,6 +74,7 @@ jobs:
           esac
 
           FIRST_LINE=$(echo "$COMMIT_MESSAGE" | head -n1 | cut -c1-100)
+          FIRST_LINE="${FIRST_LINE:-(no commit message)}"
 
           PAYLOAD=$(jq -n \
             --arg color "$COLOR" \
