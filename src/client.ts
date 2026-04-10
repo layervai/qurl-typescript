@@ -1,5 +1,6 @@
 import { createError, NetworkError, QURLError, TimeoutError } from "./errors.js";
 import type {
+  AccessToken,
   ClientOptions,
   CreateInput,
   CreateOutput,
@@ -96,6 +97,20 @@ export class QURLClient {
     this.debugFn?.(message, data);
   }
 
+  // --- Helpers ---
+
+  /**
+   * Maps the API's "qurls" field to "access_tokens" on the SDK type.
+   * Uses destructuring to avoid mutation and unsafe casts.
+   */
+  private static mapQurlsField(raw: QURL & { qurls?: AccessToken[] }): QURL {
+    const { qurls, ...rest } = raw;
+    if (qurls && !rest.access_tokens) {
+      return { ...rest, access_tokens: qurls };
+    }
+    return rest;
+  }
+
   // --- Public API ---
 
   /** Create a new QURL. */
@@ -103,12 +118,19 @@ export class QURLClient {
     return this.request<CreateOutput>("POST", "/v1/qurl", input);
   }
 
-  /** Get a QURL by ID. */
+  /** Gets a protected URL and its access tokens. */
   async get(id: string): Promise<QURL> {
-    return this.request<QURL>("GET", `/v1/qurls/${encodeURIComponent(id)}`);
+    const raw = await this.request<QURL & { qurls?: AccessToken[] }>(
+      "GET",
+      `/v1/qurls/${encodeURIComponent(id)}`,
+    );
+    return QURLClient.mapQurlsField(raw);
   }
 
-  /** List QURLs with optional filters (single page). */
+  /**
+   * Lists protected URLs. Each QURL groups access tokens sharing the same target URL.
+   * Note: list items include qurl_count but not access_tokens (too expensive at scale).
+   */
   async list(input: ListInput = {}): Promise<ListOutput> {
     const params = new URLSearchParams();
     if (input.limit !== null && input.limit !== undefined) params.set("limit", String(input.limit));
@@ -120,9 +142,10 @@ export class QURLClient {
     const query = params.toString();
     const path = query ? `/v1/qurls?${query}` : "/v1/qurls";
 
-    const { data, meta } = await this.rawRequest<QURL[]>("GET", path);
+    const { data, meta } = await this.rawRequest<(QURL & { qurls?: AccessToken[] })[]>("GET", path);
     return {
-      qurls: data,
+      // Defensive: map in case API includes nested tokens on list items in the future.
+      qurls: data.map(QURLClient.mapQurlsField),
       next_cursor: meta?.next_cursor,
       has_more: meta?.has_more ?? false,
     };
@@ -156,7 +179,12 @@ export class QURLClient {
 
   /** Update a QURL — extend expiration, change description, etc. */
   async update(id: string, input: UpdateInput): Promise<QURL> {
-    return this.request<QURL>("PATCH", `/v1/qurls/${encodeURIComponent(id)}`, input);
+    const raw = await this.request<QURL & { qurls?: AccessToken[] }>(
+      "PATCH",
+      `/v1/qurls/${encodeURIComponent(id)}`,
+      input,
+    );
+    return QURLClient.mapQurlsField(raw);
   }
 
   /** Mint a new access link for a QURL. */

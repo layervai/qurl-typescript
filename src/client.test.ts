@@ -65,7 +65,7 @@ describe("QURLClient", () => {
     );
   });
 
-  it("gets a QURL", async () => {
+  it("gets a QURL with access tokens", async () => {
     const fetch = mockFetch({
       status: 200,
       body: {
@@ -73,6 +73,30 @@ describe("QURLClient", () => {
           resource_id: "r_abc123def45",
           target_url: "https://example.com",
           status: "active",
+          qurl_count: 2,
+          // API wire format uses "qurls"; client.get() maps to "access_tokens"
+          qurls: [
+            {
+              qurl_id: "at_token1",
+              status: "active",
+              one_time_use: false,
+              max_sessions: 3,
+              session_duration: 300,
+              use_count: 1,
+              created_at: "2026-03-10T10:00:00Z",
+              expires_at: "2026-03-20T10:00:00Z",
+            },
+            {
+              qurl_id: "at_token2",
+              status: "consumed",
+              one_time_use: true,
+              max_sessions: 1,
+              session_duration: 300,
+              use_count: 1,
+              created_at: "2026-03-10T10:00:00Z",
+              expires_at: "2026-03-20T10:00:00Z",
+            },
+          ],
           created_at: "2026-03-10T10:00:00Z",
         },
       },
@@ -83,6 +107,35 @@ describe("QURLClient", () => {
 
     expect(result.resource_id).toBe("r_abc123def45");
     expect(result.status).toBe("active");
+    expect(result.qurl_count).toBe(2);
+    expect(result.access_tokens).toHaveLength(2);
+    expect(result.access_tokens![0].qurl_id).toBe("at_token1");
+    expect(result.access_tokens![0].one_time_use).toBe(false);
+    expect(result.access_tokens![0].max_sessions).toBe(3);
+    expect(result.access_tokens![1].status).toBe("consumed");
+    expect(result.access_tokens![1].one_time_use).toBe(true);
+  });
+
+  it("gets a QURL without access tokens", async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: {
+        data: {
+          resource_id: "r_abc123def45",
+          target_url: "https://example.com",
+          status: "active",
+          qurl_count: 0,
+          created_at: "2026-03-10T10:00:00Z",
+        },
+      },
+    });
+
+    const client = createClient(fetch);
+    const result = await client.get("r_abc123def45");
+
+    expect(result.resource_id).toBe("r_abc123def45");
+    expect(result.qurl_count).toBe(0);
+    expect(result.access_tokens).toBeUndefined();
   });
 
   it("lists QURLs", async () => {
@@ -181,6 +234,41 @@ describe("QURLClient", () => {
         body: JSON.stringify({ description: "Updated description" }),
       }),
     );
+  });
+
+  it("update maps qurls to access_tokens", async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: {
+        data: {
+          resource_id: "r_abc123def45",
+          target_url: "https://example.com",
+          status: "active",
+          description: "Updated",
+          qurl_count: 1,
+          qurls: [
+            {
+              qurl_id: "q_abc12345678",
+              status: "active",
+              one_time_use: false,
+              max_sessions: 5,
+              session_duration: 300,
+              use_count: 0,
+              created_at: "2026-03-10T10:00:00Z",
+              expires_at: "2026-03-20T10:00:00Z",
+            },
+          ],
+          created_at: "2026-03-10T10:00:00Z",
+        },
+      },
+    });
+
+    const client = createClient(fetch);
+    const result = await client.update("r_abc123def45", { description: "Updated" });
+
+    expect(result.access_tokens).toHaveLength(1);
+    expect(result.access_tokens![0].qurl_id).toBe("q_abc12345678");
+    expect((result as Record<string, unknown>).qurls).toBeUndefined();
   });
 
   it("resolves a QURL token", async () => {
