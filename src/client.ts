@@ -133,11 +133,9 @@ export class QURLClient {
    */
   async list(input: ListInput = {}): Promise<ListOutput> {
     const params = new URLSearchParams();
-    if (input.limit !== null && input.limit !== undefined) params.set("limit", String(input.limit));
-    if (input.cursor !== null && input.cursor !== undefined) params.set("cursor", input.cursor);
-    if (input.status !== null && input.status !== undefined) params.set("status", input.status);
-    if (input.q !== null && input.q !== undefined) params.set("q", input.q);
-    if (input.sort !== null && input.sort !== undefined) params.set("sort", input.sort);
+    for (const [key, value] of Object.entries(input)) {
+      if (value !== null && value !== undefined) params.set(key, String(value));
+    }
 
     const query = params.toString();
     const path = query ? `/v1/qurls?${query}` : "/v1/qurls";
@@ -255,16 +253,13 @@ export class QURLClient {
           signal: AbortSignal.timeout(this.timeout),
         });
       } catch (err) {
-        const isTimeout = err instanceof DOMException && err.name === "TimeoutError";
-        if (isTimeout) {
-          lastError = new TimeoutError("Request timed out", { cause: err });
-        } else {
-          const cause = err instanceof Error ? err : undefined;
-          lastError = new NetworkError(cause?.message ?? String(err), { cause });
-        }
-        this.log(`${method} ${url} ${isTimeout ? "timed out" : "network error"}`, {
-          error: lastError.message,
-        });
+        lastError = this.classifyFetchError(err);
+        this.log(
+          `${method} ${url} ${lastError instanceof TimeoutError ? "timed out" : "network error"}`,
+          {
+            error: lastError.message,
+          },
+        );
         if (attempt < this.maxRetries) {
           continue;
         }
@@ -336,5 +331,13 @@ export class QURLClient {
     const base = RETRY_BASE_DELAY_MS * Math.pow(2, attempt - 1);
     const jitter = Math.random() * base * 0.5;
     return Math.min(base + jitter, RETRY_MAX_DELAY_MS);
+  }
+
+  private classifyFetchError(err: unknown): TimeoutError | NetworkError {
+    if (err instanceof DOMException && err.name === "TimeoutError") {
+      return new TimeoutError("Request timed out", { cause: err });
+    }
+    const cause = err instanceof Error ? err : undefined;
+    return new NetworkError(cause?.message ?? String(err), { cause });
   }
 }
