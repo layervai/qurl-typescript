@@ -32,7 +32,6 @@ export interface QURL {
   tags?: string[];
   custom_domain?: string;
   qurl_site?: string;
-  qurl_link?: string;
   qurl_count?: number;
   access_tokens?: AccessToken[];
   created_at: string;
