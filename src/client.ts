@@ -144,6 +144,7 @@ export class QURLClient {
 
     const { data, meta } = await this.rawRequest<(QURL & { qurls?: AccessToken[] })[]>("GET", path);
     return {
+      // Defensive: map in case API includes nested tokens on list items in the future.
       qurls: data.map(QURLClient.mapQurlsField),
       next_cursor: meta?.next_cursor,
       has_more: meta?.has_more ?? false,

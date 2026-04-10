@@ -10,6 +10,7 @@ export interface AccessPolicy {
 
 /** An individual access token within a QURL. */
 export interface AccessToken {
+  /** Display identifier for this token (q_ prefix). */
   qurl_id: string;
   label?: string;
   status: "active" | "consumed" | "expired" | "revoked";
