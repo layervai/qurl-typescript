@@ -116,6 +116,28 @@ describe("QURLClient", () => {
     expect(result.access_tokens![1].one_time_use).toBe(true);
   });
 
+  it("gets a QURL without access tokens", async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: {
+        data: {
+          resource_id: "r_abc123def45",
+          target_url: "https://example.com",
+          status: "active",
+          qurl_count: 0,
+          created_at: "2026-03-10T10:00:00Z",
+        },
+      },
+    });
+
+    const client = createClient(fetch);
+    const result = await client.get("r_abc123def45");
+
+    expect(result.resource_id).toBe("r_abc123def45");
+    expect(result.qurl_count).toBe(0);
+    expect(result.access_tokens).toBeUndefined();
+  });
+
   it("lists QURLs", async () => {
     const fetch = mockFetch({
       status: 200,

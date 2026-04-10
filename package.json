@@ -1,6 +1,6 @@
 {
   "name": "@layerv/qurl",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "description": "TypeScript SDK for the QURL API - secure, time-limited access links",
   "type": "module",
   "main": "./dist/index.js",

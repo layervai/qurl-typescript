@@ -97,6 +97,20 @@ export class QURLClient {
     this.debugFn?.(message, data);
   }
 
+  // --- Helpers ---
+
+  /**
+   * Maps the API's "qurls" field to "access_tokens" on the SDK type.
+   * Uses destructuring to avoid mutation and unsafe casts.
+   */
+  private static mapQurlsField(raw: QURL & { qurls?: AccessToken[] }): QURL {
+    const { qurls, ...rest } = raw;
+    if (qurls && !rest.access_tokens) {
+      return { ...rest, access_tokens: qurls };
+    }
+    return rest;
+  }
+
   // --- Public API ---
 
   /** Create a new QURL. */
@@ -106,16 +120,11 @@ export class QURLClient {
 
   /** Gets a protected URL and its access tokens. */
   async get(id: string): Promise<QURL> {
-    // API returns per-token array as "qurls"; SDK exposes as "access_tokens" for clarity.
     const raw = await this.request<QURL & { qurls?: AccessToken[] }>(
       "GET",
       `/v1/qurls/${encodeURIComponent(id)}`,
     );
-    if (raw.qurls && !raw.access_tokens) {
-      raw.access_tokens = raw.qurls;
-      delete (raw as unknown as Record<string, unknown>).qurls;
-    }
-    return raw;
+    return QURLClient.mapQurlsField(raw);
   }
 
   /**
@@ -169,7 +178,12 @@ export class QURLClient {
 
   /** Update a QURL — extend expiration, change description, etc. */
   async update(id: string, input: UpdateInput): Promise<QURL> {
-    return this.request<QURL>("PATCH", `/v1/qurls/${encodeURIComponent(id)}`, input);
+    const raw = await this.request<QURL & { qurls?: AccessToken[] }>(
+      "PATCH",
+      `/v1/qurls/${encodeURIComponent(id)}`,
+      input,
+    );
+    return QURLClient.mapQurlsField(raw);
   }
 
   /** Mint a new access link for a QURL. */
