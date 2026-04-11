@@ -140,11 +140,61 @@ function requireValidTags(tags: string[] | undefined): void {
   }
 }
 
+// `format: uri` in the OpenAPI spec allows schemes the SDK doesn't
+// usefully support (`ftp://`, `file://`, `javascript:`, …). This is a
+// cheap client-side sanity check — the server is still the
+// authoritative validator (e.g. it rejects localhost, cloud metadata,
+// and private-range hosts; the SDK doesn't need to duplicate that).
+// Matches the qurl-python SDK's `_ALLOWED_URL_SCHEMES` check.
+const ALLOWED_URL_SCHEMES = ["http://", "https://"] as const;
+
+function requireValidTargetUrl(target_url: unknown): void {
+  if (
+    typeof target_url !== "string" ||
+    !ALLOWED_URL_SCHEMES.some((scheme) => target_url.startsWith(scheme))
+  ) {
+    // `JSON.stringify(...).slice(0, 40)` instead of the raw value —
+    // works on any input type (string, number, null, object, undefined)
+    // without risking a TypeError on non-subscriptable inputs, and
+    // truncates to keep the error message compact.
+    const repr = JSON.stringify(target_url)?.slice(0, 40) ?? String(target_url).slice(0, 40);
+    throw clientValidationError(`target_url: must start with http:// or https:// (got ${repr})`);
+  }
+}
+
 function validateCreateInput(input: CreateInput): void {
+  requireValidTargetUrl(input.target_url);
   requireMaxLength(input.target_url, "target_url", MAX_TARGET_URL);
   requireMaxLength(input.label, "label", MAX_LABEL);
   requireMaxLength(input.custom_domain, "custom_domain", MAX_CUSTOM_DOMAIN);
   requireMaxSessionsInRange(input.max_sessions);
+}
+
+/**
+ * Per-entry shape guard for {@link BatchItemResult}. Verifies every
+ * non-optional field on the branch of the discriminated union selected
+ * by the `success` discriminant. Protects consumers who narrow on
+ * `success` and then access `resource_id` / `qurl_link` / `error` as
+ * guaranteed-present — if the API ever omits one, we trip the guard
+ * rather than returning `undefined` where the type says `string`.
+ */
+function isValidBatchItemResult(entry: unknown): boolean {
+  if (!entry || typeof entry !== "object") return false;
+  const e = entry as Record<string, unknown>;
+  if (typeof e.index !== "number") return false;
+  if (e.success === true) {
+    return (
+      typeof e.resource_id === "string" &&
+      typeof e.qurl_link === "string" &&
+      typeof e.qurl_site === "string"
+    );
+  }
+  if (e.success === false) {
+    if (!e.error || typeof e.error !== "object") return false;
+    const err = e.error as Record<string, unknown>;
+    return typeof err.code === "string" && typeof err.message === "string";
+  }
+  return false;
 }
 
 interface ApiResponse<T> {
@@ -329,12 +379,15 @@ export class QURLClient {
     ) {
       throw clientValidationError("Unexpected response shape from POST /v1/qurls/batch");
     }
-    // Also verify every result entry carries a boolean `success` discriminant.
-    // Anything else would break the BatchItemResult narrowing consumers rely on.
-    // Deeper per-field validation is intentionally left to the API; this check
-    // is the minimum needed to protect the discriminated union contract.
+    // Per-entry shape guard protecting the BatchItemResult discriminated
+    // union contract. Each branch of the union has non-optional fields
+    // that TypeScript consumers will treat as guaranteed after narrowing
+    // on `success` — if the API omits any of them, the guard must trip
+    // instead of silently returning `undefined` where the type claims
+    // `string`. Deeper value-level validation (is `resource_id` a
+    // well-formed ID?) remains the API's responsibility.
     for (const entry of result.results) {
-      if (!entry || typeof (entry as { success?: unknown }).success !== "boolean") {
+      if (!isValidBatchItemResult(entry)) {
         throw clientValidationError("Unexpected response shape from POST /v1/qurls/batch");
       }
     }
@@ -382,7 +435,18 @@ export class QURLClient {
     };
   }
 
-  /** Iterate over all QURLs, automatically paginating. */
+  /**
+   * Iterate over all QURLs, automatically paginating.
+   *
+   * Termination is **cursor-driven**: the loop stops as soon as the API
+   * returns a page with no `next_cursor`, not when `has_more === false`.
+   * This is deliberate — if the API ever returned `has_more: true` with
+   * a missing or empty `next_cursor` (a server bug), a has_more-driven
+   * loop would spin forever, while this cursor-driven loop terminates
+   * cleanly. The trade-off is that `has_more: false` with a spurious
+   * trailing cursor would cause one extra round-trip; we accept that
+   * over the risk of an infinite loop.
+   */
   async *listAll(input: Omit<ListInput, "cursor"> = {}): AsyncGenerator<QURL, void, undefined> {
     let cursor: string | undefined;
     do {
@@ -550,6 +614,13 @@ export class QURLClient {
       headers["Content-Type"] = "application/json";
     }
 
+    // DELETE is intentionally NOT classified as mutating. HTTP DELETE
+    // is idempotent by spec — deleting an already-deleted resource is
+    // a safe no-op on the server side — and the response body is
+    // either empty (204) or carries no state worth duplicating. POST
+    // and PATCH are the real non-idempotent writes: retrying them on
+    // 5xx risks creating duplicate records or applying a PATCH twice,
+    // so those restrict retries to {429} (rate limits only).
     const mutating = method === "POST" || method === "PATCH";
     const retryable = mutating ? RETRYABLE_STATUS_MUTATING : RETRYABLE_STATUS;
     const serializedBody = body !== undefined ? JSON.stringify(body) : undefined;

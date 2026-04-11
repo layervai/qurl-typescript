@@ -139,6 +139,61 @@ describe("QURLClient", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("create rejects target_url without http/https scheme", async () => {
+    // Matches the qurl-python SDK's _ALLOWED_URL_SCHEMES check. Fail
+    // fast for the common "forgot the protocol" mistake and reject
+    // schemes the SDK doesn't usefully support (ftp://, file://,
+    // javascript:). The server is still the authoritative validator.
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+    const client = createClient(fetch);
+
+    for (const badUrl of ["example.com", "ftp://files.example.com", "javascript:alert(1)", ""]) {
+      const error = await client
+        .create({ target_url: badUrl })
+        .catch((e: unknown) => e as ValidationError);
+      expect(error).toBeInstanceOf(ValidationError);
+      expect((error as ValidationError).detail).toContain("http:// or https://");
+    }
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("create accepts http:// and https:// schemes", async () => {
+    const fetch = mockFetch({
+      status: 201,
+      body: {
+        data: {
+          resource_id: "r_abc123def45",
+          qurl_link: "https://qurl.link/#at_test",
+          qurl_site: "https://r_abc123def45.qurl.site",
+        },
+      },
+    });
+    const client = createClient(fetch);
+
+    await expect(client.create({ target_url: "http://example.com" })).resolves.toBeDefined();
+    await expect(client.create({ target_url: "https://example.com" })).resolves.toBeDefined();
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("create URL scheme error is safe for non-string inputs", async () => {
+    // Regression guard: the error message must not crash when a
+    // non-string target_url is passed from untyped JS (null,
+    // undefined, number, object). The repr uses JSON.stringify so
+    // any input type formats cleanly.
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+    const client = createClient(fetch);
+
+    for (const badUrl of [null, undefined, 42, { toString: () => "evil" }, []]) {
+      const error = await client
+        // Deliberately bypassing the type system to simulate untyped-JS callers.
+        .create({ target_url: badUrl as unknown as string })
+        .catch((e: unknown) => e as ValidationError);
+      expect(error).toBeInstanceOf(ValidationError);
+      expect((error as ValidationError).detail).toContain("http:// or https://");
+    }
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("gets a QURL with access tokens", async () => {
     const fetch = mockFetch({
       status: 200,
@@ -1242,7 +1297,11 @@ describe("QURLClient", () => {
     });
     const client = createClient(fetch);
 
-    const err = await client.create({ target_url: "" }).catch((e: unknown) => e);
+    // Uses a syntactically-valid target_url so the client-side scheme
+    // check passes and the mocked 400 response is what trips the
+    // ValidationError — the test is asserting error-envelope parsing,
+    // not the client-side scheme check.
+    const err = await client.create({ target_url: "https://example.com" }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ValidationError);
     expect((err as ValidationError).invalidFields).toEqual({ target_url: "required" });
   });
@@ -1256,7 +1315,12 @@ describe("QURLClient", () => {
     });
     const client = createClient(fetch);
 
-    await expect(client.create({ target_url: "bad" })).rejects.toThrow(ValidationError);
+    // Syntactically-valid target_url so the client-side scheme check
+    // passes — this test asserts the 422 error-envelope path, not
+    // client-side validation.
+    await expect(client.create({ target_url: "https://example.com" })).rejects.toThrow(
+      ValidationError,
+    );
   });
 
   it("throws RateLimitError on 429", async () => {
@@ -1409,6 +1473,55 @@ describe("QURLClient", () => {
 
     const result = await client.getQuota();
     expect(result.plan).toBe("growth");
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries DELETE on 502 (idempotent — not in the mutating retry set)", async () => {
+    // DELETE is intentionally classified as non-mutating for retry
+    // purposes: HTTP DELETE is idempotent by spec (deleting an
+    // already-deleted resource is a no-op), and 204 responses carry
+    // no body to duplicate. Retrying 5xx on DELETE is safe and
+    // desirable. Lock this behavior in — a refactor that naively
+    // unified DELETE with POST/PATCH under the mutating retry set
+    // would silently regress this.
+    const badGatewayResponse = {
+      ok: false,
+      status: 502,
+      statusText: "Bad Gateway",
+      headers: new Headers({}),
+      json: () =>
+        Promise.resolve({
+          error: {
+            title: "Bad Gateway",
+            status: 502,
+            detail: "Upstream error",
+            code: "bad_gateway",
+          },
+        }),
+      text: () => Promise.resolve(""),
+    } satisfies Partial<Response> as Response;
+
+    const noContentResponse = {
+      ok: true,
+      status: 204,
+      statusText: "No Content",
+      headers: new Headers({}),
+      json: () => Promise.resolve(undefined),
+      text: () => Promise.resolve(""),
+    } satisfies Partial<Response> as Response;
+
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(badGatewayResponse)
+      .mockResolvedValueOnce(noContentResponse);
+    const client = new QURLClient({
+      apiKey: "lv_live_test",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 2,
+    });
+
+    await expect(client.delete("r_abc123def45")).resolves.toBeUndefined();
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
@@ -1852,10 +1965,14 @@ describe("QURLClient", () => {
     });
 
     const client = createClient(fetch);
+    // Both URLs are syntactically valid — the client-side checks are
+    // purely "obvious mistake" guards. The second item is flagged as
+    // a per-item failure by the MOCKED API response above, so this
+    // test still exercises the partial-failure envelope parsing.
     const result = await client.batchCreate({
       items: [
         { target_url: "https://example.com/ok", expires_in: "24h" },
-        { target_url: "", expires_in: "24h" },
+        { target_url: "https://example.com/fail", expires_in: "24h" },
       ],
     });
 
@@ -2092,6 +2209,92 @@ describe("QURLClient", () => {
     expect((error as ValidationError).detail).toBe(
       "Unexpected response shape from POST /v1/qurls/batch",
     );
+  });
+
+  it("batch create rejects success entries missing resource_id", async () => {
+    // Per-entry shape guard: BatchItemSuccess has resource_id as a
+    // non-optional string. An API response with {success: true} but
+    // no resource_id would land as `undefined` on a field typed as
+    // `string` — break the type contract loudly rather than silently.
+    const fetch = mockFetch({
+      status: 201,
+      body: {
+        data: {
+          succeeded: 1,
+          failed: 0,
+          results: [
+            // Missing resource_id/qurl_link/qurl_site
+            { index: 0, success: true, expires_at: "2026-04-01T00:00:00Z" },
+          ],
+        },
+      },
+    });
+    const client = createClient(fetch);
+    await expect(
+      client.batchCreate({ items: [{ target_url: "https://example.com" }] }),
+    ).rejects.toThrow(ValidationError);
+  });
+
+  it("batch create rejects failure entries missing error object", async () => {
+    // Per-entry shape guard: BatchItemFailure has error.code /
+    // error.message as non-optional strings. Missing them would
+    // land the caller in undefined-property territory on the failure
+    // branch — trip the guard instead.
+    const fetch = mockFetch({
+      status: 400,
+      body: {
+        data: {
+          succeeded: 0,
+          failed: 1,
+          results: [
+            // Missing error object entirely
+            { index: 0, success: false },
+          ],
+        },
+      },
+    });
+    const client = createClient(fetch);
+    await expect(
+      client.batchCreate({ items: [{ target_url: "https://example.com" }] }),
+    ).rejects.toThrow(ValidationError);
+  });
+
+  it("batch create rejects failure entries with malformed error object", async () => {
+    // The error object must carry string code/message — a truthy
+    // non-object or an object missing either field fails the guard.
+    const fetch = mockFetch({
+      status: 400,
+      body: {
+        data: {
+          succeeded: 0,
+          failed: 1,
+          results: [{ index: 0, success: false, error: { code: "validation" } }], // missing message
+        },
+      },
+    });
+    const client = createClient(fetch);
+    await expect(
+      client.batchCreate({ items: [{ target_url: "https://example.com" }] }),
+    ).rejects.toThrow(ValidationError);
+  });
+
+  it("batch create rejects entries missing the success discriminant", async () => {
+    // An entry without a boolean `success` fails the guard entirely
+    // — locks in the original (pre-tightening) discriminant check.
+    const fetch = mockFetch({
+      status: 201,
+      body: {
+        data: {
+          succeeded: 1,
+          failed: 0,
+          results: [{ index: 0, resource_id: "r_x" }], // no `success`
+        },
+      },
+    });
+    const client = createClient(fetch);
+    await expect(
+      client.batchCreate({ items: [{ target_url: "https://example.com" }] }),
+    ).rejects.toThrow(ValidationError);
   });
 
   it("batch create still throws on non-400 error statuses (401, 429, 5xx)", async () => {
