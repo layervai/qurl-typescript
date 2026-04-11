@@ -54,6 +54,25 @@ type _ListParamKeysComplete =
 const _listParamKeysComplete: _ListParamKeysComplete = true;
 
 /**
+ * Fields accepted by `update()`. The empty-input pre-flight check in
+ * {@link QURLClient.update} iterates this const — so adding a new field to
+ * {@link UpdateInput} without listing it here will fail the
+ * `_UpdateFieldKeysComplete` check at compile time rather than silently
+ * sneaking through an empty-input request.
+ */
+const UPDATE_FIELD_KEYS = [
+  "extend_by",
+  "expires_at",
+  "description",
+  "tags",
+] as const satisfies readonly (keyof UpdateInput)[];
+
+type _UpdateFieldKeysComplete =
+  Exclude<keyof UpdateInput, (typeof UPDATE_FIELD_KEYS)[number]> extends never ? true : never;
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+const _updateFieldKeysComplete: _UpdateFieldKeysComplete = true;
+
+/**
  * Construct a {@link ValidationError} for a client-side pre-flight check.
  * Uses `status: 0` (matching {@link NetworkError}/{@link TimeoutError}) and
  * `code: "client_validation"` so catch-by-class still works and callers can
@@ -385,11 +404,20 @@ export class QURLClient {
    */
   async delete(id: string): Promise<void> {
     if (!id.startsWith(RESOURCE_ID_PREFIX)) {
-      // Echo only the 2-char prefix the caller used, not the raw ID, so
-      // error messages that end up in observability pipelines don't
-      // contain user-supplied identifiers. The prefix alone ("q_",
-      // "at_", etc.) is enough for a caller to understand what they
-      // passed and fix their code.
+      // Distinguish two failure modes without leaking the caller's raw ID
+      // into observability pipelines:
+      //   * Too short to be any kind of real ID — empty string, "x", "ab"
+      //     — give a clear "not a valid ID" message rather than echoing a
+      //     bogus 2-char prefix that won't match anything the caller
+      //     recognizes.
+      //   * Long enough to look like an ID but wrong prefix (e.g. "q_…",
+      //     "at_…") — echo the 2-char prefix so the caller sees exactly
+      //     which kind of ID they passed and can correct it.
+      if (id.length <= 2) {
+        throw clientValidationError(
+          `delete: requires a resource ID (${RESOURCE_ID_PREFIX} prefix) — got an invalid or empty identifier`,
+        );
+      }
       const observedPrefix = id.slice(0, 2);
       throw clientValidationError(
         `delete: only resource IDs (${RESOURCE_ID_PREFIX} prefix) are accepted — ` +
@@ -424,24 +452,22 @@ export class QURLClient {
   async update(id: string, input: UpdateInput): Promise<QURL> {
     // Match batchCreate's client-side validation pattern: catch obvious
     // mistakes before the API round-trip.
-    const { extend_by, expires_at, description, tags } = input;
-    if (extend_by !== undefined && expires_at !== undefined) {
+    if (input.extend_by !== undefined && input.expires_at !== undefined) {
       throw clientValidationError(
         "update: `extend_by` and `expires_at` are mutually exclusive — provide at most one",
       );
     }
-    if (
-      extend_by === undefined &&
-      expires_at === undefined &&
-      description === undefined &&
-      tags === undefined
-    ) {
+    // Driven by UPDATE_FIELD_KEYS (with its own compile-time completeness
+    // check) so a new field added to UpdateInput automatically participates
+    // in the empty-input guard instead of silently passing through.
+    const hasAnyField = UPDATE_FIELD_KEYS.some((key) => input[key] !== undefined);
+    if (!hasAnyField) {
       throw clientValidationError(
-        "update: at least one field (extend_by, expires_at, description, tags) must be provided",
+        `update: at least one field (${UPDATE_FIELD_KEYS.join(", ")}) must be provided`,
       );
     }
-    requireMaxLength(description, "description", MAX_DESCRIPTION);
-    requireValidTags(tags);
+    requireMaxLength(input.description, "description", MAX_DESCRIPTION);
+    requireValidTags(input.tags);
     const raw = await this.request<QURL & { qurls?: AccessToken[] }>(
       "PATCH",
       `/v1/qurls/${encodeURIComponent(id)}`,
@@ -562,6 +588,12 @@ export class QURLClient {
 
       this.log(`${method} ${url} → ${response.status}`);
 
+      // `response.ok` is true for the entire 200-299 range, so partial-
+      // success responses like 207 flow through this path naturally —
+      // `passthroughStatuses` only needs to enumerate non-2xx statuses
+      // that the caller wants to parse as a success envelope (e.g.
+      // `batchCreate` opts 400 in so per-item errors still reach the
+      // caller as a structured body instead of being raised as QURLError).
       if (response.ok || passthroughStatuses.includes(response.status)) {
         if (response.status === 204) {
           return { data: undefined as unknown as T };
@@ -608,8 +640,22 @@ export class QURLClient {
           retry_after: this.parseRetryAfter(response),
         };
       }
+      // JSON parsed cleanly but the `error` envelope is missing — the API
+      // returned an unexpected shape. Surface it through debugFn so
+      // operators can spot the divergence; fall through to the
+      // status-only safety net below.
+      this.log(`unexpected error response shape from ${response.status}`, {
+        status: response.status,
+        body_keys: Object.keys(json as object),
+      });
     } catch {
-      // Non-JSON error response
+      // Body wasn't valid JSON (or the network stream errored during
+      // read). Log so operators can distinguish this from a malformed
+      // envelope, and fall through to the status-only safety net.
+      this.log(`non-JSON error response from ${response.status}`, {
+        status: response.status,
+        content_type: response.headers.get("content-type") ?? undefined,
+      });
     }
 
     return {

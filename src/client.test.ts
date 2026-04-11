@@ -335,6 +335,26 @@ describe("QURLClient", () => {
     expect(detail).not.toContain("sensitive_suffix");
   });
 
+  it("delete gives a distinct error for too-short / empty IDs", async () => {
+    // An empty string or 1-2 char input isn't a plausible ID — the
+    // "starting with X" wording would just echo noise (or nothing) and
+    // confuse callers. Assert the short-input branch uses a clearer
+    // "invalid or empty identifier" message.
+    const fetch = mockFetch({ status: 204 });
+    const client = createClient(fetch);
+
+    for (const badId of ["", "x", "ab"]) {
+      const error = await client.delete(badId).catch((e: unknown) => e as ValidationError);
+      expect(error).toBeInstanceOf(ValidationError);
+      const detail = (error as ValidationError).detail;
+      expect(detail).toContain("invalid or empty identifier");
+      // Short-input branch must NOT fall through to the "starting with"
+      // wording that's meant for plausible-but-wrong-prefix IDs.
+      expect(detail).not.toContain("starting with");
+    }
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("extends a QURL", async () => {
     const fetch = mockFetch({
       status: 200,
@@ -493,6 +513,45 @@ describe("QURLClient", () => {
       .catch((e: unknown) => e as ValidationError);
     expect(error).toBeInstanceOf(ValidationError);
     expect((error as ValidationError).detail).toContain("alphanumeric");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("update rejects empty input pre-flight (no fields provided)", async () => {
+    // update() must reject `{}` client-side — the server-side "at least
+    // one field" check would otherwise be the only guard, and the
+    // exhaustiveness pattern in UPDATE_FIELD_KEYS was introduced
+    // specifically so a new UpdateInput field can't silently opt out of
+    // this check.
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+
+    const error = await client.update("r_abc", {}).catch((e: unknown) => e as ValidationError);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).code).toBe("client_validation");
+    expect((error as ValidationError).detail).toContain("at least one field");
+    // Message should enumerate every current UpdateInput field so
+    // callers know their options — if a field is missing from this
+    // list the exhaustiveness check in client.ts should have failed.
+    expect((error as ValidationError).detail).toContain("extend_by");
+    expect((error as ValidationError).detail).toContain("expires_at");
+    expect((error as ValidationError).detail).toContain("description");
+    expect((error as ValidationError).detail).toContain("tags");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("update treats `{ extend_by: undefined }` as empty (no stealth empty-input)", async () => {
+    // A caller who threads an `undefined` through their own types
+    // should still hit the empty-input guard — the some()-based check
+    // tests `input[key] !== undefined`, not `key in input`, so
+    // explicit-undefined values are indistinguishable from omissions.
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+
+    const error = await client
+      .update("r_abc", { extend_by: undefined })
+      .catch((e: unknown) => e as ValidationError);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).detail).toContain("at least one field");
     expect(fetch).not.toHaveBeenCalled();
   });
 
@@ -1488,6 +1547,64 @@ describe("QURLClient", () => {
     expect(debugFn).toHaveBeenCalled();
     const messages = debugFn.mock.calls.map((c: unknown[]) => c[0]);
     expect(messages.some((m: string) => m.includes("GET"))).toBe(true);
+  });
+
+  it("parseError logs when the error envelope is missing the `error` key", async () => {
+    // Defense-in-depth: if the API ever returns a valid-JSON body that
+    // lacks the `error` envelope, parseError falls back to the
+    // status-only error shape. That fallback should surface through
+    // debugFn so operators can spot the divergence instead of silently
+    // serving degraded error messages.
+    const debugFn = vi.fn();
+    const fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 500,
+      statusText: "Internal Server Error",
+      headers: new Headers({}),
+      json: () => Promise.resolve({ unexpected_shape: true, code: "oops" }),
+      text: () => Promise.resolve('{"unexpected_shape":true}'),
+    } satisfies Partial<Response> as Response);
+
+    const client = new QURLClient({
+      apiKey: "lv_live_test",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 0,
+      debug: debugFn,
+    });
+
+    await client.getQuota().catch(() => {});
+
+    const messages = debugFn.mock.calls.map((c: unknown[]) => c[0]);
+    expect(messages.some((m: string) => m.includes("unexpected error response shape"))).toBe(true);
+  });
+
+  it("parseError logs when the error body is not valid JSON", async () => {
+    // Same operator-observability argument as the unexpected-shape
+    // case: a non-JSON error response falls back to the status-only
+    // error shape, which should be visible through debugFn.
+    const debugFn = vi.fn();
+    const fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 502,
+      statusText: "Bad Gateway",
+      headers: new Headers({ "content-type": "text/html" }),
+      json: () => Promise.reject(new Error("not JSON")),
+      text: () => Promise.resolve("<html>upstream down</html>"),
+    } satisfies Partial<Response> as Response);
+
+    const client = new QURLClient({
+      apiKey: "lv_live_test",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 0,
+      debug: debugFn,
+    });
+
+    await client.getQuota().catch(() => {});
+
+    const messages = debugFn.mock.calls.map((c: unknown[]) => c[0]);
+    expect(messages.some((m: string) => m.includes("non-JSON error response"))).toBe(true);
   });
 
   // --- error hierarchy ---
