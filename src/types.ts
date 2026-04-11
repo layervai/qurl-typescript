@@ -56,6 +56,16 @@ export interface QURL {
   status: "active" | "revoked";
   description?: string;
   tags?: string[];
+  /**
+   * The custom hostname this resource is reachable under, or `null` when
+   * no custom domain is configured. The read-side type is `string | null`
+   * (matching the OpenAPI `nullable: true` declaration on
+   * `ResourceData.custom_domain`) while the write-side type on
+   * {@link CreateInput.custom_domain} is `string | undefined` (absent =
+   * "don't set"). The asymmetry is deliberate — JSON `null` and an
+   * absent field have different semantics, and the API surface uses
+   * the convention across reads and writes.
+   */
   custom_domain?: string | null;
   qurl_site?: string;
   qurl_count?: number;
@@ -136,18 +146,44 @@ export interface ListOutput {
  *
  * `extend_by` and `expires_at` are mutually exclusive — provide at most one.
  */
-export interface ExtendInput {
-  /** Relative duration to extend by (e.g., `"24h"`, `"7d"`). Mutually exclusive with `expires_at`. */
-  extend_by?: string;
-  /** Absolute RFC 3339 expiration timestamp. Mutually exclusive with `extend_by`. */
-  expires_at?: string;
-}
+/**
+ * Input for extending a QURL's expiration. Exactly one of `extend_by`
+ * or `expires_at` must be provided — the discriminated union form moves
+ * the "provide at least one" check from runtime into the TypeScript
+ * type system, so `extend(id, {})` is a compile error instead of a
+ * runtime `ValidationError`. The `?: never` on the *other* field also
+ * catches the "provide both" mistake at compile time.
+ *
+ * ```ts
+ * client.extend("r_x", { extend_by: "7d" });      // OK
+ * client.extend("r_x", { expires_at: "2026-..." }); // OK
+ * client.extend("r_x", {});                         // compile error
+ * client.extend("r_x", { extend_by: "7d", expires_at: "..." }); // compile error
+ * ```
+ */
+export type ExtendInput =
+  | {
+      /** Relative duration to extend by (e.g., `"24h"`, `"7d"`). */
+      extend_by: string;
+      expires_at?: never;
+    }
+  | {
+      /** Absolute RFC 3339 expiration timestamp. */
+      expires_at: string;
+      extend_by?: never;
+    };
 
 /**
  * Input for updating a QURL — extend expiration, change description, etc.
  *
  * `extend_by` and `expires_at` are mutually exclusive — provide at most one.
  * At least one field must be set for the request to be valid.
+ *
+ * **`access_policy` is not included** and cannot be updated after create.
+ * The OpenAPI `UpdateQurlRequest` schema only accepts `extend_by`,
+ * `expires_at`, `tags`, and `description`; access policy is immutable
+ * from the server's perspective and must be set via {@link CreateInput}
+ * when the QURL is first created.
  */
 export interface UpdateInput {
   /** Relative duration to extend by (e.g., `"24h"`, `"7d"`). Mutually exclusive with `expires_at`. */

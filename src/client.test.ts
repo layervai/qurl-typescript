@@ -476,12 +476,39 @@ describe("QURLClient", () => {
     const fetch = mockFetch({ status: 200, body: { data: {} } });
     const client = createClient(fetch);
 
-    // extend() delegates to update(), so it inherits the mutual-exclusion check.
+    // extend() delegates to update(), so it inherits the mutual-exclusion
+    // check. The new `ExtendInput` discriminated union makes this a
+    // COMPILE error for typed callers, but the runtime check is still
+    // load-bearing for untyped JS callers who bypass the type system —
+    // cast through `unknown` to simulate that path and lock the
+    // runtime guard in as a regression.
+    const bothFields = { extend_by: "24h", expires_at: "2026-04-01T00:00:00Z" };
     const error = await client
-      .extend("r_abc", { extend_by: "24h", expires_at: "2026-04-01T00:00:00Z" })
+      .extend("r_abc", bothFields as unknown as Parameters<typeof client.extend>[1])
       .catch((e: unknown) => e as ValidationError);
     expect(error).toBeInstanceOf(ValidationError);
     expect((error as ValidationError).code).toBe("client_validation");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("extend() rejects empty input at compile time (discriminated union)", async () => {
+    // The ExtendInput type is a discriminated union that requires
+    // exactly one of `extend_by` / `expires_at`. This test documents
+    // the compile-time guarantee for typed callers — the runtime
+    // "at least one field" check in update() still catches the
+    // untyped-JS path (also tested separately).
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+
+    // Untyped-JS path: empty object bypassed compile-time type check
+    // via unknown cast, hits the update() runtime "at least one
+    // field" guard.
+    const error = await client
+      .extend("r_abc", {} as unknown as Parameters<typeof client.extend>[1])
+      .catch((e: unknown) => e as ValidationError);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).code).toBe("client_validation");
+    expect((error as ValidationError).detail).toContain("at least one field");
     expect(fetch).not.toHaveBeenCalled();
   });
 
@@ -2158,8 +2185,44 @@ describe("QURLClient", () => {
     expect(error).toBeInstanceOf(ValidationError);
     expect((error as ValidationError).detail).toContain("items[0]");
     expect((error as ValidationError).detail).toContain("max_sessions");
-    // The error must identify index 0 specifically, not items[1].
+    // items[1] is well-formed so it shouldn't appear in the error at
+    // all (the collect-all change in this round only reports items
+    // that actually failed validation).
     expect((error as ValidationError).detail).not.toContain("items[1]");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("batch create collects ALL per-item validation errors in one throw", async () => {
+    // Fail-fast used to surface the first bad item only; callers had to
+    // fix-re-run-repeat. The new behavior collects every per-item
+    // validation failure into one ValidationError so callers see the
+    // full picture in one pass. Lock this UX in — a refactor that
+    // reverts to fail-fast would trip this test.
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+    const client = createClient(fetch);
+
+    const error = await client
+      .batchCreate({
+        items: [
+          { target_url: "https://a.example.com", max_sessions: 9999 }, // bad
+          { target_url: "https://b.example.com" }, // good
+          { target_url: "not-a-url" }, // bad (missing scheme)
+          { target_url: "https://d.example.com", label: "x".repeat(501) }, // bad
+        ],
+      })
+      .catch((e: unknown) => e as ValidationError);
+    expect(error).toBeInstanceOf(ValidationError);
+    const detail = (error as ValidationError).detail;
+    // All three bad items must appear in the error message.
+    expect(detail).toContain("items[0]");
+    expect(detail).toContain("items[2]");
+    expect(detail).toContain("items[3]");
+    // The good item must NOT appear.
+    expect(detail).not.toContain("items[1]");
+    // Each per-item problem is spelled out.
+    expect(detail).toContain("max_sessions");
+    expect(detail).toContain("http:// or https://");
+    expect(detail).toContain("label");
     expect(fetch).not.toHaveBeenCalled();
   });
 
@@ -2393,12 +2456,45 @@ describe("QURLClient", () => {
       .batchCreate({ items: [{ target_url: "https://example.com" }] })
       .catch((e: unknown) => e as ValidationError);
     expect(error).toBeInstanceOf(ValidationError);
-    expect((error as ValidationError).code).toBe("client_validation");
+    // Distinct from `client_validation` — the shape guard uses its own
+    // code so callers can branch on "server returned bad data" vs.
+    // "I passed bad input locally."
+    expect((error as ValidationError).code).toBe("unexpected_response");
     // Error message is intentionally static (no raw body embedded) to
     // avoid leaking sensitive response content into client-side logs.
     expect((error as ValidationError).detail).toBe(
       "Unexpected response shape from POST /v1/qurls/batch",
     );
+  });
+
+  it("batch create distinguishes client_validation from unexpected_response", async () => {
+    // Regression guard for the two distinct codes: a client-side
+    // preflight failure (bad target_url) must surface as
+    // `client_validation`, while a server response shape mismatch
+    // must surface as `unexpected_response`. Locks in the
+    // discriminability the reviewer requested.
+    const client = createClient(
+      mockFetch({
+        status: 201,
+        body: { data: { succeeded: 1, failed: 0, results: [] } },
+      }),
+    );
+
+    // Client-side preflight failure (bad scheme) → client_validation
+    const clientSide = await client
+      .batchCreate({ items: [{ target_url: "not-a-url" }] })
+      .catch((e: unknown) => e as ValidationError);
+    expect((clientSide as ValidationError).code).toBe("client_validation");
+
+    // Server response shape mismatch → unexpected_response
+    const fetchBadShape = mockFetch({
+      status: 201,
+      body: { data: { wrong: "shape" } },
+    });
+    const serverSide = await createClient(fetchBadShape)
+      .batchCreate({ items: [{ target_url: "https://example.com" }] })
+      .catch((e: unknown) => e as ValidationError);
+    expect((serverSide as ValidationError).code).toBe("unexpected_response");
   });
 
   it("batch create rejects success entries missing resource_id", async () => {

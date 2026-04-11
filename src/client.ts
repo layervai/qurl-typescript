@@ -87,6 +87,26 @@ function clientValidationError(detail: string): ValidationError {
   });
 }
 
+/**
+ * Construct a {@link ValidationError} for the case where the API returned
+ * a response that parsed as JSON but didn't match the expected schema
+ * shape (e.g. 400 with a body that isn't a {@link BatchCreateOutput}).
+ *
+ * Distinct from {@link clientValidationError} so callers can `.code`-branch
+ * between "I passed bad input locally" (`"client_validation"`) and "the
+ * server returned a body I can't interpret" (`"unexpected_response"`).
+ * Uses `status: 0` because the offending HTTP status (400/207/etc.) isn't
+ * the thing being reported — the shape mismatch is.
+ */
+function unexpectedResponseError(detail: string): ValidationError {
+  return new ValidationError({
+    status: 0,
+    code: "unexpected_response",
+    title: "Unexpected Response",
+    detail,
+  });
+}
+
 // ---- Spec-derived validation helpers ------------------------------------
 // These mirror constraints documented on each request schema in
 // `openapi.yaml` so obvious mistakes fail fast instead of round-tripping
@@ -168,6 +188,16 @@ function validateCreateInput(input: CreateInput): void {
   requireMaxLength(input.label, "label", MAX_LABEL);
   requireMaxLength(input.custom_domain, "custom_domain", MAX_CUSTOM_DOMAIN);
   requireMaxSessionsInRange(input.max_sessions);
+  // Intentional omission: `expires_in` and `session_duration` are
+  // duration strings ("5m", "24h", "7d", "1w"). The spec documents
+  // plan-dependent min/max bounds and a specific unit grammar, but
+  // duplicating that grammar as a client-side regex risks drift from
+  // the server's authoritative parser — especially for edge cases
+  // like compound units or whitespace tolerance. A typo ("24hh")
+  // surfaces quickly via 400 with a clear server error; catching it
+  // client-side would require re-implementing the server's rego/duration
+  // parser. Keep the client's validation surface small and
+  // spec-traceable.
 }
 
 /**
@@ -351,15 +381,26 @@ export class QURLClient {
     // Validate each item the same way single-create validates its input.
     // Catching obvious field issues client-side avoids the whole batch
     // round-tripping just to come back as a per-item validation error.
+    //
+    // Collect ALL invalid items instead of failing fast on the first one
+    // — callers fixing a bad batch can see every problem in one pass
+    // instead of the frustrating fix-re-run-repeat loop fail-fast would
+    // force. Non-ValidationError exceptions (unexpected bugs) still
+    // re-throw immediately since they don't have a per-item attribution.
+    const perItemErrors: string[] = [];
     for (let i = 0; i < input.items.length; i++) {
       try {
         validateCreateInput(input.items[i]);
       } catch (err) {
         if (err instanceof ValidationError) {
-          throw clientValidationError(`batchCreate items[${i}]: ${err.detail}`);
+          perItemErrors.push(`items[${i}]: ${err.detail}`);
+          continue;
         }
         throw err;
       }
+    }
+    if (perItemErrors.length > 0) {
+      throw clientValidationError(`batchCreate: ${perItemErrors.join("; ")}`);
     }
     // 400 carries per-item errors (see rawRequest JSDoc). Use rawRequest
     // directly (not `this.request`) so we can read `meta.request_id`
@@ -387,7 +428,7 @@ export class QURLClient {
       typeof result.failed !== "number" ||
       !Array.isArray(result.results)
     ) {
-      throw clientValidationError("Unexpected response shape from POST /v1/qurls/batch");
+      throw unexpectedResponseError("Unexpected response shape from POST /v1/qurls/batch");
     }
     // Per-entry shape guard protecting the BatchItemResult discriminated
     // union contract. Each branch of the union has non-optional fields
@@ -398,17 +439,20 @@ export class QURLClient {
     // well-formed ID?) remains the API's responsibility.
     for (const entry of result.results) {
       if (!isValidBatchItemResult(entry)) {
-        throw clientValidationError("Unexpected response shape from POST /v1/qurls/batch");
+        throw unexpectedResponseError("Unexpected response shape from POST /v1/qurls/batch");
       }
     }
-    // Attach the server request_id from the envelope meta via a
-    // shallow copy so the caller's object is independent of the
-    // parsed JSON envelope. Mirrors the non-mutating style used
-    // elsewhere (e.g. `mapQurlsField`). The field is optional on
-    // BatchCreateOutput so older API versions that omit
-    // `meta.request_id` still produce a valid return value.
+    // Attach the server request_id from the envelope meta without
+    // mutating `result` (which is the parsed JSON body). Mirrors the
+    // non-mutating style used elsewhere (e.g. `mapQurlsField`). In the
+    // no-request_id branch we can return `result` directly because
+    // `response.json()` already produced a fresh object — a spread
+    // there would be a redundant allocation. Only the attach path
+    // copies. The field is optional on BatchCreateOutput so older API
+    // versions that omit `meta.request_id` still produce a valid
+    // return value.
     const requestId = envelope.meta?.request_id;
-    return requestId !== undefined ? { ...result, request_id: requestId } : { ...result };
+    return requestId !== undefined ? { ...result, request_id: requestId } : result;
   }
 
   /**
@@ -428,6 +472,13 @@ export class QURLClient {
   /**
    * Lists protected URLs. Each QURL groups access tokens sharing the same target URL.
    * Note: list items include qurl_count but not access_tokens (too expensive at scale).
+   *
+   * **`limit` semantics:** `limit` is passed through to the API as-is.
+   * Callers almost certainly want `limit >= 1`; passing `limit: 0` or a
+   * negative number is not a client-side error but the server's behavior
+   * is unspecified (most REST pagination endpoints treat it as "use the
+   * default page size" or "zero items"). If you want a specific page
+   * size, pass an explicit positive integer.
    */
   async list(input: ListInput = {}): Promise<ListOutput> {
     const params = new URLSearchParams();
