@@ -407,6 +407,75 @@ export class QURLClient {
     return rest;
   }
 
+  /**
+   * Validate the response envelope from POST /v1/qurls/batch and return
+   * the inner {@link BatchCreateOutput}. Throws
+   * {@link unexpectedResponseError} on any shape-guard failure.
+   *
+   * Enforces three layers of defense-in-depth:
+   *   1. **Top-level shape**: `result` exists, `succeeded`/`failed` are
+   *      numbers, `results` is an array. Catches non-`BatchCreateOutput`
+   *      bodies on the 400 passthrough path (e.g. a proxy/gateway
+   *      returning a different error envelope).
+   *   2. **Arithmetic invariant**: `succeeded + failed === results.length`.
+   *      Catches the realistic edge case where a proxy returns a body
+   *      that happens to have the right field names but inconsistent
+   *      counts (e.g. a generic error counter from a gateway).
+   *   3. **Per-entry discriminated-union contract**: every entry has a
+   *      boolean `success` and the non-optional fields for its branch
+   *      (`resource_id`/`qurl_link`/`qurl_site` on success, `error.code`/
+   *      `error.message` on failure). Protects TypeScript consumers who
+   *      narrow on `success` and then access branch-specific fields as
+   *      guaranteed-present.
+   *
+   * Error messages include the observed HTTP status ("(HTTP 400)" /
+   * "(HTTP 201)" / etc.) so operators can distinguish proxy-induced
+   * 400 from genuine API schema drift on the happy path. The response
+   * body content is intentionally omitted — unexpected bodies could
+   * contain sensitive data (auth details, request echoes) and error
+   * messages may end up in client-side logs.
+   */
+  private validateBatchCreateResponse(envelope: ApiResponse<BatchCreateOutput>): BatchCreateOutput {
+    const result = envelope.data;
+    const statusSuffix =
+      envelope.http_status !== undefined ? ` (HTTP ${envelope.http_status})` : "";
+
+    // Layer 1: top-level shape.
+    if (
+      !result ||
+      typeof result.succeeded !== "number" ||
+      typeof result.failed !== "number" ||
+      !Array.isArray(result.results)
+    ) {
+      throw unexpectedResponseError(
+        `Unexpected response shape from POST /v1/qurls/batch${statusSuffix}`,
+      );
+    }
+
+    // Layer 2: arithmetic invariant.
+    if (result.succeeded + result.failed !== result.results.length) {
+      throw unexpectedResponseError(
+        `Unexpected response shape from POST /v1/qurls/batch${statusSuffix}: ` +
+          `counts/results length mismatch (succeeded=${result.succeeded}, ` +
+          `failed=${result.failed}, results.length=${result.results.length})`,
+      );
+    }
+
+    // Layer 3: per-entry discriminated-union contract. The reason
+    // string from `batchItemResultValidationReason` only reports field
+    // NAMES, never values — safe to surface into observability pipelines.
+    for (let i = 0; i < result.results.length; i++) {
+      const reason = batchItemResultValidationReason(result.results[i]);
+      if (reason !== null) {
+        throw unexpectedResponseError(
+          `Unexpected response shape from POST /v1/qurls/batch${statusSuffix}: results[${i}] ${reason}`,
+        );
+      }
+    }
+
+    return result;
+  }
+
   // --- Public API ---
 
   /** Create a new QURL. */
@@ -501,67 +570,7 @@ export class QURLClient {
       input,
       BATCH_PASSTHROUGH_STATUSES,
     );
-    const result = envelope.data;
-    // Build the HTTP-status suffix once for all shape-guard errors so
-    // operators can distinguish "400 with a non-batch body" (likely a
-    // proxy or gateway returning a different error envelope) from
-    // "201/207 with a malformed success body" (genuine API schema
-    // drift) — these imply very different root causes. The status
-    // itself isn't sensitive; only the response body would be, and
-    // that's still intentionally omitted.
-    const statusSuffix =
-      envelope.http_status !== undefined ? ` (HTTP ${envelope.http_status})` : "";
-    // Defense-in-depth: the 400 passthrough trusts the response shape, but
-    // if the API ever returns 400 with a different body (e.g., a top-level
-    // malformed-request error) the caller would silently get undefined
-    // fields. Validate the shape before returning and surface a clear
-    // error otherwise. The error intentionally does not embed the raw
-    // response body — an unexpected body could contain sensitive data
-    // (auth details, request echoes) and error messages may end up in
-    // client-side logs.
-    if (
-      !result ||
-      typeof result.succeeded !== "number" ||
-      typeof result.failed !== "number" ||
-      !Array.isArray(result.results)
-    ) {
-      throw unexpectedResponseError(
-        `Unexpected response shape from POST /v1/qurls/batch${statusSuffix}`,
-      );
-    }
-    // Arithmetic invariant: succeeded + failed must equal results.length.
-    // This catches a realistic edge case where a proxy/CDN returns a 400
-    // with a body that *happens* to have `succeeded`, `failed`, and
-    // `results` fields (e.g. a generic error counter from a gateway).
-    // Without this check, the shape guard would pass and the consumer
-    // would get inconsistent counts and data. Mirrors the qurl-python
-    // SDK's `_validate_batch_create_shape` arithmetic invariant.
-    if (result.succeeded + result.failed !== result.results.length) {
-      throw unexpectedResponseError(
-        `Unexpected response shape from POST /v1/qurls/batch${statusSuffix}: ` +
-          `counts/results length mismatch (succeeded=${result.succeeded}, ` +
-          `failed=${result.failed}, results.length=${result.results.length})`,
-      );
-    }
-    // Per-entry shape guard protecting the BatchItemResult discriminated
-    // union contract. Each branch of the union has non-optional fields
-    // that TypeScript consumers will treat as guaranteed after narrowing
-    // on `success` — if the API omits any of them, the guard must trip
-    // instead of silently returning `undefined` where the type claims
-    // `string`. Deeper value-level validation (is `resource_id` a
-    // well-formed ID?) remains the API's responsibility.
-    for (let i = 0; i < result.results.length; i++) {
-      const reason = batchItemResultValidationReason(result.results[i]);
-      if (reason !== null) {
-        // Include entry index + field reason so the caller can pinpoint
-        // the bad entry. The reason string itself intentionally never
-        // echoes entry VALUES — only field names — so this error is
-        // safe to surface into observability pipelines.
-        throw unexpectedResponseError(
-          `Unexpected response shape from POST /v1/qurls/batch${statusSuffix}: results[${i}] ${reason}`,
-        );
-      }
-    }
+    const result = this.validateBatchCreateResponse(envelope);
     // Attach the server request_id from the envelope meta without
     // mutating `result` (which is the parsed JSON body). Mirrors the
     // non-mutating style used elsewhere (e.g. `mapQurlsField`). In the
@@ -895,11 +904,13 @@ export class QURLClient {
           return { data: undefined as unknown as T, http_status: response.status };
         }
         const json = (await response.json()) as ApiResponse<T>;
-        // Inject the HTTP status so downstream callers (e.g. the
-        // batchCreate shape guard) can surface it in diagnostics
-        // without re-querying the Response. See ApiResponse.http_status.
-        json.http_status = response.status;
-        return json;
+        // Inject the HTTP status via shallow copy (not in-place
+        // mutation of the parsed JSON) so downstream callers get an
+        // SDK-owned object. Mirrors the non-mutating style used by
+        // `mapQurlsField` and `batchCreate`'s `request_id` attach.
+        // `response.json()` already produces a fresh object, so the
+        // spread is cheap and no one else holds a reference to it.
+        return { ...json, http_status: response.status };
       }
 
       const errorData = await this.parseError(response);
