@@ -784,6 +784,44 @@ describe("QURLClient", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("update null-strips extend_by before the mutual-exclusion check", async () => {
+    // Edge case reviewer flagged: `{ extend_by: null, expires_at: "..." }`
+    // from an untyped JS caller. If the mutual-exclusion check ran
+    // BEFORE null normalization, this would spuriously trip
+    // "mutually exclusive" because both fields are defined. The
+    // normalization must strip `extend_by: null` first, leaving only
+    // `expires_at`, and the request should succeed.
+    const fetch = mockFetch({
+      status: 200,
+      body: {
+        data: {
+          resource_id: "r_abc",
+          target_url: "https://example.com",
+          status: "active",
+          expires_at: "2026-04-01T00:00:00Z",
+          created_at: "2026-03-10T10:00:00Z",
+        },
+      },
+    });
+    const client = createClient(fetch);
+
+    // Cast through unknown because TypeScript would reject null on
+    // a `string | undefined` field — the test specifically simulates
+    // an untyped-JS caller bypassing the type system.
+    await expect(
+      client.update("r_abc", {
+        extend_by: null as unknown as string,
+        expires_at: "2026-04-01T00:00:00Z",
+      }),
+    ).resolves.toBeDefined();
+
+    // Wire body should contain only expires_at, not both fields.
+    const calledBody = (fetch as ReturnType<typeof vi.fn>).mock.calls[0][1].body as string;
+    const parsed = JSON.parse(calledBody);
+    expect(parsed.expires_at).toBe("2026-04-01T00:00:00Z");
+    expect("extend_by" in parsed).toBe(false);
+  });
+
   it("update rejects empty input pre-flight (no fields provided)", async () => {
     // update() must reject `{}` client-side — the server-side "at least
     // one field" check would otherwise be the only guard, and the
@@ -1423,6 +1461,91 @@ describe("QURLClient", () => {
     vi.useRealTimers();
   });
 
+  it("falls back to exponential backoff when Retry-After is an HTTP-date", async () => {
+    // Per RFC 7231 §7.1.3, Retry-After can be either a numeric
+    // delay-seconds OR an HTTP-date. The current implementation
+    // uses `parseInt`, which returns `NaN` for HTTP-date strings —
+    // `Number.isNaN(seconds)` catches that and returns `undefined`,
+    // so the retry falls back to exponential backoff. This test
+    // documents that intent: the SDK currently does NOT parse
+    // HTTP-date values; it silently ignores them and uses backoff
+    // instead. If we ever add HTTP-date support, this test should
+    // be flipped to assert the date is parsed and respected.
+    const retryAfterResponse = {
+      ok: false,
+      status: 429,
+      statusText: "Too Many Requests",
+      // Valid RFC 7231 HTTP-date format — the SDK should NOT parse this.
+      headers: new Headers({ "Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT" }),
+      json: () =>
+        Promise.resolve({
+          error: {
+            title: "Rate Limited",
+            status: 429,
+            detail: "Too many requests",
+            code: "rate_limited",
+          },
+        }),
+      text: () => Promise.resolve(""),
+    } satisfies Partial<Response> as Response;
+
+    const successResponse = {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      headers: new Headers({}),
+      json: () =>
+        Promise.resolve({
+          data: { plan: "growth", period_start: "2026-03-01", period_end: "2026-04-01" },
+        }),
+      text: () => Promise.resolve(""),
+    } satisfies Partial<Response> as Response;
+
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(retryAfterResponse)
+      .mockResolvedValueOnce(successResponse);
+
+    const client = new QURLClient({
+      apiKey: "lv_live_test",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 1,
+    });
+
+    // Should still retry and succeed — just via exponential backoff
+    // instead of the HTTP-date value. Don't assert exact timing; the
+    // important contract is "retry happens, doesn't wait for a parsed
+    // date value, and doesn't throw on the unparseable header."
+    const result = await client.getQuota();
+    expect(result.plan).toBe("growth");
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("clamps negative maxRetries to 0 (defensive against caller misuse)", async () => {
+    // A negative maxRetries would cause the retry loop
+    //   for (let attempt = 0; attempt <= this.maxRetries; attempt++)
+    // to skip entirely — meaning ZERO attempts, not even the initial
+    // request. The constructor clamps to Math.max(0, ...) so this
+    // can never happen. Verify the happy path still works with a
+    // negative input and does exactly one fetch (the initial attempt,
+    // no retries).
+    const fetch = mockFetch({
+      status: 200,
+      body: {
+        data: { plan: "growth", period_start: "2026-03-01", period_end: "2026-04-01" },
+      },
+    });
+    const client = new QURLClient({
+      apiKey: "lv_live_test",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch,
+      maxRetries: -5, // would-be footgun
+    });
+    await expect(client.getQuota()).resolves.toBeDefined();
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
   it("normalizes trailing slash in baseUrl", async () => {
     const fetch = mockFetch({
       status: 200,
@@ -2010,6 +2133,72 @@ describe("QURLClient", () => {
 
     expect(ids).toEqual(["r_only1", "r_only2"]);
     expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("listAll propagates errors mid-pagination after yielding prior pages", async () => {
+    // If a page fetch throws mid-iteration (e.g. server hits a 500
+    // after the first page succeeded), the generator must propagate
+    // the error cleanly rather than silently truncating the stream.
+    // Consumers relying on `listAll` should see the successfully-yielded
+    // items AND a clear error, not a partial-completion that looks
+    // like "we just ran out of data."
+    const page1Response = {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      headers: new Headers({}),
+      json: () =>
+        Promise.resolve({
+          data: [
+            { resource_id: "r_good1", status: "active", target_url: "https://a" },
+            { resource_id: "r_good2", status: "active", target_url: "https://b" },
+          ],
+          meta: { has_more: true, next_cursor: "cur_mid" },
+        }),
+      text: () => Promise.resolve(""),
+    } satisfies Partial<Response> as Response;
+
+    const page2Error = {
+      ok: false,
+      status: 500,
+      statusText: "Internal Server Error",
+      headers: new Headers({}),
+      json: () =>
+        Promise.resolve({
+          error: {
+            status: 500,
+            code: "internal_error",
+            title: "Internal Server Error",
+            detail: "Database connection lost",
+          },
+        }),
+      text: () => Promise.resolve(""),
+    } satisfies Partial<Response> as Response;
+
+    const fetch = vi.fn().mockResolvedValueOnce(page1Response).mockResolvedValueOnce(page2Error);
+    const client = new QURLClient({
+      apiKey: "lv_live_test",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 0,
+    });
+
+    const yielded: string[] = [];
+    let thrown: unknown;
+    try {
+      for await (const qurl of client.listAll()) {
+        yielded.push(qurl.resource_id);
+      }
+    } catch (err) {
+      thrown = err;
+    }
+
+    // Page 1 items were yielded before page 2 tripped the error.
+    expect(yielded).toEqual(["r_good1", "r_good2"]);
+    // The 500 propagated as a ServerError, not silently swallowed.
+    expect(thrown).toBeInstanceOf(ServerError);
+    expect((thrown as ServerError).status).toBe(500);
+    expect(fetch).toHaveBeenCalledTimes(2);
   });
 
   it("list passes all filter params simultaneously", async () => {

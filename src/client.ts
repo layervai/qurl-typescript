@@ -333,7 +333,13 @@ export class QURLClient {
     this.apiKey = options.apiKey;
     this.baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
     this.fetchFn = options.fetch ?? globalThis.fetch;
-    this.maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
+    // Clamp `maxRetries` to a non-negative integer. A negative value
+    // would cause the retry loop `for (let attempt = 0; attempt <=
+    // this.maxRetries; attempt++)` to skip entirely — meaning ZERO
+    // attempts, not even the initial request. Clamping defends against
+    // that footgun while preserving the "0 = no retries, just the
+    // initial attempt" semantic that `DEFAULT_MAX_RETRIES = 3` relies on.
+    this.maxRetries = Math.max(0, options.maxRetries ?? DEFAULT_MAX_RETRIES);
     this.timeout = options.timeout ?? DEFAULT_TIMEOUT;
     this.userAgent = options.userAgent ?? `qurl-typescript/${VERSION}`;
 
@@ -371,10 +377,22 @@ export class QURLClient {
    * Maps the API's "qurls" field to "access_tokens" on the SDK type.
    * Uses destructuring to avoid mutation and unsafe casts.
    */
-  private static mapQurlsField(raw: QURL & { qurls?: AccessToken[] }): QURL {
+  private mapQurlsField(raw: QURL & { qurls?: AccessToken[] }): QURL {
     const { qurls, ...rest } = raw;
     if (qurls && !rest.access_tokens) {
       return { ...rest, access_tokens: qurls };
+    }
+    if (qurls && rest.access_tokens) {
+      // The API is authoritative when both fields are present — we
+      // keep `access_tokens` and drop `qurls`. This path is unexpected
+      // (the API spec returns exactly one of the two), so log a debug
+      // line to aid future-change diagnostics. A silent drop would
+      // make a spec migration hard to notice; the log gives operators
+      // a signal without raising for something that's not a caller error.
+      this.log("mapQurlsField: received both 'qurls' and 'access_tokens'; keeping access_tokens", {
+        qurls_count: qurls.length,
+        access_tokens_count: rest.access_tokens.length,
+      });
     }
     return rest;
   }
@@ -533,7 +551,7 @@ export class QURLClient {
       "GET",
       `/v1/qurls/${encodeURIComponent(id)}`,
     );
-    return QURLClient.mapQurlsField(raw);
+    return this.mapQurlsField(raw);
   }
 
   /**
@@ -571,7 +589,7 @@ export class QURLClient {
     const { data, meta } = await this.rawRequest<(QURL & { qurls?: AccessToken[] })[]>("GET", path);
     return {
       // Defensive: map in case API includes nested tokens on list items in the future.
-      qurls: data.map(QURLClient.mapQurlsField),
+      qurls: data.map((raw) => this.mapQurlsField(raw)),
       next_cursor: meta?.next_cursor,
       has_more: meta?.has_more ?? false,
     };
@@ -706,7 +724,7 @@ export class QURLClient {
       `/v1/qurls/${encodeURIComponent(id)}`,
       normalized,
     );
-    return QURLClient.mapQurlsField(raw);
+    return this.mapQurlsField(raw);
   }
 
   /**
