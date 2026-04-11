@@ -295,6 +295,16 @@ interface ApiResponse<T> {
     has_more?: boolean;
     next_cursor?: string;
   };
+  /**
+   * SDK-injected HTTP status code of the underlying response. This
+   * field is NOT part of the API's JSON envelope — it's populated
+   * by `rawRequest` after the fetch so callers can branch on the
+   * observed status without re-querying the `Response` object.
+   * Currently used by `batchCreate`'s shape-guard error to surface
+   * whether an unexpected body came back on a success-range status
+   * (e.g. 201, 207) or a passthrough status (e.g. 400).
+   */
+  http_status?: number;
 }
 
 interface ApiErrorEnvelope {
@@ -492,6 +502,15 @@ export class QURLClient {
       BATCH_PASSTHROUGH_STATUSES,
     );
     const result = envelope.data;
+    // Build the HTTP-status suffix once for all shape-guard errors so
+    // operators can distinguish "400 with a non-batch body" (likely a
+    // proxy or gateway returning a different error envelope) from
+    // "201/207 with a malformed success body" (genuine API schema
+    // drift) — these imply very different root causes. The status
+    // itself isn't sensitive; only the response body would be, and
+    // that's still intentionally omitted.
+    const statusSuffix =
+      envelope.http_status !== undefined ? ` (HTTP ${envelope.http_status})` : "";
     // Defense-in-depth: the 400 passthrough trusts the response shape, but
     // if the API ever returns 400 with a different body (e.g., a top-level
     // malformed-request error) the caller would silently get undefined
@@ -506,7 +525,9 @@ export class QURLClient {
       typeof result.failed !== "number" ||
       !Array.isArray(result.results)
     ) {
-      throw unexpectedResponseError("Unexpected response shape from POST /v1/qurls/batch");
+      throw unexpectedResponseError(
+        `Unexpected response shape from POST /v1/qurls/batch${statusSuffix}`,
+      );
     }
     // Per-entry shape guard protecting the BatchItemResult discriminated
     // union contract. Each branch of the union has non-optional fields
@@ -523,7 +544,7 @@ export class QURLClient {
         // echoes entry VALUES — only field names — so this error is
         // safe to surface into observability pipelines.
         throw unexpectedResponseError(
-          `Unexpected response shape from POST /v1/qurls/batch: results[${i}] ${reason}`,
+          `Unexpected response shape from POST /v1/qurls/batch${statusSuffix}: results[${i}] ${reason}`,
         );
       }
     }
@@ -854,9 +875,13 @@ export class QURLClient {
       // caller as a structured body instead of being raised as QURLError).
       if (response.ok || passthroughStatuses.includes(response.status)) {
         if (response.status === 204) {
-          return { data: undefined as unknown as T };
+          return { data: undefined as unknown as T, http_status: response.status };
         }
         const json = (await response.json()) as ApiResponse<T>;
+        // Inject the HTTP status so downstream callers (e.g. the
+        // batchCreate shape guard) can surface it in diagnostics
+        // without re-querying the Response. See ApiResponse.http_status.
+        json.http_status = response.status;
         return json;
       }
 

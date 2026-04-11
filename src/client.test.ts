@@ -2293,6 +2293,31 @@ describe("QURLClient", () => {
     expect(calledUrl).not.toContain("sort=");
   });
 
+  it("list() with no arguments hits /v1/qurls with no query string", async () => {
+    // Regression guard for the default-parameter path: calling
+    // `client.list()` with zero arguments must behave identically
+    // to `client.list({})` — no query string, bare URL. The default
+    // parameter is straightforward but the test pins the contract
+    // so a refactor that changes the default to something non-empty
+    // (e.g. a sensible default `limit`) would trip here intentionally.
+    const fetch = mockFetch({
+      status: 200,
+      body: { data: [], meta: { has_more: false } },
+    });
+    const client = createClient(fetch);
+
+    await client.list();
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const calledUrl = (fetch as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+    // Bare path, no query string at all.
+    expect(calledUrl).toBe("https://api.test.layerv.ai/v1/qurls");
+    expect(fetch).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ method: "GET" }),
+    );
+  });
+
   it("does not retry on 503 with maxRetries: 0", async () => {
     const fetch = mockFetch({
       status: 503,
@@ -2973,11 +2998,71 @@ describe("QURLClient", () => {
     // code so callers can branch on "server returned bad data" vs.
     // "I passed bad input locally."
     expect((error as ValidationError).code).toBe("unexpected_response");
-    // Error message is intentionally static (no raw body embedded) to
-    // avoid leaking sensitive response content into client-side logs.
+    // Error detail includes the HTTP status for diagnostics so
+    // operators can distinguish "400 with non-batch body" (proxy/
+    // gateway error envelope) from "201/207 with malformed success
+    // body" (API schema drift). The detail still intentionally omits
+    // raw body content to avoid leaking sensitive data into logs.
     expect((error as ValidationError).detail).toBe(
-      "Unexpected response shape from POST /v1/qurls/batch",
+      "Unexpected response shape from POST /v1/qurls/batch (HTTP 400)",
     );
+  });
+
+  it("batch create shape-guard error includes HTTP 201 in detail for success-path malformation", async () => {
+    // Complementary to the 400 test above — locks in that a
+    // success-status response with a malformed body surfaces the
+    // 201 in the error detail, distinct from the 400 case. This is
+    // the "API schema drift on the happy path" scenario where a
+    // future server change might return 201 with a body that no
+    // longer matches BatchCreateOutput. Operators need to see HTTP
+    // 201 in the error to distinguish this from the proxy-error
+    // 400 case.
+    const fetch = mockFetch({
+      status: 201,
+      body: {
+        data: { wrong: "shape", not_a_batch_output: true },
+      },
+    });
+    const client = createClient(fetch);
+    const error = await client
+      .batchCreate({ items: [{ target_url: "https://example.com" }] })
+      .catch((e: unknown) => e as ValidationError);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).code).toBe("unexpected_response");
+    expect((error as ValidationError).detail).toBe(
+      "Unexpected response shape from POST /v1/qurls/batch (HTTP 201)",
+    );
+  });
+
+  it("batch create per-entry shape-guard error includes HTTP status", async () => {
+    // The per-entry shape guard (for entries missing required
+    // non-optional fields) must also include the HTTP status in the
+    // error detail. A 207 response with a per-entry defect is
+    // distinct from a 400 with the same defect — different
+    // root-cause branches for operators.
+    const fetch = mockFetch({
+      status: 207,
+      body: {
+        data: {
+          succeeded: 1,
+          failed: 0,
+          results: [
+            // Missing resource_id / qurl_link / qurl_site
+            { index: 0, success: true },
+          ],
+        },
+      },
+    });
+    const client = createClient(fetch);
+    const error = await client
+      .batchCreate({ items: [{ target_url: "https://example.com" }] })
+      .catch((e: unknown) => e as ValidationError);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).code).toBe("unexpected_response");
+    const detail = (error as ValidationError).detail;
+    expect(detail).toContain("(HTTP 207)");
+    expect(detail).toContain("results[0]");
+    expect(detail).toContain("resource_id");
   });
 
   it("batch create distinguishes client_validation from unexpected_response", async () => {
