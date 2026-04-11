@@ -611,14 +611,22 @@ export class QURLClient {
    * Lists protected URLs. Each QURL groups access tokens sharing the same target URL.
    * Note: list items include qurl_count but not access_tokens (too expensive at scale).
    *
-   * **`limit` semantics:** `limit` is passed through to the API as-is.
-   * Callers almost certainly want `limit >= 1`; passing `limit: 0` or a
-   * negative number is not a client-side error but the server's behavior
-   * is unspecified (most REST pagination endpoints treat it as "use the
-   * default page size" or "zero items"). If you want a specific page
-   * size, pass an explicit positive integer.
+   * **`limit` semantics:** `limit` is validated client-side to be in
+   * the range `[1, 100]` per the OpenAPI spec (`GET /v1/qurls` defines
+   * `limit: integer, minimum: 1, maximum: 100, default: 20`). Passing
+   * a value outside that range throws `ValidationError` before the
+   * request is issued. Omitting `limit` lets the server apply its
+   * default page size (currently 20). Matches the client-side
+   * validation style used for `max_sessions`, `tag count`, URL length.
    */
   async list(input: ListInput = {}): Promise<ListOutput> {
+    if (input.limit !== undefined && input.limit !== null) {
+      if (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > 100) {
+        throw clientValidationError(
+          `limit: must be an integer between 1 and 100 (got ${input.limit})`,
+        );
+      }
+    }
     const params = new URLSearchParams();
     // Explicit allowlist rather than Object.entries: TypeScript's structural
     // typing can't prevent callers from spreading untyped objects with extra
@@ -908,18 +916,53 @@ export class QURLClient {
       // that the caller wants to parse as a success envelope (e.g.
       // `batchCreate` opts 400 in so per-item errors still reach the
       // caller as a structured body instead of being raised as QURLError).
-      if (response.ok || passthroughStatuses.includes(response.status)) {
+      const isPassthrough = !response.ok && passthroughStatuses.includes(response.status);
+      if (response.ok || isPassthrough) {
         if (response.status === 204) {
           return { data: undefined as unknown as T, http_status: response.status };
         }
-        const json = (await response.json()) as ApiResponse<T>;
-        // Inject the HTTP status via shallow copy (not in-place
-        // mutation of the parsed JSON) so downstream callers get an
-        // SDK-owned object. Mirrors the non-mutating style used by
-        // `mapQurlsField` and `batchCreate`'s `request_id` attach.
-        // `response.json()` already produces a fresh object, so the
-        // spread is cheap and no one else holds a reference to it.
-        return { ...json, http_status: response.status };
+        try {
+          const json = (await response.json()) as ApiResponse<T>;
+          // Inject the HTTP status via shallow copy (not in-place
+          // mutation of the parsed JSON) so downstream callers get an
+          // SDK-owned object. Mirrors the non-mutating style used by
+          // `mapQurlsField` and `batchCreate`'s `request_id` attach.
+          // `response.json()` already produces a fresh object, so the
+          // spread is cheap and no one else holds a reference to it.
+          return { ...json, http_status: response.status };
+        } catch (parseErr) {
+          // On the ok path, a non-JSON body is a server contract
+          // violation that should throw at the call site — preserve
+          // the original SyntaxError behavior so it's debuggable.
+          if (!isPassthrough) {
+            throw parseErr;
+          }
+          // Passthrough path: a proxy/CDN/WAF can return a whitelisted
+          // status (e.g. 400 for `batchCreate`) with a non-JSON body —
+          // a Cloudflare HTML error page, a truncated response, a
+          // gateway's plaintext error. Surface a clean QURLError with
+          // the observed status instead of bubbling SyntaxError. We
+          // synthesize a minimal error envelope directly rather than
+          // delegating to `parseError` because the Response body stream
+          // has already been consumed. No retry classification runs:
+          // passthrough states are definitive (batchCreate's 400 is a
+          // final answer, not a transient condition), and a non-JSON
+          // body there has no retryable signal. Mirrors the fix in
+          // qurl-python's `_raw_request` (PR #8 commit 73ada8a).
+          this.log(
+            `non-JSON body on passthrough status ${response.status}; surfacing as QURLError`,
+            {
+              status: response.status,
+              content_type: response.headers.get("content-type") ?? undefined,
+            },
+          );
+          throw createError({
+            status: response.status,
+            code: "unexpected_response",
+            title: response.statusText || `HTTP ${response.status}`,
+            detail: `Expected JSON response body on HTTP ${response.status} but received non-JSON content`,
+          });
+        }
       }
 
       const errorData = await this.parseError(response);

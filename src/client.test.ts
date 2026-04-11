@@ -351,22 +351,71 @@ describe("QURLClient", () => {
     expect(result.has_more).toBe(false);
   });
 
-  it("passes limit: 0 as a query parameter", async () => {
-    const fetch = mockFetch({
-      status: 200,
-      body: {
-        data: [],
-        meta: { has_more: false, page_size: 0 },
-      },
-    });
-
+  it("list rejects limit: 0 below the spec's minimum", async () => {
+    // Per OpenAPI (`GET /v1/qurls` → `limit: minimum: 1, maximum: 100`),
+    // `limit` must be in [1, 100]. Client-side validation catches this
+    // before a round-trip, matching the style used for other spec-
+    // defined bounds (max_sessions, tag count, URL length).
+    const fetch = mockFetch({ status: 200, body: { data: [], meta: {} } });
     const client = createClient(fetch);
-    await client.list({ limit: 0 });
+    const error = await client.list({ limit: 0 }).catch((e: unknown) => e as ValidationError);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).code).toBe("client_validation");
+    expect((error as ValidationError).detail).toContain("1 and 100");
+    expect(fetch).not.toHaveBeenCalled();
+  });
 
-    expect(fetch).toHaveBeenCalledWith(
-      "https://api.test.layerv.ai/v1/qurls?limit=0",
-      expect.objectContaining({ method: "GET" }),
-    );
+  it("list rejects limit: 101 above the spec's maximum", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: [], meta: {} } });
+    const client = createClient(fetch);
+    const error = await client.list({ limit: 101 }).catch((e: unknown) => e as ValidationError);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).detail).toContain("1 and 100");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("list rejects negative limit", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: [], meta: {} } });
+    const client = createClient(fetch);
+    const error = await client.list({ limit: -5 }).catch((e: unknown) => e as ValidationError);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).detail).toContain("1 and 100");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("list rejects non-integer limit (e.g. 2.5)", async () => {
+    // Floats pass TypeScript's `number` type but violate the spec's
+    // `type: integer`. The server would likely reject or coerce, but
+    // we catch it client-side for a cleaner error.
+    const fetch = mockFetch({ status: 200, body: { data: [], meta: {} } });
+    const client = createClient(fetch);
+    const error = await client.list({ limit: 2.5 }).catch((e: unknown) => e as ValidationError);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).detail).toContain("integer");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("list accepts limit at the boundaries (1 and 100)", async () => {
+    // Boundary regression guard — make sure the validation is
+    // inclusive on both ends. A future refactor using a strict `< 100`
+    // or `> 1` would silently shift the boundary.
+    const fetch = mockFetch({ status: 200, body: { data: [], meta: {} } });
+    const client = createClient(fetch);
+    await expect(client.list({ limit: 1 })).resolves.toBeDefined();
+    await expect(client.list({ limit: 100 })).resolves.toBeDefined();
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("list allows omitted limit to use the server default", async () => {
+    // Omitting `limit` entirely lets the server apply its default
+    // (currently 20 per the OpenAPI spec). The validation must not
+    // trip on `undefined`.
+    const fetch = mockFetch({ status: 200, body: { data: [], meta: {} } });
+    const client = createClient(fetch);
+    await expect(client.list({})).resolves.toBeDefined();
+    // `limit` must NOT appear in the query string when omitted.
+    const [url] = (fetch as unknown as { mock: { calls: [string, RequestInit][] } }).mock.calls[0];
+    expect(url).not.toContain("limit=");
   });
 
   it("list with empty input hits /v1/qurls with no query string", async () => {
@@ -956,6 +1005,101 @@ describe("QURLClient", () => {
     expect(result.access_tokens).toHaveLength(1);
     expect(result.access_tokens![0].qurl_id).toBe("q_abc12345678");
     expect((result as Record<string, unknown>).qurls).toBeUndefined();
+  });
+
+  it("mapQurlsField keeps access_tokens when the API returns BOTH qurls and access_tokens", async () => {
+    // Defense-in-depth: the API spec returns exactly one of the two
+    // fields, but a future spec migration (or a partial deploy) could
+    // produce both. When that happens, mapQurlsField is authoritative:
+    // it keeps `access_tokens` (the SDK-canonical name), drops `qurls`
+    // (the legacy wire name), and emits a debug log so operators can
+    // spot the divergence. This test locks in the "shouldn't happen
+    // but we'll handle it" branch — without it, a future refactor
+    // could silently flip the precedence and no test would catch it.
+    const debugFn = vi.fn();
+    const fetch = mockFetch({
+      status: 200,
+      body: {
+        data: {
+          resource_id: "r_dualfield",
+          target_url: "https://example.com",
+          status: "active",
+          qurl_count: 2,
+          // Both fields populated with DIFFERENT data so we can
+          // unambiguously assert which one won. `access_tokens` has
+          // one entry, `qurls` has two — the assertion below pins
+          // `access_tokens` as the winner.
+          access_tokens: [
+            {
+              qurl_id: "q_winner00001",
+              status: "active",
+              one_time_use: false,
+              max_sessions: 5,
+              session_duration: 300,
+              use_count: 0,
+              created_at: "2026-03-10T10:00:00Z",
+              expires_at: "2026-03-20T10:00:00Z",
+            },
+          ],
+          qurls: [
+            {
+              qurl_id: "q_loser000001",
+              status: "active",
+              one_time_use: false,
+              max_sessions: 5,
+              session_duration: 300,
+              use_count: 0,
+              created_at: "2026-03-10T10:00:00Z",
+              expires_at: "2026-03-20T10:00:00Z",
+            },
+            {
+              qurl_id: "q_loser000002",
+              status: "active",
+              one_time_use: false,
+              max_sessions: 5,
+              session_duration: 300,
+              use_count: 0,
+              created_at: "2026-03-10T10:00:00Z",
+              expires_at: "2026-03-20T10:00:00Z",
+            },
+          ],
+          created_at: "2026-03-10T10:00:00Z",
+        },
+      },
+    });
+
+    const client = new QURLClient({
+      apiKey: "lv_live_test",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch,
+      maxRetries: 0,
+      debug: debugFn,
+    });
+
+    const result = await client.get("r_dualfield");
+
+    // `access_tokens` wins the merge — exactly one entry (from
+    // access_tokens), not two (from qurls).
+    expect(result.access_tokens).toHaveLength(1);
+    expect(result.access_tokens![0].qurl_id).toBe("q_winner00001");
+    // `qurls` is dropped from the returned shape entirely.
+    expect((result as Record<string, unknown>).qurls).toBeUndefined();
+
+    // Debug log fires with both counts so operators can spot the
+    // divergence. The content assertion is on the log message prefix
+    // and the structured context so this test doesn't brittle-couple
+    // to exact phrasing, just the observable contract.
+    const debugCalls = debugFn.mock.calls;
+    const dualFieldLog = debugCalls.find(
+      (call: unknown[]) =>
+        typeof call[0] === "string" && (call[0] as string).includes("mapQurlsField"),
+    );
+    expect(dualFieldLog).toBeDefined();
+    expect(dualFieldLog![0]).toContain("received both");
+    expect(dualFieldLog![1]).toEqual({
+      qurls_count: 2,
+      access_tokens_count: 1,
+    });
   });
 
   it("resolves a QURL token", async () => {
@@ -2415,6 +2559,93 @@ describe("QURLClient", () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
+  it("listAll preserves filter params AND propagates errors mid-pagination", async () => {
+    // Combined regression guard: the two previous tests cover filter
+    // threading AND error propagation separately, but the INTERACTION
+    // between them isn't directly tested. A hypothetical bug where the
+    // error path accidentally resets filter context (e.g. by re-trying
+    // without them, or by re-entering listAll's input closure) would
+    // slip past both individual tests. This one locks the combination
+    // in: filters must be present on EVERY request including the one
+    // that errors, and the error must still propagate cleanly.
+    const page1Response = {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      headers: new Headers({}),
+      json: () =>
+        Promise.resolve({
+          data: [{ resource_id: "r_filt1", status: "active", target_url: "https://a" }],
+          meta: { has_more: true, next_cursor: "cur_combined" },
+        }),
+      text: () => Promise.resolve(""),
+    } satisfies Partial<Response> as Response;
+
+    // Page 2 errors with a 500. The request must still carry the
+    // filter params from the original listAll input.
+    const page2Error = {
+      ok: false,
+      status: 500,
+      statusText: "Internal Server Error",
+      headers: new Headers({}),
+      json: () =>
+        Promise.resolve({
+          error: {
+            status: 500,
+            code: "internal_error",
+            title: "Internal Server Error",
+            detail: "Mid-pagination failure",
+          },
+        }),
+      text: () => Promise.resolve(""),
+    } satisfies Partial<Response> as Response;
+
+    const fetch = vi.fn().mockResolvedValueOnce(page1Response).mockResolvedValueOnce(page2Error);
+    const client = new QURLClient({
+      apiKey: "lv_live_test",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 0,
+    });
+
+    const yielded: string[] = [];
+    let thrown: unknown;
+    try {
+      for await (const qurl of client.listAll({
+        status: "active",
+        limit: 10,
+        q: "combined-test",
+        created_after: "2026-03-01T00:00:00Z",
+      })) {
+        yielded.push(qurl.resource_id);
+      }
+    } catch (err) {
+      thrown = err;
+    }
+
+    // Page 1 yielded before the error.
+    expect(yielded).toEqual(["r_filt1"]);
+    // Error surfaced cleanly.
+    expect(thrown).toBeInstanceOf(ServerError);
+    expect((thrown as ServerError).status).toBe(500);
+    expect(fetch).toHaveBeenCalledTimes(2);
+
+    // BOTH requests carry the filter params — including the one that
+    // errored. If page 2's URL were missing `q=combined-test` or
+    // `status=active`, that would mean the error path re-entered
+    // without the original input context — a subtle bug that neither
+    // of the two narrower tests above would catch.
+    for (const call of fetch.mock.calls) {
+      const url = call[0] as string;
+      expect(url).toContain("status=active");
+      expect(url).toContain("limit=10");
+      expect(url).toContain("q=combined-test");
+      expect(url).toContain("created_after=2026-03-01T00%3A00%3A00Z");
+    }
+    // Second (errored) request also carries the cursor from page 1.
+    expect(fetch.mock.calls[1][0] as string).toContain("cursor=cur_combined");
+  });
+
   it("list passes all filter params simultaneously", async () => {
     const fetch = mockFetch({
       status: 200,
@@ -3337,6 +3568,77 @@ describe("QURLClient", () => {
       .batchCreate({ items: [{ target_url: "https://example.com" }] })
       .catch((e: unknown) => e as ValidationError);
     expect((serverSide as ValidationError).code).toBe("unexpected_response");
+  });
+
+  it("batch create surfaces clean QURLError when 400 passthrough body is non-JSON", async () => {
+    // Regression guard for the passthrough JSON-parse hardening.
+    // A proxy/CDN/WAF (Cloudflare, ALB, nginx) returning HTTP 400
+    // with an HTML error page, a truncated body, or a plaintext
+    // gateway error previously caused `response.json()` inside
+    // `rawRequest`'s passthrough path to throw an untyped
+    // `SyntaxError` that bypassed BOTH `validateBatchCreateResponse`
+    // AND the structured error parser. Now it surfaces as a clean
+    // `QURLError` (via createError → ValidationError for
+    // `unexpected_response`) so callers catching by-class get a
+    // typed error and operators see the HTTP status in the detail.
+    //
+    // Mirrors qurl-python's
+    // `test_batch_create_falls_through_to_parse_error_on_non_json_body`
+    // regression test (PR #8 commit 73ada8a).
+    const nonJsonFetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 400,
+      statusText: "Bad Request",
+      headers: new Headers({ "content-type": "text/html" }),
+      // Cloudflare-style HTML error page — valid body, NOT valid JSON.
+      json: () =>
+        Promise.reject(new SyntaxError("Unexpected token '<', \"<html>...\" is not valid JSON")),
+      text: () => Promise.resolve("<html><body><h1>400 Bad Request</h1></body></html>"),
+    } satisfies Partial<Response> as Response);
+
+    const client = createClient(nonJsonFetch as typeof globalThis.fetch);
+    const error = await client
+      .batchCreate({ items: [{ target_url: "https://example.com" }] })
+      .catch((e: unknown) => e as ValidationError);
+
+    // Typed as ValidationError (createError maps code
+    // "unexpected_response" to ValidationError).
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).code).toBe("unexpected_response");
+    expect((error as ValidationError).status).toBe(400);
+    // Detail mentions non-JSON so operators can distinguish this from
+    // a structured bad-shape body (which produces a different message).
+    expect((error as ValidationError).detail).toContain("non-JSON");
+    expect((error as ValidationError).detail).toContain("HTTP 400");
+    // Raw HTML body is NOT echoed — information leak prevention.
+    expect((error as ValidationError).detail).not.toContain("<html>");
+    expect((error as ValidationError).detail).not.toContain("400 Bad Request");
+  });
+
+  it("rawRequest preserves SyntaxError on non-JSON success (ok path) body", async () => {
+    // Complementary to the passthrough test above: on the OK path
+    // (200-299), a non-JSON body is a server contract violation and
+    // must throw the original `SyntaxError` at the call site so the
+    // bug is debuggable. The passthrough JSON-guard must NOT eat
+    // SyntaxErrors on successful responses — that would hide real
+    // API breakage behind a generic ValidationError.
+    const nonJsonOkFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      headers: new Headers({ "content-type": "text/html" }),
+      json: () =>
+        Promise.reject(new SyntaxError("Unexpected token '<', \"<html>...\" is not valid JSON")),
+      text: () => Promise.resolve("<html>broken response</html>"),
+    } satisfies Partial<Response> as Response);
+
+    const client = createClient(nonJsonOkFetch as typeof globalThis.fetch);
+    // getQuota() uses the default path (no passthrough statuses), so
+    // this exercises `response.ok === true` with a non-JSON body.
+    const error = await client.getQuota().catch((e: unknown) => e);
+    // The original SyntaxError bubbles up — NOT a ValidationError.
+    expect(error).toBeInstanceOf(SyntaxError);
+    expect((error as SyntaxError).message).toContain("not valid JSON");
   });
 
   it("batch create rejects success entries missing resource_id", async () => {
