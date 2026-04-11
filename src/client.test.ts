@@ -11,6 +11,7 @@ import {
   TimeoutError,
   ValidationError,
 } from "./errors.js";
+import type { BatchCreateInput, CreateInput, MintInput } from "./types.js";
 
 function mockFetch(response: {
   status: number;
@@ -1182,6 +1183,46 @@ describe("QURLClient", () => {
     expect(calledUrl).toContain("sort=created_at");
   });
 
+  it("list serializes date filter params as query string", async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: { data: [], meta: { has_more: false } },
+    });
+    const client = createClient(fetch);
+
+    await client.list({
+      created_after: "2026-01-01T00:00:00Z",
+      created_before: "2026-12-31T23:59:59Z",
+      expires_before: "2026-06-01T00:00:00Z",
+      expires_after: "2026-03-01T00:00:00Z",
+    });
+
+    const calledUrl = (fetch as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+    expect(calledUrl).toContain("created_after=2026-01-01T00%3A00%3A00Z");
+    expect(calledUrl).toContain("created_before=2026-12-31T23%3A59%3A59Z");
+    expect(calledUrl).toContain("expires_before=2026-06-01T00%3A00%3A00Z");
+    expect(calledUrl).toContain("expires_after=2026-03-01T00%3A00%3A00Z");
+  });
+
+  it("list ignores unknown properties on the input object", async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: { data: [], meta: { has_more: false } },
+    });
+    const client = createClient(fetch);
+
+    // Simulates a caller spreading an untyped object with extra properties.
+    // The allowlist in list() should drop anything that isn't a known field.
+    const untypedInput = { limit: 10, rogue: "should-not-appear" } as unknown as Parameters<
+      typeof client.list
+    >[0];
+    await client.list(untypedInput);
+
+    const calledUrl = (fetch as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+    expect(calledUrl).toContain("limit=10");
+    expect(calledUrl).not.toContain("rogue");
+  });
+
   it("does not retry on 503 with maxRetries: 0", async () => {
     const fetch = mockFetch({
       status: 503,
@@ -1300,10 +1341,105 @@ describe("QURLClient", () => {
 
     expect(result.succeeded).toBe(1);
     expect(result.failed).toBe(1);
-    expect(result.results[0].success).toBe(true);
-    expect(result.results[0].resource_id).toBe("r_batch_ok");
-    expect(result.results[1].success).toBe(false);
-    expect(result.results[1].error?.code).toBe("validation_error");
-    expect(result.results[1].error?.message).toBe("Invalid target_url");
+
+    const first = result.results[0];
+    expect(first.success).toBe(true);
+    // Discriminated-union narrowing: the success branch has resource_id
+    if (first.success) {
+      expect(first.resource_id).toBe("r_batch_ok");
+    }
+
+    const second = result.results[1];
+    expect(second.success).toBe(false);
+    if (!second.success) {
+      expect(second.error.code).toBe("validation_error");
+      expect(second.error.message).toBe("Invalid target_url");
+    }
+  });
+
+  it("batch create accepts exactly 100 items (boundary)", async () => {
+    const fetch = mockFetch({
+      status: 201,
+      body: {
+        data: { succeeded: 100, failed: 0, results: [] },
+      },
+    });
+    const client = createClient(fetch);
+    const items = Array.from({ length: 100 }, (_, i) => ({
+      target_url: `https://example.com/${i}`,
+    }));
+
+    await expect(client.batchCreate({ items })).resolves.toBeDefined();
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("batch create sends items array in request body", async () => {
+    const fetch = mockFetch({
+      status: 201,
+      body: {
+        data: { succeeded: 2, failed: 0, results: [] },
+      },
+    });
+    const client = createClient(fetch);
+    const items: CreateInput[] = [
+      {
+        target_url: "https://app1.example.com",
+        expires_in: "24h",
+        label: "App 1",
+        one_time_use: true,
+        max_sessions: 5,
+        session_duration: "1h",
+        custom_domain: "app1.qurl.link",
+        access_policy: {
+          ip_allowlist: ["10.0.0.0/8"],
+          ai_agent_policy: { block_all: true },
+        },
+      },
+      { target_url: "https://app2.example.com", expires_in: "48h" },
+    ];
+
+    await client.batchCreate({ items });
+
+    const callArgs = (fetch as ReturnType<typeof vi.fn>).mock.calls[0][1] as RequestInit;
+    const body = JSON.parse(callArgs.body as string) as BatchCreateInput;
+    expect(body.items).toHaveLength(2);
+    expect(body.items[0]).toEqual(items[0]);
+    expect(body.items[0].access_policy?.ai_agent_policy?.block_all).toBe(true);
+    expect(body.items[1]).toEqual(items[1]);
+  });
+
+  it("mintLink forwards the full expanded input body", async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: {
+        data: {
+          qurl_link: "https://qurl.link/#at_minted",
+          expires_at: "2026-04-02T00:00:00Z",
+        },
+      },
+    });
+    const client = createClient(fetch);
+
+    await client.mintLink("r_abc123def45", {
+      expires_in: "7d",
+      label: "Alice from Acme",
+      one_time_use: false,
+      max_sessions: 3,
+      session_duration: "1h",
+      access_policy: {
+        geo_allowlist: ["US", "CA"],
+        ai_agent_policy: { deny_categories: ["gptbot"] },
+      },
+    });
+
+    const callArgs = (fetch as ReturnType<typeof vi.fn>).mock.calls[0][1] as RequestInit;
+    const parsed = JSON.parse(callArgs.body as string) as MintInput;
+    expect(parsed.expires_in).toBe("7d");
+    expect(parsed.label).toBe("Alice from Acme");
+    expect(parsed.one_time_use).toBe(false);
+    expect(parsed.max_sessions).toBe(3);
+    expect(parsed.session_duration).toBe("1h");
+    expect(parsed.access_policy?.geo_allowlist).toEqual(["US", "CA"]);
+    expect(parsed.access_policy?.ai_agent_policy?.deny_categories).toEqual(["gptbot"]);
   });
 });

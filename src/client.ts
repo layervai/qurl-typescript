@@ -28,6 +28,19 @@ const RETRY_MAX_DELAY_MS = 30_000;
 const RETRYABLE_STATUS = new Set([429, 502, 503, 504]);
 const RETRYABLE_STATUS_MUTATING = new Set([429]);
 
+/** Allowlist of known query-param keys for the `list()` endpoint. */
+const LIST_PARAM_KEYS = [
+  "limit",
+  "cursor",
+  "status",
+  "q",
+  "sort",
+  "created_after",
+  "created_before",
+  "expires_before",
+  "expires_after",
+] as const satisfies readonly (keyof ListInput)[];
+
 interface ApiResponse<T> {
   data: T;
   meta?: {
@@ -120,7 +133,25 @@ export class QURLClient {
     return this.request<CreateOutput>("POST", "/v1/qurls", input);
   }
 
-  /** Batch create multiple QURLs (1-100 items). */
+  /**
+   * Batch create multiple QURLs (1-100 items).
+   *
+   * **Partial failures do not throw.** The API returns HTTP 207 (Multi-Status)
+   * when some items succeed and others fail, and HTTP 400 (with a populated
+   * `BatchCreateOutput` body) when every item fails validation. In both cases
+   * the client resolves normally with the structured per-item results — the
+   * caller is responsible for inspecting `result.failed > 0` and iterating
+   * `result.results` to see which items succeeded and which errored.
+   *
+   * Use the discriminated union on each result to narrow safely:
+   * ```ts
+   * const result = await client.batchCreate({ items });
+   * for (const r of result.results) {
+   *   if (r.success) handleOk(r.resource_id, r.qurl_link);
+   *   else           handleErr(r.index, r.error.code, r.error.message);
+   * }
+   * ```
+   */
   async batchCreate(input: BatchCreateInput): Promise<BatchCreateOutput> {
     if (input.items.length === 0) {
       throw new Error("batchCreate requires at least 1 item");
@@ -146,7 +177,12 @@ export class QURLClient {
    */
   async list(input: ListInput = {}): Promise<ListOutput> {
     const params = new URLSearchParams();
-    for (const [key, value] of Object.entries(input)) {
+    // Explicit allowlist rather than Object.entries: TypeScript's structural
+    // typing can't prevent callers from spreading untyped objects with extra
+    // properties, and String(value) on an unexpected array/object would emit
+    // "[object Object]" as a query param.
+    for (const key of LIST_PARAM_KEYS) {
+      const value = input[key];
       if (value !== null && value !== undefined) params.set(key, String(value));
     }
 

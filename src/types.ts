@@ -32,14 +32,21 @@ export interface AccessToken {
   expires_at: string;
 }
 
-/** A QURL resource as returned by the API. */
+/**
+ * A QURL resource as returned by the API.
+ *
+ * Note: `status` is narrower than {@link AccessToken.status}. Resources only
+ * have two states — `active` or `revoked` — per `QurlData.status` in the
+ * OpenAPI spec. Individual access tokens can additionally be `consumed` or
+ * `expired`; see {@link AccessToken.status}.
+ */
 export interface QURL {
   resource_id: string;
   target_url: string;
-  status: "active" | "consumed" | "revoked" | "expired";
+  status: "active" | "revoked";
   description?: string;
   tags?: string[];
-  custom_domain?: string;
+  custom_domain?: string | null;
   qurl_site?: string;
   qurl_count?: number;
   access_tokens?: AccessToken[];
@@ -73,12 +80,27 @@ export interface CreateOutput {
 export interface ListInput {
   limit?: number;
   cursor?: string;
+  /**
+   * Filter by status. Accepts comma-separated values to combine multiple,
+   * e.g. `"active,revoked"`. Typed as `string` (not a union) because the
+   * API accepts the CSV form.
+   */
   status?: string;
+  /** Free-text search over description and target_url. */
   q?: string;
+  /**
+   * Sort field and direction as `field:direction`. Valid fields:
+   * `created_at`, `expires_at`. Valid directions: `asc`, `desc` (default
+   * `desc`). Example: `created_at:desc`.
+   */
   sort?: string;
+  /** RFC 3339 timestamp. */
   created_after?: string;
+  /** RFC 3339 timestamp. */
   created_before?: string;
+  /** RFC 3339 timestamp. */
   expires_before?: string;
+  /** RFC 3339 timestamp. */
   expires_after?: string;
 }
 
@@ -99,7 +121,17 @@ export interface ExtendInput {
 export interface UpdateInput {
   extend_by?: string;
   expires_at?: string;
+  /**
+   * Resource-level description. Distinct from the token-level `label` on
+   * {@link CreateInput} / {@link MintInput} — the API intentionally uses
+   * different field names for the create and update flows.
+   *
+   * Pass an empty string to clear the existing description.
+   */
   description?: string;
+  /**
+   * Replace all tags on this resource. Pass an empty array to clear all tags.
+   */
   tags?: string[];
 }
 
@@ -166,16 +198,38 @@ export interface BatchCreateInput {
   items: CreateInput[];
 }
 
-/** Result for a single item in a batch create response. */
-export interface BatchItemResult {
+/** A successfully created item in a batch create response. */
+export interface BatchItemSuccess {
   index: number;
-  success: boolean;
-  resource_id?: string;
-  qurl_link?: string;
-  qurl_site?: string;
+  success: true;
+  resource_id: string;
+  qurl_link: string;
+  qurl_site: string;
   expires_at?: string;
-  error?: { code: string; message: string };
 }
+
+/** A failed item in a batch create response. */
+export interface BatchItemFailure {
+  index: number;
+  success: false;
+  error: { code: string; message: string };
+}
+
+/**
+ * Result for a single item in a batch create response.
+ *
+ * Discriminate on `success` for type-safe narrowing:
+ * ```ts
+ * for (const r of result.results) {
+ *   if (r.success) {
+ *     console.log(r.resource_id); // success fields narrowed
+ *   } else {
+ *     console.log(r.error.message); // error narrowed
+ *   }
+ * }
+ * ```
+ */
+export type BatchItemResult = BatchItemSuccess | BatchItemFailure;
 
 /** Response from batch creating QURLs. */
 export interface BatchCreateOutput {
