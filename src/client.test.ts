@@ -427,10 +427,16 @@ describe("QURLClient", () => {
     // "starting with X" wording would just echo noise (or nothing) and
     // confuse callers. Assert the short-input branch uses a clearer
     // "invalid or empty identifier" message.
+    //
+    // Also covers the edge case where the input is EXACTLY the prefix
+    // with no suffix (`"r_"` or `"q_"`): these pass/fail `startsWith`
+    // differently, but the length check runs first and catches both
+    // uniformly. Without this ordering, bare `"r_"` would slip through
+    // the prefix check and hit `DELETE /v1/qurls/r_` on the wire.
     const fetch = mockFetch({ status: 204 });
     const client = createClient(fetch);
 
-    for (const badId of ["", "x", "ab"]) {
+    for (const badId of ["", "x", "ab", "r_", "q_", "at"]) {
       const error = await client.delete(badId).catch((e: unknown) => e as ValidationError);
       expect(error).toBeInstanceOf(ValidationError);
       const detail = (error as ValidationError).detail;

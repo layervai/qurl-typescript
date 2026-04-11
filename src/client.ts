@@ -662,21 +662,24 @@ export class QURLClient {
    * A client-side prefix check catches the mistake before the API round-trip.
    */
   async delete(id: string): Promise<void> {
+    // Too-short check runs BEFORE the prefix check so it catches
+    // bare-prefix inputs like `"r_"` (right prefix, no suffix) in
+    // addition to `""` / `"x"` / `"ab"` / `"q_"`. Without this
+    // ordering, an exact `"r_"` would pass the startsWith check and
+    // the SDK would send `DELETE /v1/qurls/r_` to the server —
+    // rejected server-side, but this catches it client-side without
+    // a round-trip.
+    if (id.length <= RESOURCE_ID_PREFIX.length) {
+      throw clientValidationError(
+        `delete: requires a resource ID (${RESOURCE_ID_PREFIX} prefix + suffix) — got an invalid or empty identifier`,
+      );
+    }
     if (!id.startsWith(RESOURCE_ID_PREFIX)) {
-      // Distinguish two failure modes without leaking the caller's raw ID
-      // into observability pipelines:
-      //   * Too short to be any kind of real ID — empty string, "x", "ab"
-      //     — give a clear "not a valid ID" message rather than echoing a
-      //     bogus 2-char prefix that won't match anything the caller
-      //     recognizes.
-      //   * Long enough to look like an ID but wrong prefix (e.g. "q_…",
-      //     "at_…") — echo the 2-char prefix so the caller sees exactly
-      //     which kind of ID they passed and can correct it.
-      if (id.length <= RESOURCE_ID_PREFIX.length) {
-        throw clientValidationError(
-          `delete: requires a resource ID (${RESOURCE_ID_PREFIX} prefix) — got an invalid or empty identifier`,
-        );
-      }
+      // Wrong-prefix branch: the input is long enough to plausibly be
+      // an ID but has the wrong prefix (e.g. `q_3a7f2c8e91b`,
+      // `at_xyz…`). Echo only the 2-char prefix — never the raw ID
+      // — so observability pipelines don't end up with caller-supplied
+      // identifiers in error logs.
       const observedPrefix = id.slice(0, RESOURCE_ID_PREFIX.length);
       throw clientValidationError(
         `delete: only resource IDs (${RESOURCE_ID_PREFIX} prefix) are accepted — ` +
