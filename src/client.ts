@@ -302,16 +302,13 @@ export class QURLClient {
           signal: AbortSignal.timeout(this.timeout),
         });
       } catch (err) {
-        const isTimeout = err instanceof DOMException && err.name === "TimeoutError";
-        if (isTimeout) {
-          lastError = new TimeoutError("Request timed out", { cause: err });
-        } else {
-          const cause = err instanceof Error ? err : undefined;
-          lastError = new NetworkError(cause?.message ?? String(err), { cause });
-        }
-        this.log(`${method} ${url} ${isTimeout ? "timed out" : "network error"}`, {
-          error: lastError.message,
-        });
+        lastError = this.classifyFetchError(err);
+        this.log(
+          `${method} ${url} ${lastError instanceof TimeoutError ? "timed out" : "network error"}`,
+          {
+            error: lastError.message,
+          },
+        );
         if (attempt < this.maxRetries) {
           continue;
         }
@@ -383,5 +380,13 @@ export class QURLClient {
     const base = RETRY_BASE_DELAY_MS * Math.pow(2, attempt - 1);
     const jitter = Math.random() * base * 0.5;
     return Math.min(base + jitter, RETRY_MAX_DELAY_MS);
+  }
+
+  private classifyFetchError(err: unknown): TimeoutError | NetworkError {
+    if (err instanceof DOMException && err.name === "TimeoutError") {
+      return new TimeoutError("Request timed out", { cause: err });
+    }
+    const cause = err instanceof Error ? err : undefined;
+    return new NetworkError(cause?.message ?? String(err), { cause });
   }
 }
