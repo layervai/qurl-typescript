@@ -40,6 +40,18 @@ Releases are automated via [Release Please](https://github.com/googleapis/releas
 - `fix:` → patch version bump
 - `feat!:` or `BREAKING CHANGE:` → major version bump
 
+### Always publish via CI
+
+**Do not run `npm publish` locally.** The project's `.npmrc` sets
+`ignore-scripts=true` as a supply-chain defense, which (as a side effect)
+suppresses the `prepublishOnly` lifecycle hook. A local publish would ship
+whatever is currently in `dist/` without re-running the build. The release
+workflow (`.github/workflows/release-please.yml`) explicitly runs
+`npm run build` before `npm publish`, so publishing via CI is safe.
+
+If you need to verify a build artifact locally, run `npm run build` directly
+rather than invoking `npm publish` with `--dry-run`.
+
 ## License
 
 By contributing, you agree that your contributions will be licensed under the MIT License.
