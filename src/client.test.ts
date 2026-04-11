@@ -730,6 +730,45 @@ describe("QURLClient", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("update rejects non-string tag elements with per-index attribution (untyped-JS safety)", async () => {
+    // Regression guard: without the per-element `typeof tag !== "string"`
+    // check, a non-string element would silently pass (a number coerces
+    // in `TAG_PATTERN.test`; `(42).length` is `undefined` so the length
+    // check skips it) or hard-crash (`null.length` is a TypeError outside
+    // our ValidationError envelope). Every bad element must surface as
+    // a clean ValidationError with its index, collect-all-style, so a
+    // caller fixing multiple bad tags sees all problems at once.
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+
+    const error = await client
+      .update("r_abc", {
+        tags: [
+          "good-tag",
+          42 as unknown as string, // bad: number
+          "also-good",
+          null as unknown as string, // bad: null (would TypeError without guard)
+          {} as unknown as string, // bad: plain object
+        ],
+      })
+      .catch((e: unknown) => e as ValidationError);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).code).toBe("client_validation");
+    const detail = (error as ValidationError).detail;
+    // All three bad indices with their concrete types.
+    expect(detail).toContain("tags[1]");
+    expect(detail).toContain("number");
+    expect(detail).toContain("tags[3]");
+    expect(detail).toContain("null");
+    expect(detail).toContain("tags[4]");
+    expect(detail).toContain("object");
+    // Good indices must NOT appear.
+    expect(detail).not.toContain("tags[0]");
+    expect(detail).not.toContain("tags[2]");
+    // Never reaches the wire.
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("update treats null tags as 'no change' (untyped-JS null-safety)", async () => {
     // Matching the list() filter's null-tolerance: `tags: null` from
     // an untyped JS caller is treated the same as `tags: undefined`

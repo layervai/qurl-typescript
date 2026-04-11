@@ -174,6 +174,15 @@ function requireValidTags(tags: string[] | null | undefined): void {
   const errors: string[] = [];
   for (let i = 0; i < tags.length; i++) {
     const tag = tags[i];
+    // Per-element type guard for untyped-JS callers. Without this, a
+    // non-string element would silently pass (`.length` on a number is
+    // `undefined`; `TAG_PATTERN.test(42)` coerces to `"42"`) or TypeError
+    // (`null.length`). Matches the `isinstance(tag, str)` check in
+    // qurl-python's `_require_valid_tags`.
+    if (typeof tag !== "string") {
+      errors.push(`tags[${i}]: must be a string (got ${tag === null ? "null" : typeof tag})`);
+      continue;
+    }
     if (tag.length < 1 || tag.length > MAX_TAG_LENGTH) {
       errors.push(`tags[${i}]: must be 1-${MAX_TAG_LENGTH} characters (got ${tag.length})`);
       continue;
@@ -981,6 +990,10 @@ export class QURLClient {
     if (response.status !== 429) return undefined;
     const header = response.headers.get("Retry-After");
     if (!header) return undefined;
+    // TODO: parse HTTP-date format per RFC 7231 §7.1.3 — currently only
+    // handles delta-seconds; HTTP-date headers fall through to the
+    // exponential-backoff branch in `retryDelay`. In practice qurl-service
+    // emits delta-seconds, so this is a forward-compat gap, not a bug.
     const seconds = parseInt(header, 10);
     return Number.isNaN(seconds) ? undefined : seconds;
   }
