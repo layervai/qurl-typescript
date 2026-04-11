@@ -1,4 +1,4 @@
-import { createError, NetworkError, QURLError, TimeoutError } from "./errors.js";
+import { createError, NetworkError, QURLError, TimeoutError, ValidationError } from "./errors.js";
 import type {
   AccessToken,
   BatchCreateInput,
@@ -40,6 +40,21 @@ const LIST_PARAM_KEYS = [
   "expires_before",
   "expires_after",
 ] as const satisfies readonly (keyof ListInput)[];
+
+/**
+ * Construct a {@link ValidationError} for a client-side pre-flight check.
+ * Uses `status: 0` (matching {@link NetworkError}/{@link TimeoutError}) and
+ * `code: "client_validation"` so catch-by-class still works and callers can
+ * tell the error originated inside the SDK rather than from the API.
+ */
+function clientValidationError(detail: string): ValidationError {
+  return new ValidationError({
+    status: 0,
+    code: "client_validation",
+    title: "Invalid Argument",
+    detail,
+  });
+}
 
 interface ApiResponse<T> {
   data: T;
@@ -138,10 +153,15 @@ export class QURLClient {
    *
    * **Partial failures do not throw.** The API returns HTTP 207 (Multi-Status)
    * when some items succeed and others fail, and HTTP 400 (with a populated
-   * `BatchCreateOutput` body) when every item fails validation. In both cases
-   * the client resolves normally with the structured per-item results — the
-   * caller is responsible for inspecting `result.failed > 0` and iterating
-   * `result.results` to see which items succeeded and which errored.
+   * `BatchCreateOutput` body) when every item fails validation. Both statuses
+   * are whitelisted via `passthroughStatuses` so the client resolves normally
+   * with the structured per-item results — the caller is responsible for
+   * inspecting `result.failed > 0` and iterating `result.results` to see
+   * which items succeeded and which errored. Other error statuses (401, 403,
+   * 429, 5xx) still throw the appropriate `QURLError` subclass.
+   *
+   * Throws `ValidationError` client-side (`status: 0`, `code: "client_validation"`)
+   * when `items` is empty or exceeds 100.
    *
    * Use the discriminated union on each result to narrow safely:
    * ```ts
@@ -154,12 +174,15 @@ export class QURLClient {
    */
   async batchCreate(input: BatchCreateInput): Promise<BatchCreateOutput> {
     if (input.items.length === 0) {
-      throw new Error("batchCreate requires at least 1 item");
+      throw clientValidationError("batchCreate requires at least 1 item");
     }
     if (input.items.length > 100) {
-      throw new Error(`batchCreate accepts at most 100 items, got ${input.items.length}`);
+      throw clientValidationError(
+        `batchCreate accepts at most 100 items, got ${input.items.length}`,
+      );
     }
-    return this.request<BatchCreateOutput>("POST", "/v1/qurls/batch", input);
+    // 400 carries per-item errors (see rawRequest JSDoc).
+    return this.request<BatchCreateOutput>("POST", "/v1/qurls/batch", input, [400]);
   }
 
   /** Gets a protected URL and its access tokens. */
@@ -259,15 +282,30 @@ export class QURLClient {
 
   // --- Internal HTTP plumbing ---
 
-  private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
-    const { data } = await this.rawRequest<T>(method, path, body);
+  private async request<T>(
+    method: string,
+    path: string,
+    body?: unknown,
+    passthroughStatuses?: readonly number[],
+  ): Promise<T> {
+    const { data } = await this.rawRequest<T>(method, path, body, passthroughStatuses);
     return data;
   }
 
+  /**
+   * Issue an HTTP request and parse the JSON response.
+   *
+   * `passthroughStatuses` lets a caller opt certain non-2xx codes out of the
+   * default throw-on-error path and receive the parsed body instead. This is
+   * used by `batchCreate`, where the API returns a structured
+   * `BatchCreateOutput` on HTTP 400 (all items rejected) — throwing would
+   * drop the per-item errors.
+   */
   private async rawRequest<T>(
     method: string,
     path: string,
     body?: unknown,
+    passthroughStatuses: readonly number[] = [],
   ): Promise<ApiResponse<T>> {
     const url = `${this.baseUrl}${path}`;
     const headers: Record<string, string> = {
@@ -317,7 +355,7 @@ export class QURLClient {
 
       this.log(`${method} ${url} → ${response.status}`);
 
-      if (response.ok) {
+      if (response.ok || passthroughStatuses.includes(response.status)) {
         if (response.status === 204) {
           return { data: undefined as unknown as T };
         }

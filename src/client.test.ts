@@ -1238,22 +1238,33 @@ describe("QURLClient", () => {
 
   // --- Batch create ---
 
-  it("throws on empty batch create", async () => {
+  it("throws ValidationError on empty batch create", async () => {
     const fetch = mockFetch({ status: 201, body: { data: {} } });
     const client = createClient(fetch);
 
-    await expect(client.batchCreate({ items: [] })).rejects.toThrow("at least 1 item");
+    // Client-side pre-flight uses ValidationError with status 0 so callers
+    // that catch ValidationError get a single error class to handle.
+    const error = await client
+      .batchCreate({ items: [] })
+      .catch((e: unknown) => e as ValidationError);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).status).toBe(0);
+    expect((error as ValidationError).code).toBe("client_validation");
+    expect((error as ValidationError).detail).toContain("at least 1 item");
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("throws when batch create exceeds 100 items", async () => {
+  it("throws ValidationError when batch create exceeds 100 items", async () => {
     const fetch = mockFetch({ status: 201, body: { data: {} } });
     const client = createClient(fetch);
     const items = Array.from({ length: 101 }, (_, i) => ({
       target_url: `https://example.com/${i}`,
     }));
 
-    await expect(client.batchCreate({ items })).rejects.toThrow("at most 100 items");
+    const error = await client.batchCreate({ items }).catch((e: unknown) => e as ValidationError);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).code).toBe("client_validation");
+    expect((error as ValidationError).detail).toContain("at most 100 items");
     expect(fetch).not.toHaveBeenCalled();
   });
 
@@ -1441,5 +1452,78 @@ describe("QURLClient", () => {
     expect(parsed.session_duration).toBe("1h");
     expect(parsed.access_policy?.geo_allowlist).toEqual(["US", "CA"]);
     expect(parsed.access_policy?.ai_agent_policy?.deny_categories).toEqual(["gptbot"]);
+  });
+
+  it("batch create passes through HTTP 400 with per-item errors", async () => {
+    // When every batch item fails validation, the API returns 400 with a
+    // structured BatchCreateOutput body. rawRequest's passthroughStatuses
+    // must allow this through instead of throwing a generic ValidationError.
+    const fetch = mockFetch({
+      status: 400,
+      body: {
+        data: {
+          succeeded: 0,
+          failed: 2,
+          results: [
+            {
+              index: 0,
+              success: false,
+              error: {
+                code: "validation_error",
+                message: "items[0]: target_url must be HTTPS",
+              },
+            },
+            {
+              index: 1,
+              success: false,
+              error: {
+                code: "validation_error",
+                message: "items[1]: target_url must be HTTPS",
+              },
+            },
+          ],
+        },
+        meta: { request_id: "req_allfail" },
+      },
+    });
+
+    const client = createClient(fetch);
+    const result = await client.batchCreate({
+      items: [
+        { target_url: "http://insecure1.example.com" },
+        { target_url: "http://insecure2.example.com" },
+      ],
+    });
+
+    expect(result.failed).toBe(2);
+    expect(result.succeeded).toBe(0);
+    expect(result.results).toHaveLength(2);
+    const first = result.results[0];
+    if (!first.success) {
+      expect(first.error.code).toBe("validation_error");
+      expect(first.error.message).toContain("target_url must be HTTPS");
+    }
+  });
+
+  it("batch create still throws on non-400 error statuses (401, 429, 5xx)", async () => {
+    // 400 is explicitly whitelisted for passthrough; other error codes must
+    // continue to throw the appropriate QURLError subclass. Regression guard
+    // that the passthrough mechanism is surgical, not a blanket disable.
+    const fetch = mockFetch({
+      status: 401,
+      body: {
+        error: {
+          status: 401,
+          code: "unauthorized",
+          title: "Unauthorized",
+          detail: "Invalid API key",
+        },
+      },
+    });
+
+    const client = createClient(fetch);
+    await expect(
+      client.batchCreate({ items: [{ target_url: "https://example.com" }] }),
+    ).rejects.toBeInstanceOf(AuthenticationError);
   });
 });
