@@ -242,6 +242,45 @@ describe("QURLClient", () => {
     );
   });
 
+  it("update throws ValidationError when extend_by and expires_at are both set", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+
+    const error = await client
+      .update("r_abc", { extend_by: "24h", expires_at: "2026-04-01T00:00:00Z" })
+      .catch((e: unknown) => e as ValidationError);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).code).toBe("client_validation");
+    expect((error as ValidationError).detail).toContain("mutually exclusive");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("extend throws ValidationError when extend_by and expires_at are both set (inherits from update)", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+
+    // extend() delegates to update(), so it inherits the mutual-exclusion check.
+    const error = await client
+      .extend("r_abc", { extend_by: "24h", expires_at: "2026-04-01T00:00:00Z" })
+      .catch((e: unknown) => e as ValidationError);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).code).toBe("client_validation");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("mintLink throws ValidationError when expires_in and expires_at are both set", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+
+    const error = await client
+      .mintLink("r_abc", { expires_in: "7d", expires_at: "2026-04-01T00:00:00Z" })
+      .catch((e: unknown) => e as ValidationError);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).code).toBe("client_validation");
+    expect((error as ValidationError).detail).toContain("mutually exclusive");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("update maps qurls to access_tokens", async () => {
     const fetch = mockFetch({
       status: 200,

@@ -28,6 +28,10 @@ const RETRY_MAX_DELAY_MS = 30_000;
 const RETRYABLE_STATUS = new Set([429, 502, 503, 504]);
 const RETRYABLE_STATUS_MUTATING = new Set([429]);
 
+// Shared empty default for the `passthroughStatuses` parameter on rawRequest,
+// so each call that doesn't pass statuses doesn't allocate a fresh `[]`.
+const NO_PASSTHROUGH_STATUSES: readonly number[] = [];
+
 /** Allowlist of known query-param keys for the `list()` endpoint. */
 const LIST_PARAM_KEYS = [
   "limit",
@@ -281,6 +285,13 @@ export class QURLClient {
 
   /** Update a QURL — extend expiration, change description, etc. */
   async update(id: string, input: UpdateInput): Promise<QURL> {
+    // Match batchCreate's client-side validation pattern: catch the
+    // mutual-exclusion mistake before the API round-trip.
+    if (input.extend_by !== undefined && input.expires_at !== undefined) {
+      throw clientValidationError(
+        "update: `extend_by` and `expires_at` are mutually exclusive — provide at most one",
+      );
+    }
     const raw = await this.request<QURL & { qurls?: AccessToken[] }>(
       "PATCH",
       `/v1/qurls/${encodeURIComponent(id)}`,
@@ -291,6 +302,11 @@ export class QURLClient {
 
   /** Mint a new access link for a QURL. */
   async mintLink(id: string, input?: MintInput): Promise<MintOutput> {
+    if (input?.expires_in !== undefined && input.expires_at !== undefined) {
+      throw clientValidationError(
+        "mintLink: `expires_in` and `expires_at` are mutually exclusive — provide at most one",
+      );
+    }
     return this.request<MintOutput>("POST", `/v1/qurls/${encodeURIComponent(id)}/mint_link`, input);
   }
 
@@ -337,7 +353,7 @@ export class QURLClient {
     method: string,
     path: string,
     body?: unknown,
-    passthroughStatuses: readonly number[] = [],
+    passthroughStatuses: readonly number[] = NO_PASSTHROUGH_STATUSES,
   ): Promise<ApiResponse<T>> {
     const url = `${this.baseUrl}${path}`;
     const headers: Record<string, string> = {

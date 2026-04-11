@@ -54,7 +54,15 @@ export interface QURL {
   expires_at?: string;
 }
 
-/** Input for creating a QURL. */
+/**
+ * Input for creating a QURL.
+ *
+ * Note: `tags` and `description` are **not** accepted on create — they live
+ * on the resource (see {@link QURL.tags} / {@link QURL.description}) and must
+ * be set via {@link UpdateInput} after creation. The API uses different field
+ * names for the create-time token label ({@link CreateInput.label}) and the
+ * resource-level description on update/get responses.
+ */
 export interface CreateInput {
   target_url: string;
   expires_in?: string;
@@ -223,7 +231,14 @@ export interface BatchCreateInput {
   items: CreateInput[];
 }
 
-/** A successfully created item in a batch create response. */
+/**
+ * A successfully created item in a batch create response.
+ *
+ * Note: the batch response is intentionally slimmer than {@link CreateOutput}
+ * — it does **not** include `qurl_id` or `label`. This matches the API's
+ * `BatchItemResult` schema in `openapi.yaml`. If you need `qurl_id` / `label`
+ * per item, call {@link QURLClient.create} individually.
+ */
 export interface BatchItemSuccess {
   index: number;
   success: true;
