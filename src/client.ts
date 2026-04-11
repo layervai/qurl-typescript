@@ -41,6 +41,14 @@ const LIST_PARAM_KEYS = [
   "expires_after",
 ] as const satisfies readonly (keyof ListInput)[];
 
+// Compile-time completeness check: fails if a new key is added to ListInput
+// but not to LIST_PARAM_KEYS. `satisfies` alone only validates that entries
+// are valid keys, not that every key is listed — this plugs that gap.
+type _ListParamKeysComplete =
+  Exclude<keyof ListInput, (typeof LIST_PARAM_KEYS)[number]> extends never ? true : never;
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+const _listParamKeysComplete: _ListParamKeysComplete = true;
+
 /**
  * Construct a {@link ValidationError} for a client-side pre-flight check.
  * Uses `status: 0` (matching {@link NetworkError}/{@link TimeoutError}) and
@@ -151,17 +159,24 @@ export class QURLClient {
   /**
    * Batch create multiple QURLs (1-100 items).
    *
-   * **Partial failures do not throw.** The API returns HTTP 207 (Multi-Status)
-   * when some items succeed and others fail, and HTTP 400 (with a populated
-   * `BatchCreateOutput` body) when every item fails validation. Both statuses
-   * are whitelisted via `passthroughStatuses` so the client resolves normally
-   * with the structured per-item results — the caller is responsible for
-   * inspecting `result.failed > 0` and iterating `result.results` to see
-   * which items succeeded and which errored. Other error statuses (401, 403,
-   * 429, 5xx) still throw the appropriate `QURLError` subclass.
+   * **Partial failures do not throw.** Two paths resolve normally with
+   * structured per-item results:
+   * - **HTTP 207 Multi-Status** (some succeeded, some failed) — passes the
+   *   `response.ok` check naturally since 207 is in the 2xx range.
+   * - **HTTP 400** (every item failed validation) — the API returns a
+   *   populated `BatchCreateOutput` body in this case; whitelisted via
+   *   `passthroughStatuses` so the structured per-item errors aren't
+   *   swallowed by the generic error path.
+   *
+   * In both cases the caller is responsible for inspecting `result.failed > 0`
+   * and iterating `result.results` to see which items succeeded and which
+   * errored. Other error statuses (401, 403, 429, 5xx) still throw the
+   * appropriate `QURLError` subclass.
    *
    * Throws `ValidationError` client-side (`status: 0`, `code: "client_validation"`)
-   * when `items` is empty or exceeds 100.
+   * when `items` is empty or exceeds 100, or when the HTTP 400 response body
+   * doesn't match the expected `BatchCreateOutput` shape (defense-in-depth
+   * for cases where the endpoint returns a non-batch error on 400).
    *
    * Use the discriminated union on each result to narrow safely:
    * ```ts
@@ -182,7 +197,23 @@ export class QURLClient {
       );
     }
     // 400 carries per-item errors (see rawRequest JSDoc).
-    return this.request<BatchCreateOutput>("POST", "/v1/qurls/batch", input, [400]);
+    const result = await this.request<BatchCreateOutput>("POST", "/v1/qurls/batch", input, [400]);
+    // Defense-in-depth: the 400 passthrough trusts the response shape, but
+    // if the API ever returns 400 with a different body (e.g., a top-level
+    // malformed-request error) the caller would silently get undefined
+    // fields. Validate the shape before returning and surface a clear
+    // error otherwise.
+    if (
+      !result ||
+      typeof result.succeeded !== "number" ||
+      typeof result.failed !== "number" ||
+      !Array.isArray(result.results)
+    ) {
+      throw clientValidationError(
+        `Unexpected batchCreate response shape: ${JSON.stringify(result).slice(0, 200)}`,
+      );
+    }
+    return result;
   }
 
   /** Gets a protected URL and its access tokens. */

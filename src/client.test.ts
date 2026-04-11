@@ -1373,7 +1373,7 @@ describe("QURLClient", () => {
     }
   });
 
-  it("batch create accepts exactly 100 items (boundary)", async () => {
+  it("batch create accepts exactly 100 items (upper boundary)", async () => {
     const fetch = mockFetch({
       status: 201,
       body: {
@@ -1386,6 +1386,40 @@ describe("QURLClient", () => {
     }));
 
     await expect(client.batchCreate({ items })).resolves.toBeDefined();
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("batch create accepts exactly 1 item (lower boundary)", async () => {
+    const fetch = mockFetch({
+      status: 201,
+      body: {
+        data: {
+          succeeded: 1,
+          failed: 0,
+          results: [
+            {
+              index: 0,
+              success: true,
+              resource_id: "r_solo",
+              qurl_link: "https://qurl.link/#at_solo",
+              qurl_site: "https://r_solo.qurl.site",
+              expires_at: "2026-04-15T00:00:00Z",
+            },
+          ],
+        },
+      },
+    });
+    const client = createClient(fetch);
+
+    const result = await client.batchCreate({
+      items: [{ target_url: "https://example.com/solo" }],
+    });
+    expect(result.succeeded).toBe(1);
+    expect(result.results).toHaveLength(1);
+    const only = result.results[0];
+    if (only.success) {
+      expect(only.resource_id).toBe("r_solo");
+    }
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
@@ -1508,6 +1542,27 @@ describe("QURLClient", () => {
       expect(first.error.code).toBe("validation_error");
       expect(first.error.message).toContain("target_url must be HTTPS");
     }
+  });
+
+  it("batch create surfaces ValidationError on unexpected 400 response shape", async () => {
+    // If the API ever returns HTTP 400 with a non-BatchCreateOutput body
+    // (e.g., a top-level malformed-request error), batchCreate should
+    // surface that as a ValidationError rather than silently returning an
+    // object with undefined fields. Defense-in-depth for the 400 passthrough.
+    const fetch = mockFetch({
+      status: 400,
+      body: {
+        data: { unexpected: "not a batch response" },
+      },
+    });
+
+    const client = createClient(fetch);
+    const error = await client
+      .batchCreate({ items: [{ target_url: "https://example.com" }] })
+      .catch((e: unknown) => e as ValidationError);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).code).toBe("client_validation");
+    expect((error as ValidationError).detail).toContain("Unexpected batchCreate response shape");
   });
 
   it("batch create still throws on non-400 error statuses (401, 429, 5xx)", async () => {
