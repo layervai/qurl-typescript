@@ -316,6 +316,25 @@ describe("QURLClient", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("delete error message reports only the 2-char prefix (no raw ID leak)", async () => {
+    // Info-leak hardening: the error message should not echo the raw
+    // caller-supplied ID (even truncated). Echoing just the prefix
+    // ("q_", "at_", etc.) gives the caller enough context to fix their
+    // code without leaking identifiers into observability pipelines.
+    const fetch = mockFetch({ status: 204 });
+    const client = createClient(fetch);
+
+    const error = await client
+      .delete("q_3a7f2c8e91b_sensitive_suffix")
+      .catch((e: unknown) => e as ValidationError);
+    expect(error).toBeInstanceOf(ValidationError);
+    const detail = (error as ValidationError).detail;
+    expect(detail).toContain('starting with "q_"');
+    // Must not echo the full ID or any sensitive suffix.
+    expect(detail).not.toContain("3a7f2c8e91b");
+    expect(detail).not.toContain("sensitive_suffix");
+  });
+
   it("extends a QURL", async () => {
     const fetch = mockFetch({
       status: 200,

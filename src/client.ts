@@ -240,22 +240,33 @@ export class QURLClient {
    *   `passthroughStatuses` so the structured per-item errors aren't
    *   swallowed by the generic error path.
    *
-   * In both cases the caller is responsible for inspecting `result.failed > 0`
-   * and iterating `result.results` to see which items succeeded and which
-   * errored. Other error statuses (401, 403, 429, 5xx) still throw the
-   * appropriate `QURLError` subclass.
+   * Callers that only catch thrown errors will **silently miss partial
+   * failures**. Always branch on `result.failed > 0` before treating the
+   * call as successful. Other error statuses (401, 403, 429, 5xx) still
+   * throw the appropriate `QURLError` subclass.
    *
    * Throws `ValidationError` client-side (`status: 0`, `code: "client_validation"`)
    * when `items` is empty or exceeds 100, or when the HTTP 400 response body
    * doesn't match the expected `BatchCreateOutput` shape (defense-in-depth
    * for cases where the endpoint returns a non-batch error on 400).
    *
-   * Use the discriminated union on each result to narrow safely:
+   * @example
+   * Always check `result.failed` after the call — exceptions alone are
+   * not enough, because 207 / 400 partial failures resolve normally:
    * ```ts
    * const result = await client.batchCreate({ items });
+   *
+   * if (result.failed > 0) {
+   *   console.warn(`${result.failed}/${result.results.length} items failed`);
+   * }
+   *
+   * // Discriminated union on `success` lets you narrow per-item:
    * for (const r of result.results) {
-   *   if (r.success) handleOk(r.resource_id, r.qurl_link);
-   *   else           handleErr(r.index, r.error.code, r.error.message);
+   *   if (r.success) {
+   *     handleOk(r.resource_id, r.qurl_link);
+   *   } else {
+   *     handleErr(r.index, r.error.code, r.error.message);
+   *   }
    * }
    * ```
    */
@@ -374,8 +385,15 @@ export class QURLClient {
    */
   async delete(id: string): Promise<void> {
     if (!id.startsWith(RESOURCE_ID_PREFIX)) {
+      // Echo only the 2-char prefix the caller used, not the raw ID, so
+      // error messages that end up in observability pipelines don't
+      // contain user-supplied identifiers. The prefix alone ("q_",
+      // "at_", etc.) is enough for a caller to understand what they
+      // passed and fix their code.
+      const observedPrefix = id.slice(0, 2);
       throw clientValidationError(
-        `delete: only resource IDs (${RESOURCE_ID_PREFIX} prefix) are accepted — got ${JSON.stringify(id.slice(0, 16))}. ` +
+        `delete: only resource IDs (${RESOURCE_ID_PREFIX} prefix) are accepted — ` +
+          `got an ID starting with "${observedPrefix}". ` +
           "To revoke a single access token, use the DELETE /v1/resources/:id/qurls/:qurl_id endpoint (not yet exposed by this SDK).",
       );
     }
