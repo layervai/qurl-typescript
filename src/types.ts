@@ -142,11 +142,6 @@ export interface ListOutput {
 }
 
 /**
- * Input for extending a QURL.
- *
- * `extend_by` and `expires_at` are mutually exclusive — provide at most one.
- */
-/**
  * Input for extending a QURL's expiration. Exactly one of `extend_by`
  * or `expires_at` must be provided — the discriminated union form moves
  * the "provide at least one" check from runtime into the TypeScript

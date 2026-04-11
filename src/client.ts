@@ -146,17 +146,26 @@ function requireValidTags(tags: string[] | undefined): void {
   if (tags.length > MAX_TAGS) {
     throw clientValidationError(`tags: max ${MAX_TAGS} items allowed (got ${tags.length})`);
   }
-  for (const tag of tags) {
+  // Collect ALL invalid tags in a single pass instead of failing fast
+  // on the first one. Matches the collect-all pattern used by
+  // `batchCreate` for per-item validation — callers fixing multiple
+  // bad tags shouldn't have to fix-re-run-repeat. Tag arrays are
+  // small (MAX_TAGS = 10) so the cost is negligible.
+  const errors: string[] = [];
+  for (let i = 0; i < tags.length; i++) {
+    const tag = tags[i];
     if (tag.length < 1 || tag.length > MAX_TAG_LENGTH) {
-      throw clientValidationError(
-        `tags: each tag must be 1-${MAX_TAG_LENGTH} characters (got ${tag.length})`,
-      );
+      errors.push(`tags[${i}]: must be 1-${MAX_TAG_LENGTH} characters (got ${tag.length})`);
+      continue;
     }
     if (!TAG_PATTERN.test(tag)) {
-      throw clientValidationError(
-        "tags: each tag must start with an alphanumeric and contain only letters, numbers, spaces, underscores, or hyphens",
+      errors.push(
+        `tags[${i}]: must start with an alphanumeric and contain only letters, numbers, spaces, underscores, or hyphens`,
       );
     }
+  }
+  if (errors.length > 0) {
+    throw clientValidationError(errors.join("; "));
   }
 }
 
@@ -207,24 +216,45 @@ function validateCreateInput(input: CreateInput): void {
  * `success` and then access `resource_id` / `qurl_link` / `error` as
  * guaranteed-present — if the API ever omits one, we trip the guard
  * rather than returning `undefined` where the type says `string`.
+ *
+ * Returns `null` when the entry is valid, or a human-readable reason
+ * string describing the *specific* field that's missing or wrong. The
+ * reason never echoes the entry's values — only field names and shape
+ * descriptors — so the caller can safely surface it in error messages
+ * that may end up in observability pipelines. Contrast with the outer
+ * guard's intentional silence about response-body content for the
+ * same info-leak reason.
  */
-function isValidBatchItemResult(entry: unknown): boolean {
-  if (!entry || typeof entry !== "object") return false;
+function batchItemResultValidationReason(entry: unknown): string | null {
+  if (!entry || typeof entry !== "object") return "not an object";
   const e = entry as Record<string, unknown>;
-  if (typeof e.index !== "number") return false;
+  if (typeof e.index !== "number") return "missing/invalid 'index' (expected number)";
   if (e.success === true) {
-    return (
-      typeof e.resource_id === "string" &&
-      typeof e.qurl_link === "string" &&
-      typeof e.qurl_site === "string"
-    );
+    if (typeof e.resource_id !== "string") {
+      return "success-branch missing required field 'resource_id' (expected string)";
+    }
+    if (typeof e.qurl_link !== "string") {
+      return "success-branch missing required field 'qurl_link' (expected string)";
+    }
+    if (typeof e.qurl_site !== "string") {
+      return "success-branch missing required field 'qurl_site' (expected string)";
+    }
+    return null;
   }
   if (e.success === false) {
-    if (!e.error || typeof e.error !== "object") return false;
+    if (!e.error || typeof e.error !== "object") {
+      return "failure-branch missing required field 'error' (expected object)";
+    }
     const err = e.error as Record<string, unknown>;
-    return typeof err.code === "string" && typeof err.message === "string";
+    if (typeof err.code !== "string") {
+      return "failure-branch missing required field 'error.code' (expected string)";
+    }
+    if (typeof err.message !== "string") {
+      return "failure-branch missing required field 'error.message' (expected string)";
+    }
+    return null;
   }
-  return false;
+  return "missing/invalid 'success' discriminant (expected boolean)";
 }
 
 interface ApiResponse<T> {
@@ -437,9 +467,16 @@ export class QURLClient {
     // instead of silently returning `undefined` where the type claims
     // `string`. Deeper value-level validation (is `resource_id` a
     // well-formed ID?) remains the API's responsibility.
-    for (const entry of result.results) {
-      if (!isValidBatchItemResult(entry)) {
-        throw unexpectedResponseError("Unexpected response shape from POST /v1/qurls/batch");
+    for (let i = 0; i < result.results.length; i++) {
+      const reason = batchItemResultValidationReason(result.results[i]);
+      if (reason !== null) {
+        // Include entry index + field reason so the caller can pinpoint
+        // the bad entry. The reason string itself intentionally never
+        // echoes entry VALUES — only field names — so this error is
+        // safe to surface into observability pipelines.
+        throw unexpectedResponseError(
+          `Unexpected response shape from POST /v1/qurls/batch: results[${i}] ${reason}`,
+        );
       }
     }
     // Attach the server request_id from the envelope meta without
@@ -488,13 +525,11 @@ export class QURLClient {
     // "[object Object]" as a query param.
     for (const key of LIST_PARAM_KEYS) {
       const value = input[key];
-      // Filter null/undefined (standard "drop" sentinels) and empty
-      // strings — an empty string from an untyped JS caller would
-      // otherwise produce `?status=&q=` garbage that the API might
-      // interpret as an explicit empty filter. Numeric 0 is preserved
-      // (serializes as "0") because it's a meaningful `limit` value.
-      // Explicit `!== null && !== undefined` rather than `!= null` to
-      // satisfy the project's `eqeqeq` eslint rule.
+      // Drop null/undefined and empty strings — an empty string from
+      // an untyped JS caller would otherwise produce `?status=&q=`
+      // garbage that the API might interpret as an explicit empty
+      // filter. Numeric 0 is preserved (serializes as "0") because
+      // it's a meaningful `limit` value.
       if (value !== null && value !== undefined && value !== "") {
         params.set(key, String(value));
       }

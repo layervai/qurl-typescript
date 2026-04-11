@@ -621,6 +621,40 @@ describe("QURLClient", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("update collects ALL invalid tag errors in a single throw", async () => {
+    // Collect-all pattern for tag validation, matching the batchCreate
+    // collect-all UX. A caller passing multiple bad tags should see all
+    // of them reported at once with per-index attribution, not just
+    // the first one.
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+
+    const error = await client
+      .update("r_abc", {
+        tags: [
+          "good-tag",
+          "-leading-dash", // bad: pattern
+          "ok",
+          "x".repeat(51), // bad: too long
+          "also bad!!", // bad: pattern (special chars)
+        ],
+      })
+      .catch((e: unknown) => e as ValidationError);
+    expect(error).toBeInstanceOf(ValidationError);
+    const detail = (error as ValidationError).detail;
+    // All three bad tags must appear with their indices.
+    expect(detail).toContain("tags[1]");
+    expect(detail).toContain("tags[3]");
+    expect(detail).toContain("tags[4]");
+    // Good indices must NOT appear.
+    expect(detail).not.toContain("tags[0]");
+    expect(detail).not.toContain("tags[2]");
+    // Each per-tag problem is spelled out.
+    expect(detail).toContain("alphanumeric");
+    expect(detail).toContain("1-50 characters");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("update rejects empty input pre-flight (no fields provided)", async () => {
     // update() must reject `{}` client-side — the server-side "at least
     // one field" check would otherwise be the only guard, and the
@@ -2519,6 +2553,80 @@ describe("QURLClient", () => {
     await expect(
       client.batchCreate({ items: [{ target_url: "https://example.com" }] }),
     ).rejects.toThrow(ValidationError);
+  });
+
+  it("batch create shape-guard errors include entry index + field context", async () => {
+    // The shape guard used to throw a single static message for every
+    // failure mode. Now it reports the offending entry index and the
+    // specific field — entry VALUES are never echoed (info-leak
+    // policy), only field NAMES. Callers debugging a bad API response
+    // can pinpoint which entry and which field tripped the guard.
+    const fetch = mockFetch({
+      status: 201,
+      body: {
+        data: {
+          succeeded: 2,
+          failed: 0,
+          results: [
+            // Good entry
+            {
+              index: 0,
+              success: true,
+              resource_id: "r_ok",
+              qurl_link: "https://qurl.link/#ok",
+              qurl_site: "https://r_ok.qurl.site",
+            },
+            // Bad entry: missing qurl_link
+            {
+              index: 1,
+              success: true,
+              resource_id: "r_bad",
+              qurl_site: "https://r_bad.qurl.site",
+            },
+          ],
+        },
+      },
+    });
+    const client = createClient(fetch);
+    const error = await client
+      .batchCreate({
+        items: [{ target_url: "https://a.com" }, { target_url: "https://b.com" }],
+      })
+      .catch((e: unknown) => e as ValidationError);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).code).toBe("unexpected_response");
+    const detail = (error as ValidationError).detail;
+    // Must identify the bad entry by index.
+    expect(detail).toContain("results[1]");
+    // Must name the missing field.
+    expect(detail).toContain("qurl_link");
+    // Must NOT echo entry values — only field names and shape
+    // descriptors. The info-leak policy stays intact.
+    expect(detail).not.toContain("r_bad");
+    expect(detail).not.toContain("qurl.site");
+  });
+
+  it("batch create shape-guard error names the missing discriminant field", async () => {
+    // A different failure mode: entry lacks a `success` boolean
+    // entirely. The error should name 'success' specifically rather
+    // than the generic "not an object" message.
+    const fetch = mockFetch({
+      status: 201,
+      body: {
+        data: {
+          succeeded: 1,
+          failed: 0,
+          results: [{ index: 0, resource_id: "r_x" }], // no `success`
+        },
+      },
+    });
+    const client = createClient(fetch);
+    const error = await client
+      .batchCreate({ items: [{ target_url: "https://example.com" }] })
+      .catch((e: unknown) => e as ValidationError);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).detail).toContain("results[0]");
+    expect((error as ValidationError).detail).toContain("success");
   });
 
   it("batch create rejects failure entries missing error object", async () => {
