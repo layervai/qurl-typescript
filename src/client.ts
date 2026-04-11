@@ -401,13 +401,14 @@ export class QURLClient {
         throw clientValidationError("Unexpected response shape from POST /v1/qurls/batch");
       }
     }
-    // Attach the server request_id from the envelope meta. The field is
-    // optional on BatchCreateOutput so older API versions that omit
+    // Attach the server request_id from the envelope meta via a
+    // shallow copy so the caller's object is independent of the
+    // parsed JSON envelope. Mirrors the non-mutating style used
+    // elsewhere (e.g. `mapQurlsField`). The field is optional on
+    // BatchCreateOutput so older API versions that omit
     // `meta.request_id` still produce a valid return value.
-    if (envelope.meta?.request_id !== undefined) {
-      result.request_id = envelope.meta.request_id;
-    }
-    return result;
+    const requestId = envelope.meta?.request_id;
+    return requestId !== undefined ? { ...result, request_id: requestId } : { ...result };
   }
 
   /**
@@ -441,7 +442,11 @@ export class QURLClient {
       // otherwise produce `?status=&q=` garbage that the API might
       // interpret as an explicit empty filter. Numeric 0 is preserved
       // (serializes as "0") because it's a meaningful `limit` value.
-      if (value != null && value !== "") params.set(key, String(value));
+      // Explicit `!== null && !== undefined` rather than `!= null` to
+      // satisfy the project's `eqeqeq` eslint rule.
+      if (value !== null && value !== undefined && value !== "") {
+        params.set(key, String(value));
+      }
     }
 
     const query = params.toString();
