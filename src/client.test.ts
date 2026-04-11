@@ -943,6 +943,15 @@ describe("QURLClient", () => {
     expect(result.target_url).toBe("https://api.example.com/data");
     expect(result.access_grant?.expires_in).toBe(305);
     expect(result.access_grant?.src_ip).toBe("203.0.113.42");
+    // URL path construction: resolve() must POST to /v1/resolve.
+    // Existing tests cover the body shape (both string and object
+    // overloads) but not the URL path — if a future refactor
+    // accidentally changed the path to `/v1/qurls/resolve` or
+    // similar, the body-only assertions wouldn't catch it.
+    expect(fetch).toHaveBeenCalledWith(
+      "https://api.test.layerv.ai/v1/resolve",
+      expect.objectContaining({ method: "POST" }),
+    );
   });
 
   it("throws QURLError on API errors", async () => {
@@ -2228,6 +2237,79 @@ describe("QURLClient", () => {
     expect(urls[2]).toContain("cursor=cur_page3");
   });
 
+  it("listAll threads filter params through to every page request", async () => {
+    // Cross-SDK parity with qurl-python's
+    // test_list_all_propagates_date_filters_to_every_page.
+    // `listAll` accepts `Omit<ListInput, "cursor">` so callers can
+    // filter (status, limit, date ranges, etc.) across the whole
+    // iteration. The filter params must flow through to EVERY page
+    // fetch, not just the first — otherwise pagination would silently
+    // collect unfiltered data after page 1, which is exactly the kind
+    // of bug this test guards against.
+    const page1Response = {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      headers: new Headers({}),
+      json: () =>
+        Promise.resolve({
+          data: [{ resource_id: "r_f1", status: "active", target_url: "https://a" }],
+          meta: { has_more: true, next_cursor: "cur_filt" },
+        }),
+      text: () => Promise.resolve(""),
+    } satisfies Partial<Response> as Response;
+
+    const page2Response = {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      headers: new Headers({}),
+      json: () =>
+        Promise.resolve({
+          data: [{ resource_id: "r_f2", status: "active", target_url: "https://b" }],
+          meta: { has_more: false },
+        }),
+      text: () => Promise.resolve(""),
+    } satisfies Partial<Response> as Response;
+
+    const fetch = vi.fn().mockResolvedValueOnce(page1Response).mockResolvedValueOnce(page2Response);
+    const client = new QURLClient({
+      apiKey: "lv_live_test",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 0,
+    });
+
+    const ids: string[] = [];
+    for await (const qurl of client.listAll({
+      status: "active",
+      limit: 10,
+      q: "search-term",
+      created_after: "2026-03-01T00:00:00Z",
+    })) {
+      ids.push(qurl.resource_id);
+    }
+
+    expect(ids).toEqual(["r_f1", "r_f2"]);
+    expect(fetch).toHaveBeenCalledTimes(2);
+
+    // Every HTTP call (not just the first) must carry all the filter
+    // params. Check each URL independently — if page 2 dropped the
+    // filters, a consumer would get unfiltered results from that
+    // page onward and the bug would be invisible without this check.
+    for (const call of fetch.mock.calls) {
+      const url = call[0] as string;
+      expect(url).toContain("status=active");
+      expect(url).toContain("limit=10");
+      expect(url).toContain("q=search-term");
+      // URL-encoded ISO timestamp: colons become %3A
+      expect(url).toContain("created_after=2026-03-01T00%3A00%3A00Z");
+    }
+    // Second request carries the cursor from page 1, first doesn't.
+    expect(fetch.mock.calls[0][0] as string).not.toContain("cursor=");
+    expect(fetch.mock.calls[1][0] as string).toContain("cursor=cur_filt");
+  });
+
   it("listAll propagates errors mid-pagination after yielding prior pages", async () => {
     // If a page fetch throws mid-iteration (e.g. server hits a 500
     // after the first page succeeded), the generator must propagate
@@ -3505,6 +3587,101 @@ describe("QURLClient", () => {
     });
     expect(result.succeeded).toBe(1);
     expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("batch create 400 passthrough works after a 429 retry boundary", async () => {
+    // Edge case: first attempt returns 429 (retry-eligible per
+    // RETRYABLE_STATUS_MUTATING), retry gets 400 with a populated
+    // BatchCreateOutput body (per-item errors). The 400 passthrough
+    // logic must work ACROSS retry boundaries, not just on a clean
+    // first attempt — otherwise a 429 → 400 sequence would mis-route
+    // the 400 through the error path and the caller would lose the
+    // per-item errors.
+    const rateLimitResponse = {
+      ok: false,
+      status: 429,
+      statusText: "Too Many Requests",
+      headers: new Headers({}),
+      json: () =>
+        Promise.resolve({
+          error: {
+            status: 429,
+            code: "rate_limited",
+            title: "Rate Limited",
+            detail: "Slow down",
+          },
+        }),
+      text: () => Promise.resolve(""),
+    } satisfies Partial<Response> as Response;
+
+    const passthroughResponse = {
+      // 400 with a populated BatchCreateOutput body — the shape guard
+      // should surface this as a normal return value (not an error)
+      // because 400 is in BATCH_PASSTHROUGH_STATUSES.
+      ok: false,
+      status: 400,
+      statusText: "Bad Request",
+      headers: new Headers({}),
+      json: () =>
+        Promise.resolve({
+          data: {
+            succeeded: 0,
+            failed: 2,
+            results: [
+              {
+                index: 0,
+                success: false,
+                error: {
+                  code: "validation_error",
+                  message: "items[0]: target_url must be HTTPS",
+                },
+              },
+              {
+                index: 1,
+                success: false,
+                error: {
+                  code: "validation_error",
+                  message: "items[1]: target_url must be HTTPS",
+                },
+              },
+            ],
+          },
+          meta: { request_id: "req_retry_passthrough" },
+        }),
+      text: () => Promise.resolve(""),
+    } satisfies Partial<Response> as Response;
+
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(rateLimitResponse)
+      .mockResolvedValueOnce(passthroughResponse);
+    const client = new QURLClient({
+      apiKey: "lv_live_test",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 1,
+    });
+
+    // Should return the BatchCreateOutput (passthrough), NOT throw.
+    // If the retry path mis-routed the 400 to the error branch,
+    // this would reject with a ValidationError and the test would
+    // fail — so the happy-path resolution is the load-bearing
+    // assertion.
+    const result = await client.batchCreate({
+      items: [{ target_url: "https://example.com/a" }, { target_url: "https://example.com/b" }],
+    });
+
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(result.failed).toBe(2);
+    expect(result.succeeded).toBe(0);
+    expect(result.results).toHaveLength(2);
+    expect(result.request_id).toBe("req_retry_passthrough");
+    // Per-item errors come through with correct attribution.
+    const first = result.results[0];
+    expect(first.success).toBe(false);
+    if (!first.success) {
+      expect(first.error.code).toBe("validation_error");
+    }
   });
 
   it("batch create does NOT retry on 502 (POST is mutating; 5xx is not retried)", async () => {
