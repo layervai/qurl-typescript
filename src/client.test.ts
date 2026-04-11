@@ -2473,6 +2473,75 @@ describe("QURLClient", () => {
     }
   });
 
+  it("batch create handles HTTP 207 Multi-Status for mixed results", async () => {
+    // Per the OpenAPI spec, mixed success/failure batches return 207
+    // instead of 201. `response.ok` covers the entire 200-299 range
+    // (including 207), so the generic success path handles it without
+    // needing an explicit passthrough — this test locks that contract
+    // in against a refactor that might accidentally restrict `ok`
+    // handling to only 2xx-minus-207.
+    const fetch = mockFetch({
+      status: 207,
+      body: {
+        data: {
+          succeeded: 1,
+          failed: 1,
+          results: [
+            {
+              index: 0,
+              success: true,
+              resource_id: "r_ok207",
+              qurl_link: "https://qurl.link/#at_ok207",
+              qurl_site: "https://r_ok207.qurl.site",
+              expires_at: "2026-04-02T00:00:00Z",
+            },
+            {
+              index: 1,
+              success: false,
+              error: {
+                code: "validation_error",
+                message: "items[1]: target_url must be HTTPS",
+              },
+            },
+          ],
+        },
+        meta: { request_id: "req_mixed207" },
+      },
+    });
+
+    const client = createClient(fetch);
+    const result = await client.batchCreate({
+      items: [
+        { target_url: "https://good.example.com" },
+        { target_url: "https://bad.example.com" },
+      ],
+    });
+
+    expect(result.succeeded).toBe(1);
+    expect(result.failed).toBe(1);
+    expect(result.results).toHaveLength(2);
+
+    // Discriminated-union narrowing for the success branch.
+    const ok = result.results[0];
+    expect(ok.success).toBe(true);
+    if (ok.success) {
+      expect(ok.resource_id).toBe("r_ok207");
+      expect(ok.qurl_link).toBe("https://qurl.link/#at_ok207");
+      expect(ok.expires_at).toBe("2026-04-02T00:00:00Z");
+    }
+
+    // And the failure branch.
+    const bad = result.results[1];
+    expect(bad.success).toBe(false);
+    if (!bad.success) {
+      expect(bad.error.code).toBe("validation_error");
+      expect(bad.error.message).toContain("must be HTTPS");
+    }
+
+    // request_id from meta still propagates on the 207 path.
+    expect(result.request_id).toBe("req_mixed207");
+  });
+
   it("batch create surfaces ValidationError on unexpected 400 response shape", async () => {
     // If the API ever returns HTTP 400 with a non-BatchCreateOutput body
     // (e.g., a top-level malformed-request error), batchCreate should

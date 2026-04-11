@@ -32,6 +32,13 @@ const RETRYABLE_STATUS_MUTATING = new Set([429]);
 // so each call that doesn't pass statuses doesn't allocate a fresh `[]`.
 const NO_PASSTHROUGH_STATUSES: readonly number[] = [];
 
+// Shared passthrough list for `batchCreate`. HTTP 400 on this endpoint
+// carries a populated `BatchCreateOutput` body when every item failed
+// validation — whitelist it so the generic error path doesn't swallow
+// the per-item errors. Hoisted out of the call site for consistency
+// with `NO_PASSTHROUGH_STATUSES` and to avoid per-call allocation.
+const BATCH_PASSTHROUGH_STATUSES: readonly number[] = [400];
+
 /** Allowlist of known query-param keys for the `list()` endpoint. */
 const LIST_PARAM_KEYS = [
   "limit",
@@ -183,9 +190,19 @@ function requireValidTargetUrl(target_url: unknown): void {
     !ALLOWED_URL_SCHEMES.some((scheme) => target_url.startsWith(scheme))
   ) {
     // `JSON.stringify(...).slice(0, 40)` instead of the raw value —
-    // works on any input type (string, number, null, object, undefined)
-    // without risking a TypeError on non-subscriptable inputs, and
-    // truncates to keep the error message compact.
+    // works on any input type (string, number, null, object) without
+    // risking a TypeError on non-subscriptable inputs, and truncates
+    // to keep the error message compact.
+    //
+    // The `?.slice(...) ?? String(...).slice(...)` chain is load-bearing,
+    // not dead code: `JSON.stringify(undefined)` returns the JS value
+    // `undefined` itself (not the string `"undefined"`), so the optional
+    // chain shortcircuits and the `??` fallback is hit. Without the
+    // fallback, calling `.slice` on `undefined` at runtime would throw
+    // `TypeError: Cannot read properties of undefined (reading 'slice')`
+    // and mask the real validation failure. The
+    // `test("create URL scheme error is safe for non-string inputs")`
+    // test passes `undefined` explicitly to lock this path in.
     const repr = JSON.stringify(target_url)?.slice(0, 40) ?? String(target_url).slice(0, 40);
     throw clientValidationError(`target_url: must start with http:// or https:// (got ${repr})`);
   }
@@ -441,7 +458,7 @@ export class QURLClient {
       "POST",
       "/v1/qurls/batch",
       input,
-      [400],
+      BATCH_PASSTHROUGH_STATUSES,
     );
     const result = envelope.data;
     // Defense-in-depth: the 400 passthrough trusts the response shape, but
