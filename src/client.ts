@@ -148,15 +148,17 @@ function requireMaxSessionsInRange(value: number | undefined): void {
   }
 }
 
-function requireValidTags(tags: string[] | undefined): void {
-  // Defensive handling for untyped-JS callers: `null` is treated the
-  // same as `undefined` ("don't touch tags") to match the list()
-  // filter's null-tolerance. Anything else that isn't an array (a
-  // plain object, number, string passed where an array was expected)
-  // is a clear caller mistake and surfaces as a clean ValidationError
-  // rather than falling through to a less helpful runtime TypeError
-  // on `.length`. TypeScript callers hit this via the type system;
-  // the runtime check catches consumers calling from plain JS.
+function requireValidTags(tags: string[] | null | undefined): void {
+  // `null` is included in the signature (not just the runtime guard)
+  // so the type itself documents the untyped-JS tolerance: `null` is
+  // treated the same as `undefined` ("don't touch tags"), matching
+  // the list() filter's null-handling. Anything else that isn't an
+  // array (a plain object, number, string passed where an array was
+  // expected) is a clear caller mistake and surfaces as a clean
+  // ValidationError rather than falling through to a less helpful
+  // runtime TypeError on `.length`. TypeScript callers hit the
+  // compile-time type check; the runtime Array.isArray path catches
+  // consumers calling from plain JS.
   if (tags === undefined || tags === null) return;
   if (!Array.isArray(tags)) {
     throw clientValidationError(`tags: must be an array of strings (got ${typeof tags})`);

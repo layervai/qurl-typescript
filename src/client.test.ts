@@ -71,6 +71,38 @@ describe("QURLClient", () => {
     );
   });
 
+  it("create forwards session_duration in the request body", async () => {
+    // `session_duration` is a spec-documented create field, but the
+    // original "creates a QURL" test doesn't exercise it — mintLink
+    // tests cover the same field on a different endpoint. Plug the
+    // gap so a refactor that accidentally drops session_duration
+    // from the create-path serialization (e.g. through an overly
+    // aggressive body filter) would trip this test.
+    const fetch = mockFetch({
+      status: 201,
+      body: {
+        data: {
+          qurl_id: "q_sd",
+          resource_id: "r_sd",
+          qurl_link: "https://qurl.link/#at_sd",
+          qurl_site: "https://r_sd.qurl.site",
+        },
+      },
+    });
+    const client = createClient(fetch);
+    await client.create({
+      target_url: "https://example.com",
+      expires_in: "24h",
+      session_duration: "1h",
+    });
+
+    const calledBody = (fetch as ReturnType<typeof vi.fn>).mock.calls[0][1].body as string;
+    const parsed = JSON.parse(calledBody);
+    expect(parsed.target_url).toBe("https://example.com");
+    expect(parsed.expires_in).toBe("24h");
+    expect(parsed.session_duration).toBe("1h");
+  });
+
   // --- Spec-derived input validation (create) ---
 
   it("create rejects target_url longer than 2048 chars", async () => {

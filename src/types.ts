@@ -251,6 +251,13 @@ export interface Quota {
    * Subscription plan. Narrowed to the spec's documented enum
    * (`QuotaData.plan` in `openapi.yaml`); uses the `(string & {})` trick so
    * the API can introduce additional plans without a breaking type change.
+   *
+   * Pattern note: `"free" | "growth" | "enterprise" | (string & {})` is an
+   * idiomatic TypeScript "open union" — the three literals keep IDE
+   * autocomplete and exhaustiveness checks useful for known plans, while
+   * `(string & {})` widens the accepted set to any string at compile time
+   * without collapsing the literal suggestions (a plain `string` arm would
+   * do that). See also `ListInput.status` which uses the same pattern.
    */
   plan: "free" | "growth" | "enterprise" | (string & {});
   period_start: string;
