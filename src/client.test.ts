@@ -2602,6 +2602,98 @@ describe("QURLClient", () => {
     }
   });
 
+  it("batch create attributes failure to the correct item with nested access_policy", async () => {
+    // Regression guard for the reviewer-noted gap: a batch item with a
+    // fully-populated AccessPolicy + nested AIAgentPolicy must
+    //   1. serialize its nested policy through to the wire body (the
+    //      client-side pre-flight passes access_policy through untouched
+    //      rather than validating it — that's the server's job), AND
+    //   2. have its per-item error correctly attributed to the right
+    //      index when the server rejects the item in a 400 passthrough.
+    // Previously we had tests for (1) via serialization coverage and
+    // (2) via the generic 400 passthrough, but nothing exercised both
+    // in the same call path.
+    const fetch = mockFetch({
+      status: 207,
+      body: {
+        data: {
+          succeeded: 1,
+          failed: 1,
+          results: [
+            {
+              index: 0,
+              success: true,
+              resource_id: "r_ok_policy",
+              qurl_link: "https://qurl.link/#at_ok",
+              qurl_site: "https://r_ok_policy.qurl.site",
+            },
+            {
+              index: 1,
+              success: false,
+              error: {
+                code: "invalid_ai_agent_policy",
+                message: "items[1]: ai_agent_policy.allow_categories[0] must be a known category",
+              },
+            },
+          ],
+        },
+        meta: { request_id: "req_mixed_policy" },
+      },
+    });
+
+    const client = createClient(fetch);
+    const result = await client.batchCreate({
+      items: [
+        {
+          target_url: "https://good.example.com",
+          access_policy: {
+            ai_agent_policy: {
+              allow_categories: ["claude", "chatgpt"],
+            },
+          },
+        },
+        {
+          target_url: "https://bad.example.com",
+          access_policy: {
+            ai_agent_policy: {
+              // Nonsense category — server will reject
+              allow_categories: ["this-is-not-a-real-category"],
+            },
+          },
+        },
+      ],
+    });
+
+    // 2: failure is attributed to the correct index, and error fields
+    // are populated as the discriminated union promises.
+    expect(result.succeeded).toBe(1);
+    expect(result.failed).toBe(1);
+    const bad = result.results[1];
+    expect(bad.success).toBe(false);
+    if (!bad.success) {
+      expect(bad.index).toBe(1);
+      expect(bad.error.code).toBe("invalid_ai_agent_policy");
+      expect(bad.error.message).toContain("ai_agent_policy.allow_categories");
+    }
+
+    // 1: the nested AccessPolicy serialized through to the wire body
+    // on BOTH items — locks in that client-side pre-flight doesn't
+    // mangle or strip complex policy structures.
+    const calledBody = (fetch as ReturnType<typeof vi.fn>).mock.calls[0][1].body as string;
+    const parsed = JSON.parse(calledBody);
+    expect(parsed.items).toHaveLength(2);
+    expect(parsed.items[0].access_policy.ai_agent_policy.allow_categories).toEqual([
+      "claude",
+      "chatgpt",
+    ]);
+    expect(parsed.items[1].access_policy.ai_agent_policy.allow_categories).toEqual([
+      "this-is-not-a-real-category",
+    ]);
+
+    // request_id from meta still propagates through the mixed-result path.
+    expect(result.request_id).toBe("req_mixed_policy");
+  });
+
   it("batch create handles HTTP 207 Multi-Status for mixed results", async () => {
     // Per the OpenAPI spec, mixed success/failure batches return 207
     // instead of 201. `response.ok` covers the entire 200-299 range
