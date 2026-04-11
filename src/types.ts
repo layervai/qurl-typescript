@@ -82,10 +82,11 @@ export interface ListInput {
   cursor?: string;
   /**
    * Filter by status. Accepts comma-separated values to combine multiple,
-   * e.g. `"active,revoked"`. Typed as `string` (not a union) because the
-   * API accepts the CSV form.
+   * e.g. `"active,revoked"`. The union includes common literal values for
+   * autocomplete while still accepting any string (via the `(string & {})`
+   * trick) to support CSV and any filter-only values the API may add.
    */
-  status?: string;
+  status?: "active" | "revoked" | "active,revoked" | (string & {});
   /** Free-text search over description and target_url. */
   q?: string;
   /**
@@ -111,15 +112,28 @@ export interface ListOutput {
   has_more: boolean;
 }
 
-/** Input for extending a QURL. */
+/**
+ * Input for extending a QURL.
+ *
+ * `extend_by` and `expires_at` are mutually exclusive — provide at most one.
+ */
 export interface ExtendInput {
+  /** Relative duration to extend by (e.g., `"24h"`, `"7d"`). Mutually exclusive with `expires_at`. */
   extend_by?: string;
+  /** Absolute RFC 3339 expiration timestamp. Mutually exclusive with `extend_by`. */
   expires_at?: string;
 }
 
-/** Input for updating a QURL — extend expiration, change description, etc. */
+/**
+ * Input for updating a QURL — extend expiration, change description, etc.
+ *
+ * `extend_by` and `expires_at` are mutually exclusive — provide at most one.
+ * At least one field must be set for the request to be valid.
+ */
 export interface UpdateInput {
+  /** Relative duration to extend by (e.g., `"24h"`, `"7d"`). Mutually exclusive with `expires_at`. */
   extend_by?: string;
+  /** Absolute RFC 3339 expiration timestamp. Mutually exclusive with `extend_by`. */
   expires_at?: string;
   /**
    * Resource-level description. Distinct from the token-level `label` on
@@ -135,13 +149,23 @@ export interface UpdateInput {
   tags?: string[];
 }
 
-/** Input for minting an access link. */
+/**
+ * Input for minting an access link.
+ *
+ * `expires_in` and `expires_at` are mutually exclusive — provide at most one.
+ * If neither is specified, the link defaults to 24 hours from now.
+ */
 export interface MintInput {
+  /** Relative duration until expiration (e.g., `"5m"`, `"24h"`, `"7d"`). Mutually exclusive with `expires_at`. */
   expires_in?: string;
+  /** Absolute RFC 3339 expiration timestamp. Mutually exclusive with `expires_in`. */
   expires_at?: string;
+  /** Human-readable label identifying who this link is for. Max 500 chars. */
   label?: string;
   one_time_use?: boolean;
+  /** Maximum concurrent sessions. `0` = unlimited (default); max `1000`. */
   max_sessions?: number;
+  /** How long access lasts after clicking (e.g., `"1h"`). Min 5m, max 24h. */
   session_duration?: string;
   access_policy?: AccessPolicy;
 }

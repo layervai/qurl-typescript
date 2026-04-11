@@ -1308,8 +1308,13 @@ describe("QURLClient", () => {
     expect(result.succeeded).toBe(2);
     expect(result.failed).toBe(0);
     expect(result.results).toHaveLength(2);
-    expect(result.results[0].resource_id).toBe("r_batch1");
-    expect(result.results[1].resource_id).toBe("r_batch2");
+    // Narrow on the discriminant before accessing success-only fields.
+    const first = result.results[0];
+    const second = result.results[1];
+    expect(first.success).toBe(true);
+    expect(second.success).toBe(true);
+    if (first.success) expect(first.resource_id).toBe("r_batch1");
+    if (second.success) expect(second.resource_id).toBe("r_batch2");
     expect(fetch).toHaveBeenCalledWith(
       "https://api.test.layerv.ai/v1/qurls/batch",
       expect.objectContaining({ method: "POST" }),
@@ -1525,5 +1530,89 @@ describe("QURLClient", () => {
     await expect(
       client.batchCreate({ items: [{ target_url: "https://example.com" }] }),
     ).rejects.toBeInstanceOf(AuthenticationError);
+  });
+
+  it("batch create retries on 429 (mutating retry allows rate limits)", async () => {
+    // POST is mutating, so RETRYABLE_STATUS_MUTATING only contains 429.
+    // Verify the batch endpoint inherits this behavior.
+    const rateLimitResponse = {
+      ok: false,
+      status: 429,
+      statusText: "Too Many Requests",
+      headers: new Headers({}),
+      json: () =>
+        Promise.resolve({
+          error: {
+            status: 429,
+            code: "rate_limited",
+            title: "Rate Limited",
+            detail: "Slow down",
+          },
+        }),
+      text: () => Promise.resolve(""),
+    } satisfies Partial<Response> as Response;
+    const successResponse = {
+      ok: true,
+      status: 201,
+      statusText: "Created",
+      headers: new Headers({}),
+      json: () =>
+        Promise.resolve({
+          data: { succeeded: 1, failed: 0, results: [] },
+        }),
+      text: () => Promise.resolve(""),
+    } satisfies Partial<Response> as Response;
+
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(rateLimitResponse)
+      .mockResolvedValueOnce(successResponse);
+    const client = new QURLClient({
+      apiKey: "lv_live_test",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 1,
+    });
+
+    const result = await client.batchCreate({
+      items: [{ target_url: "https://example.com" }],
+    });
+    expect(result.succeeded).toBe(1);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("batch create does NOT retry on 502 (POST is mutating; 5xx is not retried)", async () => {
+    // RETRYABLE_STATUS_MUTATING only includes 429, not 502/503/504, so POST
+    // callers must not replay batch requests on 5xx (prevents duplicate
+    // item creation). Regression guard for the mutating-retry policy.
+    const badGatewayResponse = {
+      ok: false,
+      status: 502,
+      statusText: "Bad Gateway",
+      headers: new Headers({}),
+      json: () =>
+        Promise.resolve({
+          error: {
+            status: 502,
+            code: "bad_gateway",
+            title: "Bad Gateway",
+            detail: "Upstream error",
+          },
+        }),
+      text: () => Promise.resolve(""),
+    } satisfies Partial<Response> as Response;
+
+    const fetch = vi.fn().mockResolvedValue(badGatewayResponse);
+    const client = new QURLClient({
+      apiKey: "lv_live_test",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 3,
+    });
+
+    await expect(
+      client.batchCreate({ items: [{ target_url: "https://example.com" }] }),
+    ).rejects.toBeInstanceOf(ServerError);
+    expect(fetch).toHaveBeenCalledTimes(1); // No retries on 5xx for POST
   });
 });
