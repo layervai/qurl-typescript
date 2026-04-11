@@ -2135,6 +2135,93 @@ describe("QURLClient", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
+  it("listAll paginates across multiple pages and threads the cursor", async () => {
+    // The reviewer flagged this as a gap: there's a single-page
+    // listAll test and an error-propagation test, but no happy-path
+    // multi-page test that verifies cursor threading. This is the
+    // core use case of listAll — a refactor that broke cursor
+    // threading (e.g. accidentally passing the same cursor on every
+    // page) would silently drop data after page 1 and pass all
+    // other tests. This test locks in the three-page contract:
+    //   1. Every item across all pages is yielded in order
+    //   2. Each request after the first carries the cursor from
+    //      the previous page's response
+    //   3. No extra round-trip fires after has_more=false
+    const page1 = {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      headers: new Headers({}),
+      json: () =>
+        Promise.resolve({
+          data: [
+            { resource_id: "r_p1a", status: "active", target_url: "https://p1a" },
+            { resource_id: "r_p1b", status: "active", target_url: "https://p1b" },
+          ],
+          meta: { has_more: true, next_cursor: "cur_page2" },
+        }),
+      text: () => Promise.resolve(""),
+    } satisfies Partial<Response> as Response;
+
+    const page2 = {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      headers: new Headers({}),
+      json: () =>
+        Promise.resolve({
+          data: [
+            { resource_id: "r_p2a", status: "active", target_url: "https://p2a" },
+            { resource_id: "r_p2b", status: "active", target_url: "https://p2b" },
+          ],
+          meta: { has_more: true, next_cursor: "cur_page3" },
+        }),
+      text: () => Promise.resolve(""),
+    } satisfies Partial<Response> as Response;
+
+    const page3 = {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      headers: new Headers({}),
+      json: () =>
+        Promise.resolve({
+          data: [{ resource_id: "r_p3a", status: "active", target_url: "https://p3a" }],
+          // No next_cursor — terminates the loop.
+          meta: { has_more: false },
+        }),
+      text: () => Promise.resolve(""),
+    } satisfies Partial<Response> as Response;
+
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(page1)
+      .mockResolvedValueOnce(page2)
+      .mockResolvedValueOnce(page3);
+    const client = new QURLClient({
+      apiKey: "lv_live_test",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 0,
+    });
+
+    const ids: string[] = [];
+    for await (const qurl of client.listAll()) {
+      ids.push(qurl.resource_id);
+    }
+
+    // All 5 items yielded in page order.
+    expect(ids).toEqual(["r_p1a", "r_p1b", "r_p2a", "r_p2b", "r_p3a"]);
+    // Exactly 3 fetches — no extra round-trip after has_more=false.
+    expect(fetch).toHaveBeenCalledTimes(3);
+    // Cursor threading: page 1 has no cursor, pages 2+3 carry the
+    // cursor from the previous response's `next_cursor`.
+    const urls = fetch.mock.calls.map((call) => call[0] as string);
+    expect(urls[0]).not.toContain("cursor=");
+    expect(urls[1]).toContain("cursor=cur_page2");
+    expect(urls[2]).toContain("cursor=cur_page3");
+  });
+
   it("listAll propagates errors mid-pagination after yielding prior pages", async () => {
     // If a page fetch throws mid-iteration (e.g. server hits a 500
     // after the first page succeeded), the generator must propagate
@@ -2473,10 +2560,20 @@ describe("QURLClient", () => {
   });
 
   it("batch create accepts exactly 100 items (upper boundary)", async () => {
+    // results[] must have the same count as succeeded+failed now that
+    // the shape guard enforces `succeeded + failed === results.length`.
+    // Populate 100 minimal success entries to match `succeeded: 100`.
+    const results = Array.from({ length: 100 }, (_, i) => ({
+      index: i,
+      success: true,
+      resource_id: `r_b${i}`,
+      qurl_link: `https://qurl.link/#at_b${i}`,
+      qurl_site: `https://r_b${i}.qurl.site`,
+    }));
     const fetch = mockFetch({
       status: 201,
       body: {
-        data: { succeeded: 100, failed: 0, results: [] },
+        data: { succeeded: 100, failed: 0, results },
       },
     });
     const client = createClient(fetch);
@@ -2699,7 +2796,27 @@ describe("QURLClient", () => {
     const fetch = mockFetch({
       status: 201,
       body: {
-        data: { succeeded: 2, failed: 0, results: [] },
+        data: {
+          succeeded: 2,
+          failed: 0,
+          // results[] matches the counts per the arithmetic invariant
+          results: [
+            {
+              index: 0,
+              success: true,
+              resource_id: "r_app1",
+              qurl_link: "https://qurl.link/#at_app1",
+              qurl_site: "https://r_app1.qurl.site",
+            },
+            {
+              index: 1,
+              success: true,
+              resource_id: "r_app2",
+              qurl_link: "https://qurl.link/#at_app2",
+              qurl_site: "https://r_app2.qurl.site",
+            },
+          ],
+        },
       },
     });
     const client = createClient(fetch);
@@ -3255,6 +3372,51 @@ describe("QURLClient", () => {
     ).rejects.toThrow(ValidationError);
   });
 
+  it("batch create rejects responses with counts/results length mismatch", async () => {
+    // Arithmetic invariant: succeeded + failed must equal results.length.
+    // This catches the edge case where a proxy or CDN returns a body that
+    // *happens* to have `succeeded`/`failed`/`results` fields but with
+    // inconsistent counts (e.g. a generic error counter from a gateway).
+    // Without this check, the shape guard would pass and the consumer
+    // would get garbage data. Mirrors the qurl-python SDK regression test
+    // `test_batch_create_rejects_counts_arithmetic_mismatch`.
+    const fetch = mockFetch({
+      status: 400,
+      body: {
+        data: {
+          succeeded: 5, // claims 5 succeeded
+          failed: 0,
+          // …but only 1 entry in results
+          results: [
+            {
+              index: 0,
+              success: true,
+              resource_id: "r_only1",
+              qurl_link: "https://qurl.link/#at_x",
+              qurl_site: "https://r_only1.qurl.site",
+            },
+          ],
+        },
+      },
+    });
+    const client = createClient(fetch);
+    const error = await client
+      .batchCreate({ items: [{ target_url: "https://example.com" }] })
+      .catch((e: unknown) => e as ValidationError);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).code).toBe("unexpected_response");
+    const detail = (error as ValidationError).detail;
+    // Error message should name the specific inconsistency so
+    // operators can debug — "counts/results length mismatch" plus
+    // the actual numbers.
+    expect(detail).toContain("counts/results length mismatch");
+    expect(detail).toContain("succeeded=5");
+    expect(detail).toContain("failed=0");
+    expect(detail).toContain("results.length=1");
+    // Still carries the HTTP status suffix from the previous round's fix.
+    expect(detail).toContain("(HTTP 400)");
+  });
+
   it("batch create still throws on non-400 error statuses (401, 429, 5xx)", async () => {
     // 400 is explicitly whitelisted for passthrough; other error codes must
     // continue to throw the appropriate QURLError subclass. Regression guard
@@ -3303,7 +3465,20 @@ describe("QURLClient", () => {
       headers: new Headers({}),
       json: () =>
         Promise.resolve({
-          data: { succeeded: 1, failed: 0, results: [] },
+          data: {
+            succeeded: 1,
+            failed: 0,
+            // results[] matches the counts per the arithmetic invariant.
+            results: [
+              {
+                index: 0,
+                success: true,
+                resource_id: "r_rl1",
+                qurl_link: "https://qurl.link/#at_rl1",
+                qurl_site: "https://r_rl1.qurl.site",
+              },
+            ],
+          },
         }),
       text: () => Promise.resolve(""),
     } satisfies Partial<Response> as Response;

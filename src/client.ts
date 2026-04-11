@@ -529,6 +529,20 @@ export class QURLClient {
         `Unexpected response shape from POST /v1/qurls/batch${statusSuffix}`,
       );
     }
+    // Arithmetic invariant: succeeded + failed must equal results.length.
+    // This catches a realistic edge case where a proxy/CDN returns a 400
+    // with a body that *happens* to have `succeeded`, `failed`, and
+    // `results` fields (e.g. a generic error counter from a gateway).
+    // Without this check, the shape guard would pass and the consumer
+    // would get inconsistent counts and data. Mirrors the qurl-python
+    // SDK's `_validate_batch_create_shape` arithmetic invariant.
+    if (result.succeeded + result.failed !== result.results.length) {
+      throw unexpectedResponseError(
+        `Unexpected response shape from POST /v1/qurls/batch${statusSuffix}: ` +
+          `counts/results length mismatch (succeeded=${result.succeeded}, ` +
+          `failed=${result.failed}, results.length=${result.results.length})`,
+      );
+    }
     // Per-entry shape guard protecting the BatchItemResult discriminated
     // union contract. Each branch of the union has non-optional fields
     // that TypeScript consumers will treat as guaranteed after narrowing
