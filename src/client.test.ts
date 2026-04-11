@@ -522,6 +522,29 @@ describe("QURLClient", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("mintLink accepts being called with no input argument", async () => {
+    // Regression guard: `input` is optional on `mintLink`, and the
+    // method guards every property access with `input?.` / a presence
+    // check. Lock that behavior in so a refactor that accidentally
+    // hard-accesses `input.max_sessions` would trip this test.
+    const fetch = mockFetch({
+      status: 200,
+      body: {
+        data: {
+          qurl_link: "https://qurl.link/#at_minted",
+          expires_at: "2026-04-02T00:00:00Z",
+        },
+      },
+    });
+    const client = createClient(fetch);
+
+    await expect(client.mintLink("r_abc123def45")).resolves.toBeDefined();
+    // Body should be omitted (undefined) when no input is provided —
+    // the server defaults fill in the unspecified fields.
+    const calledBody = (fetch as ReturnType<typeof vi.fn>).mock.calls[0][1].body;
+    expect(calledBody).toBeUndefined();
+  });
+
   it("update rejects description longer than 500 chars", async () => {
     const fetch = mockFetch({ status: 200, body: { data: {} } });
     const client = createClient(fetch);
@@ -1636,6 +1659,28 @@ describe("QURLClient", () => {
     expect(JSON.parse(calledBody)).toEqual({ access_token: "at_token123" });
   });
 
+  it("accepts a ResolveInput object in resolve", async () => {
+    // The object-overload path is tested indirectly elsewhere, but
+    // having an explicit regression lock-in test makes the dual
+    // overload contract unambiguous.
+    const fetch = mockFetch({
+      status: 200,
+      body: {
+        data: {
+          target_url: "https://example.com",
+          resource_id: "r_abc",
+          access_grant: { expires_in: 305, granted_at: "2026-03-10T15:30:00Z", src_ip: "1.2.3.4" },
+        },
+      },
+    });
+    const client = createClient(fetch);
+
+    await client.resolve({ access_token: "at_object_overload" });
+
+    const calledBody = (fetch as ReturnType<typeof vi.fn>).mock.calls[0][1].body as string;
+    expect(JSON.parse(calledBody)).toEqual({ access_token: "at_object_overload" });
+  });
+
   // --- debug logging ---
 
   it("calls debug callback on requests", async () => {
@@ -1838,6 +1883,35 @@ describe("QURLClient", () => {
     const calledUrl = (fetch as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
     expect(calledUrl).toContain("limit=10");
     expect(calledUrl).not.toContain("rogue");
+  });
+
+  it("list filters null and empty-string filter params from the query string", async () => {
+    // Untyped JS callers can pass `null` or `""` as a filter value
+    // (e.g. from form state or a reset button). The allowlist loop
+    // must skip these rather than emit `?status=&q=` garbage that
+    // the API could interpret as an explicit empty filter.
+    const fetch = mockFetch({
+      status: 200,
+      body: { data: [], meta: { has_more: false } },
+    });
+    const client = createClient(fetch);
+
+    const untypedInput = {
+      limit: 10,
+      status: null,
+      q: "",
+      cursor: null,
+      sort: "",
+    } as unknown as Parameters<typeof client.list>[0];
+    await client.list(untypedInput);
+
+    const calledUrl = (fetch as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+    expect(calledUrl).toContain("limit=10");
+    // None of the null/empty keys should appear in the query string.
+    expect(calledUrl).not.toContain("status=");
+    expect(calledUrl).not.toContain("q=");
+    expect(calledUrl).not.toContain("cursor=");
+    expect(calledUrl).not.toContain("sort=");
   });
 
   it("does not retry on 503 with maxRetries: 0", async () => {
@@ -2063,6 +2137,122 @@ describe("QURLClient", () => {
     expect((error as ValidationError).detail).toContain("items[1]");
     expect((error as ValidationError).detail).toContain("max_sessions");
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("batch create reports validation failure at index 0 (first-item failure)", async () => {
+    // Complementary to the items[1] test above — ensures the loop
+    // correctly attributes failures at index 0 too, not just
+    // later indices. Regression guard against a refactor that might
+    // accidentally skip the first item or off-by-one the index.
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+    const client = createClient(fetch);
+
+    const error = await client
+      .batchCreate({
+        items: [
+          { target_url: "https://bad.example.com", max_sessions: 9999 },
+          { target_url: "https://good.example.com" },
+        ],
+      })
+      .catch((e: unknown) => e as ValidationError);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).detail).toContain("items[0]");
+    expect((error as ValidationError).detail).toContain("max_sessions");
+    // The error must identify index 0 specifically, not items[1].
+    expect((error as ValidationError).detail).not.toContain("items[1]");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("batch create propagates server request_id into the returned output", async () => {
+    // Consumers filing support tickets on partial or total batch
+    // failures need the correlation ID. The 400 passthrough previously
+    // discarded `meta.request_id`; locks in that it flows through to
+    // BatchCreateOutput.
+    const fetch = mockFetch({
+      status: 201,
+      body: {
+        data: {
+          succeeded: 1,
+          failed: 0,
+          results: [
+            {
+              index: 0,
+              success: true,
+              resource_id: "r_req_id_test",
+              qurl_link: "https://qurl.link/#at_req",
+              qurl_site: "https://r_req_id_test.qurl.site",
+            },
+          ],
+        },
+        meta: { request_id: "req_batch_abc123" },
+      },
+    });
+    const client = createClient(fetch);
+
+    const result = await client.batchCreate({
+      items: [{ target_url: "https://example.com" }],
+    });
+    expect(result.request_id).toBe("req_batch_abc123");
+  });
+
+  it("batch create propagates request_id from the 400-passthrough path", async () => {
+    // Same request_id propagation on the 400 partial/total-failure
+    // branch — this is the most load-bearing case for support flows.
+    const fetch = mockFetch({
+      status: 400,
+      body: {
+        data: {
+          succeeded: 0,
+          failed: 1,
+          results: [
+            {
+              index: 0,
+              success: false,
+              error: { code: "validation_error", message: "target_url must be HTTPS" },
+            },
+          ],
+        },
+        meta: { request_id: "req_batch_400_xyz" },
+      },
+    });
+    const client = createClient(fetch);
+
+    const result = await client.batchCreate({
+      items: [{ target_url: "https://example.com" }],
+    });
+    expect(result.failed).toBe(1);
+    expect(result.request_id).toBe("req_batch_400_xyz");
+  });
+
+  it("batch create omits request_id when the server doesn't provide one", async () => {
+    // Optional field — older API versions or non-JSON edge responses
+    // may omit `meta.request_id`. The returned output should simply
+    // not set the field rather than crashing or using a placeholder.
+    const fetch = mockFetch({
+      status: 201,
+      body: {
+        data: {
+          succeeded: 1,
+          failed: 0,
+          results: [
+            {
+              index: 0,
+              success: true,
+              resource_id: "r_no_req",
+              qurl_link: "https://qurl.link/#at_x",
+              qurl_site: "https://r_no_req.qurl.site",
+            },
+          ],
+        },
+        // no meta
+      },
+    });
+    const client = createClient(fetch);
+
+    const result = await client.batchCreate({
+      items: [{ target_url: "https://example.com" }],
+    });
+    expect(result.request_id).toBeUndefined();
   });
 
   it("batch create sends items array in request body", async () => {

@@ -361,8 +361,18 @@ export class QURLClient {
         throw err;
       }
     }
-    // 400 carries per-item errors (see rawRequest JSDoc).
-    const result = await this.request<BatchCreateOutput>("POST", "/v1/qurls/batch", input, [400]);
+    // 400 carries per-item errors (see rawRequest JSDoc). Use rawRequest
+    // directly (not `this.request`) so we can read `meta.request_id`
+    // from the envelope and propagate it into the returned
+    // BatchCreateOutput — consumers filing support tickets on partial
+    // or total batch failures need the correlation ID.
+    const envelope = await this.rawRequest<BatchCreateOutput>(
+      "POST",
+      "/v1/qurls/batch",
+      input,
+      [400],
+    );
+    const result = envelope.data;
     // Defense-in-depth: the 400 passthrough trusts the response shape, but
     // if the API ever returns 400 with a different body (e.g., a top-level
     // malformed-request error) the caller would silently get undefined
@@ -390,6 +400,12 @@ export class QURLClient {
       if (!isValidBatchItemResult(entry)) {
         throw clientValidationError("Unexpected response shape from POST /v1/qurls/batch");
       }
+    }
+    // Attach the server request_id from the envelope meta. The field is
+    // optional on BatchCreateOutput so older API versions that omit
+    // `meta.request_id` still produce a valid return value.
+    if (envelope.meta?.request_id !== undefined) {
+      result.request_id = envelope.meta.request_id;
     }
     return result;
   }
@@ -420,7 +436,12 @@ export class QURLClient {
     // "[object Object]" as a query param.
     for (const key of LIST_PARAM_KEYS) {
       const value = input[key];
-      if (value !== null && value !== undefined) params.set(key, String(value));
+      // Filter null/undefined (standard "drop" sentinels) and empty
+      // strings — an empty string from an untyped JS caller would
+      // otherwise produce `?status=&q=` garbage that the API might
+      // interpret as an explicit empty filter. Numeric 0 is preserved
+      // (serializes as "0") because it's a meaningful `limit` value.
+      if (value != null && value !== "") params.set(key, String(value));
     }
 
     const query = params.toString();
@@ -477,16 +498,16 @@ export class QURLClient {
       //   * Long enough to look like an ID but wrong prefix (e.g. "q_…",
       //     "at_…") — echo the 2-char prefix so the caller sees exactly
       //     which kind of ID they passed and can correct it.
-      if (id.length <= 2) {
+      if (id.length <= RESOURCE_ID_PREFIX.length) {
         throw clientValidationError(
           `delete: requires a resource ID (${RESOURCE_ID_PREFIX} prefix) — got an invalid or empty identifier`,
         );
       }
-      const observedPrefix = id.slice(0, 2);
+      const observedPrefix = id.slice(0, RESOURCE_ID_PREFIX.length);
       throw clientValidationError(
         `delete: only resource IDs (${RESOURCE_ID_PREFIX} prefix) are accepted — ` +
           `got an ID starting with "${observedPrefix}". ` +
-          "To revoke a single access token, use the DELETE /v1/resources/:id/qurls/:qurl_id endpoint (not yet exposed by this SDK).",
+          "To revoke a single access token, use the token-scoped revoke endpoint (not yet available in this SDK version).",
       );
     }
     await this.rawRequest("DELETE", `/v1/qurls/${encodeURIComponent(id)}`);

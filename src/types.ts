@@ -291,6 +291,14 @@ export interface BatchCreateOutput {
   succeeded: number;
   failed: number;
   results: BatchItemResult[];
+  /**
+   * Server-assigned request ID from the response `meta.request_id` field.
+   * Propagated through the 400-passthrough path so consumers filing
+   * support tickets on partial/total batch failures have a correlation
+   * ID. Optional because older API versions or non-JSON responses may
+   * omit it.
+   */
+  request_id?: string;
 }
 
 /** API error from the QURL service (RFC 7807). */
