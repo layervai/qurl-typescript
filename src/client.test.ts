@@ -212,6 +212,34 @@ describe("QURLClient", () => {
     expect(result.access_tokens).toBeUndefined();
   });
 
+  it("gets a QURL by q_ display ID (API resolves to parent resource)", async () => {
+    // Per the spec's QurlId parameter (openapi.yaml:2254), GET /v1/qurls/:id
+    // accepts both r_ and q_ prefixes. Exercise the URL-construction path
+    // for a q_ ID so the dual-prefix contract is a regression guard.
+    const fetch = mockFetch({
+      status: 200,
+      body: {
+        data: {
+          resource_id: "r_abc123def45",
+          target_url: "https://example.com",
+          status: "active",
+          qurl_count: 1,
+          created_at: "2026-03-10T10:00:00Z",
+        },
+      },
+    });
+
+    const client = createClient(fetch);
+    const result = await client.get("q_3a7f2c8e91b");
+
+    // API resolves q_ → parent resource, so the result shape is a resource.
+    expect(result.resource_id).toBe("r_abc123def45");
+    expect(fetch).toHaveBeenCalledWith(
+      "https://api.test.layerv.ai/v1/qurls/q_3a7f2c8e91b",
+      expect.objectContaining({ method: "GET" }),
+    );
+  });
+
   it("lists QURLs", async () => {
     const fetch = mockFetch({
       status: 200,
@@ -826,6 +854,8 @@ describe("QURLClient", () => {
             resolve_per_minute: 60,
             max_active_qurls: 1000,
             max_tokens_per_qurl: 5,
+            // New field in this PR — assert it parses through.
+            max_expiry_seconds: 2592000,
           },
           usage: {
             qurls_created: 42,
@@ -846,10 +876,50 @@ describe("QURLClient", () => {
     expect(quota.rate_limits).toBeDefined();
     expect(quota.rate_limits?.create_per_minute).toBe(10);
     expect(quota.rate_limits?.max_active_qurls).toBe(1000);
+    expect(quota.rate_limits?.max_expiry_seconds).toBe(2592000);
     expect(quota.usage).toBeDefined();
     expect(quota.usage?.qurls_created).toBe(42);
     expect(quota.usage?.active_qurls).toBe(15);
+    expect(quota.usage?.active_qurls_percent).toBe(1.5);
     expect(quota.usage?.total_accesses).toBe(200);
+  });
+
+  it("handles null active_qurls_percent (unlimited plans)", async () => {
+    // Quota.usage.active_qurls_percent is nullable per the API spec —
+    // when max_active_qurls is unlimited there's no denominator to compute
+    // a percentage, so the API returns null. Exercise that branch
+    // explicitly since the happy-path test only covers the numeric case.
+    const fetch = mockFetch({
+      status: 200,
+      body: {
+        data: {
+          plan: "enterprise",
+          period_start: "2026-03-01T00:00:00Z",
+          period_end: "2026-04-01T00:00:00Z",
+          rate_limits: {
+            create_per_minute: 100,
+            create_per_hour: 10000,
+            list_per_minute: 300,
+            resolve_per_minute: 600,
+            max_active_qurls: -1,
+            max_tokens_per_qurl: -1,
+            max_expiry_seconds: 2592000,
+          },
+          usage: {
+            qurls_created: 9999,
+            active_qurls: 5000,
+            active_qurls_percent: null,
+            total_accesses: 50000,
+          },
+        },
+      },
+    });
+
+    const client = createClient(fetch);
+    const quota = await client.getQuota();
+
+    expect(quota.usage?.active_qurls_percent).toBeNull();
+    expect(quota.rate_limits?.max_active_qurls).toBe(-1);
   });
 
   it("passes AbortSignal.timeout to fetch", async () => {

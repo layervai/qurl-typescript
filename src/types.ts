@@ -24,6 +24,12 @@ export interface AccessToken {
   status: "active" | "consumed" | "expired" | "revoked";
   one_time_use: boolean;
   max_sessions: number;
+  /**
+   * Session lifetime in **seconds** (numeric). Note: the corresponding
+   * input field on {@link CreateInput} and {@link MintInput} takes a
+   * human-readable duration string like `"1h"` — the server parses the
+   * string on write and returns the resolved number of seconds on read.
+   */
   session_duration: number;
   access_policy?: AccessPolicy;
   use_count: number;
@@ -39,6 +45,10 @@ export interface AccessToken {
  * have two states — `active` or `revoked` — per `QurlData.status` in the
  * OpenAPI spec. Individual access tokens can additionally be `consumed` or
  * `expired`; see {@link AccessToken.status}.
+ *
+ * **`description` is set via {@link UpdateInput}, not on create.** The API
+ * uses `label` on create (a token-level label) and `description` on the
+ * resource itself. See the JSDoc on {@link CreateInput} for details.
  */
 export interface QURL {
   resource_id: string;
