@@ -206,7 +206,12 @@ export interface ResolveOutput {
 
 /** Quota information. */
 export interface Quota {
-  plan: string;
+  /**
+   * Subscription plan. Narrowed to the spec's documented enum
+   * (`QuotaData.plan` in `openapi.yaml`); uses the `(string & {})` trick so
+   * the API can introduce additional plans without a breaking type change.
+   */
+  plan: "free" | "growth" | "enterprise" | (string & {});
   period_start: string;
   period_end: string;
   rate_limits?: {
@@ -283,7 +288,12 @@ export interface QURLErrorData {
   status: number;
   code: string;
   title: string;
-  detail: string;
+  /** Human-readable explanation. Optional per RFC 7807. */
+  detail?: string;
+  /** Problem-type URI (RFC 7807 `type`). Optional. */
+  type?: string;
+  /** URI reference that identifies the specific occurrence (RFC 7807 `instance`). Optional. */
+  instance?: string;
   invalid_fields?: Record<string, string>;
   request_id?: string;
   retry_after?: number;

@@ -71,6 +71,74 @@ describe("QURLClient", () => {
     );
   });
 
+  // --- Spec-derived input validation (create) ---
+
+  it("create rejects target_url longer than 2048 chars", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+    const client = createClient(fetch);
+
+    const error = await client
+      .create({ target_url: "https://a.com/" + "x".repeat(2048) })
+      .catch((e: unknown) => e as ValidationError);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).detail).toContain("target_url");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("create rejects label longer than 500 chars", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+    const client = createClient(fetch);
+
+    const error = await client
+      .create({ target_url: "https://example.com", label: "x".repeat(501) })
+      .catch((e: unknown) => e as ValidationError);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).detail).toContain("label");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("create rejects max_sessions above 1000", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+    const client = createClient(fetch);
+
+    const error = await client
+      .create({ target_url: "https://example.com", max_sessions: 1001 })
+      .catch((e: unknown) => e as ValidationError);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).detail).toContain("max_sessions");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("create accepts max_sessions at the 0 and 1000 boundaries", async () => {
+    const fetch = mockFetch({
+      status: 201,
+      body: { data: { qurl_id: "q_x", resource_id: "r_x", qurl_link: "x", qurl_site: "x" } },
+    });
+    const client = createClient(fetch);
+
+    await expect(
+      client.create({ target_url: "https://example.com", max_sessions: 0 }),
+    ).resolves.toBeDefined();
+    await expect(
+      client.create({ target_url: "https://example.com", max_sessions: 1000 }),
+    ).resolves.toBeDefined();
+  });
+
+  it("create rejects custom_domain longer than 253 chars", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+    const client = createClient(fetch);
+
+    const error = await client
+      .create({
+        target_url: "https://example.com",
+        custom_domain: "a".repeat(254),
+      })
+      .catch((e: unknown) => e as ValidationError);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).detail).toContain("custom_domain");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("gets a QURL with access tokens", async () => {
     const fetch = mockFetch({
       status: 200,
@@ -207,6 +275,19 @@ describe("QURLClient", () => {
     await expect(client.delete("r_abc123def45")).resolves.toBeUndefined();
   });
 
+  it("delete rejects q_ (display) IDs client-side", async () => {
+    // Spec: DELETE /v1/qurls/:id requires a resource ID (r_ prefix).
+    // To revoke a single token, the resources-scoped endpoint must be used.
+    const fetch = mockFetch({ status: 204 });
+    const client = createClient(fetch);
+
+    const error = await client.delete("q_3a7f2c8e91b").catch((e: unknown) => e as ValidationError);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).code).toBe("client_validation");
+    expect((error as ValidationError).detail).toContain("r_ prefix");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("extends a QURL", async () => {
     const fetch = mockFetch({
       status: 200,
@@ -295,6 +376,96 @@ describe("QURLClient", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("mintLink rejects label longer than 500 chars", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+
+    const error = await client
+      .mintLink("r_abc", { label: "x".repeat(501) })
+      .catch((e: unknown) => e as ValidationError);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).detail).toContain("label");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("mintLink rejects max_sessions above 1000", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+
+    const error = await client
+      .mintLink("r_abc", { max_sessions: 5000 })
+      .catch((e: unknown) => e as ValidationError);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).detail).toContain("max_sessions");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("update rejects description longer than 500 chars", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+
+    const error = await client
+      .update("r_abc", { description: "x".repeat(501) })
+      .catch((e: unknown) => e as ValidationError);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).detail).toContain("description");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("update rejects more than 10 tags", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+
+    const error = await client
+      .update("r_abc", { tags: Array.from({ length: 11 }, (_, i) => `tag${i}`) })
+      .catch((e: unknown) => e as ValidationError);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).detail).toContain("tags");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("update rejects tags longer than 50 chars", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+
+    const error = await client
+      .update("r_abc", { tags: ["x".repeat(51)] })
+      .catch((e: unknown) => e as ValidationError);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).detail).toContain("1-50 characters");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("update rejects tags that don't match the API pattern", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+
+    // Tags must start with an alphanumeric character.
+    const error = await client
+      .update("r_abc", { tags: ["-leading-dash"] })
+      .catch((e: unknown) => e as ValidationError);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).detail).toContain("alphanumeric");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("update accepts empty tags array to clear all tags", async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: {
+        data: {
+          resource_id: "r_abc",
+          target_url: "https://example.com",
+          status: "active",
+          tags: [],
+          created_at: "2026-03-10T10:00:00Z",
+        },
+      },
+    });
+    const client = createClient(fetch);
+    await expect(client.update("r_abc", { tags: [] })).resolves.toBeDefined();
+  });
+
   it("update maps qurls to access_tokens", async () => {
     const fetch = mockFetch({
       status: 200,
@@ -365,6 +536,7 @@ describe("QURLClient", () => {
           title: "Not Found",
           status: 404,
           detail: "QURL not found",
+          instance: "/v1/qurls/r_notfound0000",
           code: "not_found",
         },
         meta: { request_id: "req_err" },
@@ -382,7 +554,53 @@ describe("QURLClient", () => {
       expect(qErr.status).toBe(404);
       expect(qErr.code).toBe("not_found");
       expect(qErr.requestId).toBe("req_err");
+      // New: RFC 7807 type + instance surfaced on the error object.
+      expect(qErr.type).toBe("https://api.qurl.link/problems/not_found");
+      expect(qErr.instance).toBe("/v1/qurls/r_notfound0000");
     }
+  });
+
+  it("falls back to title when error.detail is missing (RFC 7807 detail is optional)", async () => {
+    // Per RFC 7807, `detail` is optional. The API's Error schema only
+    // requires type/title/status/code. Verify the SDK doesn't produce
+    // "Title (403): undefined" when detail is absent.
+    const fetch = mockFetch({
+      status: 403,
+      body: {
+        error: {
+          type: "https://api.qurl.link/problems/forbidden",
+          title: "Forbidden",
+          status: 403,
+          code: "forbidden",
+          // no detail
+        },
+      },
+    });
+
+    const client = createClient(fetch);
+    const err = (await client.getQuota().catch((e: unknown) => e)) as QURLError;
+    expect(err).toBeInstanceOf(QURLError);
+    expect(err.detail).toBe("Forbidden");
+    expect(err.message).not.toContain("undefined");
+  });
+
+  it("falls back to legacy error.message field (pre-RFC-7807 envelope)", async () => {
+    // Back-compat: support the older { error: { code, message } } shape.
+    const fetch = mockFetch({
+      status: 400,
+      body: {
+        error: {
+          code: "invalid_request",
+          message: "legacy-format detail string",
+        },
+      },
+    });
+
+    const client = createClient(fetch);
+    const err = (await client.getQuota().catch((e: unknown) => e)) as QURLError;
+    expect(err).toBeInstanceOf(QURLError);
+    expect(err.detail).toBe("legacy-format detail string");
+    expect(err.message).not.toContain("undefined");
   });
 
   it("sends correct auth header", async () => {
@@ -1501,6 +1719,27 @@ describe("QURLClient", () => {
       expect(only.resource_id).toBe("r_solo");
     }
     expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("batch create rejects per-item validation failures before sending", async () => {
+    // Each item goes through the same validateCreateInput the single
+    // create() uses, so obvious mistakes fail fast with the offending
+    // index rather than round-tripping the whole batch.
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+    const client = createClient(fetch);
+
+    const error = await client
+      .batchCreate({
+        items: [
+          { target_url: "https://a.example.com" },
+          { target_url: "https://b.example.com", max_sessions: 9999 },
+        ],
+      })
+      .catch((e: unknown) => e as ValidationError);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).detail).toContain("items[1]");
+    expect((error as ValidationError).detail).toContain("max_sessions");
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("batch create sends items array in request body", async () => {

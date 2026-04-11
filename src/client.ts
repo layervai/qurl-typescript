@@ -68,6 +68,66 @@ function clientValidationError(detail: string): ValidationError {
   });
 }
 
+// ---- Spec-derived validation helpers ------------------------------------
+// These mirror constraints documented on each request schema in
+// `openapi.yaml` so obvious mistakes fail fast instead of round-tripping
+// to the API and coming back as a generic 400.
+
+const MAX_TARGET_URL = 2048;
+const MAX_LABEL = 500;
+const MAX_DESCRIPTION = 500;
+const MAX_CUSTOM_DOMAIN = 253;
+const MAX_MAX_SESSIONS = 1000;
+const MAX_TAGS = 10;
+const MAX_TAG_LENGTH = 50;
+// CreateQurlRequest.target_url pattern is loose (just a URI) but
+// UpdateQurlRequest.tags pattern is specific — enforce it here.
+const TAG_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9 _-]*$/;
+const RESOURCE_ID_PREFIX = "r_";
+
+function requireMaxLength(value: string | undefined, field: string, max: number): void {
+  if (value !== undefined && value.length > max) {
+    throw clientValidationError(
+      `${field}: must be ${max} characters or fewer (got ${value.length})`,
+    );
+  }
+}
+
+function requireMaxSessionsInRange(value: number | undefined): void {
+  if (value === undefined) return;
+  if (!Number.isInteger(value) || value < 0 || value > MAX_MAX_SESSIONS) {
+    throw clientValidationError(
+      `max_sessions: must be an integer between 0 and ${MAX_MAX_SESSIONS} (got ${value})`,
+    );
+  }
+}
+
+function requireValidTags(tags: string[] | undefined): void {
+  if (tags === undefined) return;
+  if (tags.length > MAX_TAGS) {
+    throw clientValidationError(`tags: max ${MAX_TAGS} items allowed (got ${tags.length})`);
+  }
+  for (const tag of tags) {
+    if (tag.length < 1 || tag.length > MAX_TAG_LENGTH) {
+      throw clientValidationError(
+        `tags: each tag must be 1-${MAX_TAG_LENGTH} characters (got ${tag.length})`,
+      );
+    }
+    if (!TAG_PATTERN.test(tag)) {
+      throw clientValidationError(
+        "tags: each tag must start with an alphanumeric and contain only letters, numbers, spaces, underscores, or hyphens",
+      );
+    }
+  }
+}
+
+function validateCreateInput(input: CreateInput): void {
+  requireMaxLength(input.target_url, "target_url", MAX_TARGET_URL);
+  requireMaxLength(input.label, "label", MAX_LABEL);
+  requireMaxLength(input.custom_domain, "custom_domain", MAX_CUSTOM_DOMAIN);
+  requireMaxSessionsInRange(input.max_sessions);
+}
+
 interface ApiResponse<T> {
   data: T;
   meta?: {
@@ -81,11 +141,18 @@ interface ApiResponse<T> {
 interface ApiErrorEnvelope {
   error?: {
     type?: string;
-    title: string;
-    status: number;
-    detail: string;
-    code: string;
+    title?: string;
+    status?: number;
+    detail?: string;
+    code?: string;
+    instance?: string;
     invalid_fields?: Record<string, string>;
+    /**
+     * Legacy field from pre-RFC-7807 error shapes. Supported for backward
+     * compatibility when the API has been configured to return the older
+     * `{ error: { code, message } }` envelope.
+     */
+    message?: string;
   };
   meta?: { request_id?: string };
 }
@@ -157,6 +224,7 @@ export class QURLClient {
 
   /** Create a new QURL. */
   async create(input: CreateInput): Promise<CreateOutput> {
+    validateCreateInput(input);
     return this.request<CreateOutput>("POST", "/v1/qurls", input);
   }
 
@@ -200,6 +268,19 @@ export class QURLClient {
         `batchCreate accepts at most 100 items, got ${input.items.length}`,
       );
     }
+    // Validate each item the same way single-create validates its input.
+    // Catching obvious field issues client-side avoids the whole batch
+    // round-tripping just to come back as a per-item validation error.
+    for (let i = 0; i < input.items.length; i++) {
+      try {
+        validateCreateInput(input.items[i]);
+      } catch (err) {
+        if (err instanceof ValidationError) {
+          throw clientValidationError(`batchCreate items[${i}]: ${err.detail}`);
+        }
+        throw err;
+      }
+    }
     // 400 carries per-item errors (see rawRequest JSDoc).
     const result = await this.request<BatchCreateOutput>("POST", "/v1/qurls/batch", input, [400]);
     // Defense-in-depth: the 400 passthrough trusts the response shape, but
@@ -230,7 +311,12 @@ export class QURLClient {
     return result;
   }
 
-  /** Gets a protected URL and its access tokens. */
+  /**
+   * Get a QURL resource and its access tokens.
+   *
+   * Accepts either a resource ID (`r_` prefix) or a QURL display ID (`q_`
+   * prefix); the API resolves `q_` IDs to the parent resource automatically.
+   */
   async get(id: string): Promise<QURL> {
     const raw = await this.request<QURL & { qurls?: AccessToken[] }>(
       "GET",
@@ -278,25 +364,45 @@ export class QURLClient {
     } while (cursor);
   }
 
-  /** Delete (revoke) a QURL. */
+  /**
+   * Delete (revoke) a QURL resource and all its access tokens.
+   *
+   * Only accepts a resource ID (`r_` prefix), not a QURL display ID (`q_`
+   * prefix). Per the OpenAPI spec: *"Requires a resource ID (r_ prefix).
+   * To revoke a single token, use DELETE /v1/resources/:id/qurls/:qurl_id"*.
+   * A client-side prefix check catches the mistake before the API round-trip.
+   */
   async delete(id: string): Promise<void> {
+    if (!id.startsWith(RESOURCE_ID_PREFIX)) {
+      throw clientValidationError(
+        `delete: only resource IDs (${RESOURCE_ID_PREFIX} prefix) are accepted — got ${JSON.stringify(id.slice(0, 16))}. ` +
+          "To revoke a single access token, use the DELETE /v1/resources/:id/qurls/:qurl_id endpoint (not yet exposed by this SDK).",
+      );
+    }
     await this.rawRequest("DELETE", `/v1/qurls/${encodeURIComponent(id)}`);
   }
 
   /**
    * Extend a QURL's expiration.
    *
-   * Convenience method — delegates to {@link update} with only the expiration
-   * fields. `ExtendInput` is a strict subset of `UpdateInput`, but destructuring
-   * before delegation enforces the narrow type at runtime so spread or variable
-   * callers can't accidentally leak `description` / `tags` through this path.
+   * Accepts either a resource ID (`r_` prefix) or a QURL display ID (`q_`
+   * prefix). Convenience method — delegates to {@link update} with only the
+   * expiration fields. `ExtendInput` is a strict subset of `UpdateInput`, but
+   * destructuring before delegation enforces the narrow type at runtime so
+   * spread or variable callers can't accidentally leak `description` / `tags`
+   * through this path.
    */
   async extend(id: string, input: ExtendInput): Promise<QURL> {
     const { extend_by, expires_at } = input;
     return this.update(id, { extend_by, expires_at });
   }
 
-  /** Update a QURL — extend expiration, change description, etc. */
+  /**
+   * Update a QURL — extend expiration, change description, rename tags.
+   *
+   * Accepts either a resource ID (`r_` prefix) or a QURL display ID (`q_`
+   * prefix); the API resolves `q_` IDs to the parent resource automatically.
+   */
   async update(id: string, input: UpdateInput): Promise<QURL> {
     // Match batchCreate's client-side validation pattern: catch obvious
     // mistakes before the API round-trip.
@@ -316,6 +422,8 @@ export class QURLClient {
         "update: at least one field (extend_by, expires_at, description, tags) must be provided",
       );
     }
+    requireMaxLength(description, "description", MAX_DESCRIPTION);
+    requireValidTags(tags);
     const raw = await this.request<QURL & { qurls?: AccessToken[] }>(
       "PATCH",
       `/v1/qurls/${encodeURIComponent(id)}`,
@@ -324,12 +432,21 @@ export class QURLClient {
     return QURLClient.mapQurlsField(raw);
   }
 
-  /** Mint a new access link for a QURL. */
+  /**
+   * Mint a new access link for a QURL.
+   *
+   * Accepts either a resource ID (`r_` prefix) or a QURL display ID (`q_`
+   * prefix); the API resolves `q_` IDs to the parent resource automatically.
+   */
   async mintLink(id: string, input?: MintInput): Promise<MintOutput> {
     if (input?.expires_in !== undefined && input.expires_at !== undefined) {
       throw clientValidationError(
         "mintLink: `expires_in` and `expires_at` are mutually exclusive — provide at most one",
       );
+    }
+    if (input !== undefined) {
+      requireMaxLength(input.label, "label", MAX_LABEL);
+      requireMaxSessionsInRange(input.max_sessions);
     }
     return this.request<MintOutput>("POST", `/v1/qurls/${encodeURIComponent(id)}/mint_link`, input);
   }
@@ -453,12 +570,22 @@ export class QURLClient {
     try {
       const json = (await response.json()) as ApiErrorEnvelope;
       if (json.error) {
+        const err = json.error;
+        // Detail fallback chain:
+        //   1. err.detail   (RFC 7807 primary)
+        //   2. err.message  (legacy pre-RFC-7807 shape)
+        //   3. err.title    (RFC 7807 required field)
+        //   4. HTTP status  (final safety net)
+        // This prevents `"Title (403): undefined"` when the API omits detail.
+        const detail = err.detail ?? err.message ?? err.title ?? `HTTP ${response.status}`;
         return {
-          status: json.error.status,
-          code: json.error.code,
-          title: json.error.title,
-          detail: json.error.detail,
-          invalid_fields: json.error.invalid_fields,
+          status: err.status ?? response.status,
+          code: err.code ?? "unknown",
+          title: err.title ?? response.statusText,
+          detail,
+          type: err.type,
+          instance: err.instance,
+          invalid_fields: err.invalid_fields,
           request_id: json.meta?.request_id,
           retry_after: this.parseRetryAfter(response),
         };
@@ -471,7 +598,7 @@ export class QURLClient {
       status: response.status,
       code: "unknown",
       title: response.statusText,
-      detail: "",
+      detail: response.statusText || `HTTP ${response.status}`,
     };
   }
 

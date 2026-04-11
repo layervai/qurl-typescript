@@ -4,17 +4,28 @@ import type { QURLErrorData } from "./types.js";
 export class QURLError extends Error {
   readonly status: number;
   readonly code: string;
+  /** Human-readable detail. Falls back to the title when the API omits it. */
   readonly detail: string;
+  /** RFC 7807 problem-type URI, if the API includes one. */
+  readonly type?: string;
+  /** RFC 7807 occurrence URI, if the API includes one. */
+  readonly instance?: string;
   readonly invalidFields?: Record<string, string>;
   readonly requestId?: string;
   readonly retryAfter?: number;
 
   constructor(data: QURLErrorData) {
-    super(`${data.title} (${data.status}): ${data.detail}`);
+    // RFC 7807 leaves `detail` optional; the API can legitimately omit it and
+    // `title` is required, so falling back to title keeps the Error.message
+    // meaningful instead of "Title (400): undefined".
+    const detail = data.detail ?? data.title;
+    super(`${data.title} (${data.status}): ${detail}`);
     this.name = "QURLError";
     this.status = data.status;
     this.code = data.code;
-    this.detail = data.detail;
+    this.detail = detail;
+    this.type = data.type;
+    this.instance = data.instance;
     this.invalidFields = data.invalid_fields;
     this.requestId = data.request_id;
     this.retryAfter = data.retry_after;
