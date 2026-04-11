@@ -43,10 +43,12 @@ describe("QURLClient", () => {
       status: 201,
       body: {
         data: {
+          qurl_id: "q_3a7f2c8e91b",
           resource_id: "r_abc123def45",
           qurl_link: "https://qurl.link/#at_test",
           qurl_site: "https://r_abc123def45.qurl.site",
           expires_at: "2026-03-15T10:00:00Z",
+          label: "Test create",
         },
         meta: { request_id: "req_1" },
       },
@@ -56,10 +58,13 @@ describe("QURLClient", () => {
     const result = await client.create({
       target_url: "https://example.com",
       expires_in: "24h",
+      label: "Test create",
     });
 
+    expect(result.qurl_id).toBe("q_3a7f2c8e91b");
     expect(result.resource_id).toBe("r_abc123def45");
     expect(result.qurl_link).toBe("https://qurl.link/#at_test");
+    expect(result.label).toBe("Test create");
     expect(fetch).toHaveBeenCalledWith(
       "https://api.test.layerv.ai/v1/qurls",
       expect.objectContaining({ method: "POST" }),
@@ -1562,7 +1567,11 @@ describe("QURLClient", () => {
       .catch((e: unknown) => e as ValidationError);
     expect(error).toBeInstanceOf(ValidationError);
     expect((error as ValidationError).code).toBe("client_validation");
-    expect((error as ValidationError).detail).toContain("Unexpected batchCreate response shape");
+    // Error message is intentionally static (no raw body embedded) to
+    // avoid leaking sensitive response content into client-side logs.
+    expect((error as ValidationError).detail).toBe(
+      "Unexpected response shape from POST /v1/qurls/batch",
+    );
   });
 
   it("batch create still throws on non-400 error statuses (401, 429, 5xx)", async () => {

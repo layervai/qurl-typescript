@@ -202,16 +202,17 @@ export class QURLClient {
     // if the API ever returns 400 with a different body (e.g., a top-level
     // malformed-request error) the caller would silently get undefined
     // fields. Validate the shape before returning and surface a clear
-    // error otherwise.
+    // error otherwise. The error intentionally does not embed the raw
+    // response body — an unexpected body could contain sensitive data
+    // (auth details, request echoes) and error messages may end up in
+    // client-side logs.
     if (
       !result ||
       typeof result.succeeded !== "number" ||
       typeof result.failed !== "number" ||
       !Array.isArray(result.results)
     ) {
-      throw clientValidationError(
-        `Unexpected batchCreate response shape: ${JSON.stringify(result).slice(0, 200)}`,
-      );
+      throw clientValidationError("Unexpected response shape from POST /v1/qurls/batch");
     }
     return result;
   }

@@ -81,12 +81,13 @@ export interface ListInput {
   limit?: number;
   cursor?: string;
   /**
-   * Filter by status. Accepts comma-separated values to combine multiple,
-   * e.g. `"active,revoked"`. The union includes common literal values for
-   * autocomplete while still accepting any string (via the `(string & {})`
-   * trick) to support CSV and any filter-only values the API may add.
+   * Filter by status. Accepts a single value or comma-separated values to
+   * combine multiple (e.g. `"active,revoked"`). The union lists the
+   * canonical single values for autocomplete and uses the `(string & {})`
+   * trick to still accept arbitrary strings — CSV combinations in any
+   * order, plus any filter-only values the API may add later.
    */
-  status?: "active" | "revoked" | "active,revoked" | (string & {});
+  status?: "active" | "revoked" | (string & {});
   /** Free-text search over description and target_url. */
   q?: string;
   /**
