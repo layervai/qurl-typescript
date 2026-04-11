@@ -186,6 +186,20 @@ describe("QURLClient", () => {
     );
   });
 
+  it("list with empty input hits /v1/qurls with no query string", async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: { data: [], meta: { has_more: false } },
+    });
+    const client = createClient(fetch);
+    await client.list({});
+
+    expect(fetch).toHaveBeenCalledWith(
+      "https://api.test.layerv.ai/v1/qurls",
+      expect.objectContaining({ method: "GET" }),
+    );
+  });
+
   it("deletes a QURL", async () => {
     const fetch = mockFetch({ status: 204 });
     const client = createClient(fetch);
@@ -1201,6 +1215,28 @@ describe("QURLClient", () => {
     }
 
     expect(items).toHaveLength(0);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("listAll handles a single non-empty page (has_more: false on page 1)", async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: {
+        data: [
+          { resource_id: "r_only1", status: "active", target_url: "https://a" },
+          { resource_id: "r_only2", status: "active", target_url: "https://b" },
+        ],
+        meta: { has_more: false },
+      },
+    });
+    const client = createClient(fetch);
+
+    const ids: string[] = [];
+    for await (const qurl of client.listAll()) {
+      ids.push(qurl.resource_id);
+    }
+
+    expect(ids).toEqual(["r_only1", "r_only2"]);
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 

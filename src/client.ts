@@ -218,6 +218,15 @@ export class QURLClient {
     ) {
       throw clientValidationError("Unexpected response shape from POST /v1/qurls/batch");
     }
+    // Also verify every result entry carries a boolean `success` discriminant.
+    // Anything else would break the BatchItemResult narrowing consumers rely on.
+    // Deeper per-field validation is intentionally left to the API; this check
+    // is the minimum needed to protect the discriminated union contract.
+    for (const entry of result.results) {
+      if (!entry || typeof (entry as { success?: unknown }).success !== "boolean") {
+        throw clientValidationError("Unexpected response shape from POST /v1/qurls/batch");
+      }
+    }
     return result;
   }
 
@@ -277,19 +286,34 @@ export class QURLClient {
   /**
    * Extend a QURL's expiration.
    *
-   * Convenience method — equivalent to `update(id, input)`.
+   * Convenience method — delegates to {@link update} with only the expiration
+   * fields. `ExtendInput` is a strict subset of `UpdateInput`, but destructuring
+   * before delegation enforces the narrow type at runtime so spread or variable
+   * callers can't accidentally leak `description` / `tags` through this path.
    */
   async extend(id: string, input: ExtendInput): Promise<QURL> {
-    return this.update(id, input);
+    const { extend_by, expires_at } = input;
+    return this.update(id, { extend_by, expires_at });
   }
 
   /** Update a QURL — extend expiration, change description, etc. */
   async update(id: string, input: UpdateInput): Promise<QURL> {
-    // Match batchCreate's client-side validation pattern: catch the
-    // mutual-exclusion mistake before the API round-trip.
-    if (input.extend_by !== undefined && input.expires_at !== undefined) {
+    // Match batchCreate's client-side validation pattern: catch obvious
+    // mistakes before the API round-trip.
+    const { extend_by, expires_at, description, tags } = input;
+    if (extend_by !== undefined && expires_at !== undefined) {
       throw clientValidationError(
         "update: `extend_by` and `expires_at` are mutually exclusive — provide at most one",
+      );
+    }
+    if (
+      extend_by === undefined &&
+      expires_at === undefined &&
+      description === undefined &&
+      tags === undefined
+    ) {
+      throw clientValidationError(
+        "update: at least one field (extend_by, expires_at, description, tags) must be provided",
       );
     }
     const raw = await this.request<QURL & { qurls?: AccessToken[] }>(
