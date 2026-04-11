@@ -149,7 +149,18 @@ function requireMaxSessionsInRange(value: number | undefined): void {
 }
 
 function requireValidTags(tags: string[] | undefined): void {
-  if (tags === undefined) return;
+  // Defensive handling for untyped-JS callers: `null` is treated the
+  // same as `undefined` ("don't touch tags") to match the list()
+  // filter's null-tolerance. Anything else that isn't an array (a
+  // plain object, number, string passed where an array was expected)
+  // is a clear caller mistake and surfaces as a clean ValidationError
+  // rather than falling through to a less helpful runtime TypeError
+  // on `.length`. TypeScript callers hit this via the type system;
+  // the runtime check catches consumers calling from plain JS.
+  if (tags === undefined || tags === null) return;
+  if (!Array.isArray(tags)) {
+    throw clientValidationError(`tags: must be an array of strings (got ${typeof tags})`);
+  }
   if (tags.length > MAX_TAGS) {
     throw clientValidationError(`tags: max ${MAX_TAGS} items allowed (got ${tags.length})`);
   }
@@ -643,9 +654,36 @@ export class QURLClient {
    * prefix); the API resolves `q_` IDs to the parent resource automatically.
    */
   async update(id: string, input: UpdateInput): Promise<QURL> {
+    // Normalize `null` → `undefined` for all update fields before any
+    // downstream checks. TypeScript's type system already enforces
+    // optional fields, but untyped-JS callers may pass `{ tags: null }`
+    // or `{ description: null }` expecting "don't touch this field".
+    // Without this normalization, `null` would:
+    //   1. Pass the `hasAnyField` check (since `null !== undefined`),
+    //      producing a false "non-empty" input.
+    //   2. Crash inside `requireValidTags(null)` on `.length`.
+    //   3. Reach the wire body as `"tags": null` via JSON.stringify,
+    //      which the server would likely reject or misinterpret.
+    // Mirrors the `list()` filter's null-tolerance (line ~550) where
+    // null query-param values are stripped for the same reason.
+    // A shallow copy keeps the caller's input object untouched.
+    const normalized: UpdateInput = {};
+    for (const key of UPDATE_FIELD_KEYS) {
+      const value = input[key];
+      if (value !== null && value !== undefined) {
+        // `as any` / `as unknown as` gymnastics would satisfy the
+        // assignment to the union-typed key, but the simpler read
+        // is: for each UpdateInput key, copy non-null/undefined
+        // values to the normalized object. TypeScript can't prove
+        // the per-key assignment because the union type is erased
+        // in the loop, so use a tiny local cast.
+        (normalized as Record<string, unknown>)[key] = value;
+      }
+    }
+
     // Match batchCreate's client-side validation pattern: catch obvious
     // mistakes before the API round-trip.
-    if (input.extend_by !== undefined && input.expires_at !== undefined) {
+    if (normalized.extend_by !== undefined && normalized.expires_at !== undefined) {
       throw clientValidationError(
         "update: `extend_by` and `expires_at` are mutually exclusive — provide at most one",
       );
@@ -653,18 +691,18 @@ export class QURLClient {
     // Driven by UPDATE_FIELD_KEYS (with its own compile-time completeness
     // check) so a new field added to UpdateInput automatically participates
     // in the empty-input guard instead of silently passing through.
-    const hasAnyField = UPDATE_FIELD_KEYS.some((key) => input[key] !== undefined);
+    const hasAnyField = UPDATE_FIELD_KEYS.some((key) => normalized[key] !== undefined);
     if (!hasAnyField) {
       throw clientValidationError(
         `update: at least one field (${UPDATE_FIELD_KEYS.join(", ")}) must be provided`,
       );
     }
-    requireMaxLength(input.description, "description", MAX_DESCRIPTION);
-    requireValidTags(input.tags);
+    requireMaxLength(normalized.description, "description", MAX_DESCRIPTION);
+    requireValidTags(normalized.tags);
     const raw = await this.request<QURL & { qurls?: AccessToken[] }>(
       "PATCH",
       `/v1/qurls/${encodeURIComponent(id)}`,
-      input,
+      normalized,
     );
     return QURLClient.mapQurlsField(raw);
   }

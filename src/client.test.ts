@@ -655,6 +655,103 @@ describe("QURLClient", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("update rejects non-array tags with a clean ValidationError (untyped-JS safety)", async () => {
+    // Regression guard: an untyped JS caller passing a plain object
+    // (or a number, or a string) where an array is expected used to
+    // fall through to a TypeError on `.length`. Now it surfaces as
+    // a proper ValidationError with `code: "client_validation"` so
+    // callers catching by-class still work.
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+
+    // Plain object passed as tags (common untyped-JS mistake).
+    const objError = await client
+      .update("r_abc", { tags: {} as unknown as string[] })
+      .catch((e: unknown) => e as ValidationError);
+    expect(objError).toBeInstanceOf(ValidationError);
+    expect((objError as ValidationError).code).toBe("client_validation");
+    expect((objError as ValidationError).detail).toContain("must be an array");
+    expect((objError as ValidationError).detail).toContain("object");
+
+    // Number.
+    const numError = await client
+      .update("r_abc", { tags: 42 as unknown as string[] })
+      .catch((e: unknown) => e as ValidationError);
+    expect(numError).toBeInstanceOf(ValidationError);
+    expect((numError as ValidationError).detail).toContain("number");
+
+    // String (also a common mistake — passing a single tag as a string
+    // instead of wrapping in an array).
+    const strError = await client
+      .update("r_abc", { tags: "single-tag" as unknown as string[] })
+      .catch((e: unknown) => e as ValidationError);
+    expect(strError).toBeInstanceOf(ValidationError);
+    expect((strError as ValidationError).detail).toContain("string");
+
+    // None of the above should have reached the fetch layer.
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("update treats null tags as 'no change' (untyped-JS null-safety)", async () => {
+    // Matching the list() filter's null-tolerance: `tags: null` from
+    // an untyped JS caller is treated the same as `tags: undefined`
+    // ("don't touch tags"), not as "clear all tags" (which is `[]`).
+    // Without normalization, `null.length` would TypeError inside
+    // requireValidTags AND `null` would leak into the wire body as
+    // "tags": null via JSON.stringify. update() now normalizes
+    // null/undefined to "omitted" at the top of the method, so both
+    // paths are handled consistently.
+    const fetch = mockFetch({
+      status: 200,
+      body: {
+        data: {
+          resource_id: "r_abc",
+          target_url: "https://example.com",
+          status: "active",
+          created_at: "2026-03-10T10:00:00Z",
+        },
+      },
+    });
+    const client = createClient(fetch);
+
+    // With another real field present, `tags: null` should just be
+    // dropped from the request body — no ValidationError, no crash,
+    // no `"tags": null` in the JSON wire body.
+    await expect(
+      client.update("r_abc", {
+        description: "real update",
+        tags: null as unknown as string[],
+      }),
+    ).resolves.toBeDefined();
+
+    const calledBody = (fetch as ReturnType<typeof vi.fn>).mock.calls[0][1].body as string;
+    const parsed = JSON.parse(calledBody);
+    expect(parsed.description).toBe("real update");
+    // The null-tags field must be stripped entirely — it should not
+    // appear in the body, with or without a value. Locks in the
+    // "null means no change" semantic at the wire layer.
+    expect("tags" in parsed).toBe(false);
+  });
+
+  it("update empty-input guard catches null-only tags input (no stealth empty)", async () => {
+    // Edge case: if the ONLY field a caller passes is `tags: null`,
+    // the normalization should drop it, and then the hasAnyField
+    // check should trip because the normalized object is empty.
+    // Without the normalization, the hasAnyField check would pass
+    // (since null !== undefined) and a garbage request would be
+    // sent — or requireValidTags would crash. Locks in the
+    // normalized-then-checked order.
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+
+    const error = await client
+      .update("r_abc", { tags: null as unknown as string[] })
+      .catch((e: unknown) => e as ValidationError);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).detail).toContain("at least one field");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("update rejects empty input pre-flight (no fields provided)", async () => {
     // update() must reject `{}` client-side — the server-side "at least
     // one field" check would otherwise be the only guard, and the
