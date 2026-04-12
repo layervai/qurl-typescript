@@ -27,16 +27,9 @@ const RETRY_BASE_DELAY_MS = 500;
 const RETRY_MAX_DELAY_MS = 30_000;
 const RETRYABLE_STATUS = new Set([429, 502, 503, 504]);
 const RETRYABLE_STATUS_MUTATING = new Set([429]);
+type HttpMethod = "GET" | "POST" | "PATCH" | "DELETE";
 
-// Shared empty default for the `passthroughStatuses` parameter on rawRequest,
-// so each call that doesn't pass statuses doesn't allocate a fresh `[]`.
 const NO_PASSTHROUGH_STATUSES: readonly number[] = [];
-
-// Shared passthrough list for `batchCreate`. HTTP 400 on this endpoint
-// carries a populated `BatchCreateOutput` body when every item failed
-// validation — whitelist it so the generic error path doesn't swallow
-// the per-item errors. Hoisted out of the call site for consistency
-// with `NO_PASSTHROUGH_STATUSES` and to avoid per-call allocation.
 const BATCH_PASSTHROUGH_STATUSES: readonly number[] = [400];
 
 /** Allowlist of known query-param keys for the `list()` endpoint. */
@@ -158,7 +151,6 @@ function requireMaxSessionsInRange(value: number | undefined): void {
  * Unlike `delete()`, these endpoints accept both `r_` and `q_` IDs,
  * so no prefix check is needed — just non-empty.
  *
- * Matches the Python SDK's `validate_id()` in `_utils.py:84`.
  */
 function requireNonEmptyId(id: string, method: string): void {
   if (!id) {
@@ -167,16 +159,7 @@ function requireNonEmptyId(id: string, method: string): void {
 }
 
 function requireValidTags(tags: string[] | null | undefined): void {
-  // `null` is included in the signature (not just the runtime guard)
-  // so the type itself documents the untyped-JS tolerance: `null` is
-  // treated the same as `undefined` ("don't touch tags"), matching
-  // the list() filter's null-handling. Anything else that isn't an
-  // array (a plain object, number, string passed where an array was
-  // expected) is a clear caller mistake and surfaces as a clean
-  // ValidationError rather than falling through to a less helpful
-  // runtime TypeError on `.length`. TypeScript callers hit the
-  // compile-time type check; the runtime Array.isArray path catches
-  // consumers calling from plain JS.
+  // null tolerance for untyped-JS callers — treated as "don't touch."
   if (tags === undefined || tags === null) return;
   if (!Array.isArray(tags)) {
     throw clientValidationError(`tags: must be an array of strings (got ${typeof tags})`);
@@ -184,19 +167,13 @@ function requireValidTags(tags: string[] | null | undefined): void {
   if (tags.length > MAX_TAGS) {
     throw clientValidationError(`tags: max ${MAX_TAGS} items allowed (got ${tags.length})`);
   }
-  // Collect ALL invalid tags in a single pass instead of failing fast
-  // on the first one. Matches the collect-all pattern used by
-  // `batchCreate` for per-item validation — callers fixing multiple
-  // bad tags shouldn't have to fix-re-run-repeat. Tag arrays are
-  // small (MAX_TAGS = 10) so the cost is negligible.
   const errors: string[] = [];
   for (let i = 0; i < tags.length; i++) {
     const tag = tags[i];
     // Per-element type guard for untyped-JS callers. Without this, a
     // non-string element would silently pass (`.length` on a number is
     // `undefined`; `TAG_PATTERN.test(42)` coerces to `"42"`) or TypeError
-    // (`null.length`). Matches the `isinstance(tag, str)` check in
-    // qurl-python's `_require_valid_tags`.
+    // (`null.length`).
     if (typeof tag !== "string") {
       errors.push(`tags[${i}]: must be a string (got ${tag === null ? "null" : typeof tag})`);
       continue;
@@ -221,7 +198,6 @@ function requireValidTags(tags: string[] | null | undefined): void {
 // cheap client-side sanity check — the server is still the
 // authoritative validator (e.g. it rejects localhost, cloud metadata,
 // and private-range hosts; the SDK doesn't need to duplicate that).
-// Matches the qurl-python SDK's `_ALLOWED_URL_SCHEMES` check.
 const ALLOWED_URL_SCHEMES = ["http://", "https://"] as const;
 
 function requireValidTargetUrl(target_url: unknown): void {
@@ -415,17 +391,12 @@ export class QURLClient {
    * Uses destructuring to avoid mutation and unsafe casts.
    */
   private mapQurlsField(raw: QURL & { qurls?: AccessToken[] }): QURL {
+    if (!("qurls" in raw)) return raw;
     const { qurls, ...rest } = raw;
     if (qurls && !rest.access_tokens) {
       return { ...rest, access_tokens: qurls };
     }
     if (qurls && rest.access_tokens) {
-      // The API is authoritative when both fields are present — we
-      // keep `access_tokens` and drop `qurls`. This path is unexpected
-      // (the API spec returns exactly one of the two), so log a debug
-      // line to aid future-change diagnostics. A silent drop would
-      // make a spec migration hard to notice; the log gives operators
-      // a signal without raising for something that's not a caller error.
       this.log("mapQurlsField: received both 'qurls' and 'access_tokens'; keeping access_tokens", {
         qurls_count: qurls.length,
         access_tokens_count: rest.access_tokens.length,
@@ -467,7 +438,6 @@ export class QURLClient {
     const statusSuffix =
       envelope.http_status !== undefined ? ` (HTTP ${envelope.http_status})` : "";
 
-    // Layer 1: top-level shape.
     if (
       !result ||
       typeof result.succeeded !== "number" ||
@@ -479,7 +449,6 @@ export class QURLClient {
       );
     }
 
-    // Layer 2: arithmetic invariant.
     if (result.succeeded + result.failed !== result.results.length) {
       throw unexpectedResponseError(
         `Unexpected response shape from POST /v1/qurls/batch${statusSuffix}: ` +
@@ -488,9 +457,8 @@ export class QURLClient {
       );
     }
 
-    // Layer 3: per-entry discriminated-union contract. The reason
-    // string from `batchItemResultValidationReason` only reports field
-    // NAMES, never values — safe to surface into observability pipelines.
+    // Per-entry discriminated-union contract. Reason strings report
+    // field NAMES only, never values — safe for observability pipelines.
     for (let i = 0; i < result.results.length; i++) {
       const reason = batchItemResultValidationReason(result.results[i]);
       if (reason !== null) {
@@ -562,15 +530,8 @@ export class QURLClient {
         `batchCreate accepts at most 100 items, got ${input.items.length}`,
       );
     }
-    // Validate each item the same way single-create validates its input.
-    // Catching obvious field issues client-side avoids the whole batch
-    // round-tripping just to come back as a per-item validation error.
-    //
-    // Collect ALL invalid items instead of failing fast on the first one
-    // — callers fixing a bad batch can see every problem in one pass
-    // instead of the frustrating fix-re-run-repeat loop fail-fast would
-    // force. Non-ValidationError exceptions (unexpected bugs) still
-    // re-throw immediately since they don't have a per-item attribution.
+    // Collect ALL per-item validation errors in one pass (not fail-fast)
+    // so callers see every problem without fix-re-run-repeat.
     const perItemErrors: string[] = [];
     for (let i = 0; i < input.items.length; i++) {
       try {
@@ -751,7 +712,7 @@ export class QURLClient {
    * through this path.
    */
   async extend(id: string, input: ExtendInput): Promise<QURL> {
-    requireNonEmptyId(id, "extend");
+    // No requireNonEmptyId here — update() validates the id.
     const { extend_by, expires_at } = input;
     return this.update(id, { extend_by, expires_at });
   }
@@ -764,44 +725,24 @@ export class QURLClient {
    */
   async update(id: string, input: UpdateInput): Promise<QURL> {
     requireNonEmptyId(id, "update");
-    // Normalize `null` → `undefined` for all update fields before any
-    // downstream checks. TypeScript's type system already enforces
-    // optional fields, but untyped-JS callers may pass `{ tags: null }`
-    // or `{ description: null }` expecting "don't touch this field".
-    // Without this normalization, `null` would:
-    //   1. Pass the `hasAnyField` check (since `null !== undefined`),
-    //      producing a false "non-empty" input.
-    //   2. Crash inside `requireValidTags(null)` on `.length`.
-    //   3. Reach the wire body as `"tags": null` via JSON.stringify,
-    //      which the server would likely reject or misinterpret.
-    // Mirrors the `list()` filter's null-tolerance (line ~550) where
-    // null query-param values are stripped for the same reason.
-    // A shallow copy keeps the caller's input object untouched.
+    // Normalize null → undefined so untyped-JS callers passing
+    // `{ tags: null }` don't leak null into the wire body or crash
+    // downstream validators. Shallow copy keeps caller input untouched.
     const normalized: UpdateInput = {};
+    let hasAnyField = false;
     for (const key of UPDATE_FIELD_KEYS) {
       const value = input[key];
       if (value !== null && value !== undefined) {
-        // `as any` / `as unknown as` gymnastics would satisfy the
-        // assignment to the union-typed key, but the simpler read
-        // is: for each UpdateInput key, copy non-null/undefined
-        // values to the normalized object. TypeScript can't prove
-        // the per-key assignment because the union type is erased
-        // in the loop, so use a tiny local cast.
         (normalized as Record<string, unknown>)[key] = value;
+        hasAnyField = true;
       }
     }
 
-    // Match batchCreate's client-side validation pattern: catch obvious
-    // mistakes before the API round-trip.
     if (normalized.extend_by !== undefined && normalized.expires_at !== undefined) {
       throw clientValidationError(
         "update: `extend_by` and `expires_at` are mutually exclusive — provide at most one",
       );
     }
-    // Driven by UPDATE_FIELD_KEYS (with its own compile-time completeness
-    // check) so a new field added to UpdateInput automatically participates
-    // in the empty-input guard instead of silently passing through.
-    const hasAnyField = UPDATE_FIELD_KEYS.some((key) => normalized[key] !== undefined);
     if (!hasAnyField) {
       throw clientValidationError(
         `update: at least one field (${UPDATE_FIELD_KEYS.join(", ")}) must be provided`,
@@ -858,7 +799,7 @@ export class QURLClient {
   // --- Internal HTTP plumbing ---
 
   private async request<T>(
-    method: string,
+    method: HttpMethod,
     path: string,
     body?: unknown,
     passthroughStatuses?: readonly number[],
@@ -877,7 +818,7 @@ export class QURLClient {
    * drop the per-item errors.
    */
   private async rawRequest<T>(
-    method: string,
+    method: HttpMethod,
     path: string,
     body?: unknown,
     passthroughStatuses: readonly number[] = NO_PASSTHROUGH_STATUSES,
@@ -950,12 +891,6 @@ export class QURLClient {
         }
         try {
           const json = (await response.json()) as ApiResponse<T>;
-          // Inject the HTTP status via shallow copy (not in-place
-          // mutation of the parsed JSON) so downstream callers get an
-          // SDK-owned object. Mirrors the non-mutating style used by
-          // `mapQurlsField` and `batchCreate`'s `request_id` attach.
-          // `response.json()` already produces a fresh object, so the
-          // spread is cheap and no one else holds a reference to it.
           return { ...json, http_status: response.status };
         } catch (parseErr) {
           // On the ok path, a non-JSON body is a server contract
@@ -964,18 +899,9 @@ export class QURLClient {
           if (!isPassthrough) {
             throw parseErr;
           }
-          // Passthrough path: a proxy/CDN/WAF can return a whitelisted
-          // status (e.g. 400 for `batchCreate`) with a non-JSON body —
-          // a Cloudflare HTML error page, a truncated response, a
-          // gateway's plaintext error. Surface a clean QURLError with
-          // the observed status instead of bubbling SyntaxError. We
-          // synthesize a minimal error envelope directly rather than
-          // delegating to `parseError` because the Response body stream
-          // has already been consumed. No retry classification runs:
-          // passthrough states are definitive (batchCreate's 400 is a
-          // final answer, not a transient condition), and a non-JSON
-          // body there has no retryable signal. Mirrors the fix in
-          // qurl-python's `_raw_request` (PR #8 commit 73ada8a).
+          // Non-JSON body on passthrough status (e.g. proxy HTML on 400).
+          // Synthesize a clean error — body stream is already consumed
+          // so we can't delegate to parseError.
           this.log(
             `non-JSON body on passthrough status ${response.status}; surfacing as QURLError`,
             {
