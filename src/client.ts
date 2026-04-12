@@ -620,6 +620,11 @@ export class QURLClient {
    * validation style used for `max_sessions`, `tag count`, URL length.
    */
   async list(input: ListInput = {}): Promise<ListOutput> {
+    // The `!== null` check is intentional despite `ListInput.limit`
+    // being typed as `number | undefined`: an untyped JS caller can
+    // pass `{ limit: null }` which would serialize to `?limit=null`
+    // via `String(null)` in the query-param loop below. Matches the
+    // null-tolerance pattern used for tags and other list filters.
     if (input.limit !== undefined && input.limit !== null) {
       if (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > 100) {
         throw clientValidationError(

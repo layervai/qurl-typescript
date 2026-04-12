@@ -1,6 +1,16 @@
 import type { QURLErrorData } from "./types.js";
 
-/** Base error thrown by the QURL API client. Catch this to handle all SDK errors. */
+/**
+ * Base error thrown by the QURL API client. Catch this to handle all SDK errors.
+ *
+ * **`status: 0` convention:** Client-detected failures — validation errors
+ * (`code: "client_validation"`), unexpected response shapes
+ * (`code: "unexpected_response"`), network errors (`code: "network_error"`),
+ * and timeouts (`code: "timeout"`) — all use `status: 0` because no real
+ * HTTP status code applies. To distinguish between these cases, branch on
+ * `.code` rather than `.status`. Non-zero `.status` always reflects a real
+ * HTTP status from the API (e.g. 400, 401, 429, 500).
+ */
 export class QURLError extends Error {
   readonly status: number;
   readonly code: string;
