@@ -497,6 +497,49 @@ describe("QURLClient", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("get rejects empty id", async () => {
+    // Empty id produces `GET /v1/qurls/` which hits the list endpoint,
+    // not get. The client-side check catches this before a round-trip.
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+    const error = await client.get("").catch((e: unknown) => e as ValidationError);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).code).toBe("client_validation");
+    expect((error as ValidationError).detail).toContain("id is required");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("update rejects empty id", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+    const error = await client
+      .update("", { description: "test" })
+      .catch((e: unknown) => e as ValidationError);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).detail).toContain("id is required");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("extend rejects empty id", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+    const error = await client
+      .extend("", { extend_by: "24h" })
+      .catch((e: unknown) => e as ValidationError);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).detail).toContain("id is required");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("mintLink rejects empty id", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+    const error = await client.mintLink("").catch((e: unknown) => e as ValidationError);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).detail).toContain("id is required");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("extends a QURL", async () => {
     const fetch = mockFetch({
       status: 200,

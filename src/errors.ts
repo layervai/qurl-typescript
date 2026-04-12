@@ -71,7 +71,20 @@ export class NotFoundError extends QURLError {
   }
 }
 
-/** 400/422 — invalid request parameters. Check `invalidFields` for per-field details. */
+/**
+ * 400/422 — invalid request parameters. Check `invalidFields` for per-field details.
+ *
+ * **Note:** This class covers two distinct failure modes:
+ * - `code: "client_validation"` — client-side preflight failures (bad
+ *   input caught before a round-trip).
+ * - `code: "unexpected_response"` — the server returned a response body
+ *   whose shape doesn't match the expected contract (e.g. a proxy
+ *   returning HTML on a passthrough status, or a batch response missing
+ *   required fields).
+ *
+ * `instanceof ValidationError` catches both. To distinguish them, check
+ * `.code` rather than using `instanceof` alone.
+ */
 export class ValidationError extends QURLError {
   constructor(data: QURLErrorData) {
     super(data);

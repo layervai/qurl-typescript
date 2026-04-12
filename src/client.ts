@@ -148,6 +148,24 @@ function requireMaxSessionsInRange(value: number | undefined): void {
   }
 }
 
+/**
+ * Validates that an ID argument is a non-empty string. Endpoints that
+ * accept resource or QURL display IDs (`get`, `update`, `extend`,
+ * `mintLink`) use this to catch empty strings early — without it,
+ * `encodeURIComponent("")` returns `""` and the path collapses
+ * (e.g. `GET /v1/qurls/` hits the list endpoint, not get).
+ *
+ * Unlike `delete()`, these endpoints accept both `r_` and `q_` IDs,
+ * so no prefix check is needed — just non-empty.
+ *
+ * Matches the Python SDK's `validate_id()` in `_utils.py:84`.
+ */
+function requireNonEmptyId(id: string, method: string): void {
+  if (!id) {
+    throw clientValidationError(`${method}: id is required`);
+  }
+}
+
 function requireValidTags(tags: string[] | null | undefined): void {
   // `null` is included in the signature (not just the runtime guard)
   // so the type itself documents the untyped-JS tolerance: `null` is
@@ -600,6 +618,7 @@ export class QURLClient {
    * prefix); the API resolves `q_` IDs to the parent resource automatically.
    */
   async get(id: string): Promise<QURL> {
+    requireNonEmptyId(id, "get");
     const raw = await this.request<QURL & { qurls?: AccessToken[] }>(
       "GET",
       `/v1/qurls/${encodeURIComponent(id)}`,
@@ -732,6 +751,7 @@ export class QURLClient {
    * through this path.
    */
   async extend(id: string, input: ExtendInput): Promise<QURL> {
+    requireNonEmptyId(id, "extend");
     const { extend_by, expires_at } = input;
     return this.update(id, { extend_by, expires_at });
   }
@@ -743,6 +763,7 @@ export class QURLClient {
    * prefix); the API resolves `q_` IDs to the parent resource automatically.
    */
   async update(id: string, input: UpdateInput): Promise<QURL> {
+    requireNonEmptyId(id, "update");
     // Normalize `null` → `undefined` for all update fields before any
     // downstream checks. TypeScript's type system already enforces
     // optional fields, but untyped-JS callers may pass `{ tags: null }`
@@ -803,6 +824,7 @@ export class QURLClient {
    * prefix); the API resolves `q_` IDs to the parent resource automatically.
    */
   async mintLink(id: string, input?: MintInput): Promise<MintOutput> {
+    requireNonEmptyId(id, "mintLink");
     if (input?.expires_in !== undefined && input.expires_at !== undefined) {
       throw clientValidationError(
         "mintLink: `expires_in` and `expires_at` are mutually exclusive — provide at most one",
