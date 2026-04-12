@@ -14,7 +14,12 @@ import type { QURLErrorData } from "./types.js";
 export class QURLError extends Error {
   readonly status: number;
   readonly code: string;
-  /** Human-readable detail. Falls back to the title when the API omits it. */
+  /**
+   * Human-readable error detail. **Always non-empty** — when the API
+   * omits `detail` (RFC 7807 allows this), the constructor falls back
+   * to `title`. Callers never need to null-check this property, even
+   * though `QURLErrorData.detail` is optional on the wire type.
+   */
   readonly detail: string;
   /** RFC 7807 problem-type URI, if the API includes one. */
   readonly type?: string;
