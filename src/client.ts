@@ -496,6 +496,12 @@ export class QURLClient {
    * call as successful. Other error statuses (401, 403, 429, 5xx) still
    * throw the appropriate `QURLError` subclass.
    *
+   * **Client-side validation:** All items are validated before any network
+   * request is made (target_url scheme, label length, max_sessions range,
+   * tag constraints). All failures are collected into a single
+   * `ValidationError` with per-index attribution (`"items[0]: ...; items[3]: ..."`),
+   * so callers see every problem in one throw instead of fix-re-run-repeat.
+   *
    * Throws `ValidationError` client-side (`status: 0`, `code: "client_validation"`)
    * when `items` is empty or exceeds 100, or when the HTTP 400 response body
    * doesn't match the expected `BatchCreateOutput` shape (defense-in-depth
@@ -695,7 +701,7 @@ export class QURLClient {
       throw clientValidationError(
         `delete: only resource IDs (${RESOURCE_ID_PREFIX} prefix) are accepted — ` +
           `got an ID starting with "${observedPrefix}". ` +
-          "To revoke a single access token, use the token-scoped revoke endpoint (not yet available in this SDK version).",
+          "To revoke a single access token, use the resource-scoped token endpoint.",
       );
     }
     await this.rawRequest("DELETE", `/v1/qurls/${encodeURIComponent(id)}`);
