@@ -2689,6 +2689,48 @@ describe("QURLClient", () => {
     expect(fetch.mock.calls[1][0] as string).toContain("cursor=cur_combined");
   });
 
+  it("listAll terminates on duplicate cursor (stale-cursor guard)", async () => {
+    // If the server has a bug and returns the same cursor on
+    // consecutive pages, listAll should break to prevent an
+    // infinite loop rather than re-requesting the same page forever.
+    const page1Response = {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      headers: new Headers({}),
+      json: () =>
+        Promise.resolve({
+          data: [{ resource_id: "r_stale1" }],
+          meta: { has_more: true, next_cursor: "cur_stuck" },
+        }),
+    } satisfies Partial<Response> as Response;
+
+    const page2Response = {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      headers: new Headers({}),
+      json: () =>
+        Promise.resolve({
+          data: [{ resource_id: "r_stale2" }],
+          // Server bug: returns the SAME cursor as page 1.
+          meta: { has_more: true, next_cursor: "cur_stuck" },
+        }),
+    } satisfies Partial<Response> as Response;
+
+    const fetch = vi.fn().mockResolvedValueOnce(page1Response).mockResolvedValueOnce(page2Response);
+
+    const client = createClient(fetch as typeof globalThis.fetch);
+    const items: string[] = [];
+    for await (const qurl of client.listAll()) {
+      items.push((qurl as { resource_id: string }).resource_id);
+    }
+    // Both pages yielded, then iteration stopped.
+    expect(items).toEqual(["r_stale1", "r_stale2"]);
+    // Only 2 fetches — no infinite loop.
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
   it("list passes all filter params simultaneously", async () => {
     const fetch = mockFetch({
       status: 200,
@@ -3658,13 +3700,12 @@ describe("QURLClient", () => {
     expect((error as ValidationError).detail).not.toContain("400 Bad Request");
   });
 
-  it("rawRequest preserves SyntaxError on non-JSON success (ok path) body", async () => {
+  it("rawRequest wraps non-JSON success (ok path) body in a typed QURLError", async () => {
     // Complementary to the passthrough test above: on the OK path
-    // (200-299), a non-JSON body is a server contract violation and
-    // must throw the original `SyntaxError` at the call site so the
-    // bug is debuggable. The passthrough JSON-guard must NOT eat
-    // SyntaxErrors on successful responses — that would hide real
-    // API breakage behind a generic ValidationError.
+    // (200-299), a non-JSON body is a server contract violation.
+    // Previously this threw a raw SyntaxError with no SDK metadata;
+    // now it's wrapped in a QURLError so consumers catching by-class
+    // get status/code/detail.
     const nonJsonOkFetch = vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
@@ -3676,12 +3717,11 @@ describe("QURLClient", () => {
     } satisfies Partial<Response> as Response);
 
     const client = createClient(nonJsonOkFetch as typeof globalThis.fetch);
-    // getQuota() uses the default path (no passthrough statuses), so
-    // this exercises `response.ok === true` with a non-JSON body.
     const error = await client.getQuota().catch((e: unknown) => e);
-    // The original SyntaxError bubbles up — NOT a ValidationError.
-    expect(error).toBeInstanceOf(SyntaxError);
-    expect((error as SyntaxError).message).toContain("not valid JSON");
+    expect(error).toBeInstanceOf(QURLError);
+    expect((error as QURLError).status).toBe(200);
+    expect((error as QURLError).code).toBe("unexpected_response");
+    expect((error as QURLError).detail).toContain("non-JSON");
   });
 
   it("batch create rejects success entries missing resource_id", async () => {

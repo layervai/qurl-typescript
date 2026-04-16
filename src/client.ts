@@ -628,8 +628,8 @@ export class QURLClient {
       // Drop null/undefined and empty strings — an empty string from
       // an untyped JS caller would otherwise produce `?status=&q=`
       // garbage that the API might interpret as an explicit empty
-      // filter. Numeric 0 is preserved (serializes as "0") because
-      // it's a meaningful `limit` value.
+      // filter. Non-zero numerics are preserved (serialize as their
+      // string form); `limit` is validated separately above.
       if (value !== null && value !== undefined && value !== "") {
         params.set(key, String(value));
       }
@@ -661,12 +661,22 @@ export class QURLClient {
    */
   async *listAll(input: Omit<ListInput, "cursor"> = {}): AsyncGenerator<QURL, void, undefined> {
     let cursor: string | undefined;
+    let previousCursor: string | undefined;
     do {
       const page = await this.list({ ...input, cursor });
       for (const qurl of page.qurls) {
         yield qurl;
       }
+      previousCursor = cursor;
       cursor = page.next_cursor;
+      // Stale-cursor guard: if the server returns the same cursor
+      // twice (a server bug), break instead of looping forever.
+      if (cursor && cursor === previousCursor) {
+        this.log(
+          `listAll: server returned duplicate cursor "${cursor}", terminating to prevent infinite loop`,
+        );
+        break;
+      }
     } while (cursor);
   }
 
@@ -899,11 +909,20 @@ export class QURLClient {
           const json = (await response.json()) as ApiResponse<T>;
           return { ...json, http_status: response.status };
         } catch (parseErr) {
-          // On the ok path, a non-JSON body is a server contract
-          // violation that should throw at the call site — preserve
-          // the original SyntaxError behavior so it's debuggable.
           if (!isPassthrough) {
-            throw parseErr;
+            // Non-JSON body on a success (2xx) response. Wrap in a
+            // typed SDK error so consumers catching QURLError don't
+            // miss it — a raw SyntaxError has no status/code/detail.
+            this.log(`non-JSON body on success response ${response.status}`, {
+              status: response.status,
+              content_type: response.headers.get("content-type") ?? undefined,
+            });
+            throw createError({
+              status: response.status,
+              code: "unexpected_response",
+              title: response.statusText || `HTTP ${response.status}`,
+              detail: `Expected JSON response body on HTTP ${response.status} but received non-JSON content`,
+            });
           }
           // Non-JSON body on passthrough status (e.g. proxy HTML on 400).
           // Synthesize a clean error — body stream is already consumed
