@@ -64,6 +64,14 @@ jobs:
           command -v jq >/dev/null || { echo "::error::jq not available on runner"; exit 1; }
           command -v curl >/dev/null || { echo "::error::curl not available on runner"; exit 1; }
 
+          # Validate numeric input from workflow_dispatch — a non-numeric
+          # min_age_days would crash later at `$age_days -lt $MIN_AGE_DAYS`
+          # with a cryptic bash error. Catch it here with a clear message.
+          [[ "$MIN_AGE_DAYS" =~ ^[0-9]+$ ]] || {
+            echo "::error::MIN_AGE_DAYS must be a non-negative integer (got: ${MIN_AGE_DAYS})"
+            exit 1
+          }
+
           failed=false
           skipped_count=0
           checked_count=0
@@ -117,6 +125,11 @@ jobs:
           # exotic characters in $pkg from reaching the curl URL (defense
           # against crafted lockfile entries with path-traversal / query
           # injection in the URL path).
+          #
+          # Slightly stricter than the full npm spec — `~` is technically
+          # legal in names but vanishingly rare, and being restrictive in a
+          # security check is the right default. If a real dep hits this
+          # branch, the ::warning:: in the skipped-count path surfaces it.
           is_valid_pkg_name() {
             local name="$1"
             [ ${#name} -le 214 ] || return 1
