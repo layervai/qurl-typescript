@@ -70,6 +70,10 @@ jobs:
           # rather than silently skipping checks if the runner image changes.
           command -v jq >/dev/null || { echo "::error::jq not available on runner"; exit 1; }
           command -v curl >/dev/null || { echo "::error::curl not available on runner"; exit 1; }
+          # `date -d @0` catches a BSD date silently replacing GNU date —
+          # BSD date rejects the @-prefix epoch syntax, so the downstream
+          # `date -d "$publish_time"` calls would misbehave in that case.
+          date -d @0 >/dev/null 2>&1 || { echo "::error::GNU date -d not available; workflow assumes ubuntu-latest"; exit 1; }
 
           # Validate numeric input from workflow_dispatch — a non-numeric
           # min_age_days would crash later at `$age_days -lt $MIN_AGE_DAYS`
@@ -102,7 +106,7 @@ jobs:
           # branch and skip the security check entirely.
           name_check=$(git diff --name-only --no-renames "${base_ref}...HEAD" -- package-lock.json) \
             || { echo "::error::git diff --name-only against ${base_ref} failed"; exit 1; }
-          if ! echo "$name_check" | grep -q .; then
+          if [ -z "$name_check" ]; then
             echo "No package-lock.json changes detected"
             exit 0
           fi
@@ -116,7 +120,7 @@ jobs:
           # node_modules won't be extracted cleanly; both are uncommon in
           # practice given npm v7+'s aggressive hoisting.
           new_packages=$(git diff --no-renames "${base_ref}...HEAD" -- package-lock.json \
-            | grep '^+' | grep '"resolved"' \
+            | grep '^+.*"resolved"' \
             | sed -n \
               -e 's|.*https://registry.npmjs.org/\(@[^/]*/[^/]*\)/-/.*|\1|p' \
               -e 's|.*https://registry.npmjs.org/\([^@][^/]*\)/-/.*|\1|p' \
@@ -236,8 +240,12 @@ jobs:
             # structure (npm 7+). CI pins Node 22 / npm 10+, so we'll always
             # emit v3 lockfiles; a v2 lockfile would miss entries that only
             # appear under `.dependencies`.
+            # Tolerate a corrupt/unexpected lockfile shape: `|| true` keeps
+            # set -e from killing the run; jq errors go to stderr (which
+            # reaches the Actions log). Empty version flows through to the
+            # "no version in lockfile" skip below.
             version=$(jq -r --arg p "node_modules/${pkg}" \
-              '.packages[$p].version // empty' package-lock.json)
+              '.packages[$p].version // empty' package-lock.json) || true
             if [ -z "$version" ]; then
               echo "::warning::${pkg} — could not determine installed version from lockfile (skipped)"
               echo "| \`${pkg}\` | — | — | :warning: skipped (no version in lockfile) |" >> "$GITHUB_STEP_SUMMARY"
