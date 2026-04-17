@@ -145,6 +145,8 @@ jobs:
           # branch, the ::warning:: in the skipped-count path surfaces it.
           is_valid_pkg_name() {
             local name="$1"
+            # 214 = npm's maximum package name length (includes the `@scope/`
+            # prefix for scoped packages). Per npm's naming spec.
             [ ${#name} -le 214 ] || return 1
             [[ "$name" =~ ^(@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*$ ]]
           }
@@ -159,7 +161,11 @@ jobs:
           fetch_publish_time() {
             local pkg="$1" version="$2" response_file http_code
             response_file=$(mktemp)
-            # shellcheck disable=SC2064  # expand $response_file at trap-set time
+            # We want $response_file to be expanded *now* (when the trap is
+            # set), not when the trap fires — by that point `local` has
+            # already gone out of scope. Using double quotes for the trap
+            # command is deliberate; single quotes would defer expansion.
+            # shellcheck disable=SC2064
             trap "rm -f '$response_file'" RETURN
             # URL-encode the `/` in scoped names (`@scope/name` → `@scope%2Fname`).
             # Both forms resolve today, but the encoded form is the canonical
@@ -241,7 +247,7 @@ jobs:
             case "$fetch_rc" in
               0)
                 if [ -z "$publish_time" ]; then
-                  echo "::warning::${pkg}@${version} — version not in registry timestamps (skipped)"
+                  echo "::warning::${pkg}@${safe_ver} — version not in registry timestamps (skipped)"
                   echo "| \`${pkg}\` | ${safe_ver} | — | :warning: skipped (version not in registry) |" >> "$GITHUB_STEP_SUMMARY"
                   skipped_count=$((skipped_count + 1))
                   continue
@@ -250,7 +256,7 @@ jobs:
               1)
                 # 404/410 — package not on npmjs (private registry, scope-only, or unpublished).
                 # Skip with warning; no way to verify age from public metadata.
-                echo "::warning::${pkg}@${version} — not found on npmjs.org (private or unpublished; skipped)"
+                echo "::warning::${pkg}@${safe_ver} — not found on npmjs.org (private or unpublished; skipped)"
                 echo "| \`${pkg}\` | ${safe_ver} | — | :warning: skipped (404 — private or unpublished) |" >> "$GITHUB_STEP_SUMMARY"
                 skipped_count=$((skipped_count + 1))
                 continue
@@ -258,7 +264,7 @@ jobs:
               *)
                 # Transient failure after curl --retry. Fail closed — an outage
                 # must not silently let new deps through a security control.
-                echo "::error::${pkg}@${version} — registry unreachable after retry"
+                echo "::error::${pkg}@${safe_ver} — registry unreachable after retry"
                 echo "| \`${pkg}\` | ${safe_ver} | — | :x: registry unreachable |" >> "$GITHUB_STEP_SUMMARY"
                 failed=true
                 continue
