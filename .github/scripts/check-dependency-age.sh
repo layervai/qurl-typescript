@@ -253,7 +253,9 @@ for pkg in $new_packages; do
   #
   # `2>/dev/null || true` so a malformed/unparseable lockfile yields a
   # clean per-package skip via the `-z "$version"` branch below rather
-  # than aborting the whole run under `set -e`.
+  # than aborting the whole run under `set -e`. The stderr suppression
+  # matches the per-package-skip posture elsewhere — a failure here is
+  # expected if a future lockfile includes something jq can't parse.
   version=$(jq -r --arg p "node_modules/${pkg}" \
     '.packages[$p].version // empty' package-lock.json 2>/dev/null || true)
   if [ -z "$version" ]; then
