@@ -83,8 +83,12 @@ jobs:
             # documents (e.g. typescript ~15MB) in a shell variable.
             # -sSf: silent but show errors on stderr (breadcrumb for DNS/timeout/403).
             # --compressed: request gzip from registry for faster transfers.
+            # Single retry with 2s backoff on transient failures (429, timeout, DNS).
             publish_time=$(curl -sSf --compressed -m 10 "https://registry.npmjs.org/${pkg}" \
-              | jq -r --arg v "$version" '.time[$v] // empty') || true
+              | jq -r --arg v "$version" '.time[$v] // empty') \
+              || { sleep 2; publish_time=$(curl -sSf --compressed -m 10 "https://registry.npmjs.org/${pkg}" \
+              | jq -r --arg v "$version" '.time[$v] // empty'); } \
+              || true
             if [ -z "$publish_time" ]; then
               echo "::warning::${pkg}@${version} — version not found in registry timestamps (skipped)"
               echo "| \`${pkg}\` | ${version} | — | :warning: skipped (version not in registry) |" >> "$GITHUB_STEP_SUMMARY"
