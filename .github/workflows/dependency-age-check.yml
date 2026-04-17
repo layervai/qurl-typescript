@@ -43,6 +43,10 @@ jobs:
   check-dependency-age:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # On `workflow_dispatch`, `github.event.pull_request` is null — the
+    # labels array evaluates empty and `contains(...)` is false, so the
+    # job always runs. That's the desired behavior: manual runs shouldn't
+    # be bypassable via PR labels.
     if: ${{ !contains(github.event.pull_request.labels.*.name, 'age-check-bypass') }}
     steps:
       # fetch-depth: 0 is intentional — the three-dot diff
@@ -119,6 +123,16 @@ jobs:
           # (`npm:other-package@version`) and packages nested under non-root
           # node_modules won't be extracted cleanly; both are uncommon in
           # practice given npm v7+'s aggressive hoisting.
+          #
+          # The trailing `|| true` handles grep's "exit 1 on no matches"
+          # contract: if a lockfile change touches only metadata (integrity
+          # updates, non-resolved fields) there are no `"resolved"` lines,
+          # grep exits 1, and under `pipefail` the whole pipeline would
+          # exit 1. `|| true` converts that to "$new_packages is empty" and
+          # the `-z "$new_packages"` branch below gives a clean early exit.
+          # The upstream `name_check` guard + `base_ref` handling already
+          # cover the real failure modes, so this `|| true` only masks the
+          # expected no-match case.
           new_packages=$(git diff --no-renames "${base_ref}...HEAD" -- package-lock.json \
             | grep '^+.*"resolved"' \
             | sed -n \
@@ -177,7 +191,11 @@ jobs:
             # already gone out of scope. Using double quotes for the trap
             # command is deliberate; single quotes would defer expansion.
             # shellcheck disable=SC2064
-            trap "rm -f '$response_file'" RETURN
+            # Inner path uses escaped double quotes rather than single
+            # quotes so a mktemp path containing a single quote (not
+            # possible with GNU mktemp today, but defensive) wouldn't
+            # break the trap command.
+            trap "rm -f \"$response_file\"" RETURN
             # URL-encode the `/` in scoped names (`@scope/name` → `@scope%2Fname`).
             # Both forms resolve today, but the encoded form is the canonical
             # registry API path — makes the request unambiguously correct.
@@ -244,8 +262,12 @@ jobs:
             # set -e from killing the run; jq errors go to stderr (which
             # reaches the Actions log). Empty version flows through to the
             # "no version in lockfile" skip below.
+            # `2>/dev/null || true` so a malformed/unparseable lockfile
+            # yields a clean per-package skip via the `-z "$version"`
+            # branch below rather than aborting the whole run under
+            # `set -e`.
             version=$(jq -r --arg p "node_modules/${pkg}" \
-              '.packages[$p].version // empty' package-lock.json) || true
+              '.packages[$p].version // empty' package-lock.json 2>/dev/null || true)
             if [ -z "$version" ]; then
               echo "::warning::${pkg} — could not determine installed version from lockfile (skipped)"
               echo "| \`${pkg}\` | — | — | :warning: skipped (no version in lockfile) |" >> "$GITHUB_STEP_SUMMARY"
