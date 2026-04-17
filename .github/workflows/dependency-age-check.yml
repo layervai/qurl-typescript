@@ -15,6 +15,9 @@ on:
     branches: [main]
     paths:
       - "package-lock.json"
+  # Manual dispatch is intended for re-running the check on a feature
+  # branch with lockfile changes — triggering on `main` itself produces
+  # an empty diff against origin/main and the job exits early (harmless).
   workflow_dispatch:
     inputs:
       base_ref:
@@ -114,12 +117,15 @@ jobs:
           echo "Checking ${pkg_count} new/updated package(s)..."
           echo ""
 
-          cat >> "$GITHUB_STEP_SUMMARY" <<'SUMMARY_HEADER'
-          ## Dependency Age Check
-
-          | Package | Version | Age (days) | Status |
-          |---------|---------|------------|--------|
-          SUMMARY_HEADER
+          # Block-redirect form (not heredoc) so the YAML/bash indentation
+          # story is unambiguous — every byte we want in the summary is in
+          # an explicit echo argument.
+          {
+            echo "## Dependency Age Check"
+            echo ""
+            echo "| Package | Version | Age (days) | Status |"
+            echo "|---------|---------|------------|--------|"
+          } >> "$GITHUB_STEP_SUMMARY"
 
           # Validates input looks like a real npm package name. Blocks any
           # exotic characters in $pkg from reaching the curl URL (defense
@@ -192,6 +198,10 @@ jobs:
               continue
             fi
 
+            # The `.packages["node_modules/${pkg}"]` path is the lockfile v3
+            # structure (npm 7+). CI pins Node 22 / npm 10+, so we'll always
+            # emit v3 lockfiles; a v2 lockfile would miss entries that only
+            # appear under `.dependencies`.
             version=$(jq -r --arg p "node_modules/${pkg}" \
               '.packages[$p].version // empty' package-lock.json)
             if [ -z "$version" ]; then
