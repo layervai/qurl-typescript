@@ -1,0 +1,28 @@
+# Minimal OpenAPI snapshot — the subset of the upstream QURL API
+# contract this SDK's public methods call.
+#
+# Hand-maintained. Update this file in lockstep with src/client.ts when
+# the upstream API adds/renames an endpoint the SDK uses. The contract
+# test (src/contract.test.ts) fails loudly when the two diverge.
+#
+# Operation bodies intentionally empty: the contract test only asserts
+# (verb, path) pairs. Request/response body shape drift is a separate
+# concern (see CONTRIBUTING.md).
+openapi: 3.0.3
+info:
+  title: QURL API — SDK contract surface
+  version: "1"
+paths:
+  /v1/qurls:
+    get: {}
+    post: {}
+  /v1/qurls/{id}:
+    get: {}
+    patch: {}
+    delete: {}
+  /v1/qurls/{id}/mint_link:
+    post: {}
+  /v1/resolve:
+    post: {}
+  /v1/quota:
+    get: {}
