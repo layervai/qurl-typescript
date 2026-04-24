@@ -21,6 +21,29 @@ npx eslint src/        # Lint
 
 All must pass before submitting a PR.
 
+## OpenAPI Contract Snapshot
+
+`contract/openapi.snapshot.yaml` is a vendored copy of `api/openapi.yaml`
+from the [qurl-service](https://github.com/layervai/qurl-service) backend.
+The contract test (`src/contract.test.ts`) reads it to assert every SDK
+method calls the (verb, path) pair the backend actually exposes.
+
+Regenerate it when adopting a newer qurl-service release:
+
+```bash
+# Expects qurl-service checked out at ../qurl-service (sibling directory).
+# Override with: QURL_SERVICE_DIR=/path/to/qurl-service
+scripts/update-openapi-snapshot.sh               # defaults to origin/main
+scripts/update-openapi-snapshot.sh v1.2.3        # pin to a tag
+scripts/update-openapi-snapshot.sh <sha>         # pin to a specific commit
+```
+
+The script writes the resolved commit SHA into the snapshot header, so
+reviewers can see exactly which version of the backend contract the SDK
+was last validated against. If the regenerated snapshot breaks the
+contract test, that's the signal: qurl-service changed an endpoint the
+SDK depends on, and the SDK needs to be updated in lockstep.
+
 ## Pull Requests
 
 1. Fork the repo and create a branch from `main`
