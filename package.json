@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "description": "TypeScript SDK for the QURL API - secure, time-limited access links",
   "type": "module",
+  "sideEffects": false,
   "main": "./dist/cjs/index.js",
   "module": "./dist/esm/index.js",
   "types": "./dist/esm/index.d.ts",

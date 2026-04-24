@@ -7,8 +7,8 @@ import { fileURLToPath } from "node:url";
 // Resolve against this file's location rather than process.cwd() so
 // the script behaves identically whether invoked via npm scripts
 // (cwd = package root) or directly from another directory.
-const cjs = fileURLToPath(new URL("../dist/cjs/package.json", import.meta.url));
 const esm = fileURLToPath(new URL("../dist/esm/package.json", import.meta.url));
+const cjs = fileURLToPath(new URL("../dist/cjs/package.json", import.meta.url));
 
-writeFileSync(cjs, '{"type":"commonjs"}\n');
 writeFileSync(esm, '{"type":"module"}\n');
+writeFileSync(cjs, '{"type":"commonjs"}\n');
