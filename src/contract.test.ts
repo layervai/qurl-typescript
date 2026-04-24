@@ -43,13 +43,11 @@ for (const [path, methods] of Object.entries(spec.paths ?? {})) {
 }
 
 // Escape regex metacharacters in a literal string so it can be embedded
-// in a larger regex safely. Over-escapes `-` (only significant inside
-// a character class) — harmless in the linear-regex contexts we use
-// this for (`\-` matches a literal `-`), and kept defensively so
-// future callers that DO embed in `[...]` don't have to remember to
-// re-escape.
+// in a larger regex safely. The only caller is templateRegex below,
+// which produces a linear regex (not a character class), so `-` and
+// other class-only metacharacters don't need escaping here.
 function regexEscape(literal: string): string {
-  return literal.replace(/[.*+?^${}()|[\]\\-]/g, "\\$&");
+  return literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 // `/v1/qurls/{id}` → `^/v1/qurls/[^/]+$`. Regex-escape the literal,
@@ -117,8 +115,10 @@ function assertSdkCallMatches(
   }
 }
 
-const mockOk = (body: unknown = { data: {}, meta: {} }): typeof globalThis.fetch =>
-  mockFetch({ status: 200, body });
+const mockOk = (
+  body: unknown = { data: {}, meta: {} },
+  status: number = 200,
+): typeof globalThis.fetch => mockFetch({ status, body });
 
 // Single source of truth for the contract-covered methods. Each entry
 // is one SDK public method → the (verb, template) it must call + a
@@ -134,6 +134,7 @@ type MethodCase = {
   verb: Verb;
   template: string;
   mockBody?: unknown;
+  mockStatus?: number;
   invoke: (c: QURLClient) => Promise<unknown>;
 };
 
@@ -189,7 +190,9 @@ const METHOD_CASES: MethodCase[] = [
     method: "delete",
     verb: "DELETE",
     template: "/v1/qurls/{id}",
-    mockBody: undefined,
+    // Real API returns 204 No Content on DELETE. Match it so the
+    // 204-branch in client.ts's rawRequest actually gets exercised.
+    mockStatus: 204,
     invoke: (c) => c.delete("r_x"),
   },
   {
@@ -293,8 +296,8 @@ describe("API contract", () => {
   // `create → POST /v1/qurls`.
   it.each(METHOD_CASES)(
     "$method → $verb $template",
-    async ({ mockBody, verb, template, invoke }) => {
-      const fetch = mockOk(mockBody);
+    async ({ mockBody, mockStatus, verb, template, invoke }) => {
+      const fetch = mockOk(mockBody, mockStatus);
       await invoke(createClient(fetch));
       assertSdkCallMatches(fetch, verb, template);
     },
