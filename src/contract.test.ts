@@ -55,6 +55,10 @@ for (const [path, methods] of Object.entries(spec.paths)) {
 // `/v1/qurls/{id}` → `^/v1/qurls/[^/]+$`. Regex-escape the literal,
 // then un-escape and widen the `{param}` segments into single-segment
 // wildcards. Anchored so `/v1/qurls` does not also match `/v1/qurls/{id}`.
+// Single-segment widening (`[^/]+` not `.+`) is intentional — a template
+// like `/v1/qurls/{id}/mint_link` must match `/v1/qurls/abc/mint_link`
+// but NOT `/v1/qurls/abc/def/mint_link`, which would be a different
+// (and unintended) endpoint.
 function templateRegex(pathTemplate: string): RegExp {
   const escaped = pathTemplate
     .replace(/[.+?^${}()|[\]\\]/g, "\\$&")
@@ -86,8 +90,17 @@ function assertSdkCallMatches(
         `Expected ${expectedVerb} ${expectedTemplate}.`,
     );
   }
+  // fetch() also accepts URL and Request instances, but client.ts only
+  // calls it with strings. A regression to URL/Request would make
+  // `new URL(rawUrl)` throw a confusing message — surface a clearer one.
+  if (typeof rawUrl !== "string") {
+    throw new Error(
+      `SDK called fetch with a ${typeof rawUrl}; contract test expects a string URL. ` +
+        `Expected ${expectedVerb} ${expectedTemplate}.`,
+    );
+  }
   const actualVerb = (init as RequestInit).method as Verb;
-  const actualPath = new URL(rawUrl as string).pathname;
+  const actualPath = new URL(rawUrl).pathname;
 
   // Layer 1: spec must declare the (verb, template) the test expects.
   const templateKey = `${expectedVerb} ${expectedTemplate}`;
@@ -300,6 +313,11 @@ describe("OpenAPI contract", () => {
     // The subtle case: if `create()` ever typo'd to POST /v1/resolve it
     // would be a spec-valid endpoint but the wrong contract. The helper
     // must catch this — membership-only checks silently would not.
+    //
+    // The error-string regex below is intentionally strict so that a
+    // copy edit to assertSdkCallMatches's error message breaks this test,
+    // forcing a reviewer to re-confirm the message is still operator-
+    // actionable. If you edit that message, update this regex too.
     const fetch = mockOk({ data: { target_url: "https://example.com" } });
     await client(fetch).resolve("at_y"); // actually calls POST /v1/resolve
     expect(() => assertSdkCallMatches(fetch, "POST", "/v1/qurls")).toThrow(

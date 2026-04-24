@@ -49,6 +49,20 @@ SDK depends on, and the SDK needs to be updated in lockstep.
 method calls. Alias methods (e.g. `extend` → `update`) get their own
 case so an alias rewire can't silently slip past.
 
+**What the contract test does and does not catch:** the assertion is
+scoped to `(verb, path)` — it verifies the SDK hits the right endpoint.
+It does **not** verify request body field names, response envelope
+parsing, or query parameter names. Body/response shape drift is a
+separate class (would warrant an `ajv`-backed schema validation layer
+against the OpenAPI component schemas) and is intentionally out of scope
+here.
+
+**Reviewing a regenerated-snapshot PR:** the ~4400-line YAML produces
+noisy diffs on every regen. Reviewers should verify the source commit
+SHA in the snapshot header and trust `git show` provenance — scanning
+the YAML body line-by-line is not a useful exercise. The contract test
+failing is the real signal that an SDK-used endpoint changed upstream.
+
 ## Pull Requests
 
 1. Fork the repo and create a branch from `main`
