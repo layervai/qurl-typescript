@@ -155,6 +155,22 @@ const SDK_PUBLIC_METHODS: ReadonlySet<string> = new Set([
 // not an API call — intentionally outside the contract set.
 const NON_API_PROTOTYPE_METHODS: ReadonlySet<string> = new Set(["constructor", "toJSON"]);
 
+// Internal helpers on the prototype that are deliberately excluded from
+// the public API surface. TypeScript's `private`/`protected` keywords
+// erase at runtime, so visibility isn't introspectable — this deny-list
+// IS the classification. Anything added here must be genuinely internal;
+// a user-callable method belongs in SDK_PUBLIC_METHODS instead.
+const INTERNAL_HELPERS: ReadonlySet<string> = new Set([
+  "request",
+  "rawRequest",
+  "maskKey",
+  "log",
+  "parseError",
+  "parseRetryAfter",
+  "retryDelay",
+  "classifyFetchError",
+]);
+
 describe("OpenAPI contract", () => {
   it("snapshot parses and has paths", () => {
     expect(Object.keys(spec.paths ?? {}).length).toBeGreaterThan(0);
@@ -163,26 +179,9 @@ describe("OpenAPI contract", () => {
 
   it("SDK public methods match the contract-covered set (completeness)", () => {
     const prototypeMethods = Object.getOwnPropertyNames(QURLClient.prototype).filter((name) => {
-      if (NON_API_PROTOTYPE_METHODS.has(name)) return false;
+      if (NON_API_PROTOTYPE_METHODS.has(name) || INTERNAL_HELPERS.has(name)) return false;
       const desc = Object.getOwnPropertyDescriptor(QURLClient.prototype, name);
-      if (typeof desc?.value !== "function") return false;
-      // TypeScript's `private`/`protected` keywords erase at runtime, so
-      // visibility isn't introspectable. Filter by naming convention —
-      // the SDK uses lowercase identifiers for internal helpers like
-      // `request`, `rawRequest`, `parseError`, etc. — none of those are
-      // API calls. Anything added to this deny-list should be genuinely
-      // internal; a public method must not be listed here.
-      const INTERNAL_HELPERS = new Set([
-        "request",
-        "rawRequest",
-        "maskKey",
-        "log",
-        "parseError",
-        "parseRetryAfter",
-        "retryDelay",
-        "classifyFetchError",
-      ]);
-      return !INTERNAL_HELPERS.has(name);
+      return typeof desc?.value === "function";
     });
     expect(new Set(prototypeMethods)).toEqual(SDK_PUBLIC_METHODS);
   });
@@ -284,9 +283,18 @@ describe("OpenAPI contract", () => {
     assertSdkCallMatches(fetch, "POST", "/v1/qurls/{id}/mint_link");
   });
 
-  it("resolve → POST /v1/resolve", async () => {
+  it("resolve (string arg) → POST /v1/resolve", async () => {
     const fetch = mockOk({ data: { target_url: "https://example.com" } });
     await client(fetch).resolve("at_y");
+    assertSdkCallMatches(fetch, "POST", "/v1/resolve");
+  });
+
+  it("resolve (object arg) → POST /v1/resolve", async () => {
+    // resolve() overloads: string token OR ResolveInput object. Both must
+    // hit the same endpoint; a regression where the object form dispatched
+    // elsewhere would otherwise slip past the string-form test.
+    const fetch = mockOk({ data: { target_url: "https://example.com" } });
+    await client(fetch).resolve({ access_token: "at_y" });
     assertSdkCallMatches(fetch, "POST", "/v1/resolve");
   });
 

@@ -33,13 +33,22 @@ git -C "$QURL_SERVICE_DIR" fetch --quiet origin
 SHA=$(git -C "$QURL_SERVICE_DIR" rev-parse "$REF^{commit}")
 SRC_FILE="api/openapi.yaml"
 
+# Preflight: confirm the spec file actually exists at that SHA. Without
+# this, a missing/renamed SRC_FILE surfaces as a bare `git show` error
+# mid-pipeline — clear-up-front message is friendlier to the operator.
+if ! git -C "$QURL_SERVICE_DIR" cat-file -e "${SHA}:${SRC_FILE}" 2>/dev/null; then
+  echo "error: ${SRC_FILE} not found at qurl-service@${SHA:0:12}" >&2
+  echo "       has the spec moved in qurl-service? update SRC_FILE in $0" >&2
+  exit 2
+fi
+
 # Write to a sibling tempfile and `mv` into place so a Ctrl-C mid-write
 # can't leave the committed snapshot truncated. `mv` on the same
 # filesystem is atomic; the trap cleans up the tempfile if the script
 # aborts before the rename. Streaming `git show` directly into the
 # heredoc (rather than capturing into a shell variable) avoids trailing-
 # newline truncation and ARG_MAX/memory edges on very large specs.
-TMP="${OUT}.tmp.$$"
+TMP=$(mktemp "${OUT}.tmp.XXXXXX")
 trap 'rm -f "$TMP"' EXIT
 {
   echo "# Snapshot of qurl-service/api/openapi.yaml — canonical API contract."
