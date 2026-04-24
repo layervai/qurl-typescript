@@ -13,13 +13,33 @@ npm install
 ## Running Checks
 
 ```bash
-npm run build          # Compile TypeScript
+npm run build          # Compile TypeScript (ESM + CJS)
 npm test               # Run tests (vitest)
+npm run smoke:dist     # Verify the built ESM and CJS entry points load
 npm run format:check   # Check formatting (prettier)
 npx eslint src/        # Lint
 ```
 
 All must pass before submitting a PR.
+
+## Dual Build (ESM + CJS)
+
+The package emits two builds from one source tree:
+
+- `tsconfig.json` → `dist/esm/` (ESM, `module: Node16`)
+- `tsconfig.cjs.json` → `dist/cjs/` (CJS, `module: CommonJS`)
+
+`scripts/postbuild.mjs` drops a `package.json` sidecar into each output
+directory so Node resolves the emitted `.js` files as the right format
+regardless of the root `"type"` field. The package's `exports` field
+points each condition (`import`, `require`) at its matching build, with
+per-condition `types` so `moduleResolution: Node16` consumers get the
+right `.d.ts`.
+
+`smoke/cjs.cjs` and `smoke/esm.mjs` self-reference `@layerv/qurl` and
+exercise both entry points end-to-end; CI runs them after the build.
+This is the load-bearing check that the consumer-facing surface still
+loads — don't skip it when changing build configuration.
 
 ## API Contract Snapshot
 

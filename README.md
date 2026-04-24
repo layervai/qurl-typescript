@@ -16,7 +16,7 @@ AI agents need to access protected resources — APIs, databases, internal tools
 npm install @layerv/qurl
 ```
 
-> **Note:** This package is ESM-only. It requires Node.js 18+ and `"type": "module"` in your `package.json` (or use `.mjs` extensions).
+Requires Node.js 18+. Both `import { QURLClient } from '@layerv/qurl'` (ESM) and `const { QURLClient } = require('@layerv/qurl')` (CJS) work.
 
 ## Quick Start
 
