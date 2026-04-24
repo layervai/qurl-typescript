@@ -23,25 +23,31 @@ const snapshotPath = join(
 );
 const spec = parseYaml(readFileSync(snapshotPath, "utf8")) as OpenApiSpec;
 
-// HTTP verbs that the SDK uses today. Filters out OpenAPI path-item
-// keys that aren't verbs (e.g. `parameters`, `summary`). When the SDK
-// grows a method that uses a verb not listed here, add it.
-const HTTP_VERBS = new Set<Lowercase<Verb>>(["get", "post", "patch", "delete"]);
+// HTTP verbs per RFC 9110. This set's only job is to filter out
+// non-verb OpenAPI path-item keys (`parameters`, `summary`,
+// `description`, `servers`, `$ref`). Listing all standard verbs
+// rather than just the ones the SDK uses today keeps the filter's
+// intent explicit and removes a maintenance touchpoint when a new
+// method lands.
+const HTTP_VERBS = new Set<string>(["get", "post", "patch", "put", "delete", "options", "head"]);
 const pathTemplates = new Set<string>();
 // `spec.paths ?? {}` defends against a malformed snapshot surfacing as
 // an unrelated TypeError at module load — without this, the intended
 // "snapshot parses and has paths" test below never gets to run.
 for (const [path, methods] of Object.entries(spec.paths ?? {})) {
   for (const verb of Object.keys(methods ?? {})) {
-    if (HTTP_VERBS.has(verb as Lowercase<Verb>)) {
+    if (HTTP_VERBS.has(verb.toLowerCase())) {
       pathTemplates.add(`${verb.toUpperCase()} ${path}`);
     }
   }
 }
 
 // Escape regex metacharacters in a literal string so it can be embedded
-// in a larger regex safely. Covers the full metacharacter set including
-// `*` (quantifier) and `-` (significant inside char classes).
+// in a larger regex safely. Over-escapes `-` (only significant inside
+// a character class) — harmless in the linear-regex contexts we use
+// this for (`\-` matches a literal `-`), and kept defensively so
+// future callers that DO embed in `[...]` don't have to remember to
+// re-escape.
 function regexEscape(literal: string): string {
   return literal.replace(/[.*+?^${}()|[\]\\-]/g, "\\$&");
 }
@@ -306,9 +312,17 @@ describe("API contract", () => {
   it("listAll multi-page → every page hits GET /v1/qurls", async () => {
     // Two-page mock covers the pagination path — a single-page exit
     // would not exercise that every subsequent fetch also targets the
-    // same endpoint.
+    // same endpoint. First page carries a non-empty item to make it
+    // explicit that pagination terminates on `has_more: false`, not
+    // on empty `data`.
     const fetch = mockFetches([
-      { status: 200, body: { data: [], meta: { has_more: true, next_cursor: "c2" } } },
+      {
+        status: 200,
+        body: {
+          data: [{ resource_id: "r_p1" }],
+          meta: { has_more: true, next_cursor: "c2" },
+        },
+      },
       { status: 200, body: { data: [], meta: { has_more: false } } },
     ]);
     const iter = createClient(fetch).listAll();

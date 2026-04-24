@@ -1,13 +1,16 @@
 # Minimal OpenAPI snapshot — the subset of the upstream QURL API
 # contract this SDK's public methods call.
 #
+# NOT a full OpenAPI document. Operation bodies are empty (`{}`), which
+# a strict OpenAPI 3.0.3 validator would flag as invalid (operations
+# require `responses`). Intentional: the contract test reads only the
+# `(verb, path)` pairs from `paths.*.<verb>` keys, never the operation
+# contents. If schema-level validation (e.g. ajv body checks) is ever
+# added, this file will need to become a valid OpenAPI doc first.
+#
 # Hand-maintained. Update this file in lockstep with src/client.ts when
 # the upstream API adds/renames an endpoint the SDK uses. The contract
 # test (src/contract.test.ts) fails loudly when the two diverge.
-#
-# Operation bodies intentionally empty: the contract test only asserts
-# (verb, path) pairs. Request/response body shape drift is a separate
-# concern (see CONTRIBUTING.md).
 openapi: 3.0.3
 info:
   title: QURL API — SDK contract surface
