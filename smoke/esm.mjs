@@ -1,5 +1,6 @@
 // ESM consumer smoke test. Mirror of cjs.cjs through `exports.import`
-// via a package self-reference.
+// via a package self-reference. Same scope as cjs.cjs — minimal happy-
+// path; full-surface drift is caught by smoke/parity.mjs.
 import { QURLClient, QURLError, ValidationError, VERSION } from "@layerv/qurl";
 
 if (typeof QURLClient !== "function") {

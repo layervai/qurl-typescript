@@ -10,6 +10,10 @@ const cjs = require("@layerv/qurl");
 const esm = await import("@layerv/qurl");
 
 const cjsKeys = Object.keys(cjs).sort();
+// `src/index.ts` has no default export, so this filter is a no-op today.
+// Kept defensive against a future addition of `export default …` to only
+// one build, which would otherwise surface as a spurious `default` key
+// on the ESM side only and fail the parity check for the wrong reason.
 const esmKeys = Object.keys(esm)
   .filter((k) => k !== "default")
   .sort();

@@ -7,9 +7,12 @@
     "moduleResolution": "Node10",
     "outDir": "./dist/cjs",
     "ignoreDeprecations": "6.0",
-    // The ESM tree already ships maps against the same `src/`; emitting
-    // them again into `dist/cjs/` doubles tarball size for no consumer
-    // benefit since both trees share one source of truth.
+    // The ESM tree already emits declaration + source maps from the same
+    // `src/` tree; emitting them again into `dist/cjs/` doubles tarball
+    // size for no additional signal. The ESM maps themselves ship but
+    // reference `src/` which `files: ["dist/"]` excludes (see #53);
+    // fixing that is a separate decision, and double-shipping broken
+    // maps on the CJS side wouldn't help either way.
     "declarationMap": false,
     "sourceMap": false
   }
