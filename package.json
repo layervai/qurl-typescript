@@ -20,7 +20,7 @@
     }
   },
   "scripts": {
-    "clean": "rm -rf dist",
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
     "build": "npm run clean && tsc -p tsconfig.json && tsc -p tsconfig.cjs.json && node scripts/postbuild.mjs",
     "dev": "tsc -p tsconfig.json --watch",
     "test": "vitest run",

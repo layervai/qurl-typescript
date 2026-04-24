@@ -9,14 +9,14 @@ const require = createRequire(import.meta.url);
 const cjs = require("@layerv/qurl");
 const esm = await import("@layerv/qurl");
 
+// Raw Object.keys on both — no filtering. A `default` export landing in
+// only one build is exactly the ESM-only drift this check exists to
+// catch; filtering it would silently pass the asymmetric case. The
+// Node-synthesized `default` for CJS-interop imports doesn't apply
+// here since both sides are resolved through their own `exports`
+// condition, not via cross-format interop.
 const cjsKeys = Object.keys(cjs).sort();
-// `src/index.ts` has no default export, so this filter is a no-op today.
-// Kept defensive against a future addition of `export default …` to only
-// one build, which would otherwise surface as a spurious `default` key
-// on the ESM side only and fail the parity check for the wrong reason.
-const esmKeys = Object.keys(esm)
-  .filter((k) => k !== "default")
-  .sort();
+const esmKeys = Object.keys(esm).sort();
 
 assert.deepStrictEqual(
   cjsKeys,
