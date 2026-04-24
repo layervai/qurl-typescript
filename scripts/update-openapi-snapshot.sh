@@ -22,6 +22,18 @@ if [ ! -d "$QURL_SERVICE_DIR/.git" ]; then
   exit 2
 fi
 
+# Verify the remote actually points at qurl-service. Without this, someone
+# with an unrelated repo at ../qurl-service that happens to contain
+# api/openapi.yaml could silently snapshot from the wrong source — the
+# header SHA would be from their fork, not upstream.
+REMOTE_URL=$(git -C "$QURL_SERVICE_DIR" remote get-url origin 2>/dev/null || echo "")
+if ! printf '%s' "$REMOTE_URL" | grep -q -E '[:/]qurl-service(\.git)?$'; then
+  echo "error: $QURL_SERVICE_DIR origin remote does not look like qurl-service:" >&2
+  echo "       $REMOTE_URL" >&2
+  echo "       expected a URL ending in :qurl-service or /qurl-service(.git)" >&2
+  exit 2
+fi
+
 # Refresh remote refs so `origin/main` (the default) points at the current
 # upstream tip, not whatever was last fetched locally. Without this, a
 # stale checkout would silently pin the snapshot to an old SHA. Harmless

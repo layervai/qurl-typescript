@@ -183,7 +183,27 @@ describe("OpenAPI contract", () => {
       const desc = Object.getOwnPropertyDescriptor(QURLClient.prototype, name);
       return typeof desc?.value === "function";
     });
-    expect(new Set(prototypeMethods)).toEqual(SDK_PUBLIC_METHODS);
+    const actual = new Set(prototypeMethods);
+    const missingFromSet = [...actual].filter((m) => !SDK_PUBLIC_METHODS.has(m));
+    const missingFromPrototype = [...SDK_PUBLIC_METHODS].filter((m) => !actual.has(m));
+    // Custom remediation message — vitest's default `toEqual` diff on Sets
+    // doesn't explain *what to do*. If this fires, the contributor needs
+    // to either add the method to SDK_PUBLIC_METHODS + write a contract
+    // case, or move it to INTERNAL_HELPERS if it's not a public API call.
+    if (missingFromSet.length || missingFromPrototype.length) {
+      throw new Error(
+        `Contract set drift:\n` +
+          (missingFromSet.length
+            ? `  New public method(s) on QURLClient.prototype: ${missingFromSet.join(", ")}\n` +
+              `    → add to SDK_PUBLIC_METHODS and add an it("…") case, ` +
+              `OR add to INTERNAL_HELPERS if not a user-facing API call.\n`
+            : "") +
+          (missingFromPrototype.length
+            ? `  Listed in SDK_PUBLIC_METHODS but missing from prototype: ${missingFromPrototype.join(", ")}\n` +
+              `    → either the method was removed/renamed in client.ts, or the name here is wrong.\n`
+            : ""),
+      );
+    }
   });
 
   // Each SDK public method → one call → captured (verb, url) must match
