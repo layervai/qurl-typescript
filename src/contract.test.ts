@@ -49,9 +49,11 @@ for (const [path, methods] of Object.entries(spec.paths ?? {})) {
 
 // Escape regex metacharacters in a literal string so it can be embedded
 // in a larger regex safely. Used twice in this file (here and in the
-// test-file-source coverage check below).
+// test-file-source coverage check below). Covers the full metacharacter
+// set including `*` (quantifier) and `-` (significant inside char
+// classes), not just the subset reachable by current callers.
 function regexEscape(literal: string): string {
-  return literal.replace(/[.+?^${}()|[\]\\]/g, "\\$&");
+  return literal.replace(/[.*+?^${}()|[\]\\-]/g, "\\$&");
 }
 
 // `/v1/qurls/{id}` → `^/v1/qurls/[^/]+$`. Regex-escape the literal,
@@ -65,6 +67,14 @@ function templateRegex(pathTemplate: string): RegExp {
   const escaped = regexEscape(pathTemplate).replace(/\\\{[^}]+\\\}/g, "[^/]+");
   return new RegExp(`^${escaped}$`);
 }
+
+// Module-level record of every (verb, template) pair successfully
+// asserted by assertSdkCallMatches. The "all snapshot templates are
+// covered" test at the bottom of the describe block reads this to
+// detect the opposite direction of drift: a snapshot entry that no
+// test exercises (e.g., after a method is removed from client.ts
+// without trimming the yaml).
+const assertedTemplates = new Set<string>();
 
 function assertSdkCallMatches(
   fetchFn: typeof globalThis.fetch,
@@ -111,6 +121,11 @@ function assertSdkCallMatches(
       `SDK called ${actualVerb} ${actualPath}, expected ${expectedVerb} ${expectedTemplate}.`,
     );
   }
+
+  // Record successful assertion for the snapshot-coverage direction
+  // check. Failed assertions (which threw above) are intentionally
+  // NOT recorded.
+  assertedTemplates.add(templateKey);
 }
 
 const mockOk = (body: unknown = { data: {}, meta: {} }): typeof globalThis.fetch =>
@@ -274,6 +289,10 @@ describe("API contract", () => {
     }
     assertSdkCallMatches(fetch, "GET", "/v1/qurls", 0);
     assertSdkCallMatches(fetch, "GET", "/v1/qurls", 1);
+    // Pin the exact call count — a listAll regression that looped
+    // forever would trip mockFetches's exhaustion throw, but this
+    // catches the other direction (under-call: generator exits early).
+    expect(vi.mocked(fetch).mock.calls.length).toBe(2);
   });
 
   it("update → PATCH /v1/qurls/{id}", async () => {
@@ -332,6 +351,18 @@ describe("API contract", () => {
     );
   });
 
+  it("negative: single-segment widening does NOT collide across templates", () => {
+    // `/v1/qurls` (list) and `/v1/qurls/{id}` (get) must be distinct.
+    // If someone ever loosened `[^/]+` to `.+` in templateRegex, the
+    // list template would swallow the get path and this check would
+    // fire. Locks the widening behavior in a direct test.
+    expect(templateRegex("/v1/qurls").test("/v1/qurls/r_x")).toBe(false);
+    expect(templateRegex("/v1/qurls/{id}").test("/v1/qurls/r_x/mint_link")).toBe(false);
+    // Positive sanity: the correct match still works.
+    expect(templateRegex("/v1/qurls").test("/v1/qurls")).toBe(true);
+    expect(templateRegex("/v1/qurls/{id}").test("/v1/qurls/r_x")).toBe(true);
+  });
+
   it("negative: SDK call to a different (but spec-valid) path fails", async () => {
     // If create() ever typo'd to POST /v1/resolve it would be a
     // spec-valid endpoint but the wrong contract. The helper must
@@ -347,5 +378,24 @@ describe("API contract", () => {
     expect(() => assertSdkCallMatches(fetch, "POST", "/v1/qurls")).toThrow(
       /SDK called POST \/v1\/resolve, expected POST \/v1\/qurls/,
     );
+  });
+
+  // MUST be the last it() in this describe block — it reads
+  // `assertedTemplates` which is populated by every successful
+  // `assertSdkCallMatches` above. vitest runs tests in source
+  // order within a file, so this runs after every per-method case.
+  //
+  // Closes the other direction of snapshot drift: a (verb, path)
+  // entry in the yaml that no test exercises. Catches the case where
+  // a method is removed from client.ts without trimming the yaml.
+  it("every snapshot template is exercised by a test (coverage)", () => {
+    const uncovered = [...pathTemplates].filter((t) => !assertedTemplates.has(t));
+    if (uncovered.length > 0) {
+      throw new Error(
+        `Snapshot entries not exercised by any test: ${uncovered.join(", ")}. ` +
+          `Either add a contract case that asserts each, or remove the entry ` +
+          `from contract/openapi.snapshot.yaml if the SDK no longer uses it.`,
+      );
+    }
   });
 });

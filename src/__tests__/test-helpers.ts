@@ -36,6 +36,10 @@ export function mockFetch(response: MockResponse): typeof globalThis.fetch {
 // so a pagination bug that fails to terminate the loop surfaces as a
 // targeted error rather than a cryptic `cannot read properties of
 // undefined` from the next `.json()` call.
+//
+// Ordering note: vitest drains the `mockResolvedValueOnce` queue first
+// and falls through to `mockImplementation` only after exhaustion, so
+// the two-phase seeding below is load-bearing. Don't reorder.
 export function mockFetches(responses: MockResponse[]): typeof globalThis.fetch {
   const fn = vi.fn();
   for (const response of responses) {

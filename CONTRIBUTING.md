@@ -38,8 +38,9 @@ template in the snapshot.
    `extend` → `update`) get their own case so an alias rewire can't
    silently slip past.
 
-Three mechanisms in `src/contract.test.ts` together fail CI if any of
-the three steps is skipped:
+Four mechanisms in `src/contract.test.ts` together fail CI if any of
+the three steps is skipped — and also catch the reverse direction of
+drift (orphaned entries that no longer have a consumer):
 
 - **`SDK_PUBLIC_METHODS` ↔ `QURLClient.prototype`** — catches step 1
   without step 3 (new method, no set entry).
@@ -49,6 +50,9 @@ the three steps is skipped:
 - **Per-case `assertSdkCallMatches` layer-1 check** — catches step 3
   without step 2 (the `it()` case's expected `(verb, path)` isn't in
   the snapshot).
+- **Snapshot ↔ `it()` coverage** — catches an orphaned snapshot entry
+  that no test exercises (e.g., after a method is removed from
+  `client.ts` without trimming the yaml).
 
 **Upstream API changed an endpoint the SDK uses?** Update
 `contract/openapi.snapshot.yaml` to match the new `(verb, path)` AND
