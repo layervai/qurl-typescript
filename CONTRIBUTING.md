@@ -21,6 +21,52 @@ npx eslint src/        # Lint
 
 All must pass before submitting a PR.
 
+## API Contract Snapshot
+
+`contract/openapi.snapshot.yaml` is a hand-maintained minimal OpenAPI
+document listing the exact `(verb, path)` pairs the SDK's public methods
+call. The contract test (`src/contract.test.ts`) mocks `fetch`, invokes
+each public method, and asserts the captured URL matches the expected
+template in the snapshot.
+
+**Adding a new public SDK method?** Do three things in the same PR:
+
+1. Implement the method in `src/client.ts`.
+2. Add the `(verb, path)` pair to `contract/openapi.snapshot.yaml`.
+3. Add a `METHOD_CASES` entry in `src/contract.test.ts`. Alias methods
+   (e.g. `extend` → `update`) get their own entry so an alias rewire
+   can't silently slip past.
+
+Three mechanisms in `src/contract.test.ts` together fail CI on any
+direction of drift:
+
+- **`METHOD_CASES` ↔ `QURLClient.prototype`** — catches step 1
+  without step 3 (new public method on the client without a
+  corresponding test case).
+- **Per-case `assertSdkCallMatches` layer-1 check** — catches step 3
+  without step 2 (the test case's expected `(verb, path)` isn't in
+  the snapshot).
+- **Snapshot ↔ `METHOD_CASES` coverage** — catches an orphaned
+  snapshot entry that no test exercises (e.g., after a method is
+  removed from `client.ts` without trimming the yaml).
+
+**Upstream API changed an endpoint the SDK uses?** Update
+`contract/openapi.snapshot.yaml` to match the new `(verb, path)` AND
+update `src/client.ts` to call it. The contract test failing is the
+signal to do both in lockstep.
+
+**Scope of the test:** `(verb, path)` only. Specifically:
+
+- The SDK's assembled URL is compared on its `pathname`. A doubled
+  path like `/v1/v1/qurls` *would* fail the template match and get
+  caught. A `baseUrl` bug that swapped hosts without touching the
+  path would NOT be caught — host-level regressions are covered by
+  the existing unit tests in `client.test.ts`, not here.
+- Request body field names, response envelope parsing, and query
+  parameter names are NOT validated. Body/response shape drift is a
+  separate class and would warrant an `ajv`-backed schema validation
+  layer against the upstream component schemas.
+
 ## Pull Requests
 
 1. Fork the repo and create a branch from `main`
