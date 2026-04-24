@@ -88,13 +88,18 @@ function assertSdkCallMatches(
         `Expected ${expectedVerb} ${expectedTemplate}.`,
     );
   }
-  const actualVerb = (init as RequestInit).method as Verb | undefined;
-  if (!actualVerb) {
+  const rawVerb = (init as RequestInit).method;
+  if (!rawVerb) {
     throw new Error(
       `SDK called fetch without a method in init; cannot verify. ` +
         `Expected ${expectedVerb} ${expectedTemplate}.`,
     );
   }
+  // Normalize to uppercase so a future regression that sends a
+  // lowercase verb (e.g. "get") doesn't fire a confusing
+  // `called get, expected GET` mismatch — the snapshot also
+  // uppercases verbs at ingest.
+  const actualVerb = rawVerb.toUpperCase() as Verb;
   const actualPath = new URL(rawUrl).pathname;
 
   // Layer 1: spec must declare the (verb, template) the test expects.
@@ -133,7 +138,11 @@ type MethodCase = {
   method: string;
   verb: Verb;
   template: string;
-  mockBody?: unknown;
+  // Required (not optional) so a future contributor can't forget to
+  // provide a call-shape that matches their method's parsing.
+  // `mockOk`'s default `{ data: {}, meta: {} }` would blow up list()'s
+  // `data.map(...)` — explicit is safer than a brittle fallback.
+  mockBody: unknown;
   mockStatus?: number;
   invoke: (c: QURLClient) => Promise<unknown>;
 };
@@ -183,6 +192,10 @@ const METHOD_CASES: MethodCase[] = [
     method: "extend",
     verb: "PATCH",
     template: "/v1/qurls/{id}",
+    // `extend` is an alias: `client.ts` implements it as
+    // `return this.update(id, input)`. The dedicated case protects
+    // against a future refactor silently rewiring the alias to a
+    // different endpoint.
     mockBody: { data: { resource_id: "r_x" } },
     invoke: (c) => c.extend("r_x", { expires_in: "24h" }),
   },
@@ -192,6 +205,7 @@ const METHOD_CASES: MethodCase[] = [
     template: "/v1/qurls/{id}",
     // Real API returns 204 No Content on DELETE. Match it so the
     // 204-branch in client.ts's rawRequest actually gets exercised.
+    mockBody: undefined,
     mockStatus: 204,
     invoke: (c) => c.delete("r_x"),
   },
@@ -219,7 +233,11 @@ const METHOD_CASES: MethodCase[] = [
 ];
 
 // `toJSON` is a diagnostic helper (used by console.log/JSON.stringify),
-// not an API call — intentionally outside the contract set.
+// not an API call — intentionally outside the contract set. This set
+// only covers string-keyed prototype members; symbol-keyed methods
+// (like `[Symbol.for("nodejs.util.inspect.custom")]` on QURLClient)
+// are invisible to `Object.getOwnPropertyNames` and are thus
+// implicitly unclassified by design.
 const NON_API_PROTOTYPE_METHODS: ReadonlySet<string> = new Set(["constructor", "toJSON"]);
 
 // Internal helpers on the prototype. TypeScript's `private`/`protected`
