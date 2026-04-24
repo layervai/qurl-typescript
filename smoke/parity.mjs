@@ -15,6 +15,13 @@ const esm = await import("@layerv/qurl");
 // Node-synthesized `default` for CJS-interop imports doesn't apply
 // here since both sides are resolved through their own `exports`
 // condition, not via cross-format interop.
+//
+// TS's CJS emit marks the namespace with `__esModule` via
+// `Object.defineProperty(exports, "__esModule", { value: true })`,
+// which is non-enumerable by default and so is correctly excluded
+// from Object.keys. A future TS emit change that makes it enumerable
+// would surface as a spurious "cjs has __esModule, esm doesn't" diff
+// here — that's the correct outcome (loud signal to investigate).
 const cjsKeys = Object.keys(cjs).sort();
 const esmKeys = Object.keys(esm).sort();
 
