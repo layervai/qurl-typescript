@@ -4,21 +4,11 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { QURLClient } from "./client.js";
-import { mockFetch, createClient } from "./test-helpers.js";
+import { mockFetch, mockFetches, createClient } from "./__tests__/test-helpers.js";
 
-// Contract test: every SDK public method must call the exact (verb,
-// path) pair declared in contract/openapi.snapshot.yaml. Catches two
-// failure modes:
-//   1. SDK calls a path that isn't in the snapshot — either the SDK
-//      is wrong, or the upstream contract changed and the snapshot
-//      needs updating.
-//   2. SDK calls a DIFFERENT but spec-valid path (e.g. create()
-//      accidentally typo'd to POST /v1/resolve). Membership-only
-//      checks would miss this; the per-test expected-template
-//      assertion catches it.
-//
-// The snapshot is hand-curated to only the operations this SDK
-// exercises — intentionally NOT vendoring the upstream spec.
+// API-contract test: every SDK public method must call the exact
+// (verb, path) pair declared in contract/openapi.snapshot.yaml.
+// Scope and contribution rules live in CONTRIBUTING.md.
 
 type Verb = "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
 type OpenApiSpec = {
@@ -34,11 +24,16 @@ const snapshotPath = join(
 const spec = parseYaml(readFileSync(snapshotPath, "utf8")) as OpenApiSpec;
 
 // OpenAPI allows non-verb keys (`summary`, `description`, `parameters`,
-// `servers`, `$ref`) at the path-item level. Filter against the verb
-// allowlist so those never leak into pathTemplates as entries like
-// `PARAMETERS /v1/…`. The SDK only uses these five verbs; HEAD/OPTIONS/
-// TRACE are deliberately omitted — add them here if the SDK grows a
-// method that uses them.
+// `servers`, `$ref`) at the path-item level — e.g. `parameters` under
+// `/v1/resources/{id}` would otherwise land in pathTemplates as
+// `PARAMETERS /v1/resources/{id}`. Filter against an explicit verb
+// allowlist.
+//
+// Currently all five RESTful verbs are enumerated even though the SDK
+// only uses four (no PUT) — forward-compat so a future SDK method
+// that uses PUT doesn't need to touch this allowlist. HEAD/OPTIONS/
+// TRACE are deliberately omitted; add them if the SDK grows a method
+// that uses them.
 const HTTP_VERBS = new Set<Lowercase<Verb>>(["get", "post", "patch", "put", "delete"]);
 const pathTemplates = new Set<string>();
 for (const [path, methods] of Object.entries(spec.paths)) {
@@ -49,6 +44,13 @@ for (const [path, methods] of Object.entries(spec.paths)) {
   }
 }
 
+// Escape regex metacharacters in a literal string so it can be embedded
+// in a larger regex safely. Used twice in this file (here and in the
+// test-file-source coverage check below).
+function regexEscape(literal: string): string {
+  return literal.replace(/[.+?^${}()|[\]\\]/g, "\\$&");
+}
+
 // `/v1/qurls/{id}` → `^/v1/qurls/[^/]+$`. Regex-escape the literal,
 // then un-escape and widen the `{param}` segments into single-segment
 // wildcards. Anchored so `/v1/qurls` does not also match `/v1/qurls/{id}`.
@@ -57,9 +59,7 @@ for (const [path, methods] of Object.entries(spec.paths)) {
 // NOT `/v1/qurls/abc/def/mint_link`, which would be a different
 // (and unintended) endpoint.
 function templateRegex(pathTemplate: string): RegExp {
-  const escaped = pathTemplate
-    .replace(/[.+?^${}()|[\]\\]/g, "\\$&")
-    .replace(/\\\{[^}]+\\\}/g, "[^/]+");
+  const escaped = regexEscape(pathTemplate).replace(/\\\{[^}]+\\\}/g, "[^/]+");
   return new RegExp(`^${escaped}$`);
 }
 
@@ -113,8 +113,6 @@ function assertSdkCallMatches(
 const mockOk = (body: unknown = { data: {}, meta: {} }): typeof globalThis.fetch =>
   mockFetch({ status: 200, body });
 
-const client = createClient;
-
 // Hardcoded expected public API surface. Kept in lockstep with the
 // `it()` blocks below AND with QURLClient's prototype — two separate
 // completeness tests enforce each direction. Adding a new public
@@ -159,6 +157,13 @@ describe("API contract", () => {
   });
 
   it("SDK public methods match the contract-covered set (completeness)", () => {
+    // Walks QURLClient.prototype — this catches every instance method
+    // defined with the `method() {}` form. It does NOT catch static
+    // methods (e.g. a future `QURLClient.fromEnv(...)`) or arrow-
+    // function class properties (`foo = () => {...}`, which land on
+    // instances, not the prototype). Neither pattern exists in
+    // client.ts today. If you add one and it's a public API call,
+    // extend this walk to cover it.
     const prototypeMethods = Object.getOwnPropertyNames(QURLClient.prototype).filter((name) => {
       if (NON_API_PROTOTYPE_METHODS.has(name) || INTERNAL_HELPERS.has(name)) return false;
       const desc = Object.getOwnPropertyDescriptor(QURLClient.prototype, name);
@@ -184,17 +189,22 @@ describe("API contract", () => {
   });
 
   // Parse this test file's own source and assert every method in
-  // SDK_PUBLIC_METHODS has at least one `it("<method>…"` declaration.
-  // Lookahead for whitespace or `(` distinguishes `list` from `listAll`.
-  // Brittle against `test(…)` or `it.only(…)` or wrapping the body in
-  // another `describe`; the failure mode is loud (false negative,
-  // forces a reviewer to rename or adjust the regex).
+  // SDK_PUBLIC_METHODS has at least one matching test declaration.
+  // Regex accepts: `it(...)`, `test(...)`, `.only`/`.skip` variants,
+  // any quote style (`"`, `'`, backtick). The single-segment lookahead
+  // (`(?=[\s("])`) after the method name distinguishes `list` from
+  // `listAll`. Still has a failure mode (e.g., wrapping in a second
+  // `describe` with the test declaration on a different line than the
+  // method name) but it's LOUD — false negative forces a contributor
+  // to adjust.
   it("every SDK_PUBLIC_METHOD has an it() case (test-file coverage)", () => {
     const src = readFileSync(fileURLToPath(import.meta.url), "utf8");
     const missing: string[] = [];
     for (const method of SDK_PUBLIC_METHODS) {
-      const escaped = method.replace(/[.+?^${}()|[\]\\]/g, "\\$&");
-      const re = new RegExp(`\\bit\\("${escaped}(?=[\\s("])`);
+      const escaped = regexEscape(method);
+      const re = new RegExp(
+        `\\b(?:it|test)(?:\\.(?:only|skip))?\\s*\\(\\s*["'\`]${escaped}(?=[\\s("])`,
+      );
       if (!re.test(src)) missing.push(method);
     }
     if (missing.length > 0) {
@@ -214,32 +224,32 @@ describe("API contract", () => {
     const fetch = mockOk({
       data: { resource_id: "r_x", qurl_link: "https://qurl.link/#at_y" },
     });
-    await client(fetch).create({ target_url: "https://example.com" });
+    await createClient(fetch).create({ target_url: "https://example.com" });
     assertSdkCallMatches(fetch, "POST", "/v1/qurls");
   });
 
   it("get → GET /v1/qurls/{id}", async () => {
     const fetch = mockOk({ data: { resource_id: "r_x" } });
-    await client(fetch).get("r_x");
+    await createClient(fetch).get("r_x");
     assertSdkCallMatches(fetch, "GET", "/v1/qurls/{id}");
   });
 
   it("list → GET /v1/qurls", async () => {
     const fetch = mockOk({ data: [], meta: { has_more: false } });
-    await client(fetch).list();
+    await createClient(fetch).list();
     assertSdkCallMatches(fetch, "GET", "/v1/qurls");
   });
 
   it("list with query params → GET /v1/qurls (query stripped)", async () => {
     const fetch = mockOk({ data: [], meta: { has_more: false } });
-    await client(fetch).list({ limit: 10, cursor: "c" });
+    await createClient(fetch).list({ limit: 10, cursor: "c" });
     assertSdkCallMatches(fetch, "GET", "/v1/qurls");
   });
 
   it("listAll → GET /v1/qurls (via wrapped list)", async () => {
     const fetch = mockOk({ data: [], meta: { has_more: false } });
     // Drive the generator to completion so the underlying list() fires.
-    const iter = client(fetch).listAll();
+    const iter = createClient(fetch).listAll();
     while (!(await iter.next()).done) {
       /* no-op */
     }
@@ -250,25 +260,11 @@ describe("API contract", () => {
     // Two-page mock covers the pagination path — a single-page exit
     // would not exercise that every subsequent fetch also targets the
     // same endpoint.
-    const fetch = vi
-      .fn()
-      .mockImplementationOnce(async () => ({
-        ok: true,
-        status: 200,
-        statusText: "OK",
-        headers: new Headers(),
-        json: async () => ({ data: [], meta: { has_more: true, next_cursor: "c2" } }),
-        text: async () => "",
-      }))
-      .mockImplementationOnce(async () => ({
-        ok: true,
-        status: 200,
-        statusText: "OK",
-        headers: new Headers(),
-        json: async () => ({ data: [], meta: { has_more: false } }),
-        text: async () => "",
-      })) as unknown as typeof globalThis.fetch;
-    const iter = client(fetch).listAll();
+    const fetch = mockFetches([
+      { status: 200, body: { data: [], meta: { has_more: true, next_cursor: "c2" } } },
+      { status: 200, body: { data: [], meta: { has_more: false } } },
+    ]);
+    const iter = createClient(fetch).listAll();
     while (!(await iter.next()).done) {
       /* no-op */
     }
@@ -278,31 +274,31 @@ describe("API contract", () => {
 
   it("update → PATCH /v1/qurls/{id}", async () => {
     const fetch = mockOk({ data: { resource_id: "r_x" } });
-    await client(fetch).update("r_x", { expires_in: "24h" });
+    await createClient(fetch).update("r_x", { expires_in: "24h" });
     assertSdkCallMatches(fetch, "PATCH", "/v1/qurls/{id}");
   });
 
   it("extend → PATCH /v1/qurls/{id} (alias of update)", async () => {
     const fetch = mockOk({ data: { resource_id: "r_x" } });
-    await client(fetch).extend("r_x", { expires_in: "24h" });
+    await createClient(fetch).extend("r_x", { expires_in: "24h" });
     assertSdkCallMatches(fetch, "PATCH", "/v1/qurls/{id}");
   });
 
   it("delete → DELETE /v1/qurls/{id}", async () => {
     const fetch = mockOk();
-    await client(fetch).delete("r_x");
+    await createClient(fetch).delete("r_x");
     assertSdkCallMatches(fetch, "DELETE", "/v1/qurls/{id}");
   });
 
   it("mintLink → POST /v1/qurls/{id}/mint_link", async () => {
     const fetch = mockOk({ data: { qurl_link: "https://qurl.link/#at_y" } });
-    await client(fetch).mintLink("r_x");
+    await createClient(fetch).mintLink("r_x");
     assertSdkCallMatches(fetch, "POST", "/v1/qurls/{id}/mint_link");
   });
 
   it("resolve (string arg) → POST /v1/resolve", async () => {
     const fetch = mockOk({ data: { target_url: "https://example.com" } });
-    await client(fetch).resolve("at_y");
+    await createClient(fetch).resolve("at_y");
     assertSdkCallMatches(fetch, "POST", "/v1/resolve");
   });
 
@@ -311,13 +307,13 @@ describe("API contract", () => {
     // must hit the same endpoint; a regression where the object form
     // dispatched elsewhere would otherwise slip past the string case.
     const fetch = mockOk({ data: { target_url: "https://example.com" } });
-    await client(fetch).resolve({ access_token: "at_y" });
+    await createClient(fetch).resolve({ access_token: "at_y" });
     assertSdkCallMatches(fetch, "POST", "/v1/resolve");
   });
 
   it("getQuota → GET /v1/quota", async () => {
     const fetch = mockOk({ data: { plan: "free" } });
-    await client(fetch).getQuota();
+    await createClient(fetch).getQuota();
     assertSdkCallMatches(fetch, "GET", "/v1/quota");
   });
 
@@ -326,7 +322,7 @@ describe("API contract", () => {
 
   it("negative: expected template must exist in snapshot", async () => {
     const fetch = mockOk({ data: { plan: "free" } });
-    await client(fetch).getQuota();
+    await createClient(fetch).getQuota();
     expect(() => assertSdkCallMatches(fetch, "GET", "/v1/definitely-not-a-real-endpoint")).toThrow(
       /is not in the snapshot/,
     );
@@ -343,7 +339,7 @@ describe("API contract", () => {
     // still operator-actionable. If you edit that message, update
     // this regex too.
     const fetch = mockOk({ data: { target_url: "https://example.com" } });
-    await client(fetch).resolve("at_y"); // actually calls POST /v1/resolve
+    await createClient(fetch).resolve("at_y"); // actually calls POST /v1/resolve
     expect(() => assertSdkCallMatches(fetch, "POST", "/v1/qurls")).toThrow(
       /SDK called POST \/v1\/resolve, expected POST \/v1\/qurls/,
     );

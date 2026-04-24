@@ -11,7 +11,7 @@ import {
   TimeoutError,
   ValidationError,
 } from "./errors.js";
-import { mockFetch, createClient } from "./test-helpers.js";
+import { mockFetch, createClient } from "./__tests__/test-helpers.js";
 
 describe("QURLClient", () => {
   it("creates a QURL", async () => {

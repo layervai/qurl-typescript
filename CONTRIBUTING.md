@@ -38,9 +38,17 @@ template in the snapshot.
    `extend` → `update`) get their own case so an alias rewire can't
    silently slip past.
 
-The two completeness checks (`SDK_PUBLIC_METHODS` ↔ prototype,
-`SDK_PUBLIC_METHODS` ↔ `it()` cases) will fail CI if any of the three
-steps is skipped.
+Three mechanisms in `src/contract.test.ts` together fail CI if any of
+the three steps is skipped:
+
+- **`SDK_PUBLIC_METHODS` ↔ `QURLClient.prototype`** — catches step 1
+  without step 3 (new method, no set entry).
+- **`SDK_PUBLIC_METHODS` ↔ `it()` cases** — catches a set entry
+  without a corresponding `it()` block (parses this test file's own
+  source).
+- **Per-case `assertSdkCallMatches` layer-1 check** — catches step 3
+  without step 2 (the `it()` case's expected `(verb, path)` isn't in
+  the snapshot).
 
 **Upstream API changed an endpoint the SDK uses?** Update
 `contract/openapi.snapshot.yaml` to match the new `(verb, path)` AND
