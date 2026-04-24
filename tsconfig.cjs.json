@@ -6,6 +6,11 @@
     // source-side CJS sidecar (or matching `.cts` entry) before then.
     "moduleResolution": "Node10",
     "outDir": "./dist/cjs",
-    "ignoreDeprecations": "6.0"
+    "ignoreDeprecations": "6.0",
+    // The ESM tree already ships maps against the same `src/`; emitting
+    // them again into `dist/cjs/` doubles tarball size for no consumer
+    // benefit since both trees share one source of truth.
+    "declarationMap": false,
+    "sourceMap": false
   }
 }

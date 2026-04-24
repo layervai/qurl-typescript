@@ -19,7 +19,8 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && tsc -p tsconfig.cjs.json && node scripts/postbuild.mjs",
+    "clean": "rm -rf dist",
+    "build": "npm run clean && tsc -p tsconfig.json && tsc -p tsconfig.cjs.json && node scripts/postbuild.mjs",
     "dev": "tsc -p tsconfig.json --watch",
     "test": "vitest run",
     "lint": "eslint src/",

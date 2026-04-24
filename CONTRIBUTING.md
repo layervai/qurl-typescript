@@ -37,9 +37,23 @@ per-condition `types` so `moduleResolution: Node16` consumers get the
 right `.d.ts`.
 
 `smoke/cjs.cjs` and `smoke/esm.mjs` self-reference `@layerv/qurl` and
-exercise both entry points end-to-end; CI runs them after the build.
-This is the load-bearing check that the consumer-facing surface still
-loads — don't skip it when changing build configuration.
+exercise both entry points end-to-end; `smoke/parity.mjs` additionally
+asserts both builds export the same runtime name set. CI runs all three
+after the build. These are the load-bearing checks that the consumer-
+facing surface still loads — don't skip them when changing build
+configuration.
+
+**`npm run dev` only watches the ESM build.** Both configs share
+everything except `module`/`moduleResolution`/`outDir`, so a CJS-only
+break is unlikely, but run `npm run build` before publishing any
+build-config change to confirm both trees still compile.
+
+**Avoid module-scope mutable state** (caches, singletons, `WeakMap`
+registries). A mixed-dependency tree can load both `dist/esm/index.js`
+and `dist/cjs/index.js` as separate module instances — `instanceof`
+checks across the boundary would fail and any shared state would
+diverge. Classes and plain constants are safe; only flag state added
+at module scope is the hazard.
 
 ## API Contract Snapshot
 
