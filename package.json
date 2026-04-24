@@ -23,10 +23,10 @@
     "dev": "tsc -p tsconfig.json --watch",
     "test": "vitest run",
     "lint": "eslint src/",
-    "format": "prettier --write 'src/**/*.ts'",
-    "format:check": "prettier --check 'src/**/*.ts'",
-    "smoke:dist": "node smoke/cjs.cjs && node smoke/esm.mjs",
-    "prepublishOnly": "npm run build"
+    "format": "prettier --write 'src/**/*.ts' 'smoke/**/*.{cjs,mjs}' 'scripts/**/*.mjs'",
+    "format:check": "prettier --check 'src/**/*.ts' 'smoke/**/*.{cjs,mjs}' 'scripts/**/*.mjs'",
+    "smoke:dist": "node smoke/cjs.cjs && node smoke/esm.mjs && node smoke/parity.mjs",
+    "prepublishOnly": "npm run build && npm run smoke:dist"
   },
   "keywords": [
     "qurl",

@@ -2,6 +2,8 @@
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "module": "CommonJS",
+    // TODO: TS 7 will drop `Node10`. Migrate to `module: "Node16"` + a
+    // source-side CJS sidecar (or matching `.cts` entry) before then.
     "moduleResolution": "Node10",
     "outDir": "./dist/cjs",
     "ignoreDeprecations": "6.0"
