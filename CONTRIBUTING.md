@@ -33,26 +33,22 @@ template in the snapshot.
 
 1. Implement the method in `src/client.ts`.
 2. Add the `(verb, path)` pair to `contract/openapi.snapshot.yaml`.
-3. Add an `it("<method> → VERB /path")` case in `src/contract.test.ts`
-   and include the name in `SDK_PUBLIC_METHODS`. Alias methods (e.g.
-   `extend` → `update`) get their own case so an alias rewire can't
-   silently slip past.
+3. Add a `METHOD_CASES` entry in `src/contract.test.ts`. Alias methods
+   (e.g. `extend` → `update`) get their own entry so an alias rewire
+   can't silently slip past.
 
-Four mechanisms in `src/contract.test.ts` together fail CI if any of
-the three steps is skipped — and also catch the reverse direction of
-drift (orphaned entries that no longer have a consumer):
+Three mechanisms in `src/contract.test.ts` together fail CI on any
+direction of drift:
 
-- **`SDK_PUBLIC_METHODS` ↔ `QURLClient.prototype`** — catches step 1
-  without step 3 (new method, no set entry).
-- **`SDK_PUBLIC_METHODS` ↔ `it()` cases** — catches a set entry
-  without a corresponding `it()` block (parses this test file's own
-  source).
+- **`METHOD_CASES` ↔ `QURLClient.prototype`** — catches step 1
+  without step 3 (new public method on the client without a
+  corresponding test case).
 - **Per-case `assertSdkCallMatches` layer-1 check** — catches step 3
-  without step 2 (the `it()` case's expected `(verb, path)` isn't in
+  without step 2 (the test case's expected `(verb, path)` isn't in
   the snapshot).
-- **Snapshot ↔ `it()` coverage** — catches an orphaned snapshot entry
-  that no test exercises (e.g., after a method is removed from
-  `client.ts` without trimming the yaml).
+- **Snapshot ↔ `METHOD_CASES` coverage** — catches an orphaned
+  snapshot entry that no test exercises (e.g., after a method is
+  removed from `client.ts` without trimming the yaml).
 
 **Upstream API changed an endpoint the SDK uses?** Update
 `contract/openapi.snapshot.yaml` to match the new `(verb, path)` AND
