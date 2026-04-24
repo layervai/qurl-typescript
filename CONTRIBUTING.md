@@ -44,6 +44,11 @@ was last validated against. If the regenerated snapshot breaks the
 contract test, that's the signal: qurl-service changed an endpoint the
 SDK depends on, and the SDK needs to be updated in lockstep.
 
+**Adding a new public SDK method?** Add a matching case to
+`src/contract.test.ts` asserting the exact `(verb, path-template)` the
+method calls. Alias methods (e.g. `extend` → `update`) get their own
+case so an alias rewire can't silently slip past.
+
 ## Pull Requests
 
 1. Fork the repo and create a branch from `main`

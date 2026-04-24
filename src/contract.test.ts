@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { parse as parseYaml } from "yaml";
-import { QURLClient } from "./client.js";
+import { mockFetch, createClient } from "./test-helpers.js";
 
 // Contract test: every SDK method must call the exact (verb, path) pair
 // that qurl-service's OpenAPI spec declares. Catches two failure modes:
@@ -56,12 +56,26 @@ function assertSdkCallMatches(
   fetchFn: typeof globalThis.fetch,
   expectedVerb: Verb,
   expectedTemplate: string,
+  callIndex: number = 0,
 ): void {
   const calls = (fetchFn as unknown as ReturnType<typeof vi.fn>).mock.calls;
-  if (calls.length === 0) {
-    throw new Error(`SDK made no fetch call; expected ${expectedVerb} ${expectedTemplate}`);
+  if (calls.length <= callIndex) {
+    throw new Error(
+      `SDK made ${calls.length} fetch call(s); expected at least ${callIndex + 1} ` +
+        `(looking for ${expectedVerb} ${expectedTemplate})`,
+    );
   }
-  const [rawUrl, init] = calls[0];
+  const [rawUrl, init] = calls[callIndex];
+  // Guard against a future SDK method calling fetch(url) with no options —
+  // today every path in client.ts passes an `init` object, but the check is
+  // cheap insurance against a regression with a clearer error than the
+  // undefined-access TypeError a bare access would throw.
+  if (!init) {
+    throw new Error(
+      `SDK called fetch without an init object; cannot verify method. ` +
+        `Expected ${expectedVerb} ${expectedTemplate}.`,
+    );
+  }
   const actualVerb = (init as RequestInit).method as Verb;
   const actualPath = new URL(rawUrl as string).pathname;
 
@@ -84,25 +98,15 @@ function assertSdkCallMatches(
   }
 }
 
-function mockOk(body: unknown = { data: {}, meta: {} }): typeof globalThis.fetch {
-  return vi.fn().mockResolvedValue({
-    ok: true,
-    status: 200,
-    statusText: "OK",
-    headers: new Headers(),
-    json: () => Promise.resolve(body),
-    text: () => Promise.resolve(JSON.stringify(body)),
-  } satisfies Partial<Response> as Response);
-}
+// `mockOk` + `client` wrap the shared helpers with contract-test defaults:
+// `status: 200` for `mockOk`, and the identifier `client` kept short since
+// every test in this file uses it once. Keeps the test bodies readable
+// without forking the underlying fixture — if a fixture ever changes
+// (e.g., the default baseUrl or apiKey), both test files move together.
+const mockOk = (body: unknown = { data: {}, meta: {} }): typeof globalThis.fetch =>
+  mockFetch({ status: 200, body });
 
-function client(fetchFn: typeof globalThis.fetch): QURLClient {
-  return new QURLClient({
-    apiKey: "lv_live_test",
-    baseUrl: "https://api.test.layerv.ai",
-    fetch: fetchFn,
-    maxRetries: 0,
-  });
-}
+const client = createClient;
 
 describe("OpenAPI contract", () => {
   it("snapshot parses and has paths", () => {
@@ -144,14 +148,43 @@ describe("OpenAPI contract", () => {
 
   it("listAll → GET /v1/qurls (via wrapped list)", async () => {
     const fetch = mockOk({ data: [], meta: { has_more: false } });
-    // Drive the generator to completion so `list` actually gets called.
-    // Using iterator-protocol `.next()` instead of `for…of` avoids
-    // declaring an unused loop binding that trips eslint.
+    // Drive the generator to completion so the underlying list() fires.
     const iter = client(fetch).listAll();
     while (!(await iter.next()).done) {
-      /* no-op — iteration itself is the contract being exercised. */
+      /* no-op */
     }
     assertSdkCallMatches(fetch, "GET", "/v1/qurls");
+  });
+
+  it("listAll multi-page → every page hits GET /v1/qurls", async () => {
+    // Two-page mock so the test covers the pagination path — a single-page
+    // exit would not exercise that every subsequent fetch also targets the
+    // same endpoint. Custom fetch instead of mockOk so call N can return
+    // a different body than call 0.
+    const fetch = vi
+      .fn()
+      .mockImplementationOnce(async () => ({
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        headers: new Headers(),
+        json: async () => ({ data: [], meta: { has_more: true, next_cursor: "c2" } }),
+        text: async () => "",
+      }))
+      .mockImplementationOnce(async () => ({
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        headers: new Headers(),
+        json: async () => ({ data: [], meta: { has_more: false } }),
+        text: async () => "",
+      })) as unknown as typeof globalThis.fetch;
+    const iter = client(fetch).listAll();
+    while (!(await iter.next()).done) {
+      /* no-op */
+    }
+    assertSdkCallMatches(fetch, "GET", "/v1/qurls", 0);
+    assertSdkCallMatches(fetch, "GET", "/v1/qurls", 1);
   });
 
   it("update → PATCH /v1/qurls/{id}", async () => {
