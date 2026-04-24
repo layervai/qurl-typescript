@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { parse as parseYaml } from "yaml";
+import { QURLClient } from "./client.js";
 import { mockFetch, createClient } from "./test-helpers.js";
 
 // Contract test: every SDK method must call the exact (verb, path) pair
@@ -35,10 +36,19 @@ const spec = parseYaml(readFileSync(snapshotPath, "utf8")) as OpenApiSpec;
 // "snapshot drift renamed our endpoint" failure mode. The per-test
 // templateRegex() closes the "SDK called a different (but spec-valid)
 // path" failure mode.
+//
+// OpenAPI path-item objects may carry non-verb keys (`summary`,
+// `description`, `parameters`, `servers`, `$ref`) — the snapshot does
+// use `parameters:` at the path-item level in at least two places.
+// Filter against the allowed verb set so those don't leak into
+// pathTemplates as nonsense entries like `PARAMETERS /v1/...`.
+const HTTP_VERBS = new Set<Lowercase<Verb>>(["get", "post", "patch", "put", "delete"]);
 const pathTemplates = new Set<string>();
 for (const [path, methods] of Object.entries(spec.paths)) {
   for (const verb of Object.keys(methods ?? {})) {
-    pathTemplates.add(`${verb.toUpperCase()} ${path}`);
+    if (HTTP_VERBS.has(verb as Lowercase<Verb>)) {
+      pathTemplates.add(`${verb.toUpperCase()} ${path}`);
+    }
   }
 }
 
@@ -108,10 +118,60 @@ const mockOk = (body: unknown = { data: {}, meta: {} }): typeof globalThis.fetch
 
 const client = createClient;
 
+// Hardcoded expected public API surface. Kept in lockstep with the `it()`
+// blocks below AND with QURLClient's prototype. The completeness test
+// below asserts this set equals the prototype's own methods (minus
+// constructor and `toJSON`, which is a diagnostic helper, not an API
+// call). Adding a new public method to QURLClient without extending this
+// set — and a matching contract case — fails CI, closing the "silently
+// slip past" class this PR is designed to close.
+const SDK_PUBLIC_METHODS: ReadonlySet<string> = new Set([
+  "create",
+  "get",
+  "list",
+  "listAll",
+  "update",
+  "extend",
+  "delete",
+  "mintLink",
+  "resolve",
+  "getQuota",
+]);
+
+// `toJSON` is a diagnostic helper (used by console.log/JSON.stringify),
+// not an API call — intentionally outside the contract set.
+const NON_API_PROTOTYPE_METHODS: ReadonlySet<string> = new Set(["constructor", "toJSON"]);
+
 describe("OpenAPI contract", () => {
   it("snapshot parses and has paths", () => {
     expect(Object.keys(spec.paths ?? {}).length).toBeGreaterThan(0);
     expect(pathTemplates.size).toBeGreaterThan(0);
+  });
+
+  it("SDK public methods match the contract-covered set (completeness)", () => {
+    const prototypeMethods = Object.getOwnPropertyNames(QURLClient.prototype).filter((name) => {
+      if (NON_API_PROTOTYPE_METHODS.has(name)) return false;
+      const desc = Object.getOwnPropertyDescriptor(QURLClient.prototype, name);
+      if (typeof desc?.value !== "function") return false;
+      // TypeScript's `private`/`protected` keywords erase at runtime, so
+      // visibility isn't introspectable. Filter by naming convention —
+      // the SDK uses lowercase identifiers for internal helpers like
+      // `request`, `rawRequest`, `parseError`, etc. — none of those are
+      // API calls. Anything added to this deny-list should be genuinely
+      // internal; a public method must not be listed here.
+      const INTERNAL_HELPERS = new Set([
+        "request",
+        "rawRequest",
+        "maskKey",
+        "log",
+        "parseError",
+        "parseRetryAfter",
+        "retryDelay",
+        "classifyFetchError",
+      ]);
+      return !INTERNAL_HELPERS.has(name);
+    });
+    expect(new Set(prototypeMethods)).toEqual(SDK_PUBLIC_METHODS);
   });
 
   // Each SDK public method → one call → captured (verb, url) must match
