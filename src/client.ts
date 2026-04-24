@@ -115,7 +115,7 @@ export class QURLClient {
 
   /** Create a new QURL. */
   async create(input: CreateInput): Promise<CreateOutput> {
-    return this.request<CreateOutput>("POST", "/v1/qurl", input);
+    return this.request<CreateOutput>("POST", "/v1/qurls", input);
   }
 
   /** Gets a protected URL and its access tokens. */
