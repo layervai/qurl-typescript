@@ -206,6 +206,33 @@ describe("OpenAPI contract", () => {
     }
   });
 
+  // Closes the last "silently slip past" gap: set-vs-prototype parity
+  // alone doesn't guarantee an it() case exists for every method —
+  // someone could add `foo` to SDK_PUBLIC_METHODS without writing the
+  // test. Parse this test file's own source and assert every listed
+  // method has at least one `it("<method>…"` declaration. Word-boundary
+  // aware (lookahead for whitespace or `(`) so `list` doesn't falsely
+  // match `listAll`.
+  it("every SDK_PUBLIC_METHOD has an it() case (test-file coverage)", () => {
+    const src = readFileSync(fileURLToPath(import.meta.url), "utf8");
+    const missing: string[] = [];
+    for (const method of SDK_PUBLIC_METHODS) {
+      // Escape the method name for safe regex interpolation (trivial
+      // today — all names are [a-zA-Z]+ — but future-proofs the check).
+      const escaped = method.replace(/[.+?^${}()|[\]\\]/g, "\\$&");
+      const re = new RegExp(`\\bit\\("${escaped}(?=[\\s("])`);
+      if (!re.test(src)) missing.push(method);
+    }
+    if (missing.length > 0) {
+      throw new Error(
+        `SDK_PUBLIC_METHODS listed but no matching it("<method>…") found: ` +
+          `${missing.join(", ")}. Add a contract case for each, or remove ` +
+          `the name from SDK_PUBLIC_METHODS (and INTERNAL_HELPERS if it's ` +
+          `no longer public).`,
+      );
+    }
+  });
+
   // Each SDK public method → one call → captured (verb, url) must match
   // the exact (verb, path) template below. Aliases (`listAll` wraps
   // `list`, `extend` wraps `update`) are still called separately because

@@ -26,6 +26,12 @@ fi
 # with an unrelated repo at ../qurl-service that happens to contain
 # api/openapi.yaml could silently snapshot from the wrong source — the
 # header SHA would be from their fork, not upstream.
+#
+# Intentionally permissive: matches any org's `qurl-service` repo, not
+# just layervai/qurl-service. Forks of qurl-service are legitimate dev
+# workflows, and the header SHA recorded in the snapshot is the
+# authoritative provenance that reviewers verify — this check exists to
+# catch "wrong repo entirely," not to gate on upstream identity.
 REMOTE_URL=$(git -C "$QURL_SERVICE_DIR" remote get-url origin 2>/dev/null || echo "")
 if ! printf '%s' "$REMOTE_URL" | grep -q -E '[:/]qurl-service(\.git)?$'; then
   echo "error: $QURL_SERVICE_DIR origin remote does not look like qurl-service:" >&2
