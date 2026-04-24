@@ -32,12 +32,23 @@ export function mockFetch(response: MockResponse): typeof globalThis.fetch {
 
 // Multi-call variant: returns the next response in the sequence on each
 // fetch call. Used by the pagination contract case where a single
-// response isn't enough to exercise the full loop.
+// response isn't enough to exercise the full loop. Throws on over-call
+// so a pagination bug that fails to terminate the loop surfaces as a
+// targeted error rather than a cryptic `cannot read properties of
+// undefined` from the next `.json()` call.
 export function mockFetches(responses: MockResponse[]): typeof globalThis.fetch {
   const fn = vi.fn();
   for (const response of responses) {
     fn.mockResolvedValueOnce(buildResponse(response));
   }
+  // Async throw → rejected promise, matching fetch()'s contract so the
+  // caller's await surfaces the error naturally.
+  fn.mockImplementation(async () => {
+    throw new Error(
+      `mockFetches exhausted: seeded with ${responses.length} response(s); ` +
+        `the SDK called fetch more times than expected`,
+    );
+  });
   return fn as unknown as typeof globalThis.fetch;
 }
 

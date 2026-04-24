@@ -36,7 +36,10 @@ const spec = parseYaml(readFileSync(snapshotPath, "utf8")) as OpenApiSpec;
 // that uses them.
 const HTTP_VERBS = new Set<Lowercase<Verb>>(["get", "post", "patch", "put", "delete"]);
 const pathTemplates = new Set<string>();
-for (const [path, methods] of Object.entries(spec.paths)) {
+// `spec.paths ?? {}` defends against a malformed snapshot surfacing as
+// an unrelated TypeError at module load — without this, the intended
+// "snapshot parses and has paths" test below never gets to run.
+for (const [path, methods] of Object.entries(spec.paths ?? {})) {
   for (const verb of Object.keys(methods ?? {})) {
     if (HTTP_VERBS.has(verb as Lowercase<Verb>)) {
       pathTemplates.add(`${verb.toUpperCase()} ${path}`);
@@ -159,11 +162,12 @@ describe("API contract", () => {
   it("SDK public methods match the contract-covered set (completeness)", () => {
     // Walks QURLClient.prototype — this catches every instance method
     // defined with the `method() {}` form. It does NOT catch static
-    // methods (e.g. a future `QURLClient.fromEnv(...)`) or arrow-
+    // methods (e.g. a future `QURLClient.fromEnv(...)`), arrow-
     // function class properties (`foo = () => {...}`, which land on
-    // instances, not the prototype). Neither pattern exists in
-    // client.ts today. If you add one and it's a public API call,
-    // extend this walk to cover it.
+    // instances, not the prototype), or symbol-keyed methods
+    // (`Object.getOwnPropertyNames` ignores symbols). None of those
+    // patterns exist in client.ts today. If you add one and it's a
+    // public API call, extend this walk to cover it.
     const prototypeMethods = Object.getOwnPropertyNames(QURLClient.prototype).filter((name) => {
       if (NON_API_PROTOTYPE_METHODS.has(name) || INTERNAL_HELPERS.has(name)) return false;
       const desc = Object.getOwnPropertyDescriptor(QURLClient.prototype, name);
