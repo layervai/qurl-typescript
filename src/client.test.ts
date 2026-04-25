@@ -14,7 +14,7 @@ import {
 import { mockFetch, createClient } from "./__tests__/test-helpers.js";
 
 describe("QURLClient", () => {
-  it("creates a QURL", async () => {
+  it("creates a qURL", async () => {
     const fetch = mockFetch({
       status: 201,
       body: {
@@ -42,7 +42,7 @@ describe("QURLClient", () => {
     );
   });
 
-  it("gets a QURL with access tokens", async () => {
+  it("gets a qURL with access tokens", async () => {
     const fetch = mockFetch({
       status: 200,
       body: {
@@ -93,7 +93,7 @@ describe("QURLClient", () => {
     expect(result.access_tokens![1].one_time_use).toBe(true);
   });
 
-  it("gets a QURL without access tokens", async () => {
+  it("gets a qURL without access tokens", async () => {
     const fetch = mockFetch({
       status: 200,
       body: {
@@ -115,7 +115,7 @@ describe("QURLClient", () => {
     expect(result.access_tokens).toBeUndefined();
   });
 
-  it("lists QURLs", async () => {
+  it("lists qURLs", async () => {
     const fetch = mockFetch({
       status: 200,
       body: {
@@ -157,14 +157,14 @@ describe("QURLClient", () => {
     );
   });
 
-  it("deletes a QURL", async () => {
+  it("deletes a qURL", async () => {
     const fetch = mockFetch({ status: 204 });
     const client = createClient(fetch);
 
     await expect(client.delete("r_abc123def45")).resolves.toBeUndefined();
   });
 
-  it("extends a QURL", async () => {
+  it("extends a qURL", async () => {
     const fetch = mockFetch({
       status: 200,
       body: {
@@ -184,7 +184,7 @@ describe("QURLClient", () => {
     expect(result.expires_at).toBe("2026-03-20T10:00:00Z");
   });
 
-  it("updates a QURL description", async () => {
+  it("updates a qURL description", async () => {
     const fetch = mockFetch({
       status: 200,
       body: {
@@ -248,7 +248,7 @@ describe("QURLClient", () => {
     expect((result as Record<string, unknown>).qurls).toBeUndefined();
   });
 
-  it("resolves a QURL token", async () => {
+  it("resolves a qURL token", async () => {
     const fetch = mockFetch({
       status: 200,
       body: {

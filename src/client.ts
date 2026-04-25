@@ -48,7 +48,7 @@ interface ApiErrorEnvelope {
   meta?: { request_id?: string };
 }
 
-/** QURL API client. */
+/** qURL API client. */
 export class QURLClient {
   private readonly baseUrl: string;
   private readonly apiKey: string;
@@ -113,7 +113,7 @@ export class QURLClient {
 
   // --- Public API ---
 
-  /** Create a new QURL. */
+  /** Create a new qURL. */
   async create(input: CreateInput): Promise<CreateOutput> {
     return this.request<CreateOutput>("POST", "/v1/qurls", input);
   }
@@ -128,7 +128,7 @@ export class QURLClient {
   }
 
   /**
-   * Lists protected URLs. Each QURL groups access tokens sharing the same target URL.
+   * Lists protected URLs. Each qURL groups access tokens sharing the same target URL.
    * Note: list items include qurl_count but not access_tokens (too expensive at scale).
    */
   async list(input: ListInput = {}): Promise<ListOutput> {
@@ -149,7 +149,7 @@ export class QURLClient {
     };
   }
 
-  /** Iterate over all QURLs, automatically paginating. */
+  /** Iterate over all qURLs, automatically paginating. */
   async *listAll(input: Omit<ListInput, "cursor"> = {}): AsyncGenerator<QURL, void, undefined> {
     let cursor: string | undefined;
     do {
@@ -161,13 +161,13 @@ export class QURLClient {
     } while (cursor);
   }
 
-  /** Delete (revoke) a QURL. */
+  /** Delete (revoke) a qURL. */
   async delete(id: string): Promise<void> {
     await this.rawRequest("DELETE", `/v1/qurls/${encodeURIComponent(id)}`);
   }
 
   /**
-   * Extend a QURL's expiration.
+   * Extend a qURL's expiration.
    *
    * Convenience method — equivalent to `update(id, input)`.
    */
@@ -175,7 +175,7 @@ export class QURLClient {
     return this.update(id, input);
   }
 
-  /** Update a QURL — extend expiration, change description, etc. */
+  /** Update a qURL — extend expiration, change description, etc. */
   async update(id: string, input: UpdateInput): Promise<QURL> {
     const raw = await this.request<QURL & { qurls?: AccessToken[] }>(
       "PATCH",
@@ -185,13 +185,13 @@ export class QURLClient {
     return QURLClient.mapQurlsField(raw);
   }
 
-  /** Mint a new access link for a QURL. */
+  /** Mint a new access link for a qURL. */
   async mintLink(id: string, input?: MintInput): Promise<MintOutput> {
     return this.request<MintOutput>("POST", `/v1/qurls/${encodeURIComponent(id)}/mint_link`, input);
   }
 
   /**
-   * Resolve a QURL access token (headless).
+   * Resolve a qURL access token (headless).
    *
    * Triggers an NHP knock to open firewall access for the caller's IP.
    * Requires `qurl:resolve` scope on the API key.

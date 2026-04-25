@@ -7,7 +7,7 @@
 
 ## Project
 
-TypeScript SDK for the QURL API (`npm install @layerv/qurl`). Extracted from `layervai/qurl-integrations`.
+TypeScript SDK for the qURL API (`npm install @layerv/qurl`). Extracted from `layervai/qurl-integrations`.
 
 ## Commands
 

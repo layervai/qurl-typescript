@@ -1,4 +1,4 @@
-/** Access control policy for a QURL. */
+/** Access control policy for a qURL. */
 export interface AccessPolicy {
   ip_allowlist?: string[];
   ip_denylist?: string[];
@@ -8,7 +8,7 @@ export interface AccessPolicy {
   user_agent_deny_regex?: string;
 }
 
-/** An individual access token within a QURL. */
+/** An individual access token within a qURL. */
 export interface AccessToken {
   /** Display identifier for this token (q_ prefix). */
   qurl_id: string;
@@ -24,7 +24,7 @@ export interface AccessToken {
   expires_at: string;
 }
 
-/** A QURL resource as returned by the API. */
+/** A qURL resource as returned by the API. */
 export interface QURL {
   resource_id: string;
   target_url: string;
@@ -39,7 +39,7 @@ export interface QURL {
   expires_at?: string;
 }
 
-/** Input for creating a QURL. */
+/** Input for creating a qURL. */
 export interface CreateInput {
   target_url: string;
   expires_in?: string;
@@ -51,7 +51,7 @@ export interface CreateInput {
   custom_domain?: string;
 }
 
-/** Response from creating a QURL. */
+/** Response from creating a qURL. */
 export interface CreateOutput {
   resource_id: string;
   qurl_link: string;
@@ -60,7 +60,7 @@ export interface CreateOutput {
   one_time_use?: boolean;
 }
 
-/** Input for listing QURLs. */
+/** Input for listing qURLs. */
 export interface ListInput {
   limit?: number;
   cursor?: string;
@@ -69,20 +69,20 @@ export interface ListInput {
   sort?: string;
 }
 
-/** Response from listing QURLs. */
+/** Response from listing qURLs. */
 export interface ListOutput {
   qurls: QURL[];
   next_cursor?: string;
   has_more: boolean;
 }
 
-/** Input for extending a QURL. */
+/** Input for extending a qURL. */
 export interface ExtendInput {
   extend_by?: string;
   expires_at?: string;
 }
 
-/** Input for updating a QURL — extend expiration, change description, etc. */
+/** Input for updating a qURL — extend expiration, change description, etc. */
 export interface UpdateInput {
   extend_by?: string;
   expires_at?: string;
@@ -101,7 +101,7 @@ export interface MintOutput {
   expires_at?: string;
 }
 
-/** Input for headless QURL resolution. */
+/** Input for headless qURL resolution. */
 export interface ResolveInput {
   access_token: string;
 }
@@ -141,7 +141,7 @@ export interface Quota {
   };
 }
 
-/** API error from the QURL service (RFC 7807). */
+/** API error from the qURL service (RFC 7807). */
 export interface QURLErrorData {
   status: number;
   code: string;
