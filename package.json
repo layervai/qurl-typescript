@@ -1,7 +1,7 @@
 {
   "name": "@layerv/qurl",
   "version": "0.1.0",
-  "description": "TypeScript SDK for the qURL API - secure, time-limited access links",
+  "description": "TypeScript SDK for the qURL™ API — secure, time-limited access links. Quantum URL is how you enter the hidden layer of the internet.",
   "type": "module",
   "sideEffects": false,
   "main": "./dist/cjs/index.js",

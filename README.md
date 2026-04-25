@@ -4,7 +4,9 @@
 [![CI](https://github.com/layervai/qurl-typescript/actions/workflows/ci.yml/badge.svg)](https://github.com/layervai/qurl-typescript/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/layervai/qurl-typescript)](LICENSE)
 
-TypeScript SDK for the [qURL API](https://docs.layerv.ai) — secure, time-limited access links for AI agents.
+TypeScript SDK for the [qURL™ API](https://docs.layerv.ai) — secure, time-limited access links for AI agents.
+
+> **Quantum URL (qURL)** · The internet has a hidden layer. This is how you enter.
 
 ## Why qURL?
 
