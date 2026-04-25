@@ -1,6 +1,6 @@
 import type { QURLErrorData } from "./types.js";
 
-/** Base error thrown by the QURL API client. Catch this to handle all SDK errors. */
+/** Base error thrown by the qURL API client. Catch this to handle all SDK errors. */
 export class QURLError extends Error {
   readonly status: number;
   readonly code: string;

@@ -4,11 +4,13 @@
 [![CI](https://github.com/layervai/qurl-typescript/actions/workflows/ci.yml/badge.svg)](https://github.com/layervai/qurl-typescript/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/layervai/qurl-typescript)](LICENSE)
 
-TypeScript SDK for the [QURL API](https://docs.layerv.ai) — secure, time-limited access links for AI agents.
+TypeScript SDK for the [qURL™ API](https://docs.layerv.ai) — secure, time-limited access links for AI agents.
 
-## Why QURL?
+> **Quantum URL (qURL)** · The internet has a hidden layer. This is how you enter.
 
-AI agents need to access protected resources — APIs, databases, internal tools — but giving them permanent credentials is a security risk. QURL creates time-limited, auditable access links that expire automatically. The SDK handles authentication, retries, pagination, and error handling so you can focus on your agent logic.
+## Why qURL?
+
+AI agents need to access protected resources — APIs, databases, internal tools — but giving them permanent credentials is a security risk. qURL creates time-limited, auditable access links that expire automatically. The SDK handles authentication, retries, pagination, and error handling so you can focus on your agent logic.
 
 ## Installation
 
@@ -57,12 +59,12 @@ console.log(`Access granted to ${access.target_url} for ${access.access_grant?.e
 | Method | Description |
 |--------|-------------|
 | `create(input)` | Create a protected link |
-| `get(id)` | Get QURL details |
-| `list(input?)` | List QURLs (single page) |
-| `listAll(input?)` | Iterate all QURLs (auto-paginating) |
-| `delete(id)` | Revoke a QURL |
+| `get(id)` | Get qURL details |
+| `list(input?)` | List qURLs (single page) |
+| `listAll(input?)` | Iterate all qURLs (auto-paginating) |
+| `delete(id)` | Revoke a qURL |
 | `extend(id, input)` | Extend expiration |
-| `update(id, input)` | Update QURL properties |
+| `update(id, input)` | Update qURL properties |
 | `mintLink(id, input?)` | Mint a new access link |
 | `resolve(input)` | Resolve token + open firewall |
 | `getQuota()` | Get quota/usage info |
