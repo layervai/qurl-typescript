@@ -217,25 +217,23 @@ function requireValidTags(tags: string[] | null | undefined): void {
 const ALLOWED_URL_SCHEMES = ["http://", "https://"] as const;
 
 function requireValidTargetUrl(target_url: unknown): void {
-  if (
-    typeof target_url !== "string" ||
-    !ALLOWED_URL_SCHEMES.some((scheme) => target_url.startsWith(scheme))
-  ) {
-    // `JSON.stringify(...).slice(0, 40)` instead of the raw value —
-    // works on any input type (string, number, null, object) without
-    // risking a TypeError on non-subscriptable inputs, and truncates
-    // to keep the error message compact.
-    //
-    // The `?.slice(...) ?? String(...).slice(...)` chain is load-bearing,
-    // not dead code: `JSON.stringify(undefined)` returns the JS value
-    // `undefined` itself (not the string `"undefined"`), so the optional
-    // chain shortcircuits and the `??` fallback is hit. Without the
-    // fallback, calling `.slice` on `undefined` at runtime would throw
-    // `TypeError: Cannot read properties of undefined (reading 'slice')`
-    // and mask the real validation failure. The
-    // `test("create URL scheme error is safe for non-string inputs")`
-    // test passes `undefined` explicitly to lock this path in.
-    const repr = JSON.stringify(target_url)?.slice(0, 40) ?? String(target_url).slice(0, 40);
+  // Split the type guard from the scheme check so the error message
+  // pinpoints the actual failure mode. A non-string `target_url` (a
+  // number, null, plain object) gets a "must be a string" message
+  // matching the rest of the validators (requireMaxLength,
+  // requireValidTags); only an actual string value with a bad scheme
+  // gets the "must start with http:// or https://" message. Without
+  // the split, an untyped-JS caller passing `null` would get a
+  // misleading "scheme" complaint.
+  if (typeof target_url !== "string") {
+    throw clientValidationError(
+      `target_url: must be a string (got ${target_url === null ? "null" : typeof target_url})`,
+    );
+  }
+  if (!ALLOWED_URL_SCHEMES.some((scheme) => target_url.startsWith(scheme))) {
+    // Truncate to keep the error message compact and avoid
+    // pathologically long schemes from filling logs.
+    const repr = JSON.stringify(target_url).slice(0, 40);
     throw clientValidationError(`target_url: must start with http:// or https:// (got ${repr})`);
   }
 }
@@ -256,6 +254,13 @@ function validateCreateInput(input: CreateInput): void {
   // client-side would require re-implementing the server's rego/duration
   // parser. Keep the client's validation surface small and
   // spec-traceable.
+  //
+  // `access_policy` contents (ip_allowlist CIDRs, geo_allowlist
+  // ISO-3166 codes, user_agent_*_regex patterns) are intentionally
+  // pass-through for the same reason — the server is authoritative
+  // for CIDR / ISO-3166 / regex validity, and duplicating the rules
+  // here would just create another drift surface. Don't add half-baked
+  // client-side IP/geo/regex validators without a strong case.
 }
 
 /**
@@ -560,6 +565,10 @@ export class QURLClient {
    * ```
    */
   async batchCreate(input: BatchCreateInput): Promise<BatchCreateOutput> {
+    // Size checks are fail-fast (binary, no useful aggregation), per-item
+    // validation below is collect-all (multiple bad items aggregate into
+    // one throw). The asymmetry is deliberate: there's nothing to combine
+    // for "0 items" or ">100 items" — the size is wrong or it isn't.
     if (input.items.length === 0) {
       throw clientValidationError("batchCreate requires at least 1 item");
     }

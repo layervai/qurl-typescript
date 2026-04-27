@@ -59,6 +59,7 @@ console.log(`Access granted to ${access.target_url} for ${access.access_grant?.e
 | Method | Description |
 |--------|-------------|
 | `create(input)` | Create a protected link |
+| `batchCreate(input)` | Create up to 100 protected links in one request |
 | `get(id)` | Get qURL details |
 | `list(input?)` | List qURLs (single page) |
 | `listAll(input?)` | Iterate all qURLs (auto-paginating) |
@@ -68,6 +69,29 @@ console.log(`Access granted to ${access.target_url} for ${access.access_grant?.e
 | `mintLink(id, input?)` | Mint a new access link |
 | `resolve(input)` | Resolve token + open firewall |
 | `getQuota()` | Get quota/usage info |
+
+### `batchCreate(input)`
+
+Create up to 100 qURLs in a single request. **Does not throw on partial or total failure** — per-item errors are returned in the `results` array, so `try/catch` alone won't surface them. Always inspect `result.failed` and iterate `result.results`:
+
+```typescript
+const result = await client.batchCreate({
+  items: [
+    { target_url: 'https://api.example.com/data', expires_in: '24h' },
+    { target_url: 'https://api.example.com/admin', expires_in: '1h' },
+  ],
+});
+
+if (result.failed > 0) {
+  for (const r of result.results) {
+    if (!r.success) {
+      console.error(`items[${r.index}]: ${r.error.code} - ${r.error.message}`);
+    }
+  }
+}
+```
+
+Non-400 errors (401, 403, 429, 5xx, and unexpected 400 body shapes) still throw the appropriate `QURLError` subclass.
 
 ## Error Handling
 

@@ -184,11 +184,14 @@ describe("QURLClient", () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
-  it("create URL scheme error is safe for non-string inputs", async () => {
-    // Regression guard: the error message must not crash when a
-    // non-string target_url is passed from untyped JS (null,
-    // undefined, number, object). The repr uses JSON.stringify so
-    // any input type formats cleanly.
+  it("create rejects non-string target_url with a 'must be a string' error (untyped-JS safety)", async () => {
+    // Regression guard: requireValidTargetUrl splits the type guard from
+    // the scheme check so the error message pinpoints the actual failure
+    // mode. A non-string `target_url` (number, null, plain object) gets a
+    // "must be a string" message matching the rest of the validators
+    // (requireMaxLength, requireValidTags); only an actual string with a
+    // bad scheme gets the "http:// or https://" message. Previously both
+    // failure modes shared the scheme message, which misled callers.
     const fetch = mockFetch({ status: 201, body: { data: {} } });
     const client = createClient(fetch);
 
@@ -198,7 +201,13 @@ describe("QURLClient", () => {
         .create({ target_url: badUrl as unknown as string })
         .catch((e: unknown) => e as ValidationError);
       expect(error).toBeInstanceOf(ValidationError);
-      expect((error as ValidationError).detail).toContain("http:// or https://");
+      expect((error as ValidationError).code).toBe("client_validation");
+      const detail = (error as ValidationError).detail;
+      expect(detail).toContain("target_url");
+      expect(detail).toContain("must be a string");
+      // Must NOT mislead with the scheme message — that's reserved for
+      // actual string inputs with the wrong scheme.
+      expect(detail).not.toContain("http:// or https://");
     }
     expect(fetch).not.toHaveBeenCalled();
   });
