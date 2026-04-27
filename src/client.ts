@@ -332,26 +332,22 @@ function validateCreateInput(input: CreateInput): void {
   collect(() => requireNonEmptyIfPresent(input.label, "label"));
   collect(() => requireMaxLength(input.custom_domain, "custom_domain", MAX_CUSTOM_DOMAIN));
   collect(() => requireMaxSessionsInRange(input.max_sessions));
+  collect(() => requireNonEmptyIfPresent(input.expires_in, "expires_in"));
+  collect(() => requireNonEmptyIfPresent(input.session_duration, "session_duration"));
   if (errors.length > 0) {
+    // Inner `; ` is contractual (paired with batchCreate's outer ` | `).
+    // Future field-level validators must not aggregate via `; ` internally.
     throw clientValidationError(errors.join("; "));
   }
-  // Intentional omission: `expires_in` and `session_duration` are
-  // duration strings ("5m", "24h", "7d", "1w"). The spec documents
-  // plan-dependent min/max bounds and a specific unit grammar, but
-  // duplicating that grammar as a client-side regex risks drift from
-  // the server's authoritative parser — especially for edge cases
-  // like compound units or whitespace tolerance. A typo ("24hh")
-  // surfaces quickly via 400 with a clear server error; catching it
-  // client-side would require re-implementing the server's rego/duration
-  // parser. Keep the client's validation surface small and
-  // spec-traceable.
+  // Intentional omission: duration *grammar* (`expires_in`,
+  // `session_duration`) is server-authoritative. Empty strings are
+  // rejected up front (see collect() calls above) but unit/whitespace
+  // edge cases ("24hh", "1w 3d") surface as a clean server 400 — a
+  // client-side regex would just create a drift surface against the
+  // server's rego/duration parser.
   //
-  // `access_policy` contents (ip_allowlist CIDRs, geo_allowlist
-  // ISO-3166 codes, user_agent_*_regex patterns) are intentionally
-  // pass-through for the same reason — the server is authoritative
-  // for CIDR / ISO-3166 / regex validity, and duplicating the rules
-  // here would just create another drift surface. Don't add half-baked
-  // client-side IP/geo/regex validators without a strong case.
+  // `access_policy` contents (CIDRs, ISO-3166 codes, regex patterns)
+  // are pass-through for the same reason.
 }
 
 /**
@@ -492,9 +488,10 @@ export class QURLClient {
       );
     }
     if (parsedBaseUrl.protocol === "http:") {
-      // Node's `URL.hostname` returns IPv6 hosts WITH brackets
-      // (e.g. `[::1]`), browsers'/whatwg's also; compare both bracketed
-      // and bare forms for robustness across runtimes.
+      // Node's `URL.hostname` returns IPv6 hosts WITH brackets (e.g.
+      // `[::1]`) — verified empirically. The bare `::1` arm is defensive
+      // against runtimes that strip brackets (some whatwg-URL builds);
+      // both are cheap, keep both.
       const host = parsedBaseUrl.hostname.toLowerCase();
       // `0.0.0.0` is bind-all, not loopback — would route the bearer to any local listener.
       const isLoopback =
@@ -514,7 +511,12 @@ export class QURLClient {
     this.maxRetries = Number.isFinite(requestedMaxRetries)
       ? Math.max(0, Math.floor(requestedMaxRetries))
       : DEFAULT_MAX_RETRIES;
-    this.timeout = options.timeout ?? DEFAULT_TIMEOUT;
+    // WHATWG: `AbortSignal.timeout(non-finite|≤0)` is immediate-abort.
+    const requestedTimeout = options.timeout ?? DEFAULT_TIMEOUT;
+    this.timeout =
+      Number.isFinite(requestedTimeout) && requestedTimeout > 0
+        ? requestedTimeout
+        : DEFAULT_TIMEOUT;
     this.userAgent = options.userAgent ?? `qurl-typescript/${VERSION}`;
 
     if (options.debug === true) {
@@ -1143,19 +1145,11 @@ export class QURLClient {
     if (normalized !== undefined) {
       requireMaxLength(normalized.label, "label", MAX_LABEL);
       requireNonEmptyIfPresent(normalized.label, "label");
+      requireNonEmptyIfPresent(normalized.session_duration, "session_duration");
       requireMaxSessionsInRange(normalized.max_sessions);
-      // `session_duration` and `expires_in` are intentionally NOT
-      // validated client-side here, even though the JSDoc on MintInput
-      // documents min-5m / max-24h bounds. Same rationale as
-      // validateCreateInput: duration grammar lives server-side, and
-      // duplicating it as a regex risks drift. Don't add a half-baked
-      // client-side duration parser without a strong case.
-      //
-      // `access_policy` contents (CIDRs, ISO-3166 codes, regex
-      // patterns) are also intentionally pass-through — same
-      // server-is-authoritative rationale as validateCreateInput.
-      // Don't add half-baked client-side IP/geo/regex validators
-      // without a strong case.
+      // Duration *grammar* and access_policy contents are server-authoritative
+      // (same rationale as validateCreateInput). Empty-string rejection happens
+      // above; bound/unit checks happen server-side.
     }
     return this.request<MintOutput>(
       "POST",

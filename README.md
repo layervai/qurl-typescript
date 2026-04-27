@@ -174,7 +174,7 @@ The client automatically retries failed requests with exponential backoff:
 - **GET/DELETE**: Retries on 429, 502, 503, 504
 - **POST/PATCH**: Retries only on 429 (to avoid duplicate side effects)
 - **Network errors**: Always retried
-- **429 responses**: Honors `Retry-After` header
+- **`Retry-After` header**: Honored on 429 and 503 responses (RFC 7231 §7.1.3). Currently the SDK only parses **delta-seconds** values (e.g. `Retry-After: 30`); HTTP-date values (`Retry-After: Wed, 21 Oct 2026 07:28:00 GMT`) silently fall back to exponential backoff. Tracked in [#61](https://github.com/layervai/qurl-typescript/issues/61).
 
 Configure with `maxRetries` (default: 3). Set to `0` to disable.
 

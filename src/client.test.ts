@@ -1332,13 +1332,11 @@ describe("QURLClient", () => {
     expect(body.description).toBe("");
   });
 
-  it("mintLink rejects empty-string timing fields (expires_in / expires_at)", async () => {
-    // Symmetric with update() — empty string on timing fields is
-    // always a caller mistake, never a meaningful value.
+  it("mintLink rejects empty-string timing/duration fields (expires_in / expires_at / session_duration)", async () => {
     const fetch = mockFetch({ status: 200, body: { data: {} } });
     const client = createClient(fetch);
 
-    for (const key of ["expires_in", "expires_at"] as const) {
+    for (const key of ["expires_in", "expires_at", "session_duration"] as const) {
       const error = await client
         .mintLink("r_abc", { [key]: "" } as unknown as Parameters<typeof client.mintLink>[1])
         .catch((e: unknown) => e as ValidationError);
@@ -2660,6 +2658,40 @@ describe("QURLClient", () => {
     });
     await expect(client.getQuota()).resolves.toBeDefined();
     expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to default timeout on NaN/Infinity/negative (immediate-abort guard)", async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: { data: { plan: "growth", period_start: "2026-03-01", period_end: "2026-04-01" } },
+    });
+    for (const badTimeout of [NaN, Infinity, -Infinity, -1, 0]) {
+      const client = new QURLClient({
+        apiKey: "lv_live_test",
+        baseUrl: "https://api.test.layerv.ai",
+        fetch,
+        maxRetries: 0,
+        timeout: badTimeout,
+      });
+      await expect(client.getQuota()).resolves.toBeDefined();
+    }
+    expect(fetch).toHaveBeenCalledTimes(5);
+  });
+
+  it("create rejects empty-string duration fields (expires_in / session_duration)", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+    const client = createClient(fetch);
+
+    const fields: readonly (keyof CreateInput)[] = ["expires_in", "session_duration"];
+    for (const field of fields) {
+      const error = await client
+        .create({ target_url: "https://example.com", [field]: "" })
+        .catch((e: unknown) => e as ValidationError);
+      expect(error).toBeInstanceOf(ValidationError);
+      expect((error as ValidationError).detail).toContain(field);
+      expect((error as ValidationError).detail).toContain("empty");
+    }
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("normalizes trailing slash in baseUrl", async () => {
