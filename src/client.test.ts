@@ -693,8 +693,8 @@ describe("QURLClient", () => {
   it("delete gives a distinct error for too-short / empty IDs", async () => {
     // An empty string or 1-2 char input isn't a plausible ID — the
     // "starting with X" wording would just echo noise (or nothing) and
-    // confuse callers. Assert the short-input branch uses a clearer
-    // "invalid or empty identifier" message.
+    // confuse callers. Assert the short-input branch reports the
+    // observed length so the caller sees what they actually sent.
     //
     // Also covers the edge case where the input is EXACTLY the prefix
     // with no suffix (`"r_"` or `"q_"`): these pass/fail `startsWith`
@@ -708,7 +708,7 @@ describe("QURLClient", () => {
       const error = await client.delete(badId).catch((e: unknown) => e as ValidationError);
       expect(error).toBeInstanceOf(ValidationError);
       const detail = (error as ValidationError).detail;
-      expect(detail).toContain("invalid or empty identifier");
+      expect(detail).toContain(`got ${badId.length} character`);
       // Short-input branch must NOT fall through to the "starting with"
       // wording that's meant for plausible-but-wrong-prefix IDs.
       expect(detail).not.toContain("starting with");
@@ -2599,13 +2599,15 @@ describe("QURLClient", () => {
     }
   });
 
-  it("Retry-After exceeding hard cap is truncated and logged", async () => {
-    // Pathological `Retry-After` >2^31-1 ms overflows Node's setTimeout
-    // to 1ms — hot-loop hazard. Cap honored, retry attempted only after
-    // the cap (not before).
+  it("Retry-After exceeding parse limit falls through to exponential backoff (logged)", async () => {
+    // Pathological `Retry-After` (30 days) > the parse-time limit
+    // (= RETRY_AFTER_HARD_CAP_MS / 1000) is rejected at parse with a
+    // debug log; retryDelay then uses exponential backoff. Without the
+    // parse-time guard, very large values would propagate through the
+    // *1000 ms-conversion before the hard cap clamped them.
     vi.useFakeTimers();
     try {
-      const huge = 86400 * 30; // 30 days, well past the 1h cap
+      const huge = 86400 * 30; // 30 days, well past the 1h parse limit
       const retryAfterHuge = mockFetches([
         {
           status: 429,
@@ -2632,15 +2634,15 @@ describe("QURLClient", () => {
       });
 
       const promise = client.getQuota();
-      // Just under the cap: must NOT have fired the second fetch yet.
-      await vi.advanceTimersByTimeAsync(3_599_999);
-      expect(retryAfterHuge).toHaveBeenCalledTimes(1);
-      // Past the cap: retry fires.
-      await vi.advanceTimersByTimeAsync(2);
+      // Exponential backoff is capped at RETRY_MAX_DELAY_MS (30s) + 50%
+      // jitter ≤ 45s. Advancing 60s guarantees the retry has fired.
+      await vi.advanceTimersByTimeAsync(60_000);
       const result = await promise;
       expect(result.plan).toBe("growth");
       expect(retryAfterHuge).toHaveBeenCalledTimes(2);
-      expect(debugMessages.some((m) => m.includes("Retry-After exceeded hard cap"))).toBe(true);
+      expect(debugMessages.some((m) => m.includes("Retry-After header exceeded parse limit"))).toBe(
+        true,
+      );
     } finally {
       vi.useRealTimers();
     }
@@ -5421,6 +5423,58 @@ describe("QURLClient", () => {
     expect(detail).toContain("results.length=1");
     // Still carries the HTTP status suffix from the previous round's fix.
     expect(detail).toContain("(HTTP 400)");
+  });
+
+  it("batch create rejects responses where results.length does not match request item count", async () => {
+    // Per OpenAPI contract: one result per input item. A server that drops
+    // an item (e.g. 3 sent → 2 returned with succeeded=1, failed=1) passes
+    // the arithmetic invariant AND every per-entry check, but the consumer
+    // keying by `r.index` would silently lose the dropped item. This guard
+    // closes that gap.
+    const fetch = mockFetch({
+      status: 207,
+      body: {
+        data: {
+          succeeded: 1,
+          failed: 1,
+          // results.length === 2 but we sent 3 items
+          results: [
+            {
+              index: 0,
+              success: true,
+              resource_id: "r_a",
+              qurl_link: "https://qurl.link/#at_a",
+              qurl_site: "https://r_a.qurl.site",
+            },
+            {
+              index: 2,
+              success: false,
+              error: {
+                status: 400,
+                code: "validation_error",
+                title: "Invalid",
+                detail: "x",
+              },
+            },
+          ],
+        },
+      },
+    });
+    const client = createClient(fetch);
+    const error = await client
+      .batchCreate({
+        items: [
+          { target_url: "https://a.example.com" },
+          { target_url: "https://b.example.com" },
+          { target_url: "https://c.example.com" },
+        ],
+      })
+      .catch((e: unknown) => e as ValidationError);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).code).toBe(ERROR_CODE_UNEXPECTED_RESPONSE);
+    const detail = (error as ValidationError).detail;
+    expect(detail).toContain("results.length (2) does not match request item count (3)");
+    expect(detail).toContain("(HTTP 207)");
   });
 
   it("batch create still throws on non-400 error statuses (401, 429, 5xx)", async () => {

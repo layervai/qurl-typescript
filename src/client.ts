@@ -42,6 +42,7 @@ const RETRY_MAX_DELAY_MS = 30_000;
 // values >2^31-1 ms overflowing Node's setTimeout (silently truncated to
 // 1ms — turns a "wait a month" directive into a hot retry loop).
 const RETRY_AFTER_HARD_CAP_MS = 60 * 60 * 1000;
+const RETRY_AFTER_PARSE_LIMIT_S = RETRY_AFTER_HARD_CAP_MS / 1000;
 const RETRYABLE_STATUS = new Set([429, 502, 503, 504]);
 const RETRYABLE_STATUS_MUTATING = new Set([429]);
 type HttpMethod = "GET" | "POST" | "PATCH" | "DELETE";
@@ -493,8 +494,12 @@ interface ApiResponse<T> {
    * Currently used by `batchCreate`'s shape-guard error to surface
    * whether an unexpected body came back on a success-range status
    * (e.g. 201, 207) or a passthrough status (e.g. 400).
+   *
+   * The leading underscores avoid colliding with any future API field
+   * named `http_status` — the spread `{ ...json, __http_status }` would
+   * otherwise let the SDK silently overwrite a server-supplied value.
    */
-  http_status?: number;
+  __http_status?: number;
 }
 
 interface ApiErrorEnvelope {
@@ -674,7 +679,9 @@ export class QURLClient {
    * Three layers of defense:
    *   1. Top-level shape (succeeded/failed are non-negative integers;
    *      results is an array).
-   *   2. Arithmetic invariant: `succeeded + failed === results.length`.
+   *   2. Arithmetic invariants: `succeeded + failed === results.length`
+   *      and `results.length === requestItemCount` (catches silent
+   *      server-side item drops).
    *   3. Per-entry discriminated-union contract + index range / dedupe.
    *
    * Error messages include the observed HTTP status as a suffix so
@@ -692,7 +699,7 @@ export class QURLClient {
   ): BatchCreateOutput {
     const result = envelope.data;
     const statusSuffix =
-      envelope.http_status !== undefined ? ` (HTTP ${envelope.http_status})` : "";
+      envelope.__http_status !== undefined ? ` (HTTP ${envelope.__http_status})` : "";
     // Thread the server's request_id into the shape-guard error so
     // operators debugging "unexpected response" tickets have the
     // correlation handle on the error path, mirroring the success-
@@ -733,6 +740,21 @@ export class QURLClient {
       );
     }
 
+    // OpenAPI contract: one result per input item. Without this check, a
+    // server that drops items (e.g. sends 2 results for 3 inputs with
+    // succeeded=1, failed=1) passes the arithmetic invariant above and
+    // every per-entry check below — but the consumer keying by `r.index`
+    // would silently lose the dropped item. Combined with the per-entry
+    // index range + dedup checks, this guarantees the seen-indices set is
+    // exactly [0, requestItemCount).
+    if (result.results.length !== requestItemCount) {
+      throw unexpectedResponseError(
+        `Unexpected response shape from POST /v1/qurls/batch${statusSuffix}: ` +
+          `results.length (${result.results.length}) does not match request item count (${requestItemCount})${requestIdSuffix}`,
+        requestId,
+      );
+    }
+
     // Per-entry discriminated-union contract. Reason strings report
     // field NAMES only, never values — safe for observability pipelines.
     // Short-circuit on first bad entry (server-contract check, not user
@@ -762,18 +784,6 @@ export class QURLClient {
         );
       }
       seenIndices.add(entry.index);
-    }
-
-    // Suspicious-but-shape-valid: empty results AND zero counts on a
-    // batch the SDK definitely sent items for. Doesn't fail the guard
-    // (the contract permits it) — surface via debug so operators see
-    // it if it ever shows up in the wild.
-    if (result.results.length === 0) {
-      this.log("batchCreate: response has empty results and zero counts (suspicious)", {
-        succeeded: result.succeeded,
-        failed: result.failed,
-        request_id: requestId,
-      });
     }
 
     return result;
@@ -1075,7 +1085,7 @@ export class QURLClient {
     // a round-trip.
     if (id.length <= RESOURCE_ID_PREFIX.length) {
       throw clientValidationError(
-        `delete: requires a resource ID (${RESOURCE_ID_PREFIX} prefix + suffix) — got an invalid or empty identifier`,
+        `delete: requires a resource ID (${RESOURCE_ID_PREFIX} prefix + suffix) — got ${id.length} character${id.length === 1 ? "" : "s"}`,
       );
     }
     if (!id.startsWith(RESOURCE_ID_PREFIX)) {
@@ -1207,13 +1217,11 @@ export class QURLClient {
     if (normalized !== undefined) {
       requireNonEmptyIfPresent(normalized.expires_in, "expires_in");
       requireNonEmptyIfPresent(normalized.expires_at, "expires_at");
-    }
-    if (normalized?.expires_in !== undefined && normalized.expires_at !== undefined) {
-      throw clientValidationError(
-        "mintLink: `expires_in` and `expires_at` are mutually exclusive — provide at most one",
-      );
-    }
-    if (normalized !== undefined) {
+      if (normalized.expires_in !== undefined && normalized.expires_at !== undefined) {
+        throw clientValidationError(
+          "mintLink: `expires_in` and `expires_at` are mutually exclusive — provide at most one",
+        );
+      }
       requireMaxLength(normalized.label, "label", MAX_LABEL);
       requireNonEmptyIfPresent(normalized.label, "label");
       requireNonEmptyIfPresent(normalized.session_duration, "session_duration");
@@ -1375,11 +1383,11 @@ export class QURLClient {
               url,
             });
           }
-          return { data: undefined as unknown as T, http_status: response.status };
+          return { data: undefined as unknown as T, __http_status: response.status };
         }
         try {
           const json = (await response.json()) as ApiResponse<T>;
-          return { ...json, http_status: response.status };
+          return { ...json, __http_status: response.status };
         } catch {
           // Non-JSON body on a 2xx response (server contract violation)
           // or on a passthrough status (e.g. proxy HTML on 400). The
@@ -1470,7 +1478,9 @@ export class QURLClient {
   }
 
   private parseRetryAfter(response: Response): number | undefined {
-    // RFC 7231 §7.1.3: Retry-After honored on 429 + 503.
+    // RFC 7231 §7.1.3: Retry-After honored on 429 + 503. (RFC 7231
+    // also allows Retry-After on 3xx redirects; the SDK doesn't follow
+    // redirects, so 429/503 cover the relevant cases.)
     if (response.status !== 429 && response.status !== 503) return undefined;
     const header = response.headers.get("Retry-After");
     if (!header) return undefined;
@@ -1488,7 +1498,20 @@ export class QURLClient {
       });
       return undefined;
     }
-    return parseInt(trimmed, 10);
+    const value = parseInt(trimmed, 10);
+    // Reject pathological values at parse time. Without this, very large
+    // integers (e.g. `Retry-After: 9999999999999`) propagate through the
+    // `*1000` ms-conversion in retryDelay before the hard cap clamps
+    // them — fail fast instead, with a debug breadcrumb. Cutoff matches
+    // the hard cap so a clean cap-bounded value still parses.
+    if (value > RETRY_AFTER_PARSE_LIMIT_S) {
+      this.log("Retry-After header exceeded parse limit, using exponential backoff", {
+        header_value: header.slice(0, 100),
+        limit_seconds: RETRY_AFTER_PARSE_LIMIT_S,
+      });
+      return undefined;
+    }
+    return value;
   }
 
   /**

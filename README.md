@@ -49,7 +49,7 @@ console.log(`Access granted to ${access.target_url} for ${access.access_grant?.e
 | `apiKey` | Yes | — |
 | `baseUrl` | No | `https://api.layerv.ai` |
 | `maxRetries` | No | `3` |
-| `timeout` | No | `30000` (ms) |
+| `timeout` | No | `30000` (ms) — *per attempt*, not total |
 | `fetch` | No | `globalThis.fetch` |
 | `userAgent` | No | `qurl-typescript/<version>` |
 | `debug` | No | `false` |
@@ -177,6 +177,8 @@ The client automatically retries failed requests with exponential backoff:
 - **`Retry-After` header**: Honored on 429 and 503 responses (RFC 7231 §7.1.3). Currently the SDK only parses **delta-seconds** values (e.g. `Retry-After: 30`); HTTP-date values (`Retry-After: Wed, 21 Oct 2026 07:28:00 GMT`) silently fall back to exponential backoff. Tracked in [#61](https://github.com/layervai/qurl-typescript/issues/61).
 
 Configure with `maxRetries` (default: 3). Set to `0` to disable.
+
+> **Worst-case latency**: `timeout` is enforced per *attempt*, not for the whole request. Total worst-case latency is roughly `timeout × (maxRetries + 1) + sum(retry delays)`. Operators tuning `timeout` should account for this when sizing health-check budgets.
 
 ## Versioning & breaking changes
 
