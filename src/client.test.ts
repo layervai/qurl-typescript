@@ -285,6 +285,37 @@ describe("QURLClient", () => {
     expect(result.access_tokens).toBeUndefined();
   });
 
+  it("preserves empty qurls: [] as access_tokens: []", async () => {
+    // Defense against a future refactor flipping the truthiness check
+    // in mapQurlsField from `"qurls" in raw` to `if (raw.qurls)`. An
+    // empty array is truthy as a value but falsy in a boolean coerce
+    // ONLY for length-zero strings — so the in-check correctly preserves
+    // `[]` while a `if (raw.qurls)` would fall through to the no-rename
+    // path and leave the consumer staring at `qurls: []` on a typed
+    // QURL where they expected `access_tokens: []`.
+    const fetch = mockFetch({
+      status: 200,
+      body: {
+        data: {
+          resource_id: "r_empty_tokens",
+          target_url: "https://example.com",
+          status: "active",
+          qurl_count: 0,
+          created_at: "2026-03-10T10:00:00Z",
+          qurls: [],
+        },
+      },
+    });
+
+    const client = createClient(fetch);
+    const result = await client.get("r_empty_tokens");
+
+    expect(result.resource_id).toBe("r_empty_tokens");
+    expect(result.access_tokens).toEqual([]);
+    // The wire-format key must be removed from the consumer-facing object.
+    expect((result as unknown as { qurls?: unknown[] }).qurls).toBeUndefined();
+  });
+
   it("gets a qURL by q_ display ID (API resolves to parent resource)", async () => {
     // Per the spec's QurlId parameter (openapi.yaml:2254), GET /v1/qurls/:id
     // accepts both r_ and q_ prefixes. Exercise the URL-construction path
@@ -683,6 +714,34 @@ describe("QURLClient", () => {
     expect((error as ValidationError).code).toBe("client_validation");
     expect((error as ValidationError).detail).toContain("mutually exclusive");
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("mintLink normalizes null fields like update() (untyped-JS null-safety)", async () => {
+    // Symmetry with update()'s null-normalization. An untyped-JS caller
+    // passing `{ expires_in: null, expires_at: "2026-..." }` previously
+    // would (a) bypass the XOR check (which uses `!== undefined`) and
+    // (b) leak `"expires_in": null` into the wire body via JSON.stringify.
+    // mintLink now strips null/undefined before validation, mirroring
+    // update().
+    const fetch = mockFetch({
+      status: 200,
+      body: { data: { qurl_link: "https://qurl.link/#at_x", expires_at: "2026-04-01T00:00:00Z" } },
+    });
+    const client = createClient(fetch);
+
+    await client.mintLink("r_abc", {
+      expires_in: null as unknown as string,
+      expires_at: "2026-04-01T00:00:00Z",
+      label: null as unknown as string,
+    });
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const call = fetch.mock.calls[0];
+    const body = JSON.parse((call[1] as RequestInit).body as string);
+    // Stripped fields must NOT appear in the wire body.
+    expect(body).not.toHaveProperty("expires_in");
+    expect(body).not.toHaveProperty("label");
+    expect(body.expires_at).toBe("2026-04-01T00:00:00Z");
   });
 
   it("mintLink rejects label longer than 500 chars", async () => {

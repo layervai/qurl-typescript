@@ -475,10 +475,17 @@ export class QURLClient {
     const statusSuffix =
       envelope.http_status !== undefined ? ` (HTTP ${envelope.http_status})` : "";
 
+    // `Number.isInteger` rejects NaN, Infinity, and floats. Combined
+    // with `>= 0`, this rules out pathological proxy bodies (e.g.
+    // `succeeded: -1, failed: 1, results: [<one entry>]`) that the
+    // arithmetic invariant below would only catch by accident. Make
+    // the constraint intentional rather than incidental.
     if (
       !result ||
-      typeof result.succeeded !== "number" ||
-      typeof result.failed !== "number" ||
+      !Number.isInteger(result.succeeded) ||
+      result.succeeded < 0 ||
+      !Number.isInteger(result.failed) ||
+      result.failed < 0 ||
       !Array.isArray(result.results)
     ) {
       throw unexpectedResponseError(
@@ -615,6 +622,13 @@ export class QURLClient {
     // copies. The field is optional on BatchCreateOutput so older API
     // versions that omit `meta.request_id` still produce a valid
     // return value.
+    //
+    // If a future server payload puts `request_id` on both `data` and
+    // `meta`, the spread `{ ...result, request_id: requestId }` makes
+    // `meta` win — that's deliberate: the type only documents `meta`
+    // as the source, and `meta.request_id` is the canonical envelope
+    // field. The data-side variant would be a wire-format duplication
+    // we don't want to silently honor.
     const requestId = envelope.meta?.request_id;
     return requestId !== undefined ? { ...result, request_id: requestId } : result;
   }
@@ -834,16 +848,36 @@ export class QURLClient {
    */
   async mintLink(id: string, input?: MintInput): Promise<MintOutput> {
     requireNonEmptyId(id, "mintLink");
-    if (input?.expires_in !== undefined && input.expires_at !== undefined) {
+    // Normalize null → omitted so untyped-JS callers passing
+    // `{ expires_in: null, expires_at: "..." }` don't leak null into
+    // the wire body via JSON.stringify and don't bypass the XOR check
+    // below (which uses `!== undefined`). Mirrors the null-normalization
+    // pattern used by update(); keeps the two write surfaces symmetric.
+    let normalized: MintInput | undefined = input;
+    if (input !== undefined) {
+      const stripped: Record<string, unknown> = {};
+      for (const key of Object.keys(input) as (keyof MintInput)[]) {
+        const value = input[key];
+        if (value !== null && value !== undefined) {
+          stripped[key] = value;
+        }
+      }
+      normalized = stripped as MintInput;
+    }
+    if (normalized?.expires_in !== undefined && normalized.expires_at !== undefined) {
       throw clientValidationError(
         "mintLink: `expires_in` and `expires_at` are mutually exclusive — provide at most one",
       );
     }
-    if (input !== undefined) {
-      requireMaxLength(input.label, "label", MAX_LABEL);
-      requireMaxSessionsInRange(input.max_sessions);
+    if (normalized !== undefined) {
+      requireMaxLength(normalized.label, "label", MAX_LABEL);
+      requireMaxSessionsInRange(normalized.max_sessions);
     }
-    return this.request<MintOutput>("POST", `/v1/qurls/${encodeURIComponent(id)}/mint_link`, input);
+    return this.request<MintOutput>(
+      "POST",
+      `/v1/qurls/${encodeURIComponent(id)}/mint_link`,
+      normalized,
+    );
   }
 
   /**
@@ -1053,10 +1087,18 @@ export class QURLClient {
     if (!header) return undefined;
     // TODO: parse HTTP-date format per RFC 7231 §7.1.3 — currently only
     // handles delta-seconds; HTTP-date headers fall through to the
-    // exponential-backoff branch in `retryDelay`. In practice qurl-service
-    // emits delta-seconds, so this is a forward-compat gap, not a bug.
+    // exponential-backoff branch in `retryDelay`. Tracked in #61.
     const seconds = parseInt(header, 10);
-    return Number.isNaN(seconds) ? undefined : seconds;
+    if (Number.isNaN(seconds)) {
+      // Surface non-numeric Retry-After values via debug so operators
+      // see drift if the upstream ever switches formats — without this,
+      // the silent fall-through to exponential backoff is invisible.
+      this.log("Retry-After header was non-numeric, using exponential backoff", {
+        header_value: header.slice(0, 100),
+      });
+      return undefined;
+    }
+    return seconds;
   }
 
   private retryDelay(attempt: number, lastError?: Error): number {
