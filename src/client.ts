@@ -133,13 +133,19 @@ function clientValidationError(detail: string): ValidationError {
  * server returned a body I can't interpret" (`"unexpected_response"`).
  * Uses `status: 0` because the offending HTTP status (400/207/etc.) isn't
  * the thing being reported — the shape mismatch is.
+ *
+ * Threads `request_id` through to {@link QURLError.requestId} when the
+ * server-side correlation ID is available — operators debugging
+ * "unexpected response" tickets need it on the *error* path too, not
+ * just on success/passthrough returns.
  */
-function unexpectedResponseError(detail: string): ValidationError {
+function unexpectedResponseError(detail: string, request_id?: string): ValidationError {
   return new ValidationError({
     status: 0,
     code: "unexpected_response",
     title: "Unexpected Response",
     detail,
+    request_id,
   });
 }
 
@@ -250,14 +256,13 @@ function requireValidTags(tags: string[] | null | undefined): void {
 const ALLOWED_URL_SCHEMES = ["http://", "https://"] as const;
 
 function requireValidTargetUrl(target_url: unknown): void {
-  // Split the type guard from the scheme check so the error message
-  // pinpoints the actual failure mode. A non-string `target_url` (a
-  // number, null, plain object) gets a "must be a string" message
-  // matching the rest of the validators (requireMaxLength,
-  // requireValidTags); only an actual string value with a bad scheme
-  // gets the "must start with http:// or https://" message. Without
-  // the split, an untyped-JS caller passing `null` would get a
-  // misleading "scheme" complaint.
+  // Three checks in priority order: type guard, scheme, length.
+  // Stop at the first failure so a non-string target_url doesn't
+  // produce both "must be a string" AND "must be ≤ 2048 characters"
+  // (the length check on a non-string would also typeof-fail and
+  // duplicate the type message). The collect-all loop in
+  // validateCreateInput runs each FIELD's validator independently —
+  // within target_url itself we want fail-fast.
   if (typeof target_url !== "string") {
     throw clientValidationError(
       `target_url: must be a string (got ${target_url === null ? "null" : typeof target_url})`,
@@ -268,6 +273,11 @@ function requireValidTargetUrl(target_url: unknown): void {
     // pathologically long schemes from filling logs.
     const repr = JSON.stringify(target_url).slice(0, 40);
     throw clientValidationError(`target_url: must start with http:// or https:// (got ${repr})`);
+  }
+  if (target_url.length > MAX_TARGET_URL) {
+    throw clientValidationError(
+      `target_url: must be ${MAX_TARGET_URL} characters or fewer (got ${target_url.length})`,
+    );
   }
 }
 
@@ -290,7 +300,6 @@ function validateCreateInput(input: CreateInput): void {
     }
   };
   collect(() => requireValidTargetUrl(input.target_url));
-  collect(() => requireMaxLength(input.target_url, "target_url", MAX_TARGET_URL));
   collect(() => requireMaxLength(input.label, "label", MAX_LABEL));
   collect(() => requireMaxLength(input.custom_domain, "custom_domain", MAX_CUSTOM_DOMAIN));
   collect(() => requireMaxSessionsInRange(input.max_sessions));
@@ -335,7 +344,14 @@ function validateCreateInput(input: CreateInput): void {
 function batchItemResultValidationReason(entry: unknown): string | null {
   if (!entry || typeof entry !== "object") return "not an object";
   const e = entry as Record<string, unknown>;
-  if (typeof e.index !== "number") return "missing/invalid 'index' (expected number)";
+  // `Number.isInteger` rejects NaN, Infinity, and floats; combined
+  // with `>= 0`, the check rules out pathological proxy bodies that
+  // would attribute to a useless index. `index` is informational, so
+  // this isn't a correctness hazard, but tightening the constraint
+  // matches the same posture as the count integer guards above.
+  if (!Number.isInteger(e.index) || (e.index as number) < 0) {
+    return "missing/invalid 'index' (expected non-negative integer)";
+  }
   if (e.success === true) {
     if (typeof e.resource_id !== "string") {
       return "success-branch missing required field 'resource_id' (expected string)";
@@ -506,6 +522,16 @@ export class QURLClient {
   /**
    * Maps the API's "qurls" field to "access_tokens" on the SDK type.
    * Uses destructuring to avoid mutation and unsafe casts.
+   *
+   * **Why `"qurls" in raw` (not `if (raw.qurls)`):** an empty array
+   * `qurls: []` is truthy as a value but the rename must still happen
+   * — consumers expect `access_tokens: []` (empty list of tokens), not
+   * `qurls: []` slipping through. The `in` operator triggers on
+   * presence regardless of value, so empty / null / undefined `qurls`
+   * all enter the rename branch and the wire-format key gets stripped.
+   * Walks the prototype chain by spec, but `response.json()` produces
+   * plain objects so this is safe in practice. Locked in by the test
+   * `"preserves empty qurls: [] as access_tokens: []"`.
    */
   private mapQurlsField(raw: QURL & { qurls?: AccessToken[] }): QURL {
     if (!("qurls" in raw)) return raw;
@@ -554,6 +580,13 @@ export class QURLClient {
     const result = envelope.data;
     const statusSuffix =
       envelope.http_status !== undefined ? ` (HTTP ${envelope.http_status})` : "";
+    // Thread the server's request_id into the shape-guard error so
+    // operators debugging "unexpected response" tickets have the
+    // correlation handle on the error path, mirroring the success-
+    // path propagation in batchCreate(). The field is optional —
+    // older API versions without `meta.request_id` simply produce
+    // an error without it, same as today.
+    const requestId = envelope.meta?.request_id;
 
     // `Number.isInteger` rejects NaN, Infinity, and floats. Combined
     // with `>= 0`, this rules out pathological proxy bodies (e.g.
@@ -570,6 +603,7 @@ export class QURLClient {
     ) {
       throw unexpectedResponseError(
         `Unexpected response shape from POST /v1/qurls/batch${statusSuffix}`,
+        requestId,
       );
     }
 
@@ -578,6 +612,7 @@ export class QURLClient {
         `Unexpected response shape from POST /v1/qurls/batch${statusSuffix}: ` +
           `counts/results length mismatch (succeeded=${result.succeeded}, ` +
           `failed=${result.failed}, results.length=${result.results.length})`,
+        requestId,
       );
     }
 
@@ -588,6 +623,7 @@ export class QURLClient {
       if (reason !== null) {
         throw unexpectedResponseError(
           `Unexpected response shape from POST /v1/qurls/batch${statusSuffix}: results[${i}] ${reason}`,
+          requestId,
         );
       }
     }
@@ -1206,17 +1242,18 @@ export class QURLClient {
     // TODO: parse HTTP-date format per RFC 7231 §7.1.3 — currently only
     // handles delta-seconds; HTTP-date headers fall through to the
     // exponential-backoff branch in `retryDelay`. Tracked in #61.
-    const seconds = parseInt(header, 10);
-    if (Number.isNaN(seconds)) {
-      // Surface non-numeric Retry-After values via debug so operators
-      // see drift if the upstream ever switches formats — without this,
-      // the silent fall-through to exponential backoff is invisible.
+    //
+    // Digit-only pre-check rather than `parseInt` alone: `parseInt("60abc")`
+    // returns `60` and would silently honor a malformed header. The
+    // strict check makes any deviation observable (debug log) instead.
+    const trimmed = header.trim();
+    if (!/^\d+$/.test(trimmed)) {
       this.log("Retry-After header was non-numeric, using exponential backoff", {
         header_value: header.slice(0, 100),
       });
       return undefined;
     }
-    return seconds;
+    return parseInt(trimmed, 10);
   }
 
   /**

@@ -2020,6 +2020,56 @@ describe("QURLClient", () => {
     }
   });
 
+  it("rejects Retry-After with trailing garbage (e.g. '60abc') as non-numeric", async () => {
+    // `parseInt("60abc", 10)` returns 60 — a malformed header would
+    // silently get honored without the digit-only pre-check. The strict
+    // regex makes the malformed-header path observable (debug log) and
+    // falls through to exponential backoff so the SDK doesn't act on
+    // a half-parsed value.
+    const fetch = mockFetch({
+      status: 200,
+      body: {
+        data: { plan: "growth", period_start: "2026-03-01", period_end: "2026-04-01" },
+      },
+      headers: { "Retry-After": "60abc" },
+    });
+    let lastDebug: string | undefined;
+    const client = new QURLClient({
+      apiKey: "lv_live_test",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch,
+      maxRetries: 0,
+      debug: (msg) => {
+        lastDebug = msg;
+      },
+    });
+    // The 200 success path doesn't actually call parseRetryAfter
+    // (only 429 does). Use the QURLError construction path: a 429
+    // with malformed header surfaces .retryAfter === undefined.
+    const fetch429 = mockFetch({
+      status: 429,
+      body: { error: { title: "Rate Limited", status: 429, detail: "x", code: "rate_limited" } },
+      headers: { "Retry-After": "60abc" },
+    });
+    const client429 = new QURLClient({
+      apiKey: "lv_live_test",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch429,
+      maxRetries: 0,
+      debug: (msg) => {
+        lastDebug = msg;
+      },
+    });
+    const err = (await client429.getQuota().catch((e: unknown) => e)) as QURLError;
+    expect(err).toBeInstanceOf(RateLimitError);
+    // Malformed Retry-After must NOT propagate — retryAfter stays undefined.
+    expect(err.retryAfter).toBeUndefined();
+    // Debug log fires so operators can spot the drift.
+    expect(lastDebug).toContain("non-numeric");
+    // Sanity-check the 200-path client wasn't broken by the Retry-After test.
+    await expect(client.getQuota()).resolves.toBeDefined();
+  });
+
   it("does not clamp Retry-After against RETRY_MAX_DELAY_MS (server directive wins)", async () => {
     // RFC 7231 §7.1.3 — when the server tells us 60s, retrying at 30s
     // (the exponential-backoff cap) just re-trips the rate limit.
@@ -4025,6 +4075,29 @@ describe("QURLClient", () => {
 
     // request_id from meta still propagates on the 207 path.
     expect(result.request_id).toBe("req_mixed207");
+  });
+
+  it("batch create propagates request_id to shape-guard ValidationError", async () => {
+    // Operators debugging "unexpected response" tickets need the
+    // server-side correlation ID on the *error* path too — not just
+    // on the success/passthrough returns. Locks in that
+    // unexpectedResponseError carries `meta.request_id` through to
+    // QURLError.requestId.
+    const fetch = mockFetch({
+      status: 400,
+      body: {
+        data: { unexpected: "not a batch response" },
+        meta: { request_id: "req_shape_guard_correlation" },
+      },
+    });
+
+    const client = createClient(fetch);
+    const error = await client
+      .batchCreate({ items: [{ target_url: "https://example.com" }] })
+      .catch((e: unknown) => e as ValidationError);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).code).toBe("unexpected_response");
+    expect((error as ValidationError).requestId).toBe("req_shape_guard_correlation");
   });
 
   it("batch create surfaces ValidationError on unexpected 400 response shape", async () => {

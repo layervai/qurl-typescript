@@ -210,6 +210,15 @@ export interface UpdateInput {
  *
  * `expires_in` and `expires_at` are mutually exclusive — provide at most one.
  * If neither is specified, the link defaults to 24 hours from now.
+ *
+ * **Why this isn't a {@link ExtendInput}-style discriminated union:**
+ * `ExtendInput` requires *exactly one* of the two fields, which fits
+ * `T1 | T2` cleanly. `MintInput` allows *at most one* (zero is valid —
+ * the server applies the 24h default), which would need a three-arm
+ * union (`{ expires_in } | { expires_at } | { neither }`). The runtime
+ * check in {@link QURLClient.mintLink} catches the "both provided"
+ * case at minimal cost; the type-system gain isn't worth the noisier
+ * type for consumers who just want to omit both and accept the default.
  */
 export interface MintInput {
   /** Relative duration until expiration (e.g., `"5m"`, `"24h"`, `"7d"`). Mutually exclusive with `expires_at`. */
