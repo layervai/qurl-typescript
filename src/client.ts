@@ -448,9 +448,9 @@ export class QURLClient {
         `baseUrl: must be a valid URL (got ${JSON.stringify(rawBaseUrl).slice(0, 60)})`,
       );
     }
-    // `URL.hostname` strips IPv6 brackets, so the canonical loopback
-    // forms compared here are bracket-free. Reject any non-http/https
-    // scheme outright (ftp://, file://, javascript:, ...).
+    // Reject any non-http/https scheme outright (ftp://, file://,
+    // javascript:, ...). The loopback exemption logic below handles
+    // IPv6 bracket form on `URL.hostname` — see the inner comment.
     if (parsedBaseUrl.protocol !== "http:" && parsedBaseUrl.protocol !== "https:") {
       throw clientValidationError(
         `baseUrl: must use http:// or https:// scheme (got ${JSON.stringify(rawBaseUrl).slice(0, 60)})`,
@@ -635,6 +635,18 @@ export class QURLClient {
       }
     }
 
+    // Suspicious-but-shape-valid: empty results AND zero counts on a
+    // batch the SDK definitely sent items for. Doesn't fail the guard
+    // (the contract permits it) — surface via debug so operators see
+    // it if it ever shows up in the wild.
+    if (result.results.length === 0) {
+      this.log("batchCreate: response has empty results and zero counts (suspicious)", {
+        succeeded: result.succeeded,
+        failed: result.failed,
+        request_id: requestId,
+      });
+    }
+
     return result;
   }
 
@@ -769,6 +781,18 @@ export class QURLClient {
     // field. The data-side variant would be a wire-format duplication
     // we don't want to silently honor.
     const requestId = envelope.meta?.request_id;
+    // Both-fields-present log: mirrors mapQurlsField's pattern. If
+    // the server ever puts request_id on both `data` and `meta`, the
+    // spread silently lets `meta` win — fine, but operators should
+    // see the divergence rather than discover it via support-ticket
+    // archaeology.
+    const dataRequestId = (result as { request_id?: unknown }).request_id;
+    if (dataRequestId !== undefined && requestId !== undefined && dataRequestId !== requestId) {
+      this.log("batchCreate: response carries request_id on BOTH data and meta; keeping meta", {
+        meta_request_id: requestId,
+        data_request_id: String(dataRequestId).slice(0, 80),
+      });
+    }
     return requestId !== undefined ? { ...result, request_id: requestId } : result;
   }
 
@@ -969,6 +993,18 @@ export class QURLClient {
       }
     }
 
+    // Empty-string check on timing fields. `description: ""` has
+    // documented clear semantics (see UpdateInput JSDoc) and stays
+    // as-is; the timing fields don't — `extend_by: ""` would either
+    // trip the mutual-exclusion check below or hit the server as a
+    // malformed duration. Reject up front with a structured error
+    // matching the rest of the validators.
+    for (const key of ["extend_by", "expires_at"] as const) {
+      if (normalized[key] === "") {
+        throw clientValidationError(`${key}: must not be an empty string`);
+      }
+    }
+
     if (normalized.extend_by !== undefined && normalized.expires_at !== undefined) {
       throw clientValidationError(
         "update: `extend_by` and `expires_at` are mutually exclusive — provide at most one",
@@ -1016,6 +1052,16 @@ export class QURLClient {
         }
       }
       normalized = stripped as MintInput;
+    }
+    // Empty-string check on timing fields. Symmetric with update();
+    // the timing fields have no "clear" semantic, so an empty string
+    // is always a caller mistake (e.g. uninitialized form state).
+    if (normalized !== undefined) {
+      for (const key of ["expires_in", "expires_at"] as const) {
+        if (normalized[key] === "") {
+          throw clientValidationError(`${key}: must not be an empty string`);
+        }
+      }
     }
     if (normalized?.expires_in !== undefined && normalized.expires_at !== undefined) {
       throw clientValidationError(

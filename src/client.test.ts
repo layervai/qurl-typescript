@@ -439,6 +439,49 @@ describe("QURLClient", () => {
     expect(result.has_more).toBe(false);
   });
 
+  it("list items with qurls field map to access_tokens (defensive)", async () => {
+    // The list response is documented as a flat list of QURL resources
+    // with no nested tokens, but client.list() defensively threads each
+    // item through mapQurlsField in case the API ever surfaces nested
+    // tokens on list items (e.g. embedded summaries). Locks in that
+    // the rename happens consistently on the list path too.
+    const fetch = mockFetch({
+      status: 200,
+      body: {
+        data: [
+          {
+            resource_id: "r_with_tokens",
+            target_url: "https://example.com",
+            status: "active",
+            created_at: "2026-03-10T10:00:00Z",
+            qurls: [
+              {
+                qurl_id: "at_xyz",
+                status: "active",
+                one_time_use: false,
+                max_sessions: 5,
+                session_duration: 3600,
+                use_count: 0,
+                created_at: "2026-03-10T10:00:00Z",
+                expires_at: "2026-04-10T10:00:00Z",
+              },
+            ],
+          },
+        ],
+        meta: { has_more: false },
+      },
+    });
+
+    const client = createClient(fetch);
+    const result = await client.list();
+
+    expect(result.qurls).toHaveLength(1);
+    expect(result.qurls[0].access_tokens).toHaveLength(1);
+    expect(result.qurls[0].access_tokens![0].qurl_id).toBe("at_xyz");
+    // Wire-format key stripped from each item.
+    expect((result.qurls[0] as unknown as { qurls?: unknown }).qurls).toBeUndefined();
+  });
+
   it("list rejects limit: 0 below the spec's minimum", async () => {
     // Per OpenAPI (`GET /v1/qurls` → `limit: minimum: 1, maximum: 100`),
     // `limit` must be in [1, 100]. Client-side validation catches this
@@ -1165,6 +1208,69 @@ describe("QURLClient", () => {
     expect((error as ValidationError).detail).toContain("expires_at");
     expect((error as ValidationError).detail).toContain("description");
     expect((error as ValidationError).detail).toContain("tags");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("update rejects empty-string timing fields (extend_by / expires_at)", async () => {
+    // Empty string is always a caller mistake on timing fields —
+    // typically uninitialized form state. `description: ""` has
+    // documented clear-the-field semantics (see UpdateInput JSDoc)
+    // and is preserved; the timing fields don't, so they get a
+    // structured ValidationError instead of round-tripping garbage.
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+
+    for (const key of ["extend_by", "expires_at"] as const) {
+      const error = await client
+        .update("r_abc", { [key]: "" } as unknown as Parameters<typeof client.update>[1])
+        .catch((e: unknown) => e as ValidationError);
+      expect(error).toBeInstanceOf(ValidationError);
+      const detail = (error as ValidationError).detail;
+      expect(detail).toContain(key);
+      expect(detail).toContain("must not be an empty string");
+    }
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("update preserves description: '' (documented clear-the-field semantic)", async () => {
+    // Mirror image of the timing-field rejection above: `description: ""`
+    // is a documented way to clear the resource's description and must
+    // round-trip to the API as-is. Locks in that the empty-string
+    // rejection is timing-field-only.
+    const fetch = mockFetch({
+      status: 200,
+      body: {
+        data: {
+          resource_id: "r_abc",
+          target_url: "https://example.com",
+          status: "active",
+          created_at: "2026-03-10T10:00:00Z",
+        },
+      },
+    });
+    const client = createClient(fetch);
+    await client.update("r_abc", { description: "" });
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const body = JSON.parse((fetch as ReturnType<typeof vi.fn>).mock.calls[0][1].body as string);
+    expect(body.description).toBe("");
+  });
+
+  it("mintLink rejects empty-string timing fields (expires_in / expires_at)", async () => {
+    // Symmetric with update() — empty string on timing fields is
+    // always a caller mistake, never a meaningful value.
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+
+    for (const key of ["expires_in", "expires_at"] as const) {
+      const error = await client
+        .mintLink("r_abc", { [key]: "" } as unknown as Parameters<typeof client.mintLink>[1])
+        .catch((e: unknown) => e as ValidationError);
+      expect(error).toBeInstanceOf(ValidationError);
+      const detail = (error as ValidationError).detail;
+      expect(detail).toContain(key);
+      expect(detail).toContain("must not be an empty string");
+    }
     expect(fetch).not.toHaveBeenCalled();
   });
 
