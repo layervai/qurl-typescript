@@ -1394,6 +1394,19 @@ describe("QURLClient", () => {
       { policy: { ip_allowlist: "10.0.0.0/8" }, detail: "access_policy.ip_allowlist" },
       { policy: "deny-all", detail: "must be an object (got string)" },
       { policy: ["US"], detail: "must be an object (got array)" },
+      { policy: { user_agent_allow_regex: ["^GPTBot"] }, detail: "user_agent_allow_regex" },
+      { policy: { user_agent_deny_regex: 42 }, detail: "user_agent_deny_regex" },
+      { policy: { ai_agent_policy: "block" }, detail: "ai_agent_policy: must be an object" },
+      { policy: { ai_agent_policy: ["x"] }, detail: "ai_agent_policy: must be an object" },
+      { policy: { ai_agent_policy: { block_all: "true" } }, detail: "block_all" },
+      {
+        policy: { ai_agent_policy: { deny_categories: "gptbot" } },
+        detail: "ai_agent_policy.deny_categories",
+      },
+      {
+        policy: { ai_agent_policy: { allow_categories: "search" } },
+        detail: "ai_agent_policy.allow_categories",
+      },
     ] as const;
     const fetch = mockFetch({ status: 200, body: { data: {} } });
     const client = createClient(fetch);
@@ -2494,6 +2507,57 @@ describe("QURLClient", () => {
       // 50ms is well under the 500ms exponential floor a truthy bug
       // would hit, so it cleanly distinguishes "Retry-After: 0 honored"
       // from "fell through to exponential backoff."
+      await vi.advanceTimersByTimeAsync(50);
+      const result = await promise;
+      expect(result.plan).toBe("growth");
+      expect(fetch).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("honors Retry-After: 0 on 503 (parity with 429)", async () => {
+    // Companion to the 429 case above. parseRetryAfter returns 0 on both
+    // statuses; the immediate-retry semantic must hold for either.
+    vi.useFakeTimers();
+    try {
+      const retryAfterZero = {
+        ok: false,
+        status: 503,
+        statusText: "Service Unavailable",
+        headers: new Headers({ "Retry-After": "0" }),
+        json: () =>
+          Promise.resolve({
+            error: { title: "Unavailable", status: 503, detail: "x", code: "service_unavailable" },
+          }),
+        text: () => Promise.resolve(""),
+      } satisfies Partial<Response> as Response;
+
+      const successResponse = {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        headers: new Headers({}),
+        json: () =>
+          Promise.resolve({
+            data: { plan: "growth", period_start: "2026-03-01", period_end: "2026-04-01" },
+          }),
+        text: () => Promise.resolve(""),
+      } satisfies Partial<Response> as Response;
+
+      const fetch = vi
+        .fn()
+        .mockResolvedValueOnce(retryAfterZero)
+        .mockResolvedValueOnce(successResponse);
+
+      const client = new QURLClient({
+        apiKey: "lv_live_test",
+        baseUrl: "https://api.test.layerv.ai",
+        fetch: fetch as typeof globalThis.fetch,
+        maxRetries: 1,
+      });
+
+      const promise = client.getQuota();
       await vi.advanceTimersByTimeAsync(50);
       const result = await promise;
       expect(result.plan).toBe("growth");
@@ -5506,38 +5570,41 @@ describe("QURLClient", () => {
     }
   });
 
-  it("batch create does NOT retry on 502 (POST is mutating; 5xx is not retried)", async () => {
+  it("batch create does NOT retry POST on 5xx (502/503/504 — only 429 is retried for mutating verbs)", async () => {
     // RETRYABLE_STATUS_MUTATING only includes 429, not 502/503/504, so POST
     // callers must not replay batch requests on 5xx (prevents duplicate
-    // item creation). Regression guard for the mutating-retry policy.
-    const badGatewayResponse = {
-      ok: false,
-      status: 502,
-      statusText: "Bad Gateway",
-      headers: new Headers({}),
-      json: () =>
-        Promise.resolve({
-          error: {
-            status: 502,
-            code: "bad_gateway",
-            title: "Bad Gateway",
-            detail: "Upstream error",
-          },
-        }),
-      text: () => Promise.resolve(""),
-    } satisfies Partial<Response> as Response;
+    // item creation). Direct guard for the asymmetric retry policy: GET
+    // retries on these statuses, POST does not.
+    const cases = [
+      { status: 502, code: "bad_gateway", title: "Bad Gateway" },
+      { status: 503, code: "service_unavailable", title: "Service Unavailable" },
+      { status: 504, code: "gateway_timeout", title: "Gateway Timeout" },
+    ] as const;
+    for (const c of cases) {
+      const errorResponse = {
+        ok: false,
+        status: c.status,
+        statusText: c.title,
+        headers: new Headers({}),
+        json: () =>
+          Promise.resolve({
+            error: { status: c.status, code: c.code, title: c.title, detail: "x" },
+          }),
+        text: () => Promise.resolve(""),
+      } satisfies Partial<Response> as Response;
 
-    const fetch = vi.fn().mockResolvedValue(badGatewayResponse);
-    const client = new QURLClient({
-      apiKey: "lv_live_test",
-      baseUrl: "https://api.test.layerv.ai",
-      fetch: fetch as typeof globalThis.fetch,
-      maxRetries: 3,
-    });
+      const fetch = vi.fn().mockResolvedValue(errorResponse);
+      const client = new QURLClient({
+        apiKey: "lv_live_test",
+        baseUrl: "https://api.test.layerv.ai",
+        fetch: fetch as typeof globalThis.fetch,
+        maxRetries: 3,
+      });
 
-    await expect(
-      client.batchCreate({ items: [{ target_url: "https://example.com" }] }),
-    ).rejects.toBeInstanceOf(ServerError);
-    expect(fetch).toHaveBeenCalledTimes(1); // No retries on 5xx for POST
+      await expect(
+        client.batchCreate({ items: [{ target_url: "https://example.com" }] }),
+      ).rejects.toBeInstanceOf(ServerError);
+      expect(fetch, `status ${c.status}`).toHaveBeenCalledTimes(1);
+    }
   });
 });

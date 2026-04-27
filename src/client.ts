@@ -11,6 +11,7 @@ import {
 import type {
   AccessPolicy,
   AccessToken,
+  AIAgentPolicy,
   BatchCreateInput,
   BatchCreateOutput,
   ClientOptions,
@@ -261,12 +262,28 @@ function requireValidTags(tags: string[] | null | undefined): void {
   }
 }
 
+function describeShape(value: unknown): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  return typeof value;
+}
+
 const ACCESS_POLICY_LIST_FIELDS = [
   "ip_allowlist",
   "ip_denylist",
   "geo_allowlist",
   "geo_denylist",
 ] as const satisfies readonly (keyof AccessPolicy)[];
+
+const ACCESS_POLICY_STRING_FIELDS = [
+  "user_agent_allow_regex",
+  "user_agent_deny_regex",
+] as const satisfies readonly (keyof AccessPolicy)[];
+
+const AI_AGENT_POLICY_LIST_FIELDS = [
+  "deny_categories",
+  "allow_categories",
+] as const satisfies readonly (keyof AIAgentPolicy)[];
 
 function requireValidAccessPolicy(policy: AccessPolicy | null | undefined): void {
   // null/undefined → "don't touch". Server is authoritative on CIDR /
@@ -275,19 +292,47 @@ function requireValidAccessPolicy(policy: AccessPolicy | null | undefined): void
   // instead of `["US"]`) so they get a structured ValidationError
   // instead of a server 400 they have to debug.
   if (policy === undefined || policy === null) return;
-  if (Array.isArray(policy)) {
-    throw clientValidationError("access_policy: must be an object (got array)");
-  }
-  if (typeof policy !== "object") {
-    throw clientValidationError(`access_policy: must be an object (got ${typeof policy})`);
+  if (typeof policy !== "object" || Array.isArray(policy)) {
+    throw clientValidationError(`access_policy: must be an object (got ${describeShape(policy)})`);
   }
   for (const field of ACCESS_POLICY_LIST_FIELDS) {
     const value = policy[field];
     if (value === undefined) continue;
     if (!Array.isArray(value)) {
       throw clientValidationError(
-        `access_policy.${field}: must be an array (got ${value === null ? "null" : typeof value})`,
+        `access_policy.${field}: must be an array (got ${describeShape(value)})`,
       );
+    }
+  }
+  for (const field of ACCESS_POLICY_STRING_FIELDS) {
+    const value = policy[field];
+    if (value === undefined) continue;
+    if (typeof value !== "string") {
+      throw clientValidationError(
+        `access_policy.${field}: must be a string (got ${describeShape(value)})`,
+      );
+    }
+  }
+  const aip = policy.ai_agent_policy;
+  if (aip !== undefined) {
+    if (aip === null || typeof aip !== "object" || Array.isArray(aip)) {
+      throw clientValidationError(
+        `access_policy.ai_agent_policy: must be an object (got ${describeShape(aip)})`,
+      );
+    }
+    if (aip.block_all !== undefined && typeof aip.block_all !== "boolean") {
+      throw clientValidationError(
+        `access_policy.ai_agent_policy.block_all: must be a boolean (got ${describeShape(aip.block_all)})`,
+      );
+    }
+    for (const field of AI_AGENT_POLICY_LIST_FIELDS) {
+      const value = aip[field];
+      if (value === undefined) continue;
+      if (!Array.isArray(value)) {
+        throw clientValidationError(
+          `access_policy.ai_agent_policy.${field}: must be an array (got ${describeShape(value)})`,
+        );
+      }
     }
   }
 }
@@ -608,16 +653,14 @@ export class QURLClient {
     if (!rest.access_tokens) {
       return { ...rest, access_tokens: qurls };
     }
-    if (qurls && rest.access_tokens) {
-      // Server-side bug — drop `qurls` rather than merge. If the arrays
-      // disagree, no consistent reconciliation exists; a silent merge
-      // could double-count or surface stale data.
-      this.log("mapQurlsField: received both 'qurls' and 'access_tokens'; keeping access_tokens", {
-        branch: "both",
-        qurls_count: qurls.length,
-        access_tokens_count: rest.access_tokens.length,
-      });
-    }
+    // Server-side bug — drop `qurls` rather than merge. If the arrays
+    // disagree, no consistent reconciliation exists; a silent merge
+    // could double-count or surface stale data.
+    this.log("mapQurlsField: received both 'qurls' and 'access_tokens'; keeping access_tokens", {
+      branch: "both",
+      qurls_count: qurls.length,
+      access_tokens_count: rest.access_tokens.length,
+    });
     return rest;
   }
 
@@ -1051,10 +1094,12 @@ export class QURLClient {
    * expiration fields. `ExtendInput` shares its `extend_by` / `expires_at`
    * fields with `UpdateInput` but is *narrower in two ways*: (1) exactly
    * one of the two must be present (XOR via `?: never`), where `UpdateInput`
-   * allows neither; and (2) `description` / `tags` are absent. Destructuring
-   * before delegation enforces the narrowing at runtime so spread or variable
-   * callers can't accidentally leak the wider fields through this path; the
-   * runtime XOR check still happens inside `update()`.
+   * allows neither; and (2) `description` / `tags` are absent.
+   *
+   * Destructuring before delegation strips wider fields at runtime, so an
+   * untyped-JS caller spreading `{ description, tags, ... }` can't leak
+   * those through this path. The XOR (exactly-one-of-two) invariant is
+   * enforced separately by the runtime check inside `update()`.
    */
   async extend(id: string, input: ExtendInput): Promise<QURL> {
     // No requireNonEmptyId here — update() validates the id.
