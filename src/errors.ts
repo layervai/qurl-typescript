@@ -1,7 +1,7 @@
 import type { QURLErrorData } from "./types.js";
 
 /**
- * Base error thrown by the QURL API client. Catch this to handle all SDK errors.
+ * Base error thrown by the qURL API client. Catch this to handle all SDK errors.
  *
  * **`status: 0` convention:** Client-detected failures — validation errors
  * (`code: "client_validation"`), unexpected response shapes

@@ -1,0 +1,19 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "CommonJS",
+    // TODO: TS 7 will drop `Node10`. Migrate to `module: "Node16"` + a
+    // source-side CJS sidecar (or matching `.cts` entry) before then.
+    "moduleResolution": "Node10",
+    "outDir": "./dist/cjs",
+    "ignoreDeprecations": "6.0",
+    // The ESM tree already emits declaration + source maps from the same
+    // `src/` tree; emitting them again into `dist/cjs/` doubles tarball
+    // size for no additional signal. The ESM maps themselves ship but
+    // reference `src/` which `files: ["dist/"]` excludes (see #53);
+    // fixing that is a separate decision, and double-shipping broken
+    // maps on the CJS side wouldn't help either way.
+    "declarationMap": false,
+    "sourceMap": false
+  }
+}

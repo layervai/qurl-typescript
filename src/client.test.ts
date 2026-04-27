@@ -12,33 +12,10 @@ import {
   ValidationError,
 } from "./errors.js";
 import type { BatchCreateInput, CreateInput, MintInput } from "./types.js";
-
-function mockFetch(response: {
-  status: number;
-  body?: unknown;
-  headers?: Record<string, string>;
-}): typeof globalThis.fetch {
-  return vi.fn().mockResolvedValue({
-    ok: response.status >= 200 && response.status < 300,
-    status: response.status,
-    statusText: response.status === 200 ? "OK" : "Error",
-    headers: new Headers(response.headers ?? {}),
-    json: () => Promise.resolve(response.body),
-    text: () => Promise.resolve(JSON.stringify(response.body)),
-  } satisfies Partial<Response> as Response);
-}
-
-function createClient(fetchFn: typeof globalThis.fetch): QURLClient {
-  return new QURLClient({
-    apiKey: "lv_live_test",
-    baseUrl: "https://api.test.layerv.ai",
-    fetch: fetchFn,
-    maxRetries: 0,
-  });
-}
+import { mockFetch, createClient } from "./__tests__/test-helpers.js";
 
 describe("QURLClient", () => {
-  it("creates a QURL", async () => {
+  it("creates a qURL", async () => {
     const fetch = mockFetch({
       status: 201,
       body: {
@@ -73,7 +50,7 @@ describe("QURLClient", () => {
 
   it("create forwards session_duration in the request body", async () => {
     // `session_duration` is a spec-documented create field, but the
-    // original "creates a QURL" test doesn't exercise it — mintLink
+    // original "creates a qURL" test doesn't exercise it — mintLink
     // tests cover the same field on a different endpoint. Plug the
     // gap so a refactor that accidentally drops session_duration
     // from the create-path serialization (e.g. through an overly
@@ -226,7 +203,7 @@ describe("QURLClient", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("gets a QURL with access tokens", async () => {
+  it("gets a qURL with access tokens", async () => {
     const fetch = mockFetch({
       status: 200,
       body: {
@@ -277,7 +254,7 @@ describe("QURLClient", () => {
     expect(result.access_tokens![1].one_time_use).toBe(true);
   });
 
-  it("gets a QURL without access tokens", async () => {
+  it("gets a qURL without access tokens", async () => {
     const fetch = mockFetch({
       status: 200,
       body: {
@@ -299,7 +276,7 @@ describe("QURLClient", () => {
     expect(result.access_tokens).toBeUndefined();
   });
 
-  it("gets a QURL by q_ display ID (API resolves to parent resource)", async () => {
+  it("gets a qURL by q_ display ID (API resolves to parent resource)", async () => {
     // Per the spec's QurlId parameter (openapi.yaml:2254), GET /v1/qurls/:id
     // accepts both r_ and q_ prefixes. Exercise the URL-construction path
     // for a q_ ID so the dual-prefix contract is a regression guard.
@@ -327,7 +304,7 @@ describe("QURLClient", () => {
     );
   });
 
-  it("lists QURLs", async () => {
+  it("lists qURLs", async () => {
     const fetch = mockFetch({
       status: 200,
       body: {
@@ -432,7 +409,7 @@ describe("QURLClient", () => {
     );
   });
 
-  it("deletes a QURL", async () => {
+  it("deletes a qURL", async () => {
     const fetch = mockFetch({ status: 204 });
     const client = createClient(fetch);
 
@@ -540,7 +517,7 @@ describe("QURLClient", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("extends a QURL", async () => {
+  it("extends a qURL", async () => {
     const fetch = mockFetch({
       status: 200,
       body: {
@@ -560,7 +537,7 @@ describe("QURLClient", () => {
     expect(result.expires_at).toBe("2026-03-20T10:00:00Z");
   });
 
-  it("updates a QURL description", async () => {
+  it("updates a qURL description", async () => {
     const fetch = mockFetch({
       status: 200,
       body: {
@@ -1145,7 +1122,7 @@ describe("QURLClient", () => {
     });
   });
 
-  it("resolves a QURL token", async () => {
+  it("resolves a qURL token", async () => {
     const fetch = mockFetch({
       status: 200,
       body: {

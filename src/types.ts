@@ -5,7 +5,7 @@ export interface AIAgentPolicy {
   allow_categories?: string[];
 }
 
-/** Access control policy for a QURL. */
+/** Access control policy for a qURL. */
 export interface AccessPolicy {
   ip_allowlist?: string[];
   ip_denylist?: string[];
@@ -16,7 +16,7 @@ export interface AccessPolicy {
   ai_agent_policy?: AIAgentPolicy;
 }
 
-/** An individual access token within a QURL. */
+/** An individual access token within a qURL. */
 export interface AccessToken {
   /** Display identifier for this token (q_ prefix). */
   qurl_id: string;
@@ -39,7 +39,7 @@ export interface AccessToken {
 }
 
 /**
- * A QURL resource as returned by the API.
+ * A qURL resource as returned by the API.
  *
  * Note: `status` is narrower than {@link AccessToken.status}. Resources only
  * have two states — `active` or `revoked` — per `QurlData.status` in the
@@ -75,7 +75,7 @@ export interface QURL {
 }
 
 /**
- * Input for creating a QURL.
+ * Input for creating a qURL.
  *
  * Note: `tags` and `description` are **not** accepted on create — they live
  * on the resource (see {@link QURL.tags} / {@link QURL.description}) and must
@@ -94,7 +94,7 @@ export interface CreateInput {
   custom_domain?: string;
 }
 
-/** Response from creating a QURL. */
+/** Response from creating a qURL. */
 export interface CreateOutput {
   qurl_id: string;
   resource_id: string;
@@ -104,7 +104,7 @@ export interface CreateOutput {
   label?: string;
 }
 
-/** Input for listing QURLs. */
+/** Input for listing qURLs. */
 export interface ListInput {
   limit?: number;
   cursor?: string;
@@ -134,7 +134,7 @@ export interface ListInput {
   expires_after?: string;
 }
 
-/** Response from listing QURLs. */
+/** Response from listing qURLs. */
 export interface ListOutput {
   qurls: QURL[];
   next_cursor?: string;
@@ -142,7 +142,7 @@ export interface ListOutput {
 }
 
 /**
- * Input for extending a QURL's expiration. Exactly one of `extend_by`
+ * Input for extending a qURL's expiration. Exactly one of `extend_by`
  * or `expires_at` must be provided — the discriminated union form moves
  * the "provide at least one" check from runtime into the TypeScript
  * type system, so `extend(id, {})` is a compile error instead of a
@@ -169,7 +169,7 @@ export type ExtendInput =
     };
 
 /**
- * Input for updating a QURL — extend expiration, change description, etc.
+ * Input for updating a qURL — extend expiration, change description, etc.
  *
  * `extend_by` and `expires_at` are mutually exclusive — provide at most one.
  * At least one field must be set for the request to be valid.
@@ -178,7 +178,7 @@ export type ExtendInput =
  * The OpenAPI `UpdateQurlRequest` schema only accepts `extend_by`,
  * `expires_at`, `tags`, and `description`; access policy is immutable
  * from the server's perspective and must be set via {@link CreateInput}
- * when the QURL is first created.
+ * when the qURL is first created.
  */
 export interface UpdateInput {
   /** Relative duration to extend by (e.g., `"24h"`, `"7d"`). Mutually exclusive with `expires_at`. */
@@ -226,7 +226,7 @@ export interface MintOutput {
   expires_at?: string;
 }
 
-/** Input for headless QURL resolution. */
+/** Input for headless qURL resolution. */
 export interface ResolveInput {
   access_token: string;
 }
@@ -271,7 +271,7 @@ export interface Quota {
   };
 }
 
-/** Input for batch creating QURLs. */
+/** Input for batch creating qURLs. */
 export interface BatchCreateInput {
   items: CreateInput[];
 }
@@ -316,7 +316,7 @@ export interface BatchItemFailure {
  */
 export type BatchItemResult = BatchItemSuccess | BatchItemFailure;
 
-/** Response from batch creating QURLs. */
+/** Response from batch creating qURLs. */
 export interface BatchCreateOutput {
   succeeded: number;
   failed: number;
@@ -331,7 +331,7 @@ export interface BatchCreateOutput {
   request_id?: string;
 }
 
-/** API error from the QURL service (RFC 7807). */
+/** API error from the qURL service (RFC 7807). */
 export interface QURLErrorData {
   status: number;
   code: string;

@@ -329,7 +329,7 @@ interface ApiErrorEnvelope {
   meta?: { request_id?: string };
 }
 
-/** QURL API client. */
+/** qURL API client. */
 export class QURLClient {
   private readonly baseUrl: string;
   private readonly apiKey: string;
@@ -473,7 +473,7 @@ export class QURLClient {
 
   // --- Public API ---
 
-  /** Create a new QURL. */
+  /** Create a new qURL. */
   async create(input: CreateInput): Promise<CreateOutput> {
     validateCreateInput(input);
     return this.request<CreateOutput>("POST", "/v1/qurls", input);
@@ -594,7 +594,7 @@ export class QURLClient {
   }
 
   /**
-   * Lists protected URLs. Each QURL groups access tokens sharing the same target URL.
+   * Lists protected URLs. Each qURL groups access tokens sharing the same target URL.
    * Note: list items include qurl_count but not access_tokens (too expensive at scale).
    *
    * **`limit` semantics:** `limit` is validated client-side to be in
@@ -648,7 +648,7 @@ export class QURLClient {
   }
 
   /**
-   * Iterate over all QURLs, automatically paginating.
+   * Iterate over all qURLs, automatically paginating.
    *
    * Termination is **cursor-driven**: the loop stops as soon as the API
    * returns a page with no `next_cursor`, not when `has_more === false`.
@@ -681,9 +681,9 @@ export class QURLClient {
   }
 
   /**
-   * Delete (revoke) a QURL resource and all its access tokens.
+   * Delete (revoke) a qURL resource and all its access tokens.
    *
-   * Only accepts a resource ID (`r_` prefix), not a QURL display ID (`q_`
+   * Only accepts a resource ID (`r_` prefix), not a qURL display ID (`q_`
    * prefix). Per the OpenAPI spec: *"Requires a resource ID (r_ prefix).
    * To revoke a single token, use DELETE /v1/resources/:id/qurls/:qurl_id"*.
    * A client-side prefix check catches the mistake before the API round-trip.
@@ -718,7 +718,7 @@ export class QURLClient {
   }
 
   /**
-   * Extend a QURL's expiration.
+   * Extend a qURL's expiration.
    *
    * Accepts either a resource ID (`r_` prefix) or a QURL display ID (`q_`
    * prefix). Convenience method — delegates to {@link update} with only the
@@ -734,9 +734,9 @@ export class QURLClient {
   }
 
   /**
-   * Update a QURL — extend expiration, change description, rename tags.
+   * Update a qURL — extend expiration, change description, rename tags.
    *
-   * Accepts either a resource ID (`r_` prefix) or a QURL display ID (`q_`
+   * Accepts either a resource ID (`r_` prefix) or a qURL display ID (`q_`
    * prefix); the API resolves `q_` IDs to the parent resource automatically.
    */
   async update(id: string, input: UpdateInput): Promise<QURL> {
@@ -775,9 +775,9 @@ export class QURLClient {
   }
 
   /**
-   * Mint a new access link for a QURL.
+   * Mint a new access link for a qURL.
    *
-   * Accepts either a resource ID (`r_` prefix) or a QURL display ID (`q_`
+   * Accepts either a resource ID (`r_` prefix) or a qURL display ID (`q_`
    * prefix); the API resolves `q_` IDs to the parent resource automatically.
    */
   async mintLink(id: string, input?: MintInput): Promise<MintOutput> {
@@ -795,7 +795,7 @@ export class QURLClient {
   }
 
   /**
-   * Resolve a QURL access token (headless).
+   * Resolve a qURL access token (headless).
    *
    * Triggers an NHP knock to open firewall access for the caller's IP.
    * Requires `qurl:resolve` scope on the API key.
@@ -908,7 +908,7 @@ export class QURLClient {
         try {
           const json = (await response.json()) as ApiResponse<T>;
           return { ...json, http_status: response.status };
-        } catch (parseErr) {
+        } catch {
           if (!isPassthrough) {
             // Non-JSON body on a success (2xx) response. Wrap in a
             // typed SDK error so consumers catching QURLError don't
