@@ -3,6 +3,9 @@ import { QURLClient } from "./client.js";
 import {
   AuthenticationError,
   AuthorizationError,
+  ERROR_CODE_CLIENT_VALIDATION,
+  ERROR_CODE_UNEXPECTED_RESPONSE,
+  ERROR_CODE_UNKNOWN,
   NetworkError,
   NotFoundError,
   QURLError,
@@ -125,7 +128,7 @@ describe("QURLClient", () => {
       })
       .catch((e: unknown) => e as ValidationError);
     expect(error).toBeInstanceOf(ValidationError);
-    expect((error as ValidationError).code).toBe("client_validation");
+    expect((error as ValidationError).code).toBe(ERROR_CODE_CLIENT_VALIDATION);
     const detail = (error as ValidationError).detail;
     // All four failures must appear in the aggregated detail.
     expect(detail).toContain("target_url");
@@ -195,6 +198,21 @@ describe("QURLClient", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("create rejects null/undefined input with structured ValidationError (not raw TypeError)", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+    const client = createClient(fetch);
+
+    for (const badInput of [null, undefined]) {
+      const error = await client
+        .create(badInput as unknown as Parameters<typeof client.create>[0])
+        .catch((e: unknown) => e as ValidationError);
+      expect(error).toBeInstanceOf(ValidationError);
+      expect((error as ValidationError).code).toBe(ERROR_CODE_CLIENT_VALIDATION);
+      expect((error as ValidationError).detail).toContain("must be an object");
+    }
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("create accepts target_url with whitespace inside the path", async () => {
     // Path grammar lives server-side; client validator checks
     // scheme + length only. Pass-through behavior locked in.
@@ -244,7 +262,7 @@ describe("QURLClient", () => {
         .create({ target_url: badUrl as unknown as string })
         .catch((e: unknown) => e as ValidationError);
       expect(error).toBeInstanceOf(ValidationError);
-      expect((error as ValidationError).code).toBe("client_validation");
+      expect((error as ValidationError).code).toBe(ERROR_CODE_CLIENT_VALIDATION);
       const detail = (error as ValidationError).detail;
       expect(detail).toContain("target_url");
       expect(detail).toContain("must be a string");
@@ -505,7 +523,7 @@ describe("QURLClient", () => {
     const client = createClient(fetch);
     const error = await client.list({ limit: 0 }).catch((e: unknown) => e as ValidationError);
     expect(error).toBeInstanceOf(ValidationError);
-    expect((error as ValidationError).code).toBe("client_validation");
+    expect((error as ValidationError).code).toBe(ERROR_CODE_CLIENT_VALIDATION);
     expect((error as ValidationError).detail).toContain("1 and 100");
     expect(fetch).not.toHaveBeenCalled();
   });
@@ -592,7 +610,7 @@ describe("QURLClient", () => {
 
     const error = await client.delete("q_3a7f2c8e91b").catch((e: unknown) => e as ValidationError);
     expect(error).toBeInstanceOf(ValidationError);
-    expect((error as ValidationError).code).toBe("client_validation");
+    expect((error as ValidationError).code).toBe(ERROR_CODE_CLIENT_VALIDATION);
     expect((error as ValidationError).detail).toContain("r_ prefix");
     expect(fetch).not.toHaveBeenCalled();
   });
@@ -631,7 +649,7 @@ describe("QURLClient", () => {
         .delete(badId as unknown as string)
         .catch((e: unknown) => e as ValidationError);
       expect(error).toBeInstanceOf(ValidationError);
-      expect((error as ValidationError).code).toBe("client_validation");
+      expect((error as ValidationError).code).toBe(ERROR_CODE_CLIENT_VALIDATION);
       // Must mention the type — operators need to know what came in.
       const detail = (error as ValidationError).detail;
       expect(detail).toMatch(/undefined|null|number|object/);
@@ -672,7 +690,7 @@ describe("QURLClient", () => {
     const client = createClient(fetch);
     const error = await client.get("").catch((e: unknown) => e as ValidationError);
     expect(error).toBeInstanceOf(ValidationError);
-    expect((error as ValidationError).code).toBe("client_validation");
+    expect((error as ValidationError).code).toBe(ERROR_CODE_CLIENT_VALIDATION);
     expect((error as ValidationError).detail).toContain("id is required");
     expect(fetch).not.toHaveBeenCalled();
   });
@@ -790,7 +808,7 @@ describe("QURLClient", () => {
       .update("r_abc", { extend_by: "24h", expires_at: "2026-04-01T00:00:00Z" })
       .catch((e: unknown) => e as ValidationError);
     expect(error).toBeInstanceOf(ValidationError);
-    expect((error as ValidationError).code).toBe("client_validation");
+    expect((error as ValidationError).code).toBe(ERROR_CODE_CLIENT_VALIDATION);
     expect((error as ValidationError).detail).toContain("mutually exclusive");
     expect(fetch).not.toHaveBeenCalled();
   });
@@ -810,7 +828,7 @@ describe("QURLClient", () => {
       .extend("r_abc", bothFields as unknown as Parameters<typeof client.extend>[1])
       .catch((e: unknown) => e as ValidationError);
     expect(error).toBeInstanceOf(ValidationError);
-    expect((error as ValidationError).code).toBe("client_validation");
+    expect((error as ValidationError).code).toBe(ERROR_CODE_CLIENT_VALIDATION);
     expect(fetch).not.toHaveBeenCalled();
   });
 
@@ -830,7 +848,7 @@ describe("QURLClient", () => {
       .extend("r_abc", {} as unknown as Parameters<typeof client.extend>[1])
       .catch((e: unknown) => e as ValidationError);
     expect(error).toBeInstanceOf(ValidationError);
-    expect((error as ValidationError).code).toBe("client_validation");
+    expect((error as ValidationError).code).toBe(ERROR_CODE_CLIENT_VALIDATION);
     expect((error as ValidationError).detail).toContain("at least one field");
     expect(fetch).not.toHaveBeenCalled();
   });
@@ -843,7 +861,7 @@ describe("QURLClient", () => {
       .mintLink("r_abc", { expires_in: "7d", expires_at: "2026-04-01T00:00:00Z" })
       .catch((e: unknown) => e as ValidationError);
     expect(error).toBeInstanceOf(ValidationError);
-    expect((error as ValidationError).code).toBe("client_validation");
+    expect((error as ValidationError).code).toBe(ERROR_CODE_CLIENT_VALIDATION);
     expect((error as ValidationError).detail).toContain("mutually exclusive");
     expect(fetch).not.toHaveBeenCalled();
   });
@@ -972,7 +990,7 @@ describe("QURLClient", () => {
         .update("r_abc", { description: badDescription as unknown as string })
         .catch((e: unknown) => e as ValidationError);
       expect(error).toBeInstanceOf(ValidationError);
-      expect((error as ValidationError).code).toBe("client_validation");
+      expect((error as ValidationError).code).toBe(ERROR_CODE_CLIENT_VALIDATION);
       const detail = (error as ValidationError).detail;
       expect(detail).toContain("description");
       expect(detail).toContain("must be a string");
@@ -1065,7 +1083,7 @@ describe("QURLClient", () => {
       .update("r_abc", { tags: {} as unknown as string[] })
       .catch((e: unknown) => e as ValidationError);
     expect(objError).toBeInstanceOf(ValidationError);
-    expect((objError as ValidationError).code).toBe("client_validation");
+    expect((objError as ValidationError).code).toBe(ERROR_CODE_CLIENT_VALIDATION);
     expect((objError as ValidationError).detail).toContain("must be an array");
     expect((objError as ValidationError).detail).toContain("object");
 
@@ -1112,7 +1130,7 @@ describe("QURLClient", () => {
       })
       .catch((e: unknown) => e as ValidationError);
     expect(error).toBeInstanceOf(ValidationError);
-    expect((error as ValidationError).code).toBe("client_validation");
+    expect((error as ValidationError).code).toBe(ERROR_CODE_CLIENT_VALIDATION);
     const detail = (error as ValidationError).detail;
     // All four bad indices with their concrete types.
     expect(detail).toContain("tags[1]");
@@ -1239,7 +1257,7 @@ describe("QURLClient", () => {
 
     const error = await client.update("r_abc", {}).catch((e: unknown) => e as ValidationError);
     expect(error).toBeInstanceOf(ValidationError);
-    expect((error as ValidationError).code).toBe("client_validation");
+    expect((error as ValidationError).code).toBe(ERROR_CODE_CLIENT_VALIDATION);
     expect((error as ValidationError).detail).toContain("at least one field");
     // Message should enumerate every current UpdateInput field so
     // callers know their options — if a field is missing from this
@@ -1529,6 +1547,51 @@ describe("QURLClient", () => {
     });
   });
 
+  it("mapQurlsField drops `qurls` if it isn't an array (defensive)", async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: {
+        data: {
+          resource_id: "r_abc",
+          target_url: "https://example.com",
+          status: "active",
+          qurls: { not: "an array" },
+        },
+      },
+    });
+    const debugFn = vi.fn();
+    const client = new QURLClient({
+      apiKey: "lv_live_test",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch,
+      maxRetries: 0,
+      debug: debugFn,
+    });
+
+    const result = await client.get("r_abc");
+    expect((result as { qurls?: unknown }).qurls).toBeUndefined();
+    expect((result as { access_tokens?: unknown }).access_tokens).toBeUndefined();
+    const dropLog = debugFn.mock.calls.find(
+      (c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("not an array"),
+    );
+    expect(dropLog).toBeDefined();
+  });
+
+  it("parseError synthesizes a title from HTTP status when statusText is empty (HTTP/2)", async () => {
+    // HTTP/2 omits reason-phrases — fallback must keep Error.message legible.
+    const fetch = mockFetch({
+      status: 404,
+      statusText: "",
+      body: { error: { status: 404, code: "not_found", detail: "no such resource" } },
+    });
+    const client = createClient(fetch);
+
+    const error = await client.get("r_abc").catch((e: unknown) => e as QURLError);
+    expect(error).toBeInstanceOf(QURLError);
+    expect((error as QURLError).message).toContain("HTTP 404");
+    expect((error as QURLError).message).not.toMatch(/^ \(/);
+  });
+
   it("resolves a qURL token", async () => {
     const fetch = mockFetch({
       status: 200,
@@ -1730,14 +1793,16 @@ describe("QURLClient", () => {
     expect(calledHeaders["Content-Type"]).toBe("application/json");
   });
 
-  it("throws when apiKey is empty", () => {
-    expect(
-      () =>
-        new QURLClient({
-          apiKey: "",
-          fetch: mockFetch({ status: 200 }),
-        }),
-    ).toThrow("apiKey is required");
+  it("throws ValidationError (not generic Error) when apiKey is empty", () => {
+    let thrown: unknown;
+    try {
+      new QURLClient({ apiKey: "", fetch: mockFetch({ status: 200 }) });
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(ValidationError);
+    expect((thrown as ValidationError).code).toBe(ERROR_CODE_CLIENT_VALIDATION);
+    expect((thrown as ValidationError).detail).toContain("apiKey");
   });
 
   it("retries on 429 and succeeds", async () => {
@@ -2074,7 +2139,7 @@ describe("QURLClient", () => {
       expect(err).toBeInstanceOf(QURLError);
       const qErr = err as QURLError;
       expect(qErr.status).toBe(500);
-      expect(qErr.code).toBe("unknown");
+      expect(qErr.code).toBe(ERROR_CODE_UNKNOWN);
       expect(qErr.message).toContain("Internal Server Error");
     }
   });
@@ -3075,7 +3140,7 @@ describe("QURLClient", () => {
     const error = await client.getQuota().catch((e: unknown) => e as ServerError);
     expect(error).toBeInstanceOf(ServerError);
     expect((error as ServerError).status).toBe(500);
-    expect((error as ServerError).code).toBe("unknown");
+    expect((error as ServerError).code).toBe(ERROR_CODE_UNKNOWN);
   });
 
   it("parseError logs when the error body is not valid JSON", async () => {
@@ -3632,7 +3697,7 @@ describe("QURLClient", () => {
         .list({ [key]: value } as unknown as Parameters<typeof client.list>[0])
         .catch((e: unknown) => e as ValidationError);
       expect(error).toBeInstanceOf(ValidationError);
-      expect((error as ValidationError).code).toBe("client_validation");
+      expect((error as ValidationError).code).toBe(ERROR_CODE_CLIENT_VALIDATION);
       const detail = (error as ValidationError).detail;
       expect(detail).toContain(key);
       // Per-key type enforcement: cursor / q / sort are strings,
@@ -3718,7 +3783,7 @@ describe("QURLClient", () => {
       .catch((e: unknown) => e as ValidationError);
     expect(error).toBeInstanceOf(ValidationError);
     expect((error as ValidationError).status).toBe(0);
-    expect((error as ValidationError).code).toBe("client_validation");
+    expect((error as ValidationError).code).toBe(ERROR_CODE_CLIENT_VALIDATION);
     expect((error as ValidationError).detail).toContain("at least 1 item");
     expect(fetch).not.toHaveBeenCalled();
   });
@@ -3739,7 +3804,7 @@ describe("QURLClient", () => {
         .batchCreate(badInput as unknown as { items: CreateInput[] })
         .catch((e: unknown) => e as ValidationError);
       expect(error).toBeInstanceOf(ValidationError);
-      expect((error as ValidationError).code).toBe("client_validation");
+      expect((error as ValidationError).code).toBe(ERROR_CODE_CLIENT_VALIDATION);
       expect((error as ValidationError).detail).toContain("items must be an array");
     }
     expect(fetch).not.toHaveBeenCalled();
@@ -3754,7 +3819,7 @@ describe("QURLClient", () => {
 
     const error = await client.batchCreate({ items }).catch((e: unknown) => e as ValidationError);
     expect(error).toBeInstanceOf(ValidationError);
-    expect((error as ValidationError).code).toBe("client_validation");
+    expect((error as ValidationError).code).toBe(ERROR_CODE_CLIENT_VALIDATION);
     expect((error as ValidationError).detail).toContain("at most 100 items");
     expect(fetch).not.toHaveBeenCalled();
   });
@@ -4461,7 +4526,7 @@ describe("QURLClient", () => {
       .batchCreate({ items: [{ target_url: "https://example.com" }] })
       .catch((e: unknown) => e as ValidationError);
     expect(error).toBeInstanceOf(ValidationError);
-    expect((error as ValidationError).code).toBe("unexpected_response");
+    expect((error as ValidationError).code).toBe(ERROR_CODE_UNEXPECTED_RESPONSE);
     expect((error as ValidationError).requestId).toBe("req_shape_guard_correlation");
     // request_id also lands in the message string itself so a stack
     // trace pasted into a support ticket carries the correlation
@@ -4487,7 +4552,7 @@ describe("QURLClient", () => {
       .batchCreate({ items: [{ target_url: "https://example.com" }] })
       .catch((e: unknown) => e as ValidationError);
     expect(error).toBeInstanceOf(ValidationError);
-    expect((error as ValidationError).code).toBe("unexpected_response");
+    expect((error as ValidationError).code).toBe(ERROR_CODE_UNEXPECTED_RESPONSE);
     expect((error as ValidationError).requestId).toBeUndefined();
     expect((error as ValidationError).detail).not.toContain("[request_id=");
   });
@@ -4512,7 +4577,7 @@ describe("QURLClient", () => {
     // Distinct from `client_validation` — the shape guard uses its own
     // code so callers can branch on "server returned bad data" vs.
     // "I passed bad input locally."
-    expect((error as ValidationError).code).toBe("unexpected_response");
+    expect((error as ValidationError).code).toBe(ERROR_CODE_UNEXPECTED_RESPONSE);
     // Error detail includes the HTTP status for diagnostics so
     // operators can distinguish "400 with non-batch body" (proxy/
     // gateway error envelope) from "201/207 with malformed success
@@ -4543,7 +4608,7 @@ describe("QURLClient", () => {
       .batchCreate({ items: [{ target_url: "https://example.com" }] })
       .catch((e: unknown) => e as ValidationError);
     expect(error).toBeInstanceOf(ValidationError);
-    expect((error as ValidationError).code).toBe("unexpected_response");
+    expect((error as ValidationError).code).toBe(ERROR_CODE_UNEXPECTED_RESPONSE);
     expect((error as ValidationError).detail).toBe(
       "Unexpected response shape from POST /v1/qurls/batch (HTTP 201)",
     );
@@ -4573,7 +4638,7 @@ describe("QURLClient", () => {
       .batchCreate({ items: [{ target_url: "https://example.com" }] })
       .catch((e: unknown) => e as ValidationError);
     expect(error).toBeInstanceOf(ValidationError);
-    expect((error as ValidationError).code).toBe("unexpected_response");
+    expect((error as ValidationError).code).toBe(ERROR_CODE_UNEXPECTED_RESPONSE);
     const detail = (error as ValidationError).detail;
     expect(detail).toContain("(HTTP 207)");
     expect(detail).toContain("results[0]");
@@ -4622,7 +4687,7 @@ describe("QURLClient", () => {
       })
       .catch((e: unknown) => e as ValidationError);
     expect(error).toBeInstanceOf(ValidationError);
-    expect((error as ValidationError).code).toBe("unexpected_response");
+    expect((error as ValidationError).code).toBe(ERROR_CODE_UNEXPECTED_RESPONSE);
     const detail = (error as ValidationError).detail;
     // First-bad-index reporting: results[1] is the first failure.
     expect(detail).toContain("results[1]");
@@ -4648,7 +4713,7 @@ describe("QURLClient", () => {
     const clientSide = await client
       .batchCreate({ items: [{ target_url: "not-a-url" }] })
       .catch((e: unknown) => e as ValidationError);
-    expect((clientSide as ValidationError).code).toBe("client_validation");
+    expect((clientSide as ValidationError).code).toBe(ERROR_CODE_CLIENT_VALIDATION);
 
     // Server response shape mismatch → unexpected_response
     const fetchBadShape = mockFetch({
@@ -4658,7 +4723,7 @@ describe("QURLClient", () => {
     const serverSide = await createClient(fetchBadShape)
       .batchCreate({ items: [{ target_url: "https://example.com" }] })
       .catch((e: unknown) => e as ValidationError);
-    expect((serverSide as ValidationError).code).toBe("unexpected_response");
+    expect((serverSide as ValidationError).code).toBe(ERROR_CODE_UNEXPECTED_RESPONSE);
   });
 
   it("batch create surfaces clean QURLError when 400 passthrough body is non-JSON", async () => {
@@ -4695,7 +4760,7 @@ describe("QURLClient", () => {
     // Typed as ValidationError (createError maps code
     // "unexpected_response" to ValidationError).
     expect(error).toBeInstanceOf(ValidationError);
-    expect((error as ValidationError).code).toBe("unexpected_response");
+    expect((error as ValidationError).code).toBe(ERROR_CODE_UNEXPECTED_RESPONSE);
     expect((error as ValidationError).status).toBe(400);
     // Detail mentions non-JSON so operators can distinguish this from
     // a structured bad-shape body (which produces a different message).
@@ -4726,7 +4791,7 @@ describe("QURLClient", () => {
     const error = await client.getQuota().catch((e: unknown) => e);
     expect(error).toBeInstanceOf(QURLError);
     expect((error as QURLError).status).toBe(200);
-    expect((error as QURLError).code).toBe("unexpected_response");
+    expect((error as QURLError).code).toBe(ERROR_CODE_UNEXPECTED_RESPONSE);
     expect((error as QURLError).detail).toContain("non-JSON");
   });
 
@@ -4793,7 +4858,7 @@ describe("QURLClient", () => {
       })
       .catch((e: unknown) => e as ValidationError);
     expect(error).toBeInstanceOf(ValidationError);
-    expect((error as ValidationError).code).toBe("unexpected_response");
+    expect((error as ValidationError).code).toBe(ERROR_CODE_UNEXPECTED_RESPONSE);
     const detail = (error as ValidationError).detail;
     // Must identify the bad entry by index.
     expect(detail).toContain("results[1]");
@@ -4922,7 +4987,7 @@ describe("QURLClient", () => {
       .batchCreate({ items: [{ target_url: "https://example.com" }] })
       .catch((e: unknown) => e as ValidationError);
     expect(error).toBeInstanceOf(ValidationError);
-    expect((error as ValidationError).code).toBe("unexpected_response");
+    expect((error as ValidationError).code).toBe(ERROR_CODE_UNEXPECTED_RESPONSE);
     const detail = (error as ValidationError).detail;
     // Error message should name the specific inconsistency so
     // operators can debug — "counts/results length mismatch" plus

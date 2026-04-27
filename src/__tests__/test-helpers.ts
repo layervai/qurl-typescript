@@ -10,6 +10,8 @@ type MockResponse = {
   status: number;
   body?: unknown;
   headers?: Record<string, string>;
+  /** Override the synthesized statusText (e.g. `""` for HTTP/2-style empty reason-phrases). */
+  statusText?: string;
 };
 
 function buildResponse(response: MockResponse): Response {
@@ -17,9 +19,10 @@ function buildResponse(response: MockResponse): Response {
   return {
     ok,
     status: response.status,
-    // statusText mirrors `ok` (not just status === 200) so 201/204
+    // Default mirrors `ok` (not just status === 200) so 201/204
     // successes don't render as "Error" to assertions that inspect it.
-    statusText: ok ? "OK" : "Error",
+    // Tests can pass `statusText: ""` to simulate HTTP/2.
+    statusText: response.statusText ?? (ok ? "OK" : "Error"),
     headers: new Headers(response.headers ?? {}),
     json: () => Promise.resolve(response.body),
     text: () => Promise.resolve(JSON.stringify(response.body)),

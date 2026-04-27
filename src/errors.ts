@@ -1,6 +1,23 @@
 import type { QURLErrorData } from "./types.js";
 
 /**
+ * Sentinel `.code` values for SDK-internal failure modes (no real HTTP
+ * status applies). Exported as constants so consumers branching on
+ * `.code` don't have to duplicate string literals — e.g.
+ * `if (err.code === ERROR_CODE_CLIENT_VALIDATION) ...`.
+ *
+ * Server-driven `.code` values (e.g. `"rate_limited"`, `"forbidden"`)
+ * come from the API and aren't enumerated here — branch on the typed
+ * error subclass (`RateLimitError`, `AuthorizationError`, …) instead.
+ */
+export const ERROR_CODE_CLIENT_VALIDATION = "client_validation";
+export const ERROR_CODE_UNEXPECTED_RESPONSE = "unexpected_response";
+export const ERROR_CODE_NETWORK = "network_error";
+export const ERROR_CODE_TIMEOUT = "timeout";
+/** Fallback `.code` when the server returns a non-RFC-7807 response (HTML proxy page, plaintext gateway error, JSON without `error` envelope). */
+export const ERROR_CODE_UNKNOWN = "unknown";
+
+/**
  * Base error thrown by the qURL API client. Catch this to handle all SDK errors.
  *
  * **`status: 0` convention:** Client-detected failures — validation errors
@@ -130,7 +147,7 @@ export class ServerError extends QURLError {
 /** Transport-level error — DNS failure, connection refused, etc. */
 export class NetworkError extends QURLError {
   constructor(message: string, options?: { cause?: unknown }) {
-    super({ status: 0, code: "network_error", title: "Network Error", detail: message });
+    super({ status: 0, code: ERROR_CODE_NETWORK, title: "Network Error", detail: message });
     this.name = "NetworkError";
     if (options?.cause) {
       this.cause = options.cause;
@@ -141,7 +158,7 @@ export class NetworkError extends QURLError {
 /** Request timed out. */
 export class TimeoutError extends QURLError {
   constructor(message: string = "Request timed out", options?: { cause?: unknown }) {
-    super({ status: 0, code: "timeout", title: "Timeout", detail: message });
+    super({ status: 0, code: ERROR_CODE_TIMEOUT, title: "Timeout", detail: message });
     this.name = "TimeoutError";
     if (options?.cause) {
       this.cause = options.cause;
@@ -168,7 +185,7 @@ export function createError(data: QURLErrorData): QURLError {
   // Routing them all to `ValidationError` keeps `instanceof
   // ValidationError` complete for code === "unexpected_response", as
   // documented on the class.
-  if (data.code === "unexpected_response") {
+  if (data.code === ERROR_CODE_UNEXPECTED_RESPONSE) {
     return new ValidationError(data);
   }
   if (data.status >= 500) {

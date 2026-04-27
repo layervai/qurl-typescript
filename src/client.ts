@@ -1,4 +1,13 @@
-import { createError, NetworkError, QURLError, TimeoutError, ValidationError } from "./errors.js";
+import {
+  createError,
+  ERROR_CODE_CLIENT_VALIDATION,
+  ERROR_CODE_UNEXPECTED_RESPONSE,
+  ERROR_CODE_UNKNOWN,
+  NetworkError,
+  QURLError,
+  TimeoutError,
+  ValidationError,
+} from "./errors.js";
 import type {
   AccessToken,
   BatchCreateInput,
@@ -123,7 +132,7 @@ assertExhaustive<
 function clientValidationError(detail: string): ValidationError {
   return new ValidationError({
     status: 0,
-    code: "client_validation",
+    code: ERROR_CODE_CLIENT_VALIDATION,
     title: "Invalid Argument",
     detail,
   });
@@ -148,7 +157,7 @@ function clientValidationError(detail: string): ValidationError {
 function unexpectedResponseError(detail: string, request_id?: string): ValidationError {
   return new ValidationError({
     status: 0,
-    code: "unexpected_response",
+    code: ERROR_CODE_UNEXPECTED_RESPONSE,
     title: "Unexpected Response",
     detail,
     request_id,
@@ -288,6 +297,12 @@ function requireValidTargetUrl(target_url: unknown): void {
 }
 
 function validateCreateInput(input: CreateInput): void {
+  // Untyped-JS guard: surface as ValidationError instead of raw TypeError.
+  if (typeof input !== "object" || input === null) {
+    throw clientValidationError(
+      `create: input must be an object (got ${input === null ? "null" : typeof input})`,
+    );
+  }
   // Collect-all: run every validator and aggregate the messages so a
   // caller fixing multiple bad fields sees them all at once instead
   // of fix-re-run-repeat. Matches the documented batchCreate UX
@@ -437,7 +452,7 @@ export class QURLClient {
 
   constructor(options: ClientOptions) {
     if (!options.apiKey) {
-      throw new Error("apiKey is required");
+      throw clientValidationError("apiKey is required");
     }
     this.apiKey = options.apiKey;
     const rawBaseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
@@ -545,6 +560,15 @@ export class QURLClient {
   private mapQurlsField(raw: QURL & { qurls?: AccessToken[] }): QURL {
     if (!Object.prototype.hasOwnProperty.call(raw, "qurls")) return raw;
     const { qurls, ...rest } = raw;
+    // Defensive: drop non-array `qurls` so the type promise on
+    // `access_tokens: AccessToken[]` isn't violated by a misbehaving
+    // proxy.
+    if (qurls !== undefined && qurls !== null && !Array.isArray(qurls)) {
+      this.log("mapQurlsField: 'qurls' was not an array; dropping", {
+        qurls_type: typeof qurls,
+      });
+      return rest;
+    }
     if (qurls && !rest.access_tokens) {
       return { ...rest, access_tokens: qurls };
     }
@@ -1301,7 +1325,7 @@ export class QURLClient {
           );
           throw createError({
             status: response.status,
-            code: "unexpected_response",
+            code: ERROR_CODE_UNEXPECTED_RESPONSE,
             title: response.statusText || `HTTP ${response.status}`,
             detail: `Expected JSON response body on HTTP ${response.status} but received non-JSON content`,
           });
@@ -1334,10 +1358,12 @@ export class QURLClient {
         //   4. HTTP status  (final safety net)
         // This prevents `"Title (403): undefined"` when the API omits detail.
         const detail = err.detail ?? err.message ?? err.title ?? `HTTP ${response.status}`;
+        // HTTP/2 omits reason-phrases — `statusText` may be "".
+        const title = err.title ?? (response.statusText || `HTTP ${response.status}`);
         return {
           status: err.status ?? response.status,
-          code: err.code ?? "unknown",
-          title: err.title ?? response.statusText,
+          code: err.code ?? ERROR_CODE_UNKNOWN,
+          title,
           detail,
           type: err.type,
           instance: err.instance,
@@ -1366,8 +1392,8 @@ export class QURLClient {
 
     return {
       status: response.status,
-      code: "unknown",
-      title: response.statusText,
+      code: ERROR_CODE_UNKNOWN,
+      title: response.statusText || `HTTP ${response.status}`,
       detail: response.statusText || `HTTP ${response.status}`,
     };
   }
