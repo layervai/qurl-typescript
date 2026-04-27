@@ -186,7 +186,7 @@ const METHOD_CASES: MethodCase[] = [
     verb: "PATCH",
     template: "/v1/qurls/{id}",
     mockBody: { data: { resource_id: "r_x" } },
-    invoke: (c) => c.update("r_x", { expires_in: "24h" }),
+    invoke: (c) => c.update("r_x", { extend_by: "24h" }),
   },
   {
     method: "extend",
@@ -197,7 +197,33 @@ const METHOD_CASES: MethodCase[] = [
     // against a future refactor silently rewiring the alias to a
     // different endpoint.
     mockBody: { data: { resource_id: "r_x" } },
-    invoke: (c) => c.extend("r_x", { expires_in: "24h" }),
+    invoke: (c) => c.extend("r_x", { extend_by: "24h" }),
+  },
+  {
+    method: "batchCreate",
+    verb: "POST",
+    template: "/v1/qurls/batch",
+    // batchCreate's response shape guard requires `succeeded + failed
+    // === results.length` and per-entry discriminated-union fields, so
+    // the mock body has to be a fully-formed BatchCreateOutput rather
+    // than the empty `{ data: {} }` default.
+    mockBody: {
+      data: {
+        succeeded: 1,
+        failed: 0,
+        results: [
+          {
+            index: 0,
+            success: true,
+            resource_id: "r_x",
+            qurl_link: "https://qurl.link/#at_y",
+            qurl_site: "https://r_x.qurl.site",
+          },
+        ],
+      },
+      meta: {},
+    },
+    invoke: (c) => c.batchCreate({ items: [{ target_url: "https://example.com" }] }),
   },
   {
     method: "delete",
@@ -253,6 +279,8 @@ const INTERNAL_HELPERS: ReadonlySet<string> = new Set([
   "parseRetryAfter",
   "retryDelay",
   "classifyFetchError",
+  "mapQurlsField",
+  "validateBatchCreateResponse",
 ]);
 
 describe("API contract", () => {

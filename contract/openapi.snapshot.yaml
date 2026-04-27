@@ -19,6 +19,8 @@ paths:
   /v1/qurls:
     get: {}
     post: {}
+  /v1/qurls/batch:
+    post: {}
   /v1/qurls/{id}:
     get: {}
     patch: {}

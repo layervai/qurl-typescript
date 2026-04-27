@@ -1,6 +1,19 @@
-import { createError, NetworkError, QURLError, TimeoutError } from "./errors.js";
+import {
+  createError,
+  ERROR_CODE_CLIENT_VALIDATION,
+  ERROR_CODE_UNEXPECTED_RESPONSE,
+  ERROR_CODE_UNKNOWN,
+  NetworkError,
+  QURLError,
+  TimeoutError,
+  ValidationError,
+} from "./errors.js";
 import type {
+  AccessPolicy,
   AccessToken,
+  AIAgentPolicy,
+  BatchCreateInput,
+  BatchCreateOutput,
   ClientOptions,
   CreateInput,
   CreateOutput,
@@ -22,9 +35,448 @@ const DEFAULT_BASE_URL = "https://api.layerv.ai";
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_TIMEOUT = 30_000;
 const RETRY_BASE_DELAY_MS = 500;
+// Bounds local exponential backoff (NOT server-asserted Retry-After —
+// see `RETRY_AFTER_HARD_CAP_MS` for that).
 const RETRY_MAX_DELAY_MS = 30_000;
+// Hard cap on server-asserted Retry-After. Guards against `Retry-After`
+// values >2^31-1 ms overflowing Node's setTimeout (silently truncated to
+// 1ms — turns a "wait a month" directive into a hot retry loop).
+const RETRY_AFTER_HARD_CAP_MS = 60 * 60 * 1000;
+const RETRY_AFTER_PARSE_LIMIT_S = RETRY_AFTER_HARD_CAP_MS / 1000;
 const RETRYABLE_STATUS = new Set([429, 502, 503, 504]);
 const RETRYABLE_STATUS_MUTATING = new Set([429]);
+type HttpMethod = "GET" | "POST" | "PATCH" | "DELETE";
+
+const NO_PASSTHROUGH_STATUSES: readonly number[] = [];
+const BATCH_PASSTHROUGH_STATUSES: readonly number[] = [400];
+
+/** Allowlist of known query-param keys for the `list()` endpoint. */
+const LIST_PARAM_KEYS = [
+  "limit",
+  "cursor",
+  "status",
+  "q",
+  "sort",
+  "created_after",
+  "created_before",
+  "expires_before",
+  "expires_after",
+] as const satisfies readonly (keyof ListInput)[];
+
+const NUMERIC_LIST_KEYS: ReadonlySet<keyof ListInput> = new Set(["limit"]);
+
+// Compile-time witness: `Exclude<keyof X, (typeof KEYS)[number]>` is
+// `never` iff KEYS lists every key of X. Paired with the
+// `satisfies readonly (keyof X)[]` clause on the array (which catches
+// the other direction), this gives bidirectional drift detection on
+// the *_KEYS allowlists at zero runtime cost.
+function assertExhaustive<T extends true>(_: T): void {
+  /* type-only check */
+}
+assertExhaustive<
+  Exclude<keyof ListInput, (typeof LIST_PARAM_KEYS)[number]> extends never ? true : never
+>(true);
+
+/**
+ * Fields accepted by `update()`. The empty-input pre-flight check in
+ * {@link QURLClient.update} iterates this const — so adding a new field to
+ * {@link UpdateInput} without listing it here will fail the
+ * paired `assertExhaustive` witness at compile time rather than silently
+ * sneaking through an empty-input request.
+ */
+const UPDATE_FIELD_KEYS = [
+  "extend_by",
+  "expires_at",
+  "description",
+  "tags",
+] as const satisfies readonly (keyof UpdateInput)[];
+
+assertExhaustive<
+  Exclude<keyof UpdateInput, (typeof UPDATE_FIELD_KEYS)[number]> extends never ? true : never
+>(true);
+
+/**
+ * Fields accepted by `mintLink()`. Iterated by the null-stripping
+ * normalization loop in {@link QURLClient.mintLink} so unknown keys
+ * from untyped-JS callers don't leak through to the wire body.
+ * Symmetric with `LIST_PARAM_KEYS` / `UPDATE_FIELD_KEYS`.
+ */
+const MINT_FIELD_KEYS = [
+  "expires_in",
+  "expires_at",
+  "label",
+  "one_time_use",
+  "max_sessions",
+  "session_duration",
+  "access_policy",
+] as const satisfies readonly (keyof MintInput)[];
+
+assertExhaustive<
+  Exclude<keyof MintInput, (typeof MINT_FIELD_KEYS)[number]> extends never ? true : never
+>(true);
+
+/**
+ * Construct a {@link ValidationError} for a client-side pre-flight check.
+ * Uses `status: 0` (matching {@link NetworkError}/{@link TimeoutError}) and
+ * `code: "client_validation"` so catch-by-class still works and callers can
+ * tell the error originated inside the SDK rather than from the API.
+ */
+function clientValidationError(detail: string): ValidationError {
+  return new ValidationError({
+    status: 0,
+    code: ERROR_CODE_CLIENT_VALIDATION,
+    title: "Invalid Argument",
+    detail,
+  });
+}
+
+/**
+ * Construct a {@link ValidationError} for the case where the API returned
+ * a response that parsed as JSON but didn't match the expected schema
+ * shape (e.g. 400 with a body that isn't a {@link BatchCreateOutput}).
+ *
+ * Distinct from {@link clientValidationError} so callers can `.code`-branch
+ * between "I passed bad input locally" (`"client_validation"`) and "the
+ * server returned a body I can't interpret" (`"unexpected_response"`).
+ * Uses `status: 0` because the offending HTTP status (400/207/etc.) isn't
+ * the thing being reported — the shape mismatch is.
+ *
+ * Threads `request_id` through to {@link QURLError.requestId} when the
+ * server-side correlation ID is available — operators debugging
+ * "unexpected response" tickets need it on the *error* path too, not
+ * just on success/passthrough returns.
+ */
+function unexpectedResponseError(detail: string, request_id?: string): ValidationError {
+  return new ValidationError({
+    status: 0,
+    code: ERROR_CODE_UNEXPECTED_RESPONSE,
+    title: "Unexpected Response",
+    detail,
+    request_id,
+  });
+}
+
+// ---- Spec-derived validation helpers ------------------------------------
+// These mirror constraints documented on each request schema in
+// `openapi.yaml` so obvious mistakes fail fast instead of round-tripping
+// to the API and coming back as a generic 400.
+
+const MAX_TARGET_URL = 2048;
+const MAX_LABEL = 500;
+const MAX_BATCH_ITEMS = 100;
+const MAX_DESCRIPTION = 500;
+const MAX_CUSTOM_DOMAIN = 253;
+const MAX_MAX_SESSIONS = 1000;
+const MAX_TAGS = 10;
+const MAX_TAG_LENGTH = 50;
+// CreateQurlRequest.target_url pattern is loose (just a URI) but
+// UpdateQurlRequest.tags pattern is specific — enforce it here.
+const TAG_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9 _-]*$/;
+const RESOURCE_ID_PREFIX = "r_";
+
+function requireMaxLength(value: string | undefined, field: string, max: number): void {
+  if (value === undefined) return;
+  // Untyped-JS safety: a non-string `value` would silently pass since
+  // `(42).length === undefined > max` is `false` and the bad value would
+  // sail through to the wire. Match the typeof guard pattern used by
+  // requireValidTags / requireValidTargetUrl.
+  if (typeof value !== "string") {
+    throw clientValidationError(
+      `${field}: must be a string (got ${value === null ? "null" : typeof value})`,
+    );
+  }
+  if (value.length > max) {
+    throw clientValidationError(
+      `${field}: must be ${max} characters or fewer (got ${value.length})`,
+    );
+  }
+}
+
+function requireNonEmptyIfPresent(value: unknown, field: string): void {
+  // Reject `""` so uninitialized form state doesn't reach the wire.
+  if (value === "") {
+    throw clientValidationError(`${field}: must not be an empty string`);
+  }
+}
+
+function requireMaxSessionsInRange(value: number | undefined): void {
+  if (value === undefined) return;
+  if (!Number.isInteger(value) || value < 0 || value > MAX_MAX_SESSIONS) {
+    throw clientValidationError(
+      `max_sessions: must be an integer between 0 and ${MAX_MAX_SESSIONS} (got ${value})`,
+    );
+  }
+}
+
+/**
+ * Validates that an ID argument is a non-empty string. Endpoints that
+ * accept resource or qURL display IDs (`get`, `update`, `extend`,
+ * `mintLink`) use this to catch empty strings early — without it,
+ * `encodeURIComponent("")` returns `""` and the path collapses
+ * (e.g. `GET /v1/qurls/` hits the list endpoint, not get).
+ *
+ * Unlike `delete()`, these endpoints accept both `r_` and `q_` IDs,
+ * so no prefix check is needed — just non-empty.
+ *
+ */
+function requireNonEmptyId(id: string, method: string): void {
+  // `.trim()` rejects whitespace-only IDs — without it, " " round-trips to
+  // `encodeURIComponent(" ") === "%20"` which the server returns 404 for.
+  // The pre-flight error is more actionable than the 404.
+  if (typeof id !== "string" || id.trim() === "") {
+    throw clientValidationError(`${method}: id is required`);
+  }
+}
+
+function requireValidTags(tags: string[] | null | undefined): void {
+  // null tolerance for untyped-JS callers — treated as "don't touch."
+  // Duplicates pass through to the server (authoritative on dedupe policy).
+  if (tags === undefined || tags === null) return;
+  if (!Array.isArray(tags)) {
+    throw clientValidationError(`tags: must be an array of strings (got ${typeof tags})`);
+  }
+  if (tags.length > MAX_TAGS) {
+    throw clientValidationError(`tags: max ${MAX_TAGS} items allowed (got ${tags.length})`);
+  }
+  const errors: string[] = [];
+  for (let i = 0; i < tags.length; i++) {
+    const tag = tags[i];
+    // Per-element type guard for untyped-JS callers. Without this, a
+    // non-string element would silently pass (`.length` on a number is
+    // `undefined`; `TAG_PATTERN.test(42)` coerces to `"42"`) or TypeError
+    // (`null.length`).
+    if (typeof tag !== "string") {
+      errors.push(`tags[${i}]: must be a string (got ${tag === null ? "null" : typeof tag})`);
+      continue;
+    }
+    if (tag.length < 1 || tag.length > MAX_TAG_LENGTH) {
+      errors.push(`tags[${i}]: must be 1-${MAX_TAG_LENGTH} characters (got ${tag.length})`);
+      continue;
+    }
+    if (!TAG_PATTERN.test(tag)) {
+      errors.push(
+        `tags[${i}]: must start with an alphanumeric and contain only letters, numbers, spaces, underscores, or hyphens`,
+      );
+    }
+  }
+  if (errors.length > 0) {
+    throw clientValidationError(errors.join("; "));
+  }
+}
+
+function describeShape(value: unknown): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  return typeof value;
+}
+
+const ACCESS_POLICY_LIST_FIELDS = [
+  "ip_allowlist",
+  "ip_denylist",
+  "geo_allowlist",
+  "geo_denylist",
+] as const satisfies readonly (keyof AccessPolicy)[];
+
+const ACCESS_POLICY_STRING_FIELDS = [
+  "user_agent_allow_regex",
+  "user_agent_deny_regex",
+] as const satisfies readonly (keyof AccessPolicy)[];
+
+const AI_AGENT_POLICY_LIST_FIELDS = [
+  "deny_categories",
+  "allow_categories",
+] as const satisfies readonly (keyof AIAgentPolicy)[];
+
+function requireValidAccessPolicy(policy: AccessPolicy | null | undefined): void {
+  // null/undefined → "don't touch". Server is authoritative on CIDR /
+  // ISO-3166 / regex grammar; this guard catches only the shape errors
+  // an untyped-JS caller is likely to make (e.g. `geo_allowlist: "US"`
+  // instead of `["US"]`) so they get a structured ValidationError
+  // instead of a server 400 they have to debug.
+  if (policy === undefined || policy === null) return;
+  if (typeof policy !== "object" || Array.isArray(policy)) {
+    throw clientValidationError(`access_policy: must be an object (got ${describeShape(policy)})`);
+  }
+  for (const field of ACCESS_POLICY_LIST_FIELDS) {
+    const value = policy[field];
+    if (value === undefined) continue;
+    if (!Array.isArray(value)) {
+      throw clientValidationError(
+        `access_policy.${field}: must be an array (got ${describeShape(value)})`,
+      );
+    }
+  }
+  for (const field of ACCESS_POLICY_STRING_FIELDS) {
+    const value = policy[field];
+    if (value === undefined) continue;
+    if (typeof value !== "string") {
+      throw clientValidationError(
+        `access_policy.${field}: must be a string (got ${describeShape(value)})`,
+      );
+    }
+  }
+  const aip = policy.ai_agent_policy;
+  if (aip !== undefined) {
+    if (aip === null || typeof aip !== "object" || Array.isArray(aip)) {
+      throw clientValidationError(
+        `access_policy.ai_agent_policy: must be an object (got ${describeShape(aip)})`,
+      );
+    }
+    if (aip.block_all !== undefined && typeof aip.block_all !== "boolean") {
+      throw clientValidationError(
+        `access_policy.ai_agent_policy.block_all: must be a boolean (got ${describeShape(aip.block_all)})`,
+      );
+    }
+    for (const field of AI_AGENT_POLICY_LIST_FIELDS) {
+      const value = aip[field];
+      if (value === undefined) continue;
+      if (!Array.isArray(value)) {
+        throw clientValidationError(
+          `access_policy.ai_agent_policy.${field}: must be an array (got ${describeShape(value)})`,
+        );
+      }
+    }
+  }
+}
+
+// `format: uri` in the OpenAPI spec allows schemes the SDK doesn't
+// usefully support (`ftp://`, `file://`, `javascript:`, …). This is a
+// cheap client-side sanity check — the server is still the
+// authoritative validator (e.g. it rejects localhost, cloud metadata,
+// and private-range hosts; the SDK doesn't need to duplicate that).
+const ALLOWED_URL_SCHEMES = ["http://", "https://"] as const;
+
+function requireValidTargetUrl(target_url: unknown): void {
+  // Three checks in priority order: type guard, scheme, length.
+  // Stop at the first failure so a non-string target_url doesn't
+  // produce both "must be a string" AND "must be ≤ 2048 characters"
+  // (the length check on a non-string would also typeof-fail and
+  // duplicate the type message). The collect-all loop in
+  // validateCreateInput runs each FIELD's validator independently —
+  // within target_url itself we want fail-fast.
+  if (typeof target_url !== "string") {
+    throw clientValidationError(
+      `target_url: must be a string (got ${target_url === null ? "null" : typeof target_url})`,
+    );
+  }
+  if (!ALLOWED_URL_SCHEMES.some((scheme) => target_url.startsWith(scheme))) {
+    // Truncate to keep the error message compact and avoid
+    // pathologically long schemes from filling logs.
+    const repr = JSON.stringify(target_url).slice(0, 40);
+    throw clientValidationError(`target_url: must start with http:// or https:// (got ${repr})`);
+  }
+  if (target_url.length > MAX_TARGET_URL) {
+    throw clientValidationError(
+      `target_url: must be ${MAX_TARGET_URL} characters or fewer (got ${target_url.length})`,
+    );
+  }
+}
+
+function validateCreateInput(input: CreateInput): void {
+  // Untyped-JS guard: surface as ValidationError instead of raw TypeError.
+  if (typeof input !== "object" || input === null) {
+    throw clientValidationError(
+      `create: input must be an object (got ${input === null ? "null" : typeof input})`,
+    );
+  }
+  // Collect-all: run every validator and aggregate the messages so a
+  // caller fixing multiple bad fields sees them all at once instead
+  // of fix-re-run-repeat. Matches the documented batchCreate UX
+  // ("All failures are collected into a single ValidationError")
+  // and mirrors the requireValidTags collect-all pattern.
+  const errors: string[] = [];
+  const collect = (fn: () => void): void => {
+    try {
+      fn();
+    } catch (err) {
+      if (err instanceof ValidationError) {
+        errors.push(err.detail);
+        return;
+      }
+      throw err;
+    }
+  };
+  collect(() => requireValidTargetUrl(input.target_url));
+  collect(() => requireMaxLength(input.label, "label", MAX_LABEL));
+  collect(() => requireNonEmptyIfPresent(input.label, "label"));
+  collect(() => requireMaxLength(input.custom_domain, "custom_domain", MAX_CUSTOM_DOMAIN));
+  collect(() => requireNonEmptyIfPresent(input.custom_domain, "custom_domain"));
+  collect(() => requireMaxSessionsInRange(input.max_sessions));
+  collect(() => requireNonEmptyIfPresent(input.expires_in, "expires_in"));
+  collect(() => requireNonEmptyIfPresent(input.session_duration, "session_duration"));
+  collect(() => requireValidAccessPolicy(input.access_policy));
+  if (errors.length > 0) {
+    // Inner `; ` is contractual (paired with batchCreate's outer ` | `).
+    // Future field-level validators must not aggregate via `; ` internally.
+    throw clientValidationError(errors.join("; "));
+  }
+  // Intentional omission: duration *grammar* (`expires_in`,
+  // `session_duration`) is server-authoritative. Empty strings are
+  // rejected up front (see collect() calls above) but unit/whitespace
+  // edge cases ("24hh", "1w 3d") surface as a clean server 400 — a
+  // client-side regex would just create a drift surface against the
+  // server's rego/duration parser.
+  //
+  // `access_policy` contents (CIDRs, ISO-3166 codes, regex patterns)
+  // are pass-through for the same reason. The shape-guard above only
+  // catches structural mistakes (string-instead-of-array on list fields)
+  // an untyped-JS caller is likely to make.
+}
+
+/**
+ * Per-entry shape guard for {@link BatchItemResult}. Verifies every
+ * non-optional field on the branch of the discriminated union selected
+ * by the `success` discriminant. Protects consumers who narrow on
+ * `success` and then access `resource_id` / `qurl_link` / `error` as
+ * guaranteed-present — if the API ever omits one, we trip the guard
+ * rather than returning `undefined` where the type says `string`.
+ *
+ * Returns `null` when the entry is valid, or a human-readable reason
+ * string describing the *specific* field that's missing or wrong. The
+ * reason never echoes the entry's values — only field names and shape
+ * descriptors — so the caller can safely surface it in error messages
+ * that may end up in observability pipelines. Contrast with the outer
+ * guard's intentional silence about response-body content for the
+ * same info-leak reason.
+ */
+function batchItemResultValidationReason(entry: unknown): string | null {
+  if (!entry || typeof entry !== "object") return "not an object";
+  const e = entry as Record<string, unknown>;
+  // `Number.isInteger` rejects NaN, Infinity, and floats; combined
+  // with `>= 0`, the check rules out pathological proxy bodies that
+  // would attribute to a useless index. `index` is informational, so
+  // this isn't a correctness hazard, but tightening the constraint
+  // matches the same posture as the count integer guards above.
+  if (!Number.isInteger(e.index) || (e.index as number) < 0) {
+    return "missing/invalid 'index' (expected non-negative integer)";
+  }
+  if (e.success === true) {
+    if (typeof e.resource_id !== "string") {
+      return "success-branch missing required field 'resource_id' (expected string)";
+    }
+    if (typeof e.qurl_link !== "string") {
+      return "success-branch missing required field 'qurl_link' (expected string)";
+    }
+    if (typeof e.qurl_site !== "string") {
+      return "success-branch missing required field 'qurl_site' (expected string)";
+    }
+    return null;
+  }
+  if (e.success === false) {
+    if (!e.error || typeof e.error !== "object") {
+      return "failure-branch missing required field 'error' (expected object)";
+    }
+    const err = e.error as Record<string, unknown>;
+    if (typeof err.code !== "string") {
+      return "failure-branch missing required field 'error.code' (expected string)";
+    }
+    if (typeof err.message !== "string") {
+      return "failure-branch missing required field 'error.message' (expected string)";
+    }
+    return null;
+  }
+  return "missing/invalid 'success' discriminant (expected boolean)";
+}
 
 interface ApiResponse<T> {
   data: T;
@@ -34,16 +486,37 @@ interface ApiResponse<T> {
     has_more?: boolean;
     next_cursor?: string;
   };
+  /**
+   * SDK-injected HTTP status code of the underlying response. This
+   * field is NOT part of the API's JSON envelope — it's populated
+   * by `rawRequest` after the fetch so callers can branch on the
+   * observed status without re-querying the `Response` object.
+   * Currently used by `batchCreate`'s shape-guard error to surface
+   * whether an unexpected body came back on a success-range status
+   * (e.g. 201, 207) or a passthrough status (e.g. 400).
+   *
+   * The leading underscores avoid colliding with any future API field
+   * named `http_status` — the spread `{ ...json, __http_status }` would
+   * otherwise let the SDK silently overwrite a server-supplied value.
+   */
+  __http_status?: number;
 }
 
 interface ApiErrorEnvelope {
   error?: {
     type?: string;
-    title: string;
-    status: number;
-    detail: string;
-    code: string;
+    title?: string;
+    status?: number;
+    detail?: string;
+    code?: string;
+    instance?: string;
     invalid_fields?: Record<string, string>;
+    /**
+     * Legacy field from pre-RFC-7807 error shapes. Supported for backward
+     * compatibility when the API has been configured to return the older
+     * `{ error: { code, message } }` envelope.
+     */
+    message?: string;
   };
   meta?: { request_id?: string };
 }
@@ -60,13 +533,67 @@ export class QURLClient {
 
   constructor(options: ClientOptions) {
     if (!options.apiKey) {
-      throw new Error("apiKey is required");
+      throw clientValidationError("apiKey is required");
+    }
+    // Header-injection guard: `Authorization: Bearer ${apiKey}` would
+    // otherwise be exploitable on a CR/LF-bearing key. Surface as
+    // ValidationError at construction, not as TypeError on first request.
+    if (/[\r\n]/.test(options.apiKey)) {
+      throw clientValidationError("apiKey: must not contain CR/LF characters");
     }
     this.apiKey = options.apiKey;
-    this.baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
+    const rawBaseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
+    // Parse the URL so the loopback exemption matches on the hostname,
+    // not a string prefix. `startsWith("http://localhost")` would
+    // accept `http://localhost.attacker.com` and silently send the
+    // bearer token in plaintext to an arbitrary host — exactly what
+    // this guard is meant to prevent.
+    let parsedBaseUrl: URL;
+    try {
+      parsedBaseUrl = new URL(rawBaseUrl);
+    } catch {
+      throw clientValidationError(
+        `baseUrl: must be a valid URL (got ${JSON.stringify(rawBaseUrl).slice(0, 60)})`,
+      );
+    }
+    // Reject any non-http/https scheme outright (ftp://, file://,
+    // javascript:, ...). The loopback exemption logic below handles
+    // IPv6 bracket form on `URL.hostname` — see the inner comment.
+    if (parsedBaseUrl.protocol !== "http:" && parsedBaseUrl.protocol !== "https:") {
+      throw clientValidationError(
+        `baseUrl: must use http:// or https:// scheme (got ${JSON.stringify(rawBaseUrl).slice(0, 60)})`,
+      );
+    }
+    if (parsedBaseUrl.protocol === "http:") {
+      // Node's `URL.hostname` returns IPv6 hosts WITH brackets (e.g.
+      // `[::1]`) — verified empirically. The bare `::1` arm is defensive
+      // against runtimes that strip brackets (some whatwg-URL builds);
+      // both are cheap, keep both.
+      const host = parsedBaseUrl.hostname.toLowerCase();
+      // `0.0.0.0` is bind-all, not loopback — would route the bearer to any local listener.
+      const isLoopback =
+        host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]";
+      if (!isLoopback) {
+        throw clientValidationError(
+          `baseUrl: must use https:// scheme (got ${JSON.stringify(rawBaseUrl).slice(0, 60)})`,
+        );
+      }
+    }
+    this.baseUrl = rawBaseUrl;
     this.fetchFn = options.fetch ?? globalThis.fetch;
-    this.maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
-    this.timeout = options.timeout ?? DEFAULT_TIMEOUT;
+    // Clamp `maxRetries` to a non-negative integer. Negative values
+    // would skip the loop entirely (zero attempts, not just zero
+    // retries); NaN slips past `Math.max` so use `Number.isFinite`.
+    const requestedMaxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
+    this.maxRetries = Number.isFinite(requestedMaxRetries)
+      ? Math.max(0, Math.floor(requestedMaxRetries))
+      : DEFAULT_MAX_RETRIES;
+    // WHATWG: `AbortSignal.timeout(non-finite|≤0)` is immediate-abort.
+    const requestedTimeout = options.timeout ?? DEFAULT_TIMEOUT;
+    this.timeout =
+      Number.isFinite(requestedTimeout) && requestedTimeout > 0
+        ? requestedTimeout
+        : DEFAULT_TIMEOUT;
     this.userAgent = options.userAgent ?? `qurl-typescript/${VERSION}`;
 
     if (options.debug === true) {
@@ -100,41 +627,389 @@ export class QURLClient {
   // --- Helpers ---
 
   /**
-   * Maps the API's "qurls" field to "access_tokens" on the SDK type.
-   * Uses destructuring to avoid mutation and unsafe casts.
+   * Map the API's wire-format `qurls` field to the SDK's `access_tokens`.
+   *
+   * Uses `hasOwnProperty.call` (not `if (raw.qurls)`) so empty `qurls: []`
+   * still enters the rename branch — consumers expect `access_tokens: []`,
+   * not `qurls: []` leaking through. `.call` form confines the check to
+   * own-properties; safe even on pre-parsed bodies from arbitrary sources.
    */
-  private static mapQurlsField(raw: QURL & { qurls?: AccessToken[] }): QURL {
+  private mapQurlsField(raw: QURL & { qurls?: AccessToken[] }): QURL {
+    if (!Object.prototype.hasOwnProperty.call(raw, "qurls")) return raw;
     const { qurls, ...rest } = raw;
-    if (qurls && !rest.access_tokens) {
+    // Defensive: drop non-array `qurls` to keep `access_tokens: AccessToken[]`'s
+    // type promise honest under a misbehaving proxy.
+    if (qurls !== undefined && qurls !== null && !Array.isArray(qurls)) {
+      this.log("mapQurlsField: 'qurls' was not an array; dropping", {
+        branch: "non-array",
+        qurls_type: typeof qurls,
+      });
+      return rest;
+    }
+    // null is semantically "no tokens" — silent drop is fine, but surface
+    // via debug so operators spot it if the API starts emitting null.
+    if (qurls === null) {
+      this.log("mapQurlsField: 'qurls' was null; dropping", { branch: "null" });
+      return rest;
+    }
+    if (qurls === undefined) {
+      // Symmetric with null / non-array branches.
+      this.log("mapQurlsField: 'qurls' was undefined; dropping", { branch: "undefined" });
+      return rest;
+    }
+    if (!rest.access_tokens) {
       return { ...rest, access_tokens: qurls };
     }
+    // Server-side bug — drop `qurls` rather than merge. If the arrays
+    // disagree, no consistent reconciliation exists; a silent merge
+    // could double-count or surface stale data.
+    this.log("mapQurlsField: received both 'qurls' and 'access_tokens'; keeping access_tokens", {
+      branch: "both",
+      qurls_count: qurls.length,
+      access_tokens_count: rest.access_tokens.length,
+    });
     return rest;
+  }
+
+  /**
+   * Validate the response envelope from POST /v1/qurls/batch and return
+   * the inner {@link BatchCreateOutput}. Throws
+   * {@link unexpectedResponseError} on any shape-guard failure.
+   *
+   * Three layers of defense:
+   *   1. Top-level shape (succeeded/failed are non-negative integers;
+   *      results is an array).
+   *   2. Arithmetic invariants: `succeeded + failed === results.length`
+   *      and `results.length === requestItemCount` (catches silent
+   *      server-side item drops).
+   *   3. Per-entry discriminated-union contract + index range / dedupe.
+   *
+   * Error messages include the observed HTTP status as a suffix so
+   * operators can attribute drift; entry values are deliberately
+   * never echoed (unexpected bodies may carry sensitive data).
+   *
+   * **Fail-fast, unlike `validateCreateInput`'s collect-all.** This is
+   * a server-contract integrity check, not user input — once the envelope
+   * is malformed, additional shape errors don't help debug the upstream
+   * issue.
+   */
+  private validateBatchCreateResponse(
+    envelope: ApiResponse<BatchCreateOutput>,
+    requestItemCount: number,
+  ): BatchCreateOutput {
+    const result = envelope.data;
+    const statusSuffix =
+      envelope.__http_status !== undefined ? ` (HTTP ${envelope.__http_status})` : "";
+    // Thread the server's request_id into the shape-guard error so
+    // operators debugging "unexpected response" tickets have the
+    // correlation handle on the error path, mirroring the success-
+    // path propagation in batchCreate(). The field is optional —
+    // older API versions without `meta.request_id` simply produce
+    // an error without it, same as today. Embedded in BOTH the
+    // .requestId property AND the message string so a stack trace
+    // pasted into a support ticket carries the correlation handle
+    // without a follow-up round-trip.
+    const requestId = envelope.meta?.request_id;
+    const requestIdSuffix = requestId !== undefined ? ` [request_id=${requestId}]` : "";
+
+    // `Number.isInteger` rejects NaN, Infinity, and floats. Combined
+    // with `>= 0`, this rules out pathological proxy bodies (e.g.
+    // `succeeded: -1, failed: 1, results: [<one entry>]`) that the
+    // arithmetic invariant below would only catch by accident. Make
+    // the constraint intentional rather than incidental.
+    if (
+      !result ||
+      !Number.isInteger(result.succeeded) ||
+      result.succeeded < 0 ||
+      !Number.isInteger(result.failed) ||
+      result.failed < 0 ||
+      !Array.isArray(result.results)
+    ) {
+      throw unexpectedResponseError(
+        `Unexpected response shape from POST /v1/qurls/batch${statusSuffix}${requestIdSuffix}`,
+        requestId,
+      );
+    }
+
+    if (result.succeeded + result.failed !== result.results.length) {
+      throw unexpectedResponseError(
+        `Unexpected response shape from POST /v1/qurls/batch${statusSuffix}: ` +
+          `counts/results length mismatch (succeeded=${result.succeeded}, ` +
+          `failed=${result.failed}, results.length=${result.results.length})${requestIdSuffix}`,
+        requestId,
+      );
+    }
+
+    // OpenAPI contract: one result per input item. Without this check, a
+    // server that drops items (e.g. sends 2 results for 3 inputs with
+    // succeeded=1, failed=1) passes the arithmetic invariant above and
+    // every per-entry check below — but the consumer keying by `r.index`
+    // would silently lose the dropped item. Combined with the per-entry
+    // index range + dedup checks, this guarantees the seen-indices set is
+    // exactly [0, requestItemCount).
+    if (result.results.length !== requestItemCount) {
+      throw unexpectedResponseError(
+        `Unexpected response shape from POST /v1/qurls/batch${statusSuffix}: ` +
+          `results.length (${result.results.length}) does not match request item count (${requestItemCount})${requestIdSuffix}`,
+        requestId,
+      );
+    }
+
+    // Per-entry discriminated-union contract. Reason strings report
+    // field NAMES only, never values — safe for observability pipelines.
+    // Short-circuit on first bad entry (server-contract check, not user
+    // input). `index` is bound to `[0, requestItemCount)` and de-duped:
+    // both are unambiguous server bugs that silently break per-item
+    // attribution, so fail closed to match this guard's posture.
+    const seenIndices = new Set<number>();
+    for (let i = 0; i < result.results.length; i++) {
+      const reason = batchItemResultValidationReason(result.results[i]);
+      if (reason !== null) {
+        throw unexpectedResponseError(
+          `Unexpected response shape from POST /v1/qurls/batch${statusSuffix}: results[${i}] ${reason}${requestIdSuffix}`,
+          requestId,
+        );
+      }
+      const entry = result.results[i] as { index: number };
+      if (entry.index >= requestItemCount) {
+        throw unexpectedResponseError(
+          `Unexpected response shape from POST /v1/qurls/batch${statusSuffix}: results[${i}] index out of range (sent ${requestItemCount} items)${requestIdSuffix}`,
+          requestId,
+        );
+      }
+      if (seenIndices.has(entry.index)) {
+        throw unexpectedResponseError(
+          `Unexpected response shape from POST /v1/qurls/batch${statusSuffix}: results[${i}] duplicate index${requestIdSuffix}`,
+          requestId,
+        );
+      }
+      seenIndices.add(entry.index);
+    }
+
+    return result;
   }
 
   // --- Public API ---
 
   /** Create a new qURL. */
   async create(input: CreateInput): Promise<CreateOutput> {
+    validateCreateInput(input);
     return this.request<CreateOutput>("POST", "/v1/qurls", input);
   }
 
-  /** Gets a protected URL and its access tokens. */
+  /**
+   * Batch create multiple qURLs (1-`MAX_BATCH_ITEMS` items).
+   *
+   * **Partial failures do not throw.** Two paths resolve normally with
+   * structured per-item results:
+   * - **HTTP 207 Multi-Status** (some succeeded, some failed) — passes the
+   *   `response.ok` check naturally since 207 is in the 2xx range.
+   * - **HTTP 400** (every item failed validation) — the API returns a
+   *   populated `BatchCreateOutput` body in this case; whitelisted via
+   *   `passthroughStatuses` so the structured per-item errors aren't
+   *   swallowed by the generic error path.
+   *
+   * Callers that only catch thrown errors will **silently miss partial
+   * failures**. Always branch on `result.failed > 0` before treating the
+   * call as successful. Other error statuses (401, 403, 429, 5xx) still
+   * throw the appropriate `QURLError` subclass.
+   *
+   * **Client-side validation:** All items are validated before any network
+   * request is made (target_url scheme, label length, max_sessions range,
+   * tag constraints). All failures are collected into a single
+   * `ValidationError` with per-index attribution
+   * (`"items[0]: ... | items[3]: ..."`) — items are separated by ` | ` and
+   * field-level errors within an item by `; ` so callers can split the
+   * detail message reliably. Every problem surfaces in one throw instead
+   * of fix-re-run-repeat.
+   *
+   * Throws `ValidationError` client-side (`status: 0`, `code: "client_validation"`)
+   * when `items` is empty or exceeds `MAX_BATCH_ITEMS`, or when the
+   * HTTP 400 response body doesn't match the expected `BatchCreateOutput`
+   * shape (defense-in-depth for cases where the endpoint returns a non-batch
+   * error on 400).
+   *
+   * @example
+   * Always check `result.failed` after the call — exceptions alone are
+   * not enough, because 207 / 400 partial failures resolve normally:
+   * ```ts
+   * const result = await client.batchCreate({ items });
+   *
+   * if (result.failed > 0) {
+   *   console.warn(`${result.failed}/${result.results.length} items failed`);
+   * }
+   *
+   * // Discriminated union on `success` lets you narrow per-item:
+   * for (const r of result.results) {
+   *   if (r.success) {
+   *     handleOk(r.resource_id, r.qurl_link);
+   *   } else {
+   *     handleErr(r.index, r.error.code, r.error.message);
+   *   }
+   * }
+   * ```
+   */
+  async batchCreate(input: BatchCreateInput): Promise<BatchCreateOutput> {
+    // Untyped-JS safety: the rest of the validators (requireValidTags,
+    // requireMaxLength, etc.) all surface a structured ValidationError
+    // for non-conforming inputs. Without this guard, `batchCreate({} as
+    // any)` would throw a raw TypeError on `.length`. Match the pattern.
+    if (!input || !Array.isArray(input.items)) {
+      throw clientValidationError("batchCreate: items must be an array");
+    }
+    // Size checks are fail-fast (binary, no useful aggregation), per-item
+    // validation below is collect-all (multiple bad items aggregate into
+    // one throw). The asymmetry is deliberate: there's nothing to combine
+    // for empty input or oversized batches — the size is wrong or it isn't.
+    if (input.items.length === 0) {
+      throw clientValidationError("batchCreate requires at least 1 item");
+    }
+    if (input.items.length > MAX_BATCH_ITEMS) {
+      throw clientValidationError(
+        `batchCreate accepts at most ${MAX_BATCH_ITEMS} items, got ${input.items.length}`,
+      );
+    }
+    // Collect ALL per-item validation errors in one pass (not fail-fast)
+    // so callers see every problem without fix-re-run-repeat. Kept inline
+    // (not unified with `validateCreateInput`'s `collect()`) because the
+    // separator policy and `items[i]:` prefix differ.
+    const perItemErrors: string[] = [];
+    for (let i = 0; i < input.items.length; i++) {
+      try {
+        validateCreateInput(input.items[i]);
+      } catch (err) {
+        if (err instanceof ValidationError) {
+          perItemErrors.push(`items[${i}]: ${err.detail}`);
+          continue;
+        }
+        throw err;
+      }
+    }
+    if (perItemErrors.length > 0) {
+      // Outer separator differs from `validateCreateInput`'s inner
+      // `"; "` so callers can split the message reliably:
+      //   `items[0]: a; b | items[2]: c; d`
+      // Without this asymmetry, the same `; ` at both levels makes
+      // it ambiguous which separator is "next item" vs "next field
+      // within item". Mirrors the JSDoc example shape.
+      throw clientValidationError(`batchCreate: ${perItemErrors.join(" | ")}`);
+    }
+    // 400 carries per-item errors (see rawRequest JSDoc). Use rawRequest
+    // directly (not `this.request`) so we can read `meta.request_id`
+    // from the envelope and propagate it into the returned
+    // BatchCreateOutput — consumers filing support tickets on partial
+    // or total batch failures need the correlation ID.
+    const envelope = await this.rawRequest<BatchCreateOutput>(
+      "POST",
+      "/v1/qurls/batch",
+      input,
+      BATCH_PASSTHROUGH_STATUSES,
+    );
+    const result = this.validateBatchCreateResponse(envelope, input.items.length);
+    // Attach the server request_id from the envelope meta without
+    // mutating `result` (which is the parsed JSON body). Mirrors the
+    // non-mutating style used elsewhere (e.g. `mapQurlsField`). In the
+    // no-request_id branch we can return `result` directly because
+    // `response.json()` already produced a fresh object — a spread
+    // there would be a redundant allocation. Only the attach path
+    // copies. The field is optional on BatchCreateOutput so older API
+    // versions that omit `meta.request_id` still produce a valid
+    // return value.
+    //
+    // If a future server payload puts `request_id` on both `data` and
+    // `meta`, the spread `{ ...result, request_id: requestId }` makes
+    // `meta` win — that's deliberate: the type only documents `meta`
+    // as the source, and `meta.request_id` is the canonical envelope
+    // field. The data-side variant would be a wire-format duplication
+    // we don't want to silently honor.
+    const requestId = envelope.meta?.request_id;
+    // Both-fields-present and data-only-present are both worth surfacing
+    // via debug — the former because meta wins silently, the latter
+    // because it suggests an envelope-shape transition. Data-side value
+    // is preserved when meta is absent (no over-eager strip).
+    const dataRequestId = (result as { request_id?: unknown }).request_id;
+    if (dataRequestId !== undefined) {
+      const dataRequestIdRepr = String(dataRequestId).slice(0, 80);
+      if (requestId !== undefined && dataRequestId !== requestId) {
+        this.log("batchCreate: response carries request_id on BOTH data and meta; keeping meta", {
+          meta_request_id: requestId,
+          data_request_id: dataRequestIdRepr,
+        });
+      } else if (requestId === undefined) {
+        // Data-only request_id suggests an envelope-shape transition;
+        // surface for observability.
+        this.log("batchCreate: response carries request_id on data only (meta absent)", {
+          data_request_id: dataRequestIdRepr,
+        });
+      }
+    }
+    return requestId !== undefined ? { ...result, request_id: requestId } : result;
+  }
+
+  /**
+   * Get a qURL resource and its access tokens.
+   *
+   * Accepts either a resource ID (`r_` prefix) or a qURL display ID (`q_`
+   * prefix); the API resolves `q_` IDs to the parent resource automatically.
+   */
   async get(id: string): Promise<QURL> {
+    requireNonEmptyId(id, "get");
     const raw = await this.request<QURL & { qurls?: AccessToken[] }>(
       "GET",
       `/v1/qurls/${encodeURIComponent(id)}`,
     );
-    return QURLClient.mapQurlsField(raw);
+    return this.mapQurlsField(raw);
   }
 
   /**
    * Lists protected URLs. Each qURL groups access tokens sharing the same target URL.
    * Note: list items include qurl_count but not access_tokens (too expensive at scale).
+   *
+   * **`limit` semantics:** `limit` is validated client-side to be in
+   * the range `[1, 100]` per the OpenAPI spec (`GET /v1/qurls` defines
+   * `limit: integer, minimum: 1, maximum: 100, default: 20`). Passing
+   * a value outside that range throws `ValidationError` before the
+   * request is issued. Omitting `limit` lets the server apply its
+   * default page size (currently 20). Matches the client-side
+   * validation style used for `max_sessions`, `tag count`, URL length.
    */
   async list(input: ListInput = {}): Promise<ListOutput> {
+    // The `!== null` check is intentional despite `ListInput.limit`
+    // being typed as `number | undefined`: an untyped JS caller can
+    // pass `{ limit: null }` which would serialize to `?limit=null`
+    // via `String(null)` in the query-param loop below. Matches the
+    // null-tolerance pattern used for tags and other list filters.
+    if (input.limit !== undefined && input.limit !== null) {
+      if (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > 100) {
+        throw clientValidationError(
+          `limit: must be an integer between 1 and 100 (got ${input.limit})`,
+        );
+      }
+    }
     const params = new URLSearchParams();
-    for (const [key, value] of Object.entries(input)) {
-      if (value !== null && value !== undefined) params.set(key, String(value));
+    // Explicit allowlist rather than Object.entries: TypeScript's structural
+    // typing can't prevent callers from spreading untyped objects with extra
+    // properties, and String(value) on an unexpected array/object would emit
+    // "[object Object]" as a query param.
+    // Per the OpenAPI spec, only `limit` is numeric; every other
+    // filter field is a string. Enforce per-key type expectations
+    // so untyped-JS callers passing `cursor: 42` (or worse,
+    // `q: ["foo", "bar"]`) get a structured ValidationError instead
+    // of silently coercing to `"42"` / `"foo,bar"`.
+    for (const key of LIST_PARAM_KEYS) {
+      const value = input[key];
+      // Drop null/undefined and empty strings — an empty string from
+      // an untyped JS caller would otherwise produce `?status=&q=`
+      // garbage that the API might interpret as an explicit empty
+      // filter. `limit` is validated separately above.
+      if (value === null || value === undefined || value === "") continue;
+      const expectedType = NUMERIC_LIST_KEYS.has(key) ? "number" : "string";
+      if (typeof value !== expectedType) {
+        throw clientValidationError(
+          `${key}: must be a ${expectedType} (got ${value === null ? "null" : typeof value})`,
+        );
+      }
+      params.set(key, String(value));
     }
 
     const query = params.toString();
@@ -143,51 +1018,224 @@ export class QURLClient {
     const { data, meta } = await this.rawRequest<(QURL & { qurls?: AccessToken[] })[]>("GET", path);
     return {
       // Defensive: map in case API includes nested tokens on list items in the future.
-      qurls: data.map(QURLClient.mapQurlsField),
+      qurls: data.map((raw) => this.mapQurlsField(raw)),
       next_cursor: meta?.next_cursor,
       has_more: meta?.has_more ?? false,
     };
   }
 
-  /** Iterate over all qURLs, automatically paginating. */
+  /**
+   * Iterate over all qURLs, automatically paginating.
+   *
+   * Termination is **cursor-driven**: the loop stops as soon as the API
+   * returns a page with no `next_cursor`, not when `has_more === false`.
+   * This is deliberate — if the API ever returned `has_more: true` with
+   * a missing or empty `next_cursor` (a server bug), a has_more-driven
+   * loop would spin forever, while this cursor-driven loop terminates
+   * cleanly. The trade-off is that `has_more: false` with a spurious
+   * trailing cursor would cause one extra round-trip; we accept that
+   * over the risk of an infinite loop.
+   */
   async *listAll(input: Omit<ListInput, "cursor"> = {}): AsyncGenerator<QURL, void, undefined> {
     let cursor: string | undefined;
+    let previousCursor: string | undefined;
     do {
       const page = await this.list({ ...input, cursor });
       for (const qurl of page.qurls) {
         yield qurl;
       }
+      previousCursor = cursor;
       cursor = page.next_cursor;
+      // Stale-cursor guard: catches CONSECUTIVE duplicates only —
+      // an A→B→A→B oscillation would still loop. Tracking the full
+      // history would grow unboundedly on long paginations; the
+      // common server-bug shape is a stuck cursor, which this catches.
+      if (cursor && cursor === previousCursor) {
+        this.log(
+          `listAll: server returned duplicate cursor "${cursor}", terminating to prevent infinite loop`,
+        );
+        break;
+      }
     } while (cursor);
   }
 
-  /** Delete (revoke) a qURL. */
+  /**
+   * Delete (revoke) a qURL resource and all its access tokens.
+   *
+   * Only accepts a resource ID (`r_` prefix), not a qURL display ID (`q_`
+   * prefix). Per the OpenAPI spec: *"Requires a resource ID (r_ prefix).
+   * To revoke a single token, use DELETE /v1/resources/:id/qurls/:qurl_id"*.
+   * A client-side prefix check catches the mistake before the API round-trip.
+   */
   async delete(id: string): Promise<void> {
+    // Type guard for untyped-JS callers — without it, `(undefined).length`
+    // is a raw TypeError instead of the structured ValidationError the
+    // rest of the surface produces.
+    if (typeof id !== "string") {
+      throw clientValidationError(
+        `delete: requires a resource ID (${RESOURCE_ID_PREFIX} prefix + suffix) — got ${id === null ? "null" : typeof id}`,
+      );
+    }
+    // Too-short check runs BEFORE the prefix check so it catches
+    // bare-prefix inputs like `"r_"` (right prefix, no suffix) in
+    // addition to `""` / `"x"` / `"ab"` / `"q_"`. Without this
+    // ordering, an exact `"r_"` would pass the startsWith check and
+    // the SDK would send `DELETE /v1/qurls/r_` to the server —
+    // rejected server-side, but this catches it client-side without
+    // a round-trip.
+    if (id.length <= RESOURCE_ID_PREFIX.length) {
+      throw clientValidationError(
+        `delete: requires a resource ID (${RESOURCE_ID_PREFIX} prefix + suffix) — got ${id.length} character${id.length === 1 ? "" : "s"}`,
+      );
+    }
+    if (!id.startsWith(RESOURCE_ID_PREFIX)) {
+      // Wrong-prefix branch: the input is long enough to plausibly be
+      // an ID but has the wrong prefix (e.g. `q_3a7f2c8e91b`,
+      // `at_xyz…`). Echo only the 2-char prefix — never the raw ID
+      // — so observability pipelines don't end up with caller-supplied
+      // identifiers in error logs.
+      const observedPrefix = id.slice(0, RESOURCE_ID_PREFIX.length);
+      throw clientValidationError(
+        `delete: only resource IDs (${RESOURCE_ID_PREFIX} prefix) are accepted — ` +
+          `got an ID starting with "${observedPrefix}". ` +
+          "To revoke a single access token, use the resource-scoped token endpoint.",
+      );
+    }
     await this.rawRequest("DELETE", `/v1/qurls/${encodeURIComponent(id)}`);
   }
 
   /**
    * Extend a qURL's expiration.
    *
-   * Convenience method — equivalent to `update(id, input)`.
+   * Accepts either a resource ID (`r_` prefix) or a qURL display ID (`q_`
+   * prefix). Convenience method — delegates to {@link update} with only the
+   * expiration fields. `ExtendInput` shares its `extend_by` / `expires_at`
+   * fields with `UpdateInput` but is *narrower in two ways*: (1) exactly
+   * one of the two must be present (XOR via `?: never`), where `UpdateInput`
+   * allows neither; and (2) `description` / `tags` are absent.
+   *
+   * Destructuring before delegation strips wider fields at runtime, so an
+   * untyped-JS caller spreading `{ description, tags, ... }` can't leak
+   * those through this path. The XOR (exactly-one-of-two) invariant is
+   * enforced separately by the runtime check inside `update()`.
    */
   async extend(id: string, input: ExtendInput): Promise<QURL> {
-    return this.update(id, input);
+    // No requireNonEmptyId here — update() validates the id.
+    // ExtendInput's `?: never` types enforce XOR at compile time, so
+    // typed callers can never reach this with both fields present.
+    // Untyped-JS callers spreading wider objects could; the runtime
+    // XOR check inside update() is the safety net for that path.
+    const { extend_by, expires_at } = input;
+    return this.update(id, { extend_by, expires_at });
   }
 
-  /** Update a qURL — extend expiration, change description, etc. */
+  /**
+   * Update a qURL — extend expiration, change description, rename tags.
+   *
+   * Accepts either a resource ID (`r_` prefix) or a qURL display ID (`q_`
+   * prefix); the API resolves `q_` IDs to the parent resource automatically.
+   */
   async update(id: string, input: UpdateInput): Promise<QURL> {
+    requireNonEmptyId(id, "update");
+    // Normalize null → undefined so untyped-JS callers passing
+    // `{ tags: null }` don't leak null into the wire body or crash
+    // downstream validators. Shallow copy keeps caller input untouched.
+    const normalized: UpdateInput = {};
+    let hasAnyField = false;
+    for (const key of UPDATE_FIELD_KEYS) {
+      const value = input[key];
+      if (value !== null && value !== undefined) {
+        (normalized as Record<string, unknown>)[key] = value;
+        hasAnyField = true;
+      }
+    }
+
+    // Timing fields have no clear-semantic (unlike `description: ""`).
+    requireNonEmptyIfPresent(normalized.extend_by, "extend_by");
+    requireNonEmptyIfPresent(normalized.expires_at, "expires_at");
+
+    if (normalized.extend_by !== undefined && normalized.expires_at !== undefined) {
+      throw clientValidationError(
+        "update: `extend_by` and `expires_at` are mutually exclusive — provide at most one",
+      );
+    }
+    if (!hasAnyField) {
+      throw clientValidationError(
+        `update: at least one field (${UPDATE_FIELD_KEYS.join(", ")}) must be provided`,
+      );
+    }
+    // Per-field validators run after the empty-input guard so the
+    // cheap binary check short-circuits first; order is correctness-neutral
+    // (`requireMaxLength(undefined, …)` is a no-op).
+    requireMaxLength(normalized.description, "description", MAX_DESCRIPTION);
+    requireValidTags(normalized.tags);
     const raw = await this.request<QURL & { qurls?: AccessToken[] }>(
       "PATCH",
       `/v1/qurls/${encodeURIComponent(id)}`,
-      input,
+      normalized,
     );
-    return QURLClient.mapQurlsField(raw);
+    return this.mapQurlsField(raw);
   }
 
-  /** Mint a new access link for a qURL. */
+  /**
+   * Mint a new access link for a qURL.
+   *
+   * Accepts either a resource ID (`r_` prefix) or a qURL display ID (`q_`
+   * prefix); the API resolves `q_` IDs to the parent resource automatically.
+   *
+   * Passing `{}` or an object with all fields `null`/`undefined` is
+   * equivalent to omitting the second argument: no body is sent, and the
+   * server applies its 24h default expiration.
+   */
   async mintLink(id: string, input?: MintInput): Promise<MintOutput> {
-    return this.request<MintOutput>("POST", `/v1/qurls/${encodeURIComponent(id)}/mint_link`, input);
+    requireNonEmptyId(id, "mintLink");
+    // Normalize null → omitted so untyped-JS callers passing
+    // `{ expires_in: null, expires_at: "..." }` don't leak null into
+    // the wire body via JSON.stringify and don't bypass the XOR check
+    // below (which uses `!== undefined`). Mirrors the null-normalization
+    // pattern used by update(); keeps the two write surfaces symmetric.
+    let normalized: MintInput | undefined = input;
+    if (input !== undefined) {
+      // Iterate the explicit allowlist (matching update() / list())
+      // so unknown keys from untyped-JS callers can't leak through
+      // to the wire body. The compile-time `assertExhaustive` check
+      // on MINT_FIELD_KEYS keeps this in sync with MintInput.
+      const stripped: Record<string, unknown> = {};
+      let hasAnyField = false;
+      for (const key of MINT_FIELD_KEYS) {
+        const value = input[key];
+        if (value !== null && value !== undefined) {
+          stripped[key] = value;
+          hasAnyField = true;
+        }
+      }
+      // Collapse to `undefined` when stripping leaves nothing so
+      // `mintLink(id, {})` matches `mintLink(id)` on the wire (no
+      // Content-Type, no body); server-side defaults are identical.
+      normalized = hasAnyField ? (stripped as MintInput) : undefined;
+    }
+    if (normalized !== undefined) {
+      requireNonEmptyIfPresent(normalized.expires_in, "expires_in");
+      requireNonEmptyIfPresent(normalized.expires_at, "expires_at");
+      if (normalized.expires_in !== undefined && normalized.expires_at !== undefined) {
+        throw clientValidationError(
+          "mintLink: `expires_in` and `expires_at` are mutually exclusive — provide at most one",
+        );
+      }
+      requireMaxLength(normalized.label, "label", MAX_LABEL);
+      requireNonEmptyIfPresent(normalized.label, "label");
+      requireNonEmptyIfPresent(normalized.session_duration, "session_duration");
+      requireMaxSessionsInRange(normalized.max_sessions);
+      requireValidAccessPolicy(normalized.access_policy);
+      // Duration *grammar* and access_policy contents are server-authoritative
+      // (same rationale as validateCreateInput). Empty-string rejection happens
+      // above; bound/unit checks happen server-side.
+    }
+    return this.request<MintOutput>(
+      "POST",
+      `/v1/qurls/${encodeURIComponent(id)}/mint_link`,
+      normalized,
+    );
   }
 
   /**
@@ -199,7 +1247,24 @@ export class QURLClient {
    * Accepts a plain token string or a `ResolveInput` object.
    */
   async resolve(input: ResolveInput | string): Promise<ResolveOutput> {
-    const body = typeof input === "string" ? { access_token: input } : input;
+    // Mirror get/update/mintLink: catch untyped-JS misuse client-side.
+    let body: ResolveInput;
+    if (typeof input === "string") {
+      if (input.length === 0) {
+        throw clientValidationError("resolve: access_token must be a non-empty string");
+      }
+      body = { access_token: input };
+    } else if (typeof input === "object" && input !== null) {
+      if (typeof input.access_token !== "string" || input.access_token.length === 0) {
+        throw clientValidationError("resolve: access_token must be a non-empty string");
+      }
+      // Allowlist-rebuild — symmetric with list()/update()/mintLink().
+      body = { access_token: input.access_token };
+    } else {
+      throw clientValidationError(
+        `resolve: input must be a string or { access_token } object (got ${input === null ? "null" : typeof input})`,
+      );
+    }
     return this.request<ResolveOutput>("POST", "/v1/resolve", body);
   }
 
@@ -210,15 +1275,30 @@ export class QURLClient {
 
   // --- Internal HTTP plumbing ---
 
-  private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
-    const { data } = await this.rawRequest<T>(method, path, body);
+  private async request<T>(
+    method: HttpMethod,
+    path: string,
+    body?: unknown,
+    passthroughStatuses?: readonly number[],
+  ): Promise<T> {
+    const { data } = await this.rawRequest<T>(method, path, body, passthroughStatuses);
     return data;
   }
 
+  /**
+   * Issue an HTTP request and parse the JSON response.
+   *
+   * `passthroughStatuses` lets a caller opt certain non-2xx codes out of the
+   * default throw-on-error path and receive the parsed body instead. This is
+   * used by `batchCreate`, where the API returns a structured
+   * `BatchCreateOutput` on HTTP 400 (all items rejected) — throwing would
+   * drop the per-item errors.
+   */
   private async rawRequest<T>(
-    method: string,
+    method: HttpMethod,
     path: string,
     body?: unknown,
+    passthroughStatuses: readonly number[] = NO_PASSTHROUGH_STATUSES,
   ): Promise<ApiResponse<T>> {
     const url = `${this.baseUrl}${path}`;
     const headers: Record<string, string> = {
@@ -230,6 +1310,13 @@ export class QURLClient {
       headers["Content-Type"] = "application/json";
     }
 
+    // DELETE is intentionally NOT classified as mutating. HTTP DELETE
+    // is idempotent by spec — deleting an already-deleted resource is
+    // a safe no-op on the server side — and the response body is
+    // either empty (204) or carries no state worth duplicating. POST
+    // and PATCH are the real non-idempotent writes: retrying them on
+    // 5xx risks creating duplicate records or applying a PATCH twice,
+    // so those restrict retries to {429} (rate limits only).
     const mutating = method === "POST" || method === "PATCH";
     const retryable = mutating ? RETRYABLE_STATUS_MUTATING : RETRYABLE_STATUS;
     const serializedBody = body !== undefined ? JSON.stringify(body) : undefined;
@@ -246,6 +1333,14 @@ export class QURLClient {
 
       let response: Response;
       try {
+        // `timeout` is intentionally a per-attempt budget, not a total-
+        // request budget. With maxRetries=3 and timeout=30s, a slow
+        // upstream + retries can run up to ~120s total. The per-
+        // attempt cap matches `fetch()` semantics elsewhere and lets
+        // each retry get a fresh window — a half-completed slow
+        // attempt shouldn't poison the next try's deadline. Total
+        // request bound: roughly `timeout * (maxRetries + 1) +
+        // sum(retryDelay)`.
         response = await this.fetchFn(url, {
           method,
           headers,
@@ -268,12 +1363,52 @@ export class QURLClient {
 
       this.log(`${method} ${url} → ${response.status}`);
 
-      if (response.ok) {
+      // `response.ok` is true for the entire 200-299 range, so partial-
+      // success responses like 207 flow through this path naturally —
+      // `passthroughStatuses` only needs to enumerate non-2xx statuses
+      // that the caller wants to parse as a success envelope (e.g.
+      // `batchCreate` opts 400 in so per-item errors still reach the
+      // caller as a structured body instead of being raised as QURLError).
+      const isPassthrough = !response.ok && passthroughStatuses.includes(response.status);
+      if (response.ok || isPassthrough) {
         if (response.status === 204) {
-          return { data: undefined as unknown as T };
+          // 204 on a non-DELETE method would deliver `undefined` to a
+          // caller whose return type expects data — silent failure.
+          // Surface via debug so operators see drift; the actual return
+          // is unchanged for back-compat (DELETE is the only documented
+          // 204-returning endpoint and its return type is `Promise<void>`).
+          if (method !== "DELETE") {
+            this.log(`unexpected 204 on ${method} ${url} — caller expected a response body`, {
+              method,
+              url,
+            });
+          }
+          return { data: undefined as unknown as T, __http_status: response.status };
         }
-        const json = (await response.json()) as ApiResponse<T>;
-        return json;
+        try {
+          const json = (await response.json()) as ApiResponse<T>;
+          return { ...json, __http_status: response.status };
+        } catch {
+          // Non-JSON body on a 2xx response (server contract violation)
+          // or on a passthrough status (e.g. proxy HTML on 400). The
+          // body stream is already consumed by the failed `.json()`,
+          // so we can't delegate to parseError — synthesize a typed
+          // QURLError directly so consumers catching by-class don't
+          // miss it.
+          this.log(
+            `non-JSON body on ${isPassthrough ? "passthrough" : "success"} response ${response.status}`,
+            {
+              status: response.status,
+              content_type: response.headers.get("content-type") ?? undefined,
+            },
+          );
+          throw createError({
+            status: response.status,
+            code: ERROR_CODE_UNEXPECTED_RESPONSE,
+            title: response.statusText || `HTTP ${response.status}`,
+            detail: `Expected JSON response body on HTTP ${response.status} but received non-JSON content`,
+          });
+        }
       }
 
       const errorData = await this.parseError(response);
@@ -294,39 +1429,115 @@ export class QURLClient {
     try {
       const json = (await response.json()) as ApiErrorEnvelope;
       if (json.error) {
+        const err = json.error;
+        // Detail fallback chain:
+        //   1. err.detail   (RFC 7807 primary)
+        //   2. err.message  (legacy pre-RFC-7807 shape)
+        //   3. err.title    (RFC 7807 required field)
+        //   4. HTTP status  (final safety net)
+        // This prevents `"Title (403): undefined"` when the API omits detail.
+        const detail = err.detail ?? err.message ?? err.title ?? `HTTP ${response.status}`;
+        // HTTP/2 omits reason-phrases — `statusText` may be "".
+        const title = err.title ?? (response.statusText || `HTTP ${response.status}`);
         return {
-          status: json.error.status,
-          code: json.error.code,
-          title: json.error.title,
-          detail: json.error.detail,
-          invalid_fields: json.error.invalid_fields,
+          status: err.status ?? response.status,
+          code: err.code ?? ERROR_CODE_UNKNOWN,
+          title,
+          detail,
+          type: err.type,
+          instance: err.instance,
+          invalid_fields: err.invalid_fields,
           request_id: json.meta?.request_id,
           retry_after: this.parseRetryAfter(response),
         };
       }
+      // JSON parsed cleanly but the `error` envelope is missing — the API
+      // returned an unexpected shape. Surface it through debugFn so
+      // operators can spot the divergence; fall through to the
+      // status-only safety net below.
+      this.log(`unexpected error response shape from ${response.status}`, {
+        status: response.status,
+        body_keys: Object.keys(json as object),
+      });
     } catch {
-      // Non-JSON error response
+      // Body wasn't valid JSON (or the network stream errored during
+      // read). Log so operators can distinguish this from a malformed
+      // envelope, and fall through to the status-only safety net.
+      this.log(`non-JSON error response from ${response.status}`, {
+        status: response.status,
+        content_type: response.headers.get("content-type") ?? undefined,
+      });
     }
 
     return {
       status: response.status,
-      code: "unknown",
-      title: response.statusText,
-      detail: "",
+      code: ERROR_CODE_UNKNOWN,
+      title: response.statusText || `HTTP ${response.status}`,
+      detail: response.statusText || `HTTP ${response.status}`,
     };
   }
 
   private parseRetryAfter(response: Response): number | undefined {
-    if (response.status !== 429) return undefined;
+    // RFC 7231 §7.1.3: Retry-After honored on 429 + 503. (RFC 7231
+    // also allows Retry-After on 3xx redirects; the SDK doesn't follow
+    // redirects, so 429/503 cover the relevant cases.)
+    if (response.status !== 429 && response.status !== 503) return undefined;
     const header = response.headers.get("Retry-After");
     if (!header) return undefined;
-    const seconds = parseInt(header, 10);
-    return Number.isNaN(seconds) ? undefined : seconds;
+    // TODO: parse HTTP-date format per RFC 7231 §7.1.3 — currently only
+    // handles delta-seconds; HTTP-date headers fall through to the
+    // exponential-backoff branch in `retryDelay`. Tracked in #61.
+    //
+    // Digit-only pre-check rather than `parseInt` alone: `parseInt("60abc")`
+    // returns `60` and would silently honor a malformed header. The
+    // strict check makes any deviation observable (debug log) instead.
+    const trimmed = header.trim();
+    if (!/^\d+$/.test(trimmed)) {
+      this.log("Retry-After header was non-numeric, using exponential backoff", {
+        header_value: header.slice(0, 100),
+      });
+      return undefined;
+    }
+    const value = parseInt(trimmed, 10);
+    // Reject pathological values at parse time. Without this, very large
+    // integers (e.g. `Retry-After: 9999999999999`) propagate through the
+    // `*1000` ms-conversion in retryDelay before the hard cap clamps
+    // them — fail fast instead, with a debug breadcrumb. Cutoff matches
+    // the hard cap so a clean cap-bounded value still parses.
+    if (value > RETRY_AFTER_PARSE_LIMIT_S) {
+      this.log("Retry-After header exceeded parse limit, using exponential backoff", {
+        header_value: header.slice(0, 100),
+        limit_seconds: RETRY_AFTER_PARSE_LIMIT_S,
+      });
+      return undefined;
+    }
+    return value;
   }
 
+  /**
+   * Compute the delay before the next retry attempt.
+   *
+   * - If the server sent a usable `Retry-After`, the value (converted
+   *   from seconds to ms) is honored without the `RETRY_MAX_DELAY_MS`
+   *   clamp — the cap exists to bound exponential backoff against
+   *   ourselves; clamping a server-asserted directive (e.g.
+   *   `Retry-After: 60`) down to 30s would just re-trip the rate limit.
+   *   `Retry-After: 0` is honored verbatim per RFC 7231 §7.1.3 ("retry
+   *   immediately").
+   * - Otherwise: `RETRY_BASE_DELAY_MS * 2^(attempt-1)` plus 0-50%
+   *   jitter, capped at `RETRY_MAX_DELAY_MS`.
+   */
   private retryDelay(attempt: number, lastError?: Error): number {
-    if (lastError instanceof QURLError && lastError.retryAfter) {
-      return Math.min(lastError.retryAfter * 1000, RETRY_MAX_DELAY_MS);
+    if (lastError instanceof QURLError && lastError.retryAfter !== undefined) {
+      const requestedMs = lastError.retryAfter * 1000;
+      if (requestedMs > RETRY_AFTER_HARD_CAP_MS) {
+        this.log("Retry-After exceeded hard cap, truncating", {
+          requested_seconds: lastError.retryAfter,
+          capped_ms: RETRY_AFTER_HARD_CAP_MS,
+        });
+        return RETRY_AFTER_HARD_CAP_MS;
+      }
+      return requestedMs;
     }
     const base = RETRY_BASE_DELAY_MS * Math.pow(2, attempt - 1);
     const jitter = Math.random() * base * 0.5;
