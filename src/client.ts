@@ -909,26 +909,14 @@ export class QURLClient {
           const json = (await response.json()) as ApiResponse<T>;
           return { ...json, http_status: response.status };
         } catch {
-          if (!isPassthrough) {
-            // Non-JSON body on a success (2xx) response. Wrap in a
-            // typed SDK error so consumers catching QURLError don't
-            // miss it — a raw SyntaxError has no status/code/detail.
-            this.log(`non-JSON body on success response ${response.status}`, {
-              status: response.status,
-              content_type: response.headers.get("content-type") ?? undefined,
-            });
-            throw createError({
-              status: response.status,
-              code: "unexpected_response",
-              title: response.statusText || `HTTP ${response.status}`,
-              detail: `Expected JSON response body on HTTP ${response.status} but received non-JSON content`,
-            });
-          }
-          // Non-JSON body on passthrough status (e.g. proxy HTML on 400).
-          // Synthesize a clean error — body stream is already consumed
-          // so we can't delegate to parseError.
+          // Non-JSON body on a 2xx response (server contract violation)
+          // or on a passthrough status (e.g. proxy HTML on 400). The
+          // body stream is already consumed by the failed `.json()`,
+          // so we can't delegate to parseError — synthesize a typed
+          // QURLError directly so consumers catching by-class don't
+          // miss it.
           this.log(
-            `non-JSON body on passthrough status ${response.status}; surfacing as QURLError`,
+            `non-JSON body on ${isPassthrough ? "passthrough" : "success"} response ${response.status}`,
             {
               status: response.status,
               content_type: response.headers.get("content-type") ?? undefined,
