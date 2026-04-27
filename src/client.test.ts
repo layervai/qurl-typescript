@@ -1627,6 +1627,31 @@ describe("QURLClient", () => {
     );
   });
 
+  it("resolve() rejects empty string and non-string/non-object input client-side", async () => {
+    // Symmetric with get/update/mintLink/delete: untyped-JS misuse must
+    // surface as ValidationError, not a confusing server-side 400 or
+    // a non-object body sent over the wire.
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+
+    for (const bad of ["", null, undefined, 42, true]) {
+      const error = await client
+        .resolve(bad as unknown as string)
+        .catch((e: unknown) => e as ValidationError);
+      expect(error).toBeInstanceOf(ValidationError);
+      expect((error as ValidationError).code).toBe(ERROR_CODE_CLIENT_VALIDATION);
+    }
+    // Object overload must reject empty / non-string access_token too.
+    for (const bad of [{}, { access_token: "" }, { access_token: 42 }]) {
+      const error = await client
+        .resolve(bad as unknown as Parameters<typeof client.resolve>[0])
+        .catch((e: unknown) => e as ValidationError);
+      expect(error).toBeInstanceOf(ValidationError);
+      expect((error as ValidationError).code).toBe(ERROR_CODE_CLIENT_VALIDATION);
+    }
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("throws QURLError on API errors", async () => {
     const fetch = mockFetch({
       status: 404,
@@ -4133,6 +4158,121 @@ describe("QURLClient", () => {
     });
     expect(result.failed).toBe(1);
     expect(result.request_id).toBe("req_batch_400_xyz");
+  });
+
+  it("batch create logs when request_id appears on BOTH data and meta with different values", async () => {
+    // Meta wins (canonical source per the type), but the divergence
+    // must be observable for operators chasing envelope-shape bugs.
+    const fetch = mockFetch({
+      status: 201,
+      body: {
+        data: {
+          succeeded: 1,
+          failed: 0,
+          request_id: "req_data_side",
+          results: [
+            {
+              index: 0,
+              success: true,
+              resource_id: "r_x",
+              qurl_link: "https://qurl.link/#at_x",
+              qurl_site: "https://r_x.qurl.site",
+            },
+          ],
+        },
+        meta: { request_id: "req_meta_side" },
+      },
+    });
+    const debugMessages: string[] = [];
+    const client = new QURLClient({
+      apiKey: "lv_live_test",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      debug: (msg) => {
+        debugMessages.push(msg);
+      },
+    });
+
+    const result = await client.batchCreate({
+      items: [{ target_url: "https://example.com" }],
+    });
+    // Meta wins.
+    expect(result.request_id).toBe("req_meta_side");
+    expect(debugMessages.some((m) => m.includes("BOTH data and meta"))).toBe(true);
+  });
+
+  it("batch create throws unexpected_response when an entry's index is out of range", async () => {
+    // Server contract violation: `index` must be in [0, items.length).
+    // A buggy proxy could attribute to a non-existent slot otherwise.
+    const fetch = mockFetch({
+      status: 201,
+      body: {
+        data: {
+          succeeded: 1,
+          failed: 0,
+          results: [
+            {
+              index: 999,
+              success: true,
+              resource_id: "r_x",
+              qurl_link: "https://qurl.link/#at_x",
+              qurl_site: "https://r_x.qurl.site",
+            },
+          ],
+        },
+        meta: { request_id: "req_oor" },
+      },
+    });
+    const client = createClient(fetch);
+
+    const error = await client
+      .batchCreate({ items: [{ target_url: "https://example.com" }] })
+      .catch((e: unknown) => e as ValidationError);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).code).toBe(ERROR_CODE_UNEXPECTED_RESPONSE);
+    expect((error as ValidationError).detail).toContain("index out of range");
+    expect((error as ValidationError).requestId).toBe("req_oor");
+  });
+
+  it("batch create throws unexpected_response when entries have duplicate index values", async () => {
+    // Per-item attribution silently breaks under duplicates. Fail closed.
+    const fetch = mockFetch({
+      status: 201,
+      body: {
+        data: {
+          succeeded: 2,
+          failed: 0,
+          results: [
+            {
+              index: 0,
+              success: true,
+              resource_id: "r_a",
+              qurl_link: "https://qurl.link/#at_a",
+              qurl_site: "https://r_a.qurl.site",
+            },
+            {
+              index: 0,
+              success: true,
+              resource_id: "r_b",
+              qurl_link: "https://qurl.link/#at_b",
+              qurl_site: "https://r_b.qurl.site",
+            },
+          ],
+        },
+        meta: { request_id: "req_dup" },
+      },
+    });
+    const client = createClient(fetch);
+
+    const error = await client
+      .batchCreate({
+        items: [{ target_url: "https://a.example.com" }, { target_url: "https://b.example.com" }],
+      })
+      .catch((e: unknown) => e as ValidationError);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).code).toBe(ERROR_CODE_UNEXPECTED_RESPONSE);
+    expect((error as ValidationError).detail).toContain("duplicate index");
+    expect((error as ValidationError).requestId).toBe("req_dup");
   });
 
   it("batch create logs when request_id appears on data only (meta absent)", async () => {

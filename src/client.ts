@@ -482,6 +482,7 @@ export class QURLClient {
       // (e.g. `[::1]`), browsers'/whatwg's also; compare both bracketed
       // and bare forms for robustness across runtimes.
       const host = parsedBaseUrl.hostname.toLowerCase();
+      // `0.0.0.0` is bind-all, not loopback — would route the bearer to any local listener.
       const isLoopback =
         host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]";
       if (!isLoopback) {
@@ -492,17 +493,9 @@ export class QURLClient {
     }
     this.baseUrl = rawBaseUrl;
     this.fetchFn = options.fetch ?? globalThis.fetch;
-    // Clamp `maxRetries` to a non-negative integer. A negative value
-    // would cause the retry loop `for (let attempt = 0; attempt <=
-    // this.maxRetries; attempt++)` to skip entirely — meaning ZERO
-    // attempts, not even the initial request. Clamping defends against
-    // that footgun while preserving the "0 = no retries, just the
-    // initial attempt" semantic that `DEFAULT_MAX_RETRIES = 3` relies on.
-    //
-    // `Number.isFinite` rules out NaN and ±Infinity. NaN is the real
-    // hazard — `Math.max(0, NaN) === NaN` and `n <= NaN` is false, so
-    // `maxRetries: NaN` (e.g. from a `parseInt` failure) would silently
-    // skip every attempt. Fall back to the default in that case.
+    // Clamp `maxRetries` to a non-negative integer. Negative values
+    // would skip the loop entirely (zero attempts, not just zero
+    // retries); NaN slips past `Math.max` so use `Number.isFinite`.
     const requestedMaxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
     this.maxRetries = Number.isFinite(requestedMaxRetries)
       ? Math.max(0, Math.floor(requestedMaxRetries))
@@ -612,7 +605,10 @@ export class QURLClient {
    * contain sensitive data (auth details, request echoes) and error
    * messages may end up in client-side logs.
    */
-  private validateBatchCreateResponse(envelope: ApiResponse<BatchCreateOutput>): BatchCreateOutput {
+  private validateBatchCreateResponse(
+    envelope: ApiResponse<BatchCreateOutput>,
+    requestItemCount: number,
+  ): BatchCreateOutput {
     const result = envelope.data;
     const statusSuffix =
       envelope.http_status !== undefined ? ` (HTTP ${envelope.http_status})` : "";
@@ -658,14 +654,11 @@ export class QURLClient {
 
     // Per-entry discriminated-union contract. Reason strings report
     // field NAMES only, never values — safe for observability pipelines.
-    // Also accumulate `index` values: a server bug returning duplicates
-    // breaks per-item attribution, so surface them via debug.
-    //
-    // Short-circuit on first bad entry (vs `validateCreateInput`'s
-    // collect-all): server-contract check, not user input — one
-    // violation is enough to file a bug, more risks leaking entry data.
+    // Short-circuit on first bad entry (server-contract check, not user
+    // input). `index` is bound to `[0, requestItemCount)` and de-duped:
+    // both are unambiguous server bugs that silently break per-item
+    // attribution, so fail closed to match this guard's posture.
     const seenIndices = new Set<number>();
-    const duplicateIndices: number[] = [];
     for (let i = 0; i < result.results.length; i++) {
       const reason = batchItemResultValidationReason(result.results[i]);
       if (reason !== null) {
@@ -675,22 +668,19 @@ export class QURLClient {
         );
       }
       const entry = result.results[i] as { index: number };
-      if (seenIndices.has(entry.index)) {
-        duplicateIndices.push(entry.index);
-      } else {
-        seenIndices.add(entry.index);
+      if (entry.index >= requestItemCount) {
+        throw unexpectedResponseError(
+          `Unexpected response shape from POST /v1/qurls/batch${statusSuffix}: results[${i}] index out of range (sent ${requestItemCount} items)${requestIdSuffix}`,
+          requestId,
+        );
       }
-    }
-
-    if (duplicateIndices.length > 0) {
-      this.log(
-        "batchCreate: response has duplicate index values (per-item attribution unreliable)",
-        {
-          duplicates: duplicateIndices,
-          results_length: result.results.length,
-          request_id: requestId,
-        },
-      );
+      if (seenIndices.has(entry.index)) {
+        throw unexpectedResponseError(
+          `Unexpected response shape from POST /v1/qurls/batch${statusSuffix}: results[${i}] duplicate index${requestIdSuffix}`,
+          requestId,
+        );
+      }
+      seenIndices.add(entry.index);
     }
 
     // Suspicious-but-shape-valid: empty results AND zero counts on a
@@ -823,7 +813,7 @@ export class QURLClient {
       input,
       BATCH_PASSTHROUGH_STATUSES,
     );
-    const result = this.validateBatchCreateResponse(envelope);
+    const result = this.validateBatchCreateResponse(envelope, input.items.length);
     // Attach the server request_id from the envelope meta without
     // mutating `result` (which is the parsed JSON body). Mirrors the
     // non-mutating style used elsewhere (e.g. `mapQurlsField`). In the
@@ -841,18 +831,10 @@ export class QURLClient {
     // field. The data-side variant would be a wire-format duplication
     // we don't want to silently honor.
     const requestId = envelope.meta?.request_id;
-    // Both-fields-present log: mirrors mapQurlsField's pattern. If
-    // the server ever puts request_id on both `data` and `meta`, the
-    // spread silently lets `meta` win — fine, but operators should
-    // see the divergence rather than discover it via support-ticket
-    // archaeology.
-    //
-    // When meta is absent, the `requestId !== undefined ? ...` ternary
-    // skips the spread and `result` passes through verbatim. If a
-    // future server places `request_id` only on `data`, that data-side
-    // value is preserved (we don't strip it) — meta is the canonical
-    // source per the type, but absent meta means absent canonical, and
-    // an over-eager strip would discard usable correlation data.
+    // Both-fields-present and data-only-present are both worth surfacing
+    // via debug — the former because meta wins silently, the latter
+    // because it suggests an envelope-shape transition. Data-side value
+    // is preserved when meta is absent (no over-eager strip).
     const dataRequestId = (result as { request_id?: unknown }).request_id;
     if (dataRequestId !== undefined) {
       const dataRequestIdRepr = String(dataRequestId).slice(0, 80);
@@ -1185,7 +1167,23 @@ export class QURLClient {
    * Accepts a plain token string or a `ResolveInput` object.
    */
   async resolve(input: ResolveInput | string): Promise<ResolveOutput> {
-    const body = typeof input === "string" ? { access_token: input } : input;
+    // Mirror get/update/mintLink: catch untyped-JS misuse client-side.
+    let body: ResolveInput;
+    if (typeof input === "string") {
+      if (input.length === 0) {
+        throw clientValidationError("resolve: access_token must be a non-empty string");
+      }
+      body = { access_token: input };
+    } else if (typeof input === "object" && input !== null) {
+      if (typeof input.access_token !== "string" || input.access_token.length === 0) {
+        throw clientValidationError("resolve: access_token must be a non-empty string");
+      }
+      body = input;
+    } else {
+      throw clientValidationError(
+        `resolve: input must be a string or { access_token } object (got ${input === null ? "null" : typeof input})`,
+      );
+    }
     return this.request<ResolveOutput>("POST", "/v1/resolve", body);
   }
 
