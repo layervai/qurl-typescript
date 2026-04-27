@@ -106,6 +106,35 @@ describe("QURLClient", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("validateCreateInput collects ALL field errors (not fail-fast)", async () => {
+    // Documented batchCreate UX: "All failures are collected into a
+    // single ValidationError" — must hold per-item too. Previously
+    // requireValidTargetUrl threw first and hid the label/max_sessions
+    // failures, so a caller fixing a bad batch had to fix one issue,
+    // re-run, fix the next, re-run... Now every check runs and the
+    // detail aggregates `; `-separated.
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+    const client = createClient(fetch);
+
+    const error = await client
+      .create({
+        target_url: "ftp://nope.com", // bad scheme
+        label: "x".repeat(501), // too long
+        custom_domain: "x".repeat(254), // too long
+        max_sessions: 9999, // out of range
+      })
+      .catch((e: unknown) => e as ValidationError);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).code).toBe("client_validation");
+    const detail = (error as ValidationError).detail;
+    // All four failures must appear in the aggregated detail.
+    expect(detail).toContain("target_url");
+    expect(detail).toContain("label");
+    expect(detail).toContain("custom_domain");
+    expect(detail).toContain("max_sessions");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("create rejects max_sessions above 1000", async () => {
     const fetch = mockFetch({ status: 201, body: { data: {} } });
     const client = createClient(fetch);
@@ -1991,6 +2020,65 @@ describe("QURLClient", () => {
     }
   });
 
+  it("does not clamp Retry-After against RETRY_MAX_DELAY_MS (server directive wins)", async () => {
+    // RFC 7231 §7.1.3 — when the server tells us 60s, retrying at 30s
+    // (the exponential-backoff cap) just re-trips the rate limit.
+    // The server-supplied path bypasses the clamp; only the local
+    // exponential-backoff branch is capped.
+    vi.useFakeTimers();
+    try {
+      const retryAfter60 = {
+        ok: false,
+        status: 429,
+        statusText: "Too Many Requests",
+        headers: new Headers({ "Retry-After": "60" }),
+        json: () =>
+          Promise.resolve({
+            error: { title: "Rate Limited", status: 429, detail: "x", code: "rate_limited" },
+          }),
+        text: () => Promise.resolve(""),
+      } satisfies Partial<Response> as Response;
+
+      const successResponse = {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        headers: new Headers({}),
+        json: () =>
+          Promise.resolve({
+            data: { plan: "growth", period_start: "2026-03-01", period_end: "2026-04-01" },
+          }),
+        text: () => Promise.resolve(""),
+      } satisfies Partial<Response> as Response;
+
+      const fetch = vi
+        .fn()
+        .mockResolvedValueOnce(retryAfter60)
+        .mockResolvedValueOnce(successResponse);
+
+      const client = new QURLClient({
+        apiKey: "lv_live_test",
+        baseUrl: "https://api.test.layerv.ai",
+        fetch: fetch as typeof globalThis.fetch,
+        maxRetries: 1,
+      });
+
+      const promise = client.getQuota();
+      // Advance past the local cap (30s) but short of the server-asked
+      // 60s. If the SDK clamped the server directive, the retry would
+      // already have fired by now.
+      await vi.advanceTimersByTimeAsync(35_000);
+      expect(fetch).toHaveBeenCalledTimes(1);
+      // Now advance past the server directive — retry should fire.
+      await vi.advanceTimersByTimeAsync(30_000);
+      const result = await promise;
+      expect(fetch).toHaveBeenCalledTimes(2);
+      expect(result.plan).toBe("growth");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("clamps negative maxRetries to 0 (defensive against caller misuse)", async () => {
     // A negative maxRetries would cause the retry loop
     //   for (let attempt = 0; attempt <= this.maxRetries; attempt++)
@@ -2110,27 +2198,58 @@ describe("QURLClient", () => {
           apiKey: "lv_live_test",
           baseUrl: "ftp://api.example.com",
         }),
-    ).toThrow(/baseUrl: must use https:\/\//);
+    ).toThrow(/baseUrl: must use http:\/\/ or https:\/\//);
   });
 
-  it("allows http://localhost and http://127.0.0.1 baseUrl for local development", async () => {
+  it("rejects loopback-prefix bypass attempts in baseUrl", async () => {
+    // Security regression guard: a `startsWith("http://localhost")`
+    // implementation would accept `http://localhost.attacker.com` and
+    // silently send the bearer token in plaintext to an arbitrary
+    // host. The hostname-based check (URL parser + exact match)
+    // closes this. Cover IPv4, IPv6, and name-based variants.
+    const bypassAttempts = [
+      "http://localhost.evil.com",
+      "http://localhostfoo",
+      "http://localhost-evil",
+      "http://127.0.0.1.evil.com",
+      "http://127.0.0.1evil",
+      "http://[::1].evil.com",
+    ];
+    for (const bad of bypassAttempts) {
+      expect(
+        () => new QURLClient({ apiKey: "lv_live_test", baseUrl: bad }),
+        `bypass attempt should be rejected: ${bad}`,
+      ).toThrow(/baseUrl/);
+    }
+  });
+
+  it("rejects malformed baseUrl with a structured ValidationError", async () => {
+    // A URL that fails to parse at construction time should surface
+    // as a ValidationError, not a raw TypeError from `new URL()`.
+    expect(
+      () =>
+        new QURLClient({
+          apiKey: "lv_live_test",
+          baseUrl: "not a url at all",
+        }),
+    ).toThrow(/baseUrl: must be a valid URL/);
+  });
+
+  it("allows http://localhost, 127.0.0.1, and [::1] baseUrl for local development", async () => {
     // The escape hatch — keeps the SDK usable against a non-TLS
     // dev server without forcing every test harness to spin up TLS.
-    expect(
-      () =>
-        new QURLClient({
-          apiKey: "lv_live_test",
-          baseUrl: "http://localhost:8080",
-        }),
-    ).not.toThrow();
-
-    expect(
-      () =>
-        new QURLClient({
-          apiKey: "lv_live_test",
-          baseUrl: "http://127.0.0.1:3000",
-        }),
-    ).not.toThrow();
+    // Covers IPv4, IPv6, and name-based loopback.
+    for (const allowed of [
+      "http://localhost:8080",
+      "http://127.0.0.1:3000",
+      "http://[::1]:9000",
+      "http://localhost",
+    ]) {
+      expect(
+        () => new QURLClient({ apiKey: "lv_live_test", baseUrl: allowed }),
+        `loopback should be allowed: ${allowed}`,
+      ).not.toThrow();
+    }
   });
 
   // --- Error subclass mapping ---

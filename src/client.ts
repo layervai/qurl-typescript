@@ -45,11 +45,24 @@ const LIST_PARAM_KEYS = [
   "expires_after",
 ] as const satisfies readonly (keyof ListInput)[];
 
-// Compile-time completeness check: fails if a new key is added to ListInput
-// but not to LIST_PARAM_KEYS. `satisfies` alone only validates that entries
-// are valid keys, not that every key is listed — this plugs that gap.
-// `assertExhaustive` accepts the witness only when it narrows to `true`,
-// so a missing key flips the witness to `never` and fails compilation.
+// `assertExhaustive` is a compile-time witness: it accepts a value
+// only when its type parameter narrows to the literal `true`. Used
+// below (and for UPDATE_FIELD_KEYS / MINT_FIELD_KEYS) to verify that
+// each `*_KEYS` allowlist covers every key of the corresponding
+// `*Input` interface. The trick:
+//
+//   Exclude<keyof ListInput, (typeof LIST_PARAM_KEYS)[number]>
+//
+// is `never` when LIST_PARAM_KEYS already names every key in
+// ListInput, so the witness narrows to `true` and the call type-
+// checks. Add a key to ListInput without updating LIST_PARAM_KEYS
+// and the Exclude<> result becomes the missing key name (a string
+// literal), the witness narrows to `never`, and the `(true)`
+// argument fails to assign — surfacing the drift at compile time.
+//
+// `satisfies readonly (keyof ListInput)[]` on the array catches the
+// other direction (a key listed that isn't on ListInput), so the
+// pair is bidirectional drift detection without runtime cost.
 function assertExhaustive<T extends true>(_: T): void {
   /* type-only check */
 }
@@ -259,11 +272,31 @@ function requireValidTargetUrl(target_url: unknown): void {
 }
 
 function validateCreateInput(input: CreateInput): void {
-  requireValidTargetUrl(input.target_url);
-  requireMaxLength(input.target_url, "target_url", MAX_TARGET_URL);
-  requireMaxLength(input.label, "label", MAX_LABEL);
-  requireMaxLength(input.custom_domain, "custom_domain", MAX_CUSTOM_DOMAIN);
-  requireMaxSessionsInRange(input.max_sessions);
+  // Collect-all: run every validator and aggregate the messages so a
+  // caller fixing multiple bad fields sees them all at once instead
+  // of fix-re-run-repeat. Matches the documented batchCreate UX
+  // ("All failures are collected into a single ValidationError")
+  // and mirrors the requireValidTags collect-all pattern.
+  const errors: string[] = [];
+  const collect = (fn: () => void): void => {
+    try {
+      fn();
+    } catch (err) {
+      if (err instanceof ValidationError) {
+        errors.push(err.detail);
+        return;
+      }
+      throw err;
+    }
+  };
+  collect(() => requireValidTargetUrl(input.target_url));
+  collect(() => requireMaxLength(input.target_url, "target_url", MAX_TARGET_URL));
+  collect(() => requireMaxLength(input.label, "label", MAX_LABEL));
+  collect(() => requireMaxLength(input.custom_domain, "custom_domain", MAX_CUSTOM_DOMAIN));
+  collect(() => requireMaxSessionsInRange(input.max_sessions));
+  if (errors.length > 0) {
+    throw clientValidationError(errors.join("; "));
+  }
   // Intentional omission: `expires_in` and `session_duration` are
   // duration strings ("5m", "24h", "7d", "1w"). The spec documents
   // plan-dependent min/max bounds and a specific unit grammar, but
@@ -386,20 +419,39 @@ export class QURLClient {
     }
     this.apiKey = options.apiKey;
     const rawBaseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
-    // Reject http:// to prevent the bearer token from being sent in the
-    // clear over a typo'd or downgraded base URL. `http://localhost`,
-    // `http://127.0.0.1`, and `http://[::1]` are exempted as the
-    // conventional escape hatch for local development against a non-TLS
-    // test server (IPv4 + IPv6 + name-based loopback).
-    if (
-      !rawBaseUrl.startsWith("https://") &&
-      !rawBaseUrl.startsWith("http://localhost") &&
-      !rawBaseUrl.startsWith("http://127.0.0.1") &&
-      !rawBaseUrl.startsWith("http://[::1]")
-    ) {
+    // Parse the URL so the loopback exemption matches on the hostname,
+    // not a string prefix. `startsWith("http://localhost")` would
+    // accept `http://localhost.attacker.com` and silently send the
+    // bearer token in plaintext to an arbitrary host — exactly what
+    // this guard is meant to prevent.
+    let parsedBaseUrl: URL;
+    try {
+      parsedBaseUrl = new URL(rawBaseUrl);
+    } catch {
       throw clientValidationError(
-        `baseUrl: must use https:// scheme (got ${JSON.stringify(rawBaseUrl).slice(0, 60)})`,
+        `baseUrl: must be a valid URL (got ${JSON.stringify(rawBaseUrl).slice(0, 60)})`,
       );
+    }
+    // `URL.hostname` strips IPv6 brackets, so the canonical loopback
+    // forms compared here are bracket-free. Reject any non-http/https
+    // scheme outright (ftp://, file://, javascript:, ...).
+    if (parsedBaseUrl.protocol !== "http:" && parsedBaseUrl.protocol !== "https:") {
+      throw clientValidationError(
+        `baseUrl: must use http:// or https:// scheme (got ${JSON.stringify(rawBaseUrl).slice(0, 60)})`,
+      );
+    }
+    if (parsedBaseUrl.protocol === "http:") {
+      // Node's `URL.hostname` returns IPv6 hosts WITH brackets
+      // (e.g. `[::1]`), browsers'/whatwg's also; compare both bracketed
+      // and bare forms for robustness across runtimes.
+      const host = parsedBaseUrl.hostname.toLowerCase();
+      const isLoopback =
+        host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]";
+      if (!isLoopback) {
+        throw clientValidationError(
+          `baseUrl: must use https:// scheme (got ${JSON.stringify(rawBaseUrl).slice(0, 60)})`,
+        );
+      }
     }
     this.baseUrl = rawBaseUrl;
     this.fetchFn = options.fetch ?? globalThis.fetch;
@@ -1167,12 +1219,21 @@ export class QURLClient {
     return seconds;
   }
 
+  /**
+   * Compute the delay before the next retry attempt.
+   *
+   * - If the server sent a usable `Retry-After`, that value (in ms) is
+   *   honored without the `RETRY_MAX_DELAY_MS` clamp — the cap exists
+   *   to bound exponential backoff against ourselves; clamping a
+   *   server-asserted directive (e.g. `Retry-After: 60`) down to 30s
+   *   would just re-trip the rate limit. `Retry-After: 0` is honored
+   *   verbatim per RFC 7231 §7.1.3 ("retry immediately").
+   * - Otherwise: `RETRY_BASE_DELAY_MS * 2^(attempt-1)` plus 0-50%
+   *   jitter, capped at `RETRY_MAX_DELAY_MS`.
+   */
   private retryDelay(attempt: number, lastError?: Error): number {
-    // `!== undefined` (not truthy) so `Retry-After: 0` — legal per RFC
-    // 7231 §7.1.3, meaning "retry immediately" — is honored instead of
-    // falling through to the exponential-backoff branch.
     if (lastError instanceof QURLError && lastError.retryAfter !== undefined) {
-      return Math.min(lastError.retryAfter * 1000, RETRY_MAX_DELAY_MS);
+      return lastError.retryAfter * 1000;
     }
     const base = RETRY_BASE_DELAY_MS * Math.pow(2, attempt - 1);
     const jitter = Math.random() * base * 0.5;

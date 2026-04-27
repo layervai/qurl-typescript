@@ -49,6 +49,12 @@ export interface AccessToken {
  * **`description` is set via {@link UpdateInput}, not on create.** The API
  * uses `label` on create (a token-level label) and `description` on the
  * resource itself. See the JSDoc on {@link CreateInput} for details.
+ *
+ * **`qurl_link` is delivered exactly once.** It appears on
+ * {@link CreateOutput} (`POST /v1/qurls`) and {@link MintOutput}
+ * (`POST /v1/qurls/{id}/mint_link`) but is *not* on this read-side
+ * shape — `get()` and `list()` cannot recover the link. Persist it at
+ * create or mint time; if you lose it, mint a new one.
  */
 export interface QURL {
   resource_id: string;
