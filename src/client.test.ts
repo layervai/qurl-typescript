@@ -1594,34 +1594,41 @@ describe("QURLClient", () => {
     expect(dropLog).toBeDefined();
   });
 
-  it("mapQurlsField logs when `qurls` is bare null (without access_tokens)", async () => {
-    const fetch = mockFetch({
-      status: 200,
-      body: {
-        data: {
-          resource_id: "r_null",
-          target_url: "https://example.com",
-          status: "active",
-          qurls: null,
+  it.each([
+    { label: "null", qurls: null, needle: "was null", branch: "null" },
+    { label: "undefined", qurls: undefined, needle: "was undefined", branch: "undefined" },
+  ])(
+    "mapQurlsField logs when own-property `qurls` is $label",
+    async ({ qurls, needle, branch }) => {
+      const fetch = mockFetch({
+        status: 200,
+        body: {
+          data: {
+            resource_id: "r_x",
+            target_url: "https://example.com",
+            status: "active",
+            qurls,
+          },
         },
-      },
-    });
-    const debugFn = vi.fn();
-    const client = new QURLClient({
-      apiKey: "lv_live_test",
-      baseUrl: "https://api.test.layerv.ai",
-      fetch,
-      maxRetries: 0,
-      debug: debugFn,
-    });
+      });
+      const debugFn = vi.fn();
+      const client = new QURLClient({
+        apiKey: "lv_live_test",
+        baseUrl: "https://api.test.layerv.ai",
+        fetch,
+        maxRetries: 0,
+        debug: debugFn,
+      });
 
-    const result = await client.get("r_null");
-    expect((result as { qurls?: unknown }).qurls).toBeUndefined();
-    const log = debugFn.mock.calls.find(
-      (c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("was null"),
-    );
-    expect(log).toBeDefined();
-  });
+      const result = await client.get("r_x");
+      expect((result as { qurls?: unknown }).qurls).toBeUndefined();
+      const log = debugFn.mock.calls.find(
+        (c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes(needle),
+      );
+      expect(log).toBeDefined();
+      expect(log![1]).toEqual({ branch });
+    },
+  );
 
   it("parseError synthesizes a title from HTTP status when statusText is empty (HTTP/2)", async () => {
     // HTTP/2 omits reason-phrases — fallback must keep Error.message legible.
@@ -1696,6 +1703,29 @@ describe("QURLClient", () => {
       expect((error as ValidationError).code).toBe(ERROR_CODE_CLIENT_VALIDATION);
     }
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("resolve() allowlist-rebuilds the body — extra keys from untyped-JS callers don't leak", async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: { data: { target_url: "https://example.com", resource_id: "r_x" } },
+    });
+    const client = createClient(fetch);
+
+    // `["__proto__"]` (computed/quoted key) creates an own property
+    // — bare `__proto__:` would set the prototype, which JSON.stringify
+    // already drops, so it wouldn't actually exercise the allowlist.
+    const widerPayload = {
+      access_token: "at_token123",
+      apiKey: "lv_live_oops",
+      arbitrary: "field",
+      ["__proto__"]: "should-not-leak",
+    };
+    await client.resolve(widerPayload as unknown as Parameters<typeof client.resolve>[0]);
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const body = JSON.parse((fetch.mock.calls[0][1] as RequestInit).body as string);
+    expect(body).toEqual({ access_token: "at_token123" });
   });
 
   it("throws QURLError on API errors", async () => {

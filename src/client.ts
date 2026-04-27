@@ -60,6 +60,8 @@ const LIST_PARAM_KEYS = [
   "expires_after",
 ] as const satisfies readonly (keyof ListInput)[];
 
+const NUMERIC_LIST_KEYS: ReadonlySet<keyof ListInput> = new Set(["limit"]);
+
 // Compile-time witness: `Exclude<keyof X, (typeof KEYS)[number]>` is
 // `never` iff KEYS lists every key of X. Paired with the
 // `satisfies readonly (keyof X)[]` clause on the array (which catches
@@ -224,6 +226,7 @@ function requireNonEmptyId(id: string, method: string): void {
 
 function requireValidTags(tags: string[] | null | undefined): void {
   // null tolerance for untyped-JS callers — treated as "don't touch."
+  // Duplicates pass through to the server (authoritative on dedupe policy).
   if (tags === undefined || tags === null) return;
   if (!Array.isArray(tags)) {
     throw clientValidationError(`tags: must be an array of strings (got ${typeof tags})`);
@@ -562,7 +565,12 @@ export class QURLClient {
       this.log("mapQurlsField: 'qurls' was null; dropping", { branch: "null" });
       return rest;
     }
-    if (qurls && !rest.access_tokens) {
+    if (qurls === undefined) {
+      // Symmetric with null / non-array branches.
+      this.log("mapQurlsField: 'qurls' was undefined; dropping", { branch: "undefined" });
+      return rest;
+    }
+    if (!rest.access_tokens) {
       return { ...rest, access_tokens: qurls };
     }
     if (qurls && rest.access_tokens) {
@@ -892,7 +900,6 @@ export class QURLClient {
     // so untyped-JS callers passing `cursor: 42` (or worse,
     // `q: ["foo", "bar"]`) get a structured ValidationError instead
     // of silently coercing to `"42"` / `"foo,bar"`.
-    const NUMERIC_LIST_KEYS: ReadonlySet<keyof ListInput> = new Set(["limit"]);
     for (const key of LIST_PARAM_KEYS) {
       const value = input[key];
       // Drop null/undefined and empty strings — an empty string from
@@ -943,8 +950,10 @@ export class QURLClient {
       }
       previousCursor = cursor;
       cursor = page.next_cursor;
-      // Stale-cursor guard: if the server returns the same cursor
-      // twice (a server bug), break instead of looping forever.
+      // Stale-cursor guard: catches CONSECUTIVE duplicates only —
+      // an A→B→A→B oscillation would still loop. Tracking the full
+      // history would grow unboundedly on long paginations; the
+      // common server-bug shape is a stuck cursor, which this catches.
       if (cursor && cursor === previousCursor) {
         this.log(
           `listAll: server returned duplicate cursor "${cursor}", terminating to prevent infinite loop`,
@@ -1057,6 +1066,9 @@ export class QURLClient {
         `update: at least one field (${UPDATE_FIELD_KEYS.join(", ")}) must be provided`,
       );
     }
+    // Per-field validators run after the empty-input guard so the
+    // cheap binary check short-circuits first; order is correctness-neutral
+    // (`requireMaxLength(undefined, …)` is a no-op).
     requireMaxLength(normalized.description, "description", MAX_DESCRIPTION);
     requireValidTags(normalized.tags);
     const raw = await this.request<QURL & { qurls?: AccessToken[] }>(
@@ -1149,7 +1161,8 @@ export class QURLClient {
       if (typeof input.access_token !== "string" || input.access_token.length === 0) {
         throw clientValidationError("resolve: access_token must be a non-empty string");
       }
-      body = input;
+      // Allowlist-rebuild — symmetric with list()/update()/mintLink().
+      body = { access_token: input.access_token };
     } else {
       throw clientValidationError(
         `resolve: input must be a string or { access_token } object (got ${input === null ? "null" : typeof input})`,
