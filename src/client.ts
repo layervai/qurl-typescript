@@ -156,7 +156,7 @@ function requireMaxSessionsInRange(value: number | undefined): void {
 
 /**
  * Validates that an ID argument is a non-empty string. Endpoints that
- * accept resource or QURL display IDs (`get`, `update`, `extend`,
+ * accept resource or qURL display IDs (`get`, `update`, `extend`,
  * `mintLink`) use this to catch empty strings early — without it,
  * `encodeURIComponent("")` returns `""` and the path collapses
  * (e.g. `GET /v1/qurls/` hits the list endpoint, not get).
@@ -572,6 +572,13 @@ export class QURLClient {
    * ```
    */
   async batchCreate(input: BatchCreateInput): Promise<BatchCreateOutput> {
+    // Untyped-JS safety: the rest of the validators (requireValidTags,
+    // requireMaxLength, etc.) all surface a structured ValidationError
+    // for non-conforming inputs. Without this guard, `batchCreate({} as
+    // any)` would throw a raw TypeError on `.length`. Match the pattern.
+    if (!input || !Array.isArray(input.items)) {
+      throw clientValidationError("batchCreate: items must be an array");
+    }
     // Size checks are fail-fast (binary, no useful aggregation), per-item
     // validation below is collect-all (multiple bad items aggregate into
     // one throw). The asymmetry is deliberate: there's nothing to combine
@@ -634,9 +641,9 @@ export class QURLClient {
   }
 
   /**
-   * Get a QURL resource and its access tokens.
+   * Get a qURL resource and its access tokens.
    *
-   * Accepts either a resource ID (`r_` prefix) or a QURL display ID (`q_`
+   * Accepts either a resource ID (`r_` prefix) or a qURL display ID (`q_`
    * prefix); the API resolves `q_` IDs to the parent resource automatically.
    */
   async get(id: string): Promise<QURL> {
@@ -685,9 +692,19 @@ export class QURLClient {
       // garbage that the API might interpret as an explicit empty
       // filter. Non-zero numerics are preserved (serialize as their
       // string form); `limit` is validated separately above.
-      if (value !== null && value !== undefined && value !== "") {
-        params.set(key, String(value));
+      if (value === null || value === undefined || value === "") continue;
+      // Reject non-string/number values explicitly. `String(["a","b"])`
+      // produces `"a,b"` (which accidentally matches `status`'s CSV
+      // form but means nothing for `q` / `sort` / dates), and
+      // `String({})` produces `"[object Object]"` — both leak garbage
+      // through the type system from untyped-JS callers. Surface a
+      // structured ValidationError instead.
+      if (typeof value !== "string" && typeof value !== "number") {
+        throw clientValidationError(
+          `${key}: must be a string or number (got ${value === null ? "null" : typeof value})`,
+        );
       }
+      params.set(key, String(value));
     }
 
     const query = params.toString();
@@ -783,7 +800,7 @@ export class QURLClient {
   /**
    * Extend a qURL's expiration.
    *
-   * Accepts either a resource ID (`r_` prefix) or a QURL display ID (`q_`
+   * Accepts either a resource ID (`r_` prefix) or a qURL display ID (`q_`
    * prefix). Convenience method — delegates to {@link update} with only the
    * expiration fields. `ExtendInput` shares its `extend_by` / `expires_at`
    * fields with `UpdateInput` but is *narrower in two ways*: (1) exactly
@@ -872,6 +889,12 @@ export class QURLClient {
     if (normalized !== undefined) {
       requireMaxLength(normalized.label, "label", MAX_LABEL);
       requireMaxSessionsInRange(normalized.max_sessions);
+      // `session_duration` and `expires_in` are intentionally NOT
+      // validated client-side here, even though the JSDoc on MintInput
+      // documents min-5m / max-24h bounds. Same rationale as
+      // validateCreateInput: duration grammar lives server-side, and
+      // duplicating it as a regex risks drift. Don't add a half-baked
+      // client-side duration parser without a strong case.
     }
     return this.request<MintOutput>(
       "POST",

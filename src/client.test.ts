@@ -292,7 +292,7 @@ describe("QURLClient", () => {
     // ONLY for length-zero strings — so the in-check correctly preserves
     // `[]` while a `if (raw.qurls)` would fall through to the no-rename
     // path and leave the consumer staring at `qurls: []` on a typed
-    // QURL where they expected `access_tokens: []`.
+    // qURL resource where they expected `access_tokens: []`.
     const fetch = mockFetch({
       status: 200,
       body: {
@@ -1303,7 +1303,7 @@ describe("QURLClient", () => {
           type: "https://api.qurl.link/problems/not_found",
           title: "Not Found",
           status: 404,
-          detail: "QURL not found",
+          detail: "qURL not found",
           instance: "/v1/qurls/r_notfound0000",
           code: "not_found",
         },
@@ -1660,6 +1660,61 @@ describe("QURLClient", () => {
 
     expect(quota.usage?.active_qurls_percent).toBeNull();
     expect(quota.rate_limits?.max_active_qurls).toBe(-1);
+  });
+
+  it("handles partial Quota responses (rate_limits and usage absent)", async () => {
+    // Locks in the type contract: Quota.rate_limits and Quota.usage
+    // are both optional (older deployments / partial responses /
+    // plan-tier variation may omit them). Inner fields are also
+    // optional so consumers must guard each one — calling
+    // `quota.rate_limits.max_expiry_seconds` directly on this response
+    // would have been `undefined` at runtime under the previous types,
+    // and a typed consumer would not have known to guard it.
+    const fetch = mockFetch({
+      status: 200,
+      body: {
+        data: {
+          plan: "free",
+          period_start: "2026-03-01T00:00:00Z",
+          period_end: "2026-04-01T00:00:00Z",
+        },
+      },
+    });
+
+    const client = createClient(fetch);
+    const quota = await client.getQuota();
+
+    expect(quota.plan).toBe("free");
+    expect(quota.rate_limits).toBeUndefined();
+    expect(quota.usage).toBeUndefined();
+  });
+
+  it("handles partial Quota responses (rate_limits / usage with subset of fields)", async () => {
+    // Locks in the inner-fields-optional contract: a partial
+    // rate_limits or usage object (missing some inner fields) must
+    // parse cleanly. The optional inner fields force consumers to
+    // guard each access individually rather than trusting the parent's
+    // presence to imply the full inner shape.
+    const fetch = mockFetch({
+      status: 200,
+      body: {
+        data: {
+          plan: "growth",
+          period_start: "2026-03-01T00:00:00Z",
+          period_end: "2026-04-01T00:00:00Z",
+          rate_limits: { create_per_minute: 10 },
+          usage: { qurls_created: 5 },
+        },
+      },
+    });
+
+    const client = createClient(fetch);
+    const quota = await client.getQuota();
+
+    expect(quota.rate_limits?.create_per_minute).toBe(10);
+    expect(quota.rate_limits?.max_expiry_seconds).toBeUndefined();
+    expect(quota.usage?.qurls_created).toBe(5);
+    expect(quota.usage?.active_qurls).toBeUndefined();
   });
 
   it("passes AbortSignal.timeout to fetch", async () => {
@@ -2064,7 +2119,7 @@ describe("QURLClient", () => {
     const fetch = mockFetch({
       status: 404,
       body: {
-        error: { title: "Not Found", status: 404, detail: "QURL not found", code: "not_found" },
+        error: { title: "Not Found", status: 404, detail: "qURL not found", code: "not_found" },
       },
     });
     const client = createClient(fetch);
@@ -3038,6 +3093,36 @@ describe("QURLClient", () => {
     expect(calledUrl).not.toContain("sort=");
   });
 
+  it("list rejects non-string/number filter values (untyped-JS safety)", async () => {
+    // Regression guard: `String(value)` previously coerced anything
+    // — `["a","b"]` became `"a,b"` (which accidentally matched `status`
+    // CSV form but means nothing for `q` / `sort` / dates), and `{}`
+    // became `"[object Object]"`. Both leak garbage into the query
+    // string from untyped-JS callers spreading wider objects. The
+    // allowlist loop now rejects non-string/number values explicitly.
+    const fetch = mockFetch({
+      status: 200,
+      body: { data: [], meta: { has_more: false } },
+    });
+    const client = createClient(fetch);
+
+    for (const [key, value] of [
+      ["q", ["foo", "bar"]],
+      ["sort", { fieldName: "created_at" }],
+      ["cursor", true],
+    ] as const) {
+      const error = await client
+        .list({ [key]: value } as unknown as Parameters<typeof client.list>[0])
+        .catch((e: unknown) => e as ValidationError);
+      expect(error).toBeInstanceOf(ValidationError);
+      expect((error as ValidationError).code).toBe("client_validation");
+      const detail = (error as ValidationError).detail;
+      expect(detail).toContain(key);
+      expect(detail).toContain("must be a string or number");
+    }
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("list() with no arguments hits /v1/qurls with no query string", async () => {
     // Regression guard for the default-parameter path: calling
     // `client.list()` with zero arguments must behave identically
@@ -3091,6 +3176,28 @@ describe("QURLClient", () => {
     expect((error as ValidationError).status).toBe(0);
     expect((error as ValidationError).code).toBe("client_validation");
     expect((error as ValidationError).detail).toContain("at least 1 item");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("batchCreate rejects non-array items with structured ValidationError (untyped-JS safety)", async () => {
+    // Regression guard: without the Array.isArray pre-check, an untyped
+    // JS caller passing `{}` / `{ items: undefined }` / `null` would
+    // hit a raw TypeError on `input.items.length`. batchCreate is the
+    // new public surface — programmatic helpers building items can
+    // produce undefined once and would otherwise swallow the SDK's
+    // structured error contract. Match the typeof-guard pattern used
+    // by the rest of the validators.
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+    const client = createClient(fetch);
+
+    for (const badInput of [{}, { items: undefined }, { items: null }, { items: "nope" }, null]) {
+      const error = await client
+        .batchCreate(badInput as unknown as { items: CreateInput[] })
+        .catch((e: unknown) => e as ValidationError);
+      expect(error).toBeInstanceOf(ValidationError);
+      expect((error as ValidationError).code).toBe("client_validation");
+      expect((error as ValidationError).detail).toContain("items must be an array");
+    }
     expect(fetch).not.toHaveBeenCalled();
   });
 

@@ -141,6 +141,17 @@ const STATUS_ERROR_MAP: Record<number, new (data: QURLErrorData) => QURLError> =
 
 /** Create the appropriate QURLError subclass for an HTTP status code. */
 export function createError(data: QURLErrorData): QURLError {
+  // Route by code first for SDK-internal failure modes that aren't a
+  // function of the HTTP status. `unexpected_response` is the canonical
+  // case: a 200 body with malformed JSON, a 500 body that isn't an
+  // error envelope, and a 400 body that isn't a batch result are all
+  // the same SDK failure (server returned a shape we can't interpret).
+  // Routing them all to `ValidationError` keeps `instanceof
+  // ValidationError` complete for code === "unexpected_response", as
+  // documented on the class.
+  if (data.code === "unexpected_response") {
+    return new ValidationError(data);
+  }
   if (data.status >= 500) {
     return new ServerError(data);
   }

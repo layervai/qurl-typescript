@@ -254,20 +254,34 @@ export interface Quota {
   plan: "free" | "growth" | "enterprise" | (string & {});
   period_start: string;
   period_end: string;
+  /**
+   * Rate limit configuration. The parent is optional (older API
+   * deployments and partial responses may omit it entirely), and
+   * every inner field is also optional — if a future plan tier
+   * exposes only a subset of limits, consumers must guard each
+   * field individually rather than trusting `rate_limits` to
+   * imply the full shape.
+   */
   rate_limits?: {
-    create_per_minute: number;
-    create_per_hour: number;
-    list_per_minute: number;
-    resolve_per_minute: number;
-    max_active_qurls: number;
-    max_tokens_per_qurl: number;
-    max_expiry_seconds: number;
+    create_per_minute?: number;
+    create_per_hour?: number;
+    list_per_minute?: number;
+    resolve_per_minute?: number;
+    max_active_qurls?: number;
+    max_tokens_per_qurl?: number;
+    max_expiry_seconds?: number;
   };
+  /**
+   * Usage snapshot. Same optional-parent + optional-fields shape as
+   * {@link rate_limits}: a partial response (e.g. `{ data: { plan } }`
+   * with no usage at all) is valid, and individual usage counters
+   * may be absent on plans that don't track them.
+   */
   usage?: {
-    qurls_created: number;
-    active_qurls: number;
-    active_qurls_percent: number | null;
-    total_accesses: number;
+    qurls_created?: number;
+    active_qurls?: number;
+    active_qurls_percent?: number | null;
+    total_accesses?: number;
   };
 }
 
