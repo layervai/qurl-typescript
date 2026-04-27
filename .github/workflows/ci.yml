@@ -23,6 +23,7 @@ jobs:
       - run: npm run lint
       - run: npm run format:check
       - run: npm test
+      - run: npm run smoke:dist
 
   notify:
     name: Notify
@@ -65,7 +66,7 @@ jobs:
             *) TRIGGER_TEXT="$GH_EVENT_NAME" ;;
           esac
 
-          HEADER="QURL TypeScript SDK Build"
+          HEADER="qURL TypeScript SDK Build"
           case "$TEST_RESULT" in
             success)  COLOR="#36a64f"; EMOJI=":white_check_mark:"; STATUS_TEXT="successful" ;;
             failure)  COLOR="#dc3545"; EMOJI=":x:";                STATUS_TEXT="failed" ;;
