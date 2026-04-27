@@ -517,6 +517,27 @@ describe("QURLClient", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("get/update/extend/mintLink reject whitespace-only id", async () => {
+    // Regression guard: without `.trim()` in requireNonEmptyId, a
+    // whitespace-only id passes the falsy check and round-trips as
+    // `encodeURIComponent("   ") === "%20%20%20"`, returning a server 404.
+    // The pre-flight error is more actionable than the eventual 404.
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+
+    for (const call of [
+      () => client.get("   "),
+      () => client.update("   ", { description: "x" }),
+      () => client.extend("   ", { extend_by: "24h" }),
+      () => client.mintLink("   "),
+    ]) {
+      const error = await call().catch((e: unknown) => e as ValidationError);
+      expect(error).toBeInstanceOf(ValidationError);
+      expect((error as ValidationError).detail).toContain("id is required");
+    }
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("extends a qURL", async () => {
     const fetch = mockFetch({
       status: 200,
@@ -818,19 +839,22 @@ describe("QURLClient", () => {
           "also-good",
           null as unknown as string, // bad: null (would TypeError without guard)
           {} as unknown as string, // bad: plain object
+          undefined as unknown as string, // bad: undefined (would TypeError without guard)
         ],
       })
       .catch((e: unknown) => e as ValidationError);
     expect(error).toBeInstanceOf(ValidationError);
     expect((error as ValidationError).code).toBe("client_validation");
     const detail = (error as ValidationError).detail;
-    // All three bad indices with their concrete types.
+    // All four bad indices with their concrete types.
     expect(detail).toContain("tags[1]");
     expect(detail).toContain("number");
     expect(detail).toContain("tags[3]");
     expect(detail).toContain("null");
     expect(detail).toContain("tags[4]");
     expect(detail).toContain("object");
+    expect(detail).toContain("tags[5]");
+    expect(detail).toContain("undefined");
     // Good indices must NOT appear.
     expect(detail).not.toContain("tags[0]");
     expect(detail).not.toContain("tags[2]");
@@ -1789,6 +1813,48 @@ describe("QURLClient", () => {
       "https://api.test.layerv.ai/v1/quota",
       expect.objectContaining({ method: "GET" }),
     );
+  });
+
+  it("rejects non-https baseUrl to prevent bearer-token plaintext leakage", async () => {
+    // Bearer token would otherwise be sent in the clear. The check is
+    // a constructor-time sanity guard — production callers would notice
+    // a typo'd or downgraded URL eventually, but the pre-flight stops
+    // the leak on the first request.
+    expect(
+      () =>
+        new QURLClient({
+          apiKey: "lv_live_test",
+          baseUrl: "http://api.example.com",
+        }),
+    ).toThrow(/baseUrl: must use https:\/\//);
+
+    expect(
+      () =>
+        new QURLClient({
+          apiKey: "lv_live_test",
+          baseUrl: "ftp://api.example.com",
+        }),
+    ).toThrow(/baseUrl: must use https:\/\//);
+  });
+
+  it("allows http://localhost and http://127.0.0.1 baseUrl for local development", async () => {
+    // The escape hatch — keeps the SDK usable against a non-TLS
+    // dev server without forcing every test harness to spin up TLS.
+    expect(
+      () =>
+        new QURLClient({
+          apiKey: "lv_live_test",
+          baseUrl: "http://localhost:8080",
+        }),
+    ).not.toThrow();
+
+    expect(
+      () =>
+        new QURLClient({
+          apiKey: "lv_live_test",
+          baseUrl: "http://127.0.0.1:3000",
+        }),
+    ).not.toThrow();
   });
 
   // --- Error subclass mapping ---

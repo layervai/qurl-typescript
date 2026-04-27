@@ -48,10 +48,14 @@ const LIST_PARAM_KEYS = [
 // Compile-time completeness check: fails if a new key is added to ListInput
 // but not to LIST_PARAM_KEYS. `satisfies` alone only validates that entries
 // are valid keys, not that every key is listed — this plugs that gap.
-type _ListParamKeysComplete =
-  Exclude<keyof ListInput, (typeof LIST_PARAM_KEYS)[number]> extends never ? true : never;
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-const _listParamKeysComplete: _ListParamKeysComplete = true;
+// `assertExhaustive` accepts the witness only when it narrows to `true`,
+// so a missing key flips the witness to `never` and fails compilation.
+function assertExhaustive<T extends true>(_: T): void {
+  /* type-only check */
+}
+assertExhaustive<
+  Exclude<keyof ListInput, (typeof LIST_PARAM_KEYS)[number]> extends never ? true : never
+>(true);
 
 /**
  * Fields accepted by `update()`. The empty-input pre-flight check in
@@ -67,10 +71,9 @@ const UPDATE_FIELD_KEYS = [
   "tags",
 ] as const satisfies readonly (keyof UpdateInput)[];
 
-type _UpdateFieldKeysComplete =
-  Exclude<keyof UpdateInput, (typeof UPDATE_FIELD_KEYS)[number]> extends never ? true : never;
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-const _updateFieldKeysComplete: _UpdateFieldKeysComplete = true;
+assertExhaustive<
+  Exclude<keyof UpdateInput, (typeof UPDATE_FIELD_KEYS)[number]> extends never ? true : never
+>(true);
 
 /**
  * Construct a {@link ValidationError} for a client-side pre-flight check.
@@ -153,7 +156,10 @@ function requireMaxSessionsInRange(value: number | undefined): void {
  *
  */
 function requireNonEmptyId(id: string, method: string): void {
-  if (!id) {
+  // `.trim()` rejects whitespace-only IDs — without it, " " round-trips to
+  // `encodeURIComponent(" ") === "%20"` which the server returns 404 for.
+  // The pre-flight error is more actionable than the 404.
+  if (typeof id !== "string" || id.trim() === "") {
     throw clientValidationError(`${method}: id is required`);
   }
 }
@@ -344,7 +350,21 @@ export class QURLClient {
       throw new Error("apiKey is required");
     }
     this.apiKey = options.apiKey;
-    this.baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
+    const rawBaseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
+    // Reject http:// to prevent the bearer token from being sent in the
+    // clear over a typo'd or downgraded base URL. `http://localhost` and
+    // `http://127.0.0.1` are exempted as the conventional escape hatch
+    // for local development against a non-TLS test server.
+    if (
+      !rawBaseUrl.startsWith("https://") &&
+      !rawBaseUrl.startsWith("http://localhost") &&
+      !rawBaseUrl.startsWith("http://127.0.0.1")
+    ) {
+      throw clientValidationError(
+        `baseUrl: must use https:// scheme (got ${JSON.stringify(rawBaseUrl).slice(0, 60)})`,
+      );
+    }
+    this.baseUrl = rawBaseUrl;
     this.fetchFn = options.fetch ?? globalThis.fetch;
     // Clamp `maxRetries` to a non-negative integer. A negative value
     // would cause the retry loop `for (let attempt = 0; attempt <=

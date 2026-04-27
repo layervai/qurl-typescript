@@ -31,7 +31,7 @@ const client = new QURLClient({ apiKey: 'lv_live_xxx' });
 const result = await client.create({
   target_url: 'https://api.example.com/data',
   expires_in: '24h',
-  description: 'API access for agent',
+  label: 'API access for agent',
 });
 console.log(result.qurl_link);
 
