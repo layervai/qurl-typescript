@@ -765,6 +765,10 @@ describe("QURLClient", () => {
   });
 
   it("update throws ValidationError when extend_by and expires_at are both set", async () => {
+    // `UpdateInput` is a non-XOR interface — both fields are optional, so
+    // typed callers reach the runtime mutual-exclusion guard directly.
+    // This is the regression for that runtime guard; untyped wider-object
+    // callers also hit it via the same code path (allowlist + XOR check).
     const fetch = mockFetch({ status: 200, body: { data: {} } });
     const client = createClient(fetch);
 

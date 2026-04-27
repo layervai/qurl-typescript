@@ -543,6 +543,9 @@ export class QURLClient {
       return { ...rest, access_tokens: qurls };
     }
     if (qurls && rest.access_tokens) {
+      // Server-side bug — drop `qurls` rather than merge. If the arrays
+      // disagree, no consistent reconciliation exists; a silent merge
+      // could double-count or surface stale data.
       this.log("mapQurlsField: received both 'qurls' and 'access_tokens'; keeping access_tokens", {
         qurls_count: qurls.length,
         access_tokens_count: rest.access_tokens.length,
@@ -625,9 +628,12 @@ export class QURLClient {
 
     // Per-entry discriminated-union contract. Reason strings report
     // field NAMES only, never values — safe for observability pipelines.
-    // Also accumulate `index` values: a server bug returning duplicate
-    // indices would silently break the per-item attribution model
-    // documented in the README, so surface duplicates via debug.
+    // Also accumulate `index` values: a server bug returning duplicates
+    // breaks per-item attribution, so surface them via debug.
+    //
+    // Short-circuit on first bad entry (vs `validateCreateInput`'s
+    // collect-all): server-contract check, not user input — one
+    // violation is enough to file a bug, more risks leaking entry data.
     const seenIndices = new Set<number>();
     const duplicateIndices: number[] = [];
     for (let i = 0; i < result.results.length; i++) {
@@ -752,7 +758,9 @@ export class QURLClient {
       );
     }
     // Collect ALL per-item validation errors in one pass (not fail-fast)
-    // so callers see every problem without fix-re-run-repeat.
+    // so callers see every problem without fix-re-run-repeat. Kept inline
+    // (not unified with `validateCreateInput`'s `collect()`) because the
+    // separator policy and `items[i]:` prefix differ.
     const perItemErrors: string[] = [];
     for (let i = 0; i < input.items.length; i++) {
       try {

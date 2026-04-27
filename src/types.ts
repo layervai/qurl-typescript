@@ -308,6 +308,7 @@ export interface Quota {
 
 /** Input for batch creating qURLs. */
 export interface BatchCreateInput {
+  /** Max 100 items per request; min 1. The client rejects out-of-range arrays before the round-trip. */
   items: CreateInput[];
 }
 

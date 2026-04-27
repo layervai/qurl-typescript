@@ -93,6 +93,10 @@ if (result.failed > 0) {
 
 Non-400 errors (401, 403, 429, 5xx, and unexpected 400 body shapes) still throw the appropriate `QURLError` subclass.
 
+**Result ordering** — `result.results` is **not** guaranteed to be sorted by `index`. Each entry's `index` field carries the position in the original `items` array, so build per-input-position state by keying on `r.index` (e.g., `for (const r of result.results) { byInputIndex[r.index] = r; }`) rather than relying on iteration order.
+
+**Duplicate `index` values** — under a misbehaving server, duplicates are logged (debug) but not thrown. Callers building a `Map` keyed by `r.index` see last-write-wins; for high-stakes batches, assert uniqueness yourself: `new Set(result.results.map(r => r.index)).size === result.results.length`.
+
 ## Error Handling
 
 All API errors throw typed error subclasses, so you can catch specific failure modes:
