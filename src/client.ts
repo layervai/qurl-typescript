@@ -523,18 +523,21 @@ export class QURLClient {
    * Maps the API's "qurls" field to "access_tokens" on the SDK type.
    * Uses destructuring to avoid mutation and unsafe casts.
    *
-   * **Why `"qurls" in raw` (not `if (raw.qurls)`):** an empty array
-   * `qurls: []` is truthy as a value but the rename must still happen
-   * — consumers expect `access_tokens: []` (empty list of tokens), not
-   * `qurls: []` slipping through. The `in` operator triggers on
-   * presence regardless of value, so empty / null / undefined `qurls`
+   * **Why `hasOwnProperty.call` (not `if (raw.qurls)`):** an empty
+   * array `qurls: []` is truthy as a value but the rename must still
+   * happen — consumers expect `access_tokens: []` (empty list of
+   * tokens), not `qurls: []` slipping through. The presence check
+   * triggers regardless of value, so empty / null / undefined `qurls`
    * all enter the rename branch and the wire-format key gets stripped.
-   * Walks the prototype chain by spec, but `response.json()` produces
-   * plain objects so this is safe in practice. Locked in by the test
+   * Belt-and-suspenders form: `Object.prototype.hasOwnProperty.call`
+   * confines the check to own-properties (the bare `in` operator walks
+   * the prototype chain). `response.json()` already produces plain
+   * objects, but if the SDK ever consumes pre-parsed bodies from
+   * arbitrary sources, this stays safe. Locked in by the test
    * `"preserves empty qurls: [] as access_tokens: []"`.
    */
   private mapQurlsField(raw: QURL & { qurls?: AccessToken[] }): QURL {
-    if (!("qurls" in raw)) return raw;
+    if (!Object.prototype.hasOwnProperty.call(raw, "qurls")) return raw;
     const { qurls, ...rest } = raw;
     if (qurls && !rest.access_tokens) {
       return { ...rest, access_tokens: qurls };
@@ -585,8 +588,12 @@ export class QURLClient {
     // correlation handle on the error path, mirroring the success-
     // path propagation in batchCreate(). The field is optional —
     // older API versions without `meta.request_id` simply produce
-    // an error without it, same as today.
+    // an error without it, same as today. Embedded in BOTH the
+    // .requestId property AND the message string so a stack trace
+    // pasted into a support ticket carries the correlation handle
+    // without a follow-up round-trip.
     const requestId = envelope.meta?.request_id;
+    const requestIdSuffix = requestId !== undefined ? ` [request_id=${requestId}]` : "";
 
     // `Number.isInteger` rejects NaN, Infinity, and floats. Combined
     // with `>= 0`, this rules out pathological proxy bodies (e.g.
@@ -602,7 +609,7 @@ export class QURLClient {
       !Array.isArray(result.results)
     ) {
       throw unexpectedResponseError(
-        `Unexpected response shape from POST /v1/qurls/batch${statusSuffix}`,
+        `Unexpected response shape from POST /v1/qurls/batch${statusSuffix}${requestIdSuffix}`,
         requestId,
       );
     }
@@ -611,7 +618,7 @@ export class QURLClient {
       throw unexpectedResponseError(
         `Unexpected response shape from POST /v1/qurls/batch${statusSuffix}: ` +
           `counts/results length mismatch (succeeded=${result.succeeded}, ` +
-          `failed=${result.failed}, results.length=${result.results.length})`,
+          `failed=${result.failed}, results.length=${result.results.length})${requestIdSuffix}`,
         requestId,
       );
     }
@@ -622,7 +629,7 @@ export class QURLClient {
       const reason = batchItemResultValidationReason(result.results[i]);
       if (reason !== null) {
         throw unexpectedResponseError(
-          `Unexpected response shape from POST /v1/qurls/batch${statusSuffix}: results[${i}] ${reason}`,
+          `Unexpected response shape from POST /v1/qurls/batch${statusSuffix}: results[${i}] ${reason}${requestIdSuffix}`,
           requestId,
         );
       }
@@ -659,8 +666,11 @@ export class QURLClient {
    * **Client-side validation:** All items are validated before any network
    * request is made (target_url scheme, label length, max_sessions range,
    * tag constraints). All failures are collected into a single
-   * `ValidationError` with per-index attribution (`"items[0]: ...; items[3]: ..."`),
-   * so callers see every problem in one throw instead of fix-re-run-repeat.
+   * `ValidationError` with per-index attribution
+   * (`"items[0]: ... | items[3]: ..."`) — items are separated by ` | ` and
+   * field-level errors within an item by `; ` so callers can split the
+   * detail message reliably. Every problem surfaces in one throw instead
+   * of fix-re-run-repeat.
    *
    * Throws `ValidationError` client-side (`status: 0`, `code: "client_validation"`)
    * when `items` is empty or exceeds 100, or when the HTTP 400 response body
@@ -722,7 +732,13 @@ export class QURLClient {
       }
     }
     if (perItemErrors.length > 0) {
-      throw clientValidationError(`batchCreate: ${perItemErrors.join("; ")}`);
+      // Outer separator differs from `validateCreateInput`'s inner
+      // `"; "` so callers can split the message reliably:
+      //   `items[0]: a; b | items[2]: c; d`
+      // Without this asymmetry, the same `; ` at both levels makes
+      // it ambiguous which separator is "next item" vs "next field
+      // within item". Mirrors the JSDoc example shape.
+      throw clientValidationError(`batchCreate: ${perItemErrors.join(" | ")}`);
     }
     // 400 carries per-item errors (see rawRequest JSDoc). Use rawRequest
     // directly (not `this.request`) so we can read `meta.request_id`
@@ -801,23 +817,23 @@ export class QURLClient {
     // typing can't prevent callers from spreading untyped objects with extra
     // properties, and String(value) on an unexpected array/object would emit
     // "[object Object]" as a query param.
+    // Per the OpenAPI spec, only `limit` is numeric; every other
+    // filter field is a string. Enforce per-key type expectations
+    // so untyped-JS callers passing `cursor: 42` (or worse,
+    // `q: ["foo", "bar"]`) get a structured ValidationError instead
+    // of silently coercing to `"42"` / `"foo,bar"`.
+    const NUMERIC_LIST_KEYS: ReadonlySet<keyof ListInput> = new Set(["limit"]);
     for (const key of LIST_PARAM_KEYS) {
       const value = input[key];
       // Drop null/undefined and empty strings — an empty string from
       // an untyped JS caller would otherwise produce `?status=&q=`
       // garbage that the API might interpret as an explicit empty
-      // filter. Non-zero numerics are preserved (serialize as their
-      // string form); `limit` is validated separately above.
+      // filter. `limit` is validated separately above.
       if (value === null || value === undefined || value === "") continue;
-      // Reject non-string/number values explicitly. `String(["a","b"])`
-      // produces `"a,b"` (which accidentally matches `status`'s CSV
-      // form but means nothing for `q` / `sort` / dates), and
-      // `String({})` produces `"[object Object]"` — both leak garbage
-      // through the type system from untyped-JS callers. Surface a
-      // structured ValidationError instead.
-      if (typeof value !== "string" && typeof value !== "number") {
+      const expectedType = NUMERIC_LIST_KEYS.has(key) ? "number" : "string";
+      if (typeof value !== expectedType) {
         throw clientValidationError(
-          `${key}: must be a string or number (got ${value === null ? "null" : typeof value})`,
+          `${key}: must be a ${expectedType} (got ${value === null ? "null" : typeof value})`,
         );
       }
       params.set(key, String(value));
@@ -1101,6 +1117,14 @@ export class QURLClient {
 
       let response: Response;
       try {
+        // `timeout` is intentionally a per-attempt budget, not a total-
+        // request budget. With maxRetries=3 and timeout=30s, a slow
+        // upstream + retries can run up to ~120s total. The per-
+        // attempt cap matches `fetch()` semantics elsewhere and lets
+        // each retry get a fresh window — a half-completed slow
+        // attempt shouldn't poison the next try's deadline. Total
+        // request bound: roughly `timeout * (maxRetries + 1) +
+        // sum(retryDelay)`.
         response = await this.fetchFn(url, {
           method,
           headers,

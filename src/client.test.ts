@@ -314,6 +314,48 @@ describe("QURLClient", () => {
     expect(result.access_tokens).toBeUndefined();
   });
 
+  it("handles qurls: null with access_tokens already present (truthy short-circuit)", async () => {
+    // Exercises the `qurls && ...` branches in mapQurlsField. With
+    // qurls being null (not absent), the rename branch is entered
+    // (presence check passes), but the truthy short-circuit means
+    // we keep access_tokens as-is and drop the wire-format key.
+    // Defends against a future refactor that flips presence-vs-truthy
+    // and accidentally surfaces qurls: null on a typed QURL.
+    const accessTokens = [
+      {
+        qurl_id: "at_existing",
+        status: "active",
+        one_time_use: false,
+        max_sessions: 5,
+        session_duration: 3600,
+        use_count: 0,
+        created_at: "2026-03-10T10:00:00Z",
+        expires_at: "2026-04-10T10:00:00Z",
+      },
+    ];
+    const fetch = mockFetch({
+      status: 200,
+      body: {
+        data: {
+          resource_id: "r_dual",
+          target_url: "https://example.com",
+          status: "active",
+          qurl_count: 1,
+          created_at: "2026-03-10T10:00:00Z",
+          qurls: null,
+          access_tokens: accessTokens,
+        },
+      },
+    });
+
+    const client = createClient(fetch);
+    const result = await client.get("r_dual");
+
+    expect(result.access_tokens).toEqual(accessTokens);
+    // Wire-format key stripped from consumer-facing object.
+    expect((result as unknown as { qurls?: unknown }).qurls).toBeUndefined();
+  });
+
   it("preserves empty qurls: [] as access_tokens: []", async () => {
     // Defense against a future refactor flipping the truthiness check
     // in mapQurlsField from `"qurls" in raw` to `if (raw.qurls)`. An
@@ -3324,10 +3366,10 @@ describe("QURLClient", () => {
     });
     const client = createClient(fetch);
 
-    for (const [key, value] of [
-      ["q", ["foo", "bar"]],
-      ["sort", { fieldName: "created_at" }],
-      ["cursor", true],
+    for (const [key, value, expectedType] of [
+      ["q", ["foo", "bar"], "string"],
+      ["sort", { fieldName: "created_at" }, "string"],
+      ["cursor", true, "string"],
     ] as const) {
       const error = await client
         .list({ [key]: value } as unknown as Parameters<typeof client.list>[0])
@@ -3336,7 +3378,34 @@ describe("QURLClient", () => {
       expect((error as ValidationError).code).toBe("client_validation");
       const detail = (error as ValidationError).detail;
       expect(detail).toContain(key);
-      expect(detail).toContain("must be a string or number");
+      // Per-key type enforcement: cursor / q / sort are strings,
+      // not numbers — `cursor: 42` would silently coerce without
+      // this guard.
+      expect(detail).toContain(`must be a ${expectedType}`);
+    }
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("list rejects numeric values for string-typed filter fields (e.g. cursor: 42)", async () => {
+    // Per-key type enforcement: only `limit` is numeric per the
+    // OpenAPI spec. `cursor: 42`, `status: 1`, etc. would silently
+    // coerce to "42" / "1" through the previous broad
+    // string-or-number guard. Now they fail fast with a per-key
+    // ValidationError pointing at the expected type.
+    const fetch = mockFetch({
+      status: 200,
+      body: { data: [], meta: { has_more: false } },
+    });
+    const client = createClient(fetch);
+
+    for (const key of ["cursor", "status", "q", "sort"] as const) {
+      const error = await client
+        .list({ [key]: 42 } as unknown as Parameters<typeof client.list>[0])
+        .catch((e: unknown) => e as ValidationError);
+      expect(error).toBeInstanceOf(ValidationError);
+      const detail = (error as ValidationError).detail;
+      expect(detail).toContain(key);
+      expect(detail).toContain("must be a string");
     }
     expect(fetch).not.toHaveBeenCalled();
   });
@@ -4098,6 +4167,10 @@ describe("QURLClient", () => {
     expect(error).toBeInstanceOf(ValidationError);
     expect((error as ValidationError).code).toBe("unexpected_response");
     expect((error as ValidationError).requestId).toBe("req_shape_guard_correlation");
+    // request_id also lands in the message string itself so a stack
+    // trace pasted into a support ticket carries the correlation
+    // handle without a follow-up round-trip.
+    expect((error as ValidationError).detail).toContain("[request_id=req_shape_guard_correlation]");
   });
 
   it("batch create surfaces ValidationError on unexpected 400 response shape", async () => {

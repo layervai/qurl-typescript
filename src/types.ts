@@ -295,6 +295,12 @@ export interface Quota {
   usage?: {
     qurls_created?: number;
     active_qurls?: number;
+    /**
+     * Active qURLs as a percentage of the plan's `max_active_qurls`,
+     * or `null` when the plan is unlimited (no denominator). Callers
+     * doing arithmetic must guard the null case — `usage.active_qurls_percent * 0.01`
+     * yields `NaN` if the plan is unlimited.
+     */
     active_qurls_percent?: number | null;
     total_accesses?: number;
   };
