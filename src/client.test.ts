@@ -198,6 +198,21 @@ describe("QURLClient", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("create rejects custom_domain: '' (empty string)", async () => {
+    // Symmetric with the empty-string label rejection — an untyped-JS
+    // caller passing `""` would otherwise round-trip to the server.
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+    const client = createClient(fetch);
+
+    const error = await client
+      .create({ target_url: "https://example.com", custom_domain: "" })
+      .catch((e: unknown) => e as ValidationError);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).detail).toContain("custom_domain");
+    expect((error as ValidationError).detail).toContain("must not be an empty string");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("create rejects target_url without http/https scheme", async () => {
     // Matches the qurl-python SDK's _ALLOWED_URL_SCHEMES check. Fail
     // fast for the common "forgot the protocol" mistake and reject
@@ -869,6 +884,23 @@ describe("QURLClient", () => {
     expect((error as ValidationError).code).toBe(ERROR_CODE_CLIENT_VALIDATION);
     expect((error as ValidationError).detail).toContain("at least one field");
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("mintLink({ expires_at }) round-trips the absolute expiry to the wire body", async () => {
+    // Happy-path companion to the expires_in / mutual-exclusion tests.
+    // Locks in the absolute-expiry path against accidental stripping by
+    // future MINT_FIELD_KEYS / null-normalization changes.
+    const fetch = mockFetch({
+      status: 200,
+      body: { data: { qurl_link: "https://qurl.link/#at_x", expires_at: "2026-04-01T00:00:00Z" } },
+    });
+    const client = createClient(fetch);
+
+    await client.mintLink("r_abc", { expires_at: "2026-04-01T00:00:00Z" });
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const body = JSON.parse((fetch.mock.calls[0][1] as RequestInit).body as string);
+    expect(body).toEqual({ expires_at: "2026-04-01T00:00:00Z" });
   });
 
   it("mintLink throws ValidationError when expires_in and expires_at are both set", async () => {

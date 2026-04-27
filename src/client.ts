@@ -80,7 +80,7 @@ assertExhaustive<
  * Fields accepted by `update()`. The empty-input pre-flight check in
  * {@link QURLClient.update} iterates this const — so adding a new field to
  * {@link UpdateInput} without listing it here will fail the
- * `_UpdateFieldKeysComplete` check at compile time rather than silently
+ * paired `assertExhaustive` witness at compile time rather than silently
  * sneaking through an empty-input request.
  */
 const UPDATE_FIELD_KEYS = [
@@ -162,6 +162,7 @@ function unexpectedResponseError(detail: string, request_id?: string): Validatio
 
 const MAX_TARGET_URL = 2048;
 const MAX_LABEL = 500;
+const MAX_BATCH_ITEMS = 100;
 const MAX_DESCRIPTION = 500;
 const MAX_CUSTOM_DOMAIN = 253;
 const MAX_MAX_SESSIONS = 1000;
@@ -398,6 +399,7 @@ function validateCreateInput(input: CreateInput): void {
   collect(() => requireMaxLength(input.label, "label", MAX_LABEL));
   collect(() => requireNonEmptyIfPresent(input.label, "label"));
   collect(() => requireMaxLength(input.custom_domain, "custom_domain", MAX_CUSTOM_DOMAIN));
+  collect(() => requireNonEmptyIfPresent(input.custom_domain, "custom_domain"));
   collect(() => requireMaxSessionsInRange(input.max_sessions));
   collect(() => requireNonEmptyIfPresent(input.expires_in, "expires_in"));
   collect(() => requireNonEmptyIfPresent(input.session_duration, "session_duration"));
@@ -678,6 +680,11 @@ export class QURLClient {
    * Error messages include the observed HTTP status as a suffix so
    * operators can attribute drift; entry values are deliberately
    * never echoed (unexpected bodies may carry sensitive data).
+   *
+   * **Fail-fast, unlike `validateCreateInput`'s collect-all.** This is
+   * a server-contract integrity check, not user input — once the envelope
+   * is malformed, additional shape errors don't help debug the upstream
+   * issue.
    */
   private validateBatchCreateResponse(
     envelope: ApiResponse<BatchCreateOutput>,
@@ -781,7 +788,7 @@ export class QURLClient {
   }
 
   /**
-   * Batch create multiple qURLs (1-100 items).
+   * Batch create multiple qURLs (1-`MAX_BATCH_ITEMS` items).
    *
    * **Partial failures do not throw.** Two paths resolve normally with
    * structured per-item results:
@@ -807,9 +814,10 @@ export class QURLClient {
    * of fix-re-run-repeat.
    *
    * Throws `ValidationError` client-side (`status: 0`, `code: "client_validation"`)
-   * when `items` is empty or exceeds 100, or when the HTTP 400 response body
-   * doesn't match the expected `BatchCreateOutput` shape (defense-in-depth
-   * for cases where the endpoint returns a non-batch error on 400).
+   * when `items` is empty or exceeds `MAX_BATCH_ITEMS`, or when the
+   * HTTP 400 response body doesn't match the expected `BatchCreateOutput`
+   * shape (defense-in-depth for cases where the endpoint returns a non-batch
+   * error on 400).
    *
    * @example
    * Always check `result.failed` after the call — exceptions alone are
@@ -842,13 +850,13 @@ export class QURLClient {
     // Size checks are fail-fast (binary, no useful aggregation), per-item
     // validation below is collect-all (multiple bad items aggregate into
     // one throw). The asymmetry is deliberate: there's nothing to combine
-    // for "0 items" or ">100 items" — the size is wrong or it isn't.
+    // for empty input or oversized batches — the size is wrong or it isn't.
     if (input.items.length === 0) {
       throw clientValidationError("batchCreate requires at least 1 item");
     }
-    if (input.items.length > 100) {
+    if (input.items.length > MAX_BATCH_ITEMS) {
       throw clientValidationError(
-        `batchCreate accepts at most 100 items, got ${input.items.length}`,
+        `batchCreate accepts at most ${MAX_BATCH_ITEMS} items, got ${input.items.length}`,
       );
     }
     // Collect ALL per-item validation errors in one pass (not fail-fast)
