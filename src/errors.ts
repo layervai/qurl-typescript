@@ -84,6 +84,19 @@ export class NotFoundError extends QURLError {
  *
  * `instanceof ValidationError` catches both. To distinguish them, check
  * `.code` rather than using `instanceof` alone.
+ *
+ * **`.status` asymmetry within `code: "unexpected_response"`:**
+ * - Shape-guard failure on a parsed JSON body (wrong field types,
+ *   counts/length mismatch, per-entry contract violation): `.status`
+ *   is `0`. The HTTP status that produced the bad body is appended
+ *   to `.detail` as `(HTTP 400)` / `(HTTP 207)` etc. for diagnostics.
+ * - Non-JSON body on a 2xx or passthrough status (e.g. proxy HTML
+ *   error page, plaintext gateway error, truncated body): `.status`
+ *   is the actual HTTP status (e.g. `400`, `200`).
+ *
+ * Consumers branching purely on `.status` should branch on `.code`
+ * first, then `.detail` for shape-guard cases. See #59 for tracking
+ * a future unification of the two paths.
  */
 export class ValidationError extends QURLError {
   constructor(data: QURLErrorData) {

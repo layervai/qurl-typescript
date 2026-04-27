@@ -172,6 +172,12 @@ The client automatically retries failed requests with exponential backoff:
 
 Configure with `maxRetries` (default: 3). Set to `0` to disable.
 
+## Versioning & breaking changes
+
+This SDK is pre-1.0; breaking changes between minor versions are possible until the API surface stabilizes. Significant changes are called out in [`CHANGELOG.md`](CHANGELOG.md) and in the corresponding GitHub release notes.
+
+When upgrading, check the release notes for migration guidance — recent breaking changes have included field renames (`description` → `label` on create), removed fields (`metadata`), narrowed type unions (`QURL.status`), and endpoint relocations (`/v1/qurl` → `/v1/qurls`).
+
 ## License
 
 MIT

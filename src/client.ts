@@ -76,6 +76,26 @@ assertExhaustive<
 >(true);
 
 /**
+ * Fields accepted by `mintLink()`. Iterated by the null-stripping
+ * normalization loop in {@link QURLClient.mintLink} so unknown keys
+ * from untyped-JS callers don't leak through to the wire body.
+ * Symmetric with `LIST_PARAM_KEYS` / `UPDATE_FIELD_KEYS`.
+ */
+const MINT_FIELD_KEYS = [
+  "expires_in",
+  "expires_at",
+  "label",
+  "one_time_use",
+  "max_sessions",
+  "session_duration",
+  "access_policy",
+] as const satisfies readonly (keyof MintInput)[];
+
+assertExhaustive<
+  Exclude<keyof MintInput, (typeof MINT_FIELD_KEYS)[number]> extends never ? true : never
+>(true);
+
+/**
  * Construct a {@link ValidationError} for a client-side pre-flight check.
  * Uses `status: 0` (matching {@link NetworkError}/{@link TimeoutError}) and
  * `code: "client_validation"` so catch-by-class still works and callers can
@@ -389,7 +409,15 @@ export class QURLClient {
     // attempts, not even the initial request. Clamping defends against
     // that footgun while preserving the "0 = no retries, just the
     // initial attempt" semantic that `DEFAULT_MAX_RETRIES = 3` relies on.
-    this.maxRetries = Math.max(0, options.maxRetries ?? DEFAULT_MAX_RETRIES);
+    //
+    // `Number.isFinite` rules out NaN and ±Infinity. NaN is the real
+    // hazard — `Math.max(0, NaN) === NaN` and `n <= NaN` is false, so
+    // `maxRetries: NaN` (e.g. from a `parseInt` failure) would silently
+    // skip every attempt. Fall back to the default in that case.
+    const requestedMaxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
+    this.maxRetries = Number.isFinite(requestedMaxRetries)
+      ? Math.max(0, Math.floor(requestedMaxRetries))
+      : DEFAULT_MAX_RETRIES;
     this.timeout = options.timeout ?? DEFAULT_TIMEOUT;
     this.userAgent = options.userAgent ?? `qurl-typescript/${VERSION}`;
 
@@ -872,8 +900,12 @@ export class QURLClient {
     // pattern used by update(); keeps the two write surfaces symmetric.
     let normalized: MintInput | undefined = input;
     if (input !== undefined) {
+      // Iterate the explicit allowlist (matching update() / list())
+      // so unknown keys from untyped-JS callers can't leak through
+      // to the wire body. The compile-time `assertExhaustive` check
+      // on MINT_FIELD_KEYS keeps this in sync with MintInput.
       const stripped: Record<string, unknown> = {};
-      for (const key of Object.keys(input) as (keyof MintInput)[]) {
+      for (const key of MINT_FIELD_KEYS) {
         const value = input[key];
         if (value !== null && value !== undefined) {
           stripped[key] = value;
@@ -1012,6 +1044,17 @@ export class QURLClient {
       const isPassthrough = !response.ok && passthroughStatuses.includes(response.status);
       if (response.ok || isPassthrough) {
         if (response.status === 204) {
+          // 204 on a non-DELETE method would deliver `undefined` to a
+          // caller whose return type expects data — silent failure.
+          // Surface via debug so operators see drift; the actual return
+          // is unchanged for back-compat (DELETE is the only documented
+          // 204-returning endpoint and its return type is `Promise<void>`).
+          if (method !== "DELETE") {
+            this.log(`unexpected 204 on ${method} ${url} — caller expected a response body`, {
+              method,
+              url,
+            });
+          }
           return { data: undefined as unknown as T, http_status: response.status };
         }
         try {

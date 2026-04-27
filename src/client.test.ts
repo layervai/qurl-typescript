@@ -2015,6 +2015,55 @@ describe("QURLClient", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
+  it("falls back to default maxRetries on NaN/Infinity (would skip every attempt)", async () => {
+    // `Math.max(0, NaN) === NaN` and `attempt <= NaN` is `false`, so
+    // a `parseInt`-failed `maxRetries: NaN` would silently skip every
+    // attempt — including the initial request. The Number.isFinite
+    // guard falls back to DEFAULT_MAX_RETRIES so the request still
+    // fires. The default is 3, so a happy 200 still resolves with a
+    // single fetch (the initial attempt, no retries needed).
+    const fetch = mockFetch({
+      status: 200,
+      body: {
+        data: { plan: "growth", period_start: "2026-03-01", period_end: "2026-04-01" },
+      },
+    });
+
+    for (const badRetries of [NaN, Infinity, -Infinity]) {
+      const client = new QURLClient({
+        apiKey: "lv_live_test",
+        baseUrl: "https://api.test.layerv.ai",
+        fetch,
+        maxRetries: badRetries,
+      });
+      await expect(client.getQuota()).resolves.toBeDefined();
+    }
+    // Three constructions, three single-attempt fetches each.
+    expect(fetch).toHaveBeenCalledTimes(3);
+  });
+
+  it("floors fractional maxRetries (no off-by-one in the retry loop)", async () => {
+    // `Math.floor` on a positive fractional input — `2.7` → `2`, not
+    // `3`. The retry loop uses `attempt <= this.maxRetries`, so a
+    // non-integer would still work numerically but reading the value
+    // back via debug or telemetry would be confusing. Floor for
+    // determinism.
+    const fetch = mockFetch({
+      status: 200,
+      body: {
+        data: { plan: "growth", period_start: "2026-03-01", period_end: "2026-04-01" },
+      },
+    });
+    const client = new QURLClient({
+      apiKey: "lv_live_test",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch,
+      maxRetries: 2.7,
+    });
+    await expect(client.getQuota()).resolves.toBeDefined();
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
   it("normalizes trailing slash in baseUrl", async () => {
     const fetch = mockFetch({
       status: 200,
@@ -3945,6 +3994,57 @@ describe("QURLClient", () => {
     expect(detail).toContain("(HTTP 207)");
     expect(detail).toContain("results[0]");
     expect(detail).toContain("resource_id");
+  });
+
+  it("batch create per-entry shape guard reports the FIRST invalid index in a mixed result set", async () => {
+    // Coverage gap: previous tests exercise one bad entry per response.
+    // This locks in the contract that with multiple bad entries
+    // interleaved among valid ones, the shape guard reports the
+    // *first* invalid index (which is what the per-entry loop does
+    // — it throws on the first reason !== null). Operators relying on
+    // "the index in the error message points at the entry to debug
+    // first" need this to stay stable.
+    const fetch = mockFetch({
+      status: 207,
+      body: {
+        data: {
+          succeeded: 2,
+          failed: 1,
+          results: [
+            // index 0: valid success
+            {
+              index: 0,
+              success: true,
+              resource_id: "r_first",
+              qurl_link: "https://qurl.link/#at_a",
+              qurl_site: "https://r_first.qurl.site",
+            },
+            // index 1: INVALID — success branch missing qurl_link
+            { index: 1, success: true, resource_id: "r_second", qurl_site: "https://x.qurl.site" },
+            // index 2: INVALID (also) — would be reported if loop kept going
+            { index: 2, success: false, error: { code: "x" /* missing message */ } },
+          ],
+        },
+      },
+    });
+    const client = createClient(fetch);
+    const error = await client
+      .batchCreate({
+        items: [
+          { target_url: "https://a.com" },
+          { target_url: "https://b.com" },
+          { target_url: "https://c.com" },
+        ],
+      })
+      .catch((e: unknown) => e as ValidationError);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).code).toBe("unexpected_response");
+    const detail = (error as ValidationError).detail;
+    // First-bad-index reporting: results[1] is the first failure.
+    expect(detail).toContain("results[1]");
+    expect(detail).toContain("qurl_link");
+    // Must NOT report the later bad index — the loop short-circuits.
+    expect(detail).not.toContain("results[2]");
   });
 
   it("batch create distinguishes client_validation from unexpected_response", async () => {
