@@ -9,6 +9,7 @@ import {
   ValidationError,
 } from "./errors.js";
 import type {
+  AccessPolicy,
   AccessToken,
   BatchCreateInput,
   BatchCreateOutput,
@@ -260,6 +261,37 @@ function requireValidTags(tags: string[] | null | undefined): void {
   }
 }
 
+const ACCESS_POLICY_LIST_FIELDS = [
+  "ip_allowlist",
+  "ip_denylist",
+  "geo_allowlist",
+  "geo_denylist",
+] as const satisfies readonly (keyof AccessPolicy)[];
+
+function requireValidAccessPolicy(policy: AccessPolicy | null | undefined): void {
+  // null/undefined → "don't touch". Server is authoritative on CIDR /
+  // ISO-3166 / regex grammar; this guard catches only the shape errors
+  // an untyped-JS caller is likely to make (e.g. `geo_allowlist: "US"`
+  // instead of `["US"]`) so they get a structured ValidationError
+  // instead of a server 400 they have to debug.
+  if (policy === undefined || policy === null) return;
+  if (Array.isArray(policy)) {
+    throw clientValidationError("access_policy: must be an object (got array)");
+  }
+  if (typeof policy !== "object") {
+    throw clientValidationError(`access_policy: must be an object (got ${typeof policy})`);
+  }
+  for (const field of ACCESS_POLICY_LIST_FIELDS) {
+    const value = policy[field];
+    if (value === undefined) continue;
+    if (!Array.isArray(value)) {
+      throw clientValidationError(
+        `access_policy.${field}: must be an array (got ${value === null ? "null" : typeof value})`,
+      );
+    }
+  }
+}
+
 // `format: uri` in the OpenAPI spec allows schemes the SDK doesn't
 // usefully support (`ftp://`, `file://`, `javascript:`, …). This is a
 // cheap client-side sanity check — the server is still the
@@ -324,6 +356,7 @@ function validateCreateInput(input: CreateInput): void {
   collect(() => requireMaxSessionsInRange(input.max_sessions));
   collect(() => requireNonEmptyIfPresent(input.expires_in, "expires_in"));
   collect(() => requireNonEmptyIfPresent(input.session_duration, "session_duration"));
+  collect(() => requireValidAccessPolicy(input.access_policy));
   if (errors.length > 0) {
     // Inner `; ` is contractual (paired with batchCreate's outer ` | `).
     // Future field-level validators must not aggregate via `; ` internally.
@@ -337,7 +370,9 @@ function validateCreateInput(input: CreateInput): void {
   // server's rego/duration parser.
   //
   // `access_policy` contents (CIDRs, ISO-3166 codes, regex patterns)
-  // are pass-through for the same reason.
+  // are pass-through for the same reason. The shape-guard above only
+  // catches structural mistakes (string-instead-of-array on list fields)
+  // an untyped-JS caller is likely to make.
 }
 
 /**
@@ -1130,6 +1165,7 @@ export class QURLClient {
       requireNonEmptyIfPresent(normalized.label, "label");
       requireNonEmptyIfPresent(normalized.session_duration, "session_duration");
       requireMaxSessionsInRange(normalized.max_sessions);
+      requireValidAccessPolicy(normalized.access_policy);
       // Duration *grammar* and access_policy contents are server-authoritative
       // (same rationale as validateCreateInput). Empty-string rejection happens
       // above; bound/unit checks happen server-side.

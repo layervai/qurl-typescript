@@ -1384,6 +1384,47 @@ describe("QURLClient", () => {
     expect(body.access_policy.ai_agent_policy.deny_categories).toEqual(["fictional-category"]);
   });
 
+  it("create rejects malformed access_policy shapes (untyped JS shape errors)", async () => {
+    // Untyped JS callers commonly pass `geo_allowlist: "US"` instead of
+    // `["US"]`, or stringify the whole policy. The shape guard returns
+    // a structured ValidationError client-side instead of an opaque
+    // server 400.
+    const cases = [
+      { policy: { geo_allowlist: "US" }, detail: "access_policy.geo_allowlist" },
+      { policy: { ip_allowlist: "10.0.0.0/8" }, detail: "access_policy.ip_allowlist" },
+      { policy: "deny-all", detail: "must be an object (got string)" },
+      { policy: ["US"], detail: "must be an object (got array)" },
+    ] as const;
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+
+    for (const c of cases) {
+      const error = await client
+        .create({
+          target_url: "https://example.com",
+          access_policy: c.policy,
+        } as unknown as Parameters<typeof client.create>[0])
+        .catch((e: unknown) => e as ValidationError);
+      expect(error).toBeInstanceOf(ValidationError);
+      expect((error as ValidationError).detail).toContain(c.detail);
+    }
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("mintLink rejects access_policy with non-array list field", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+
+    const error = await client
+      .mintLink("r_abc", {
+        access_policy: { ip_allowlist: "10.0.0.0/8" },
+      } as unknown as Parameters<typeof client.mintLink>[1])
+      .catch((e: unknown) => e as ValidationError);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).detail).toContain("access_policy.ip_allowlist");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("update treats `{ extend_by: undefined }` as empty (no stealth empty-input)", async () => {
     // A caller who threads an `undefined` through their own types
     // should still hit the empty-input guard — the some()-based check
