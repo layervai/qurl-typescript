@@ -393,7 +393,13 @@ export interface ClientOptions {
   fetch?: typeof globalThis.fetch;
   /** Maximum retry attempts for transient errors (429, 5xx). Default: 3. */
   maxRetries?: number;
-  /** Request timeout in milliseconds. Default: 30000. */
+  /**
+   * Request timeout in milliseconds, **per attempt** (not total). Default: 30000.
+   *
+   * Worst-case total time for a request that exhausts all retries is
+   * approximately `timeout * (maxRetries + 1) + sum(retryDelay)`. If you
+   * need a hard total budget, wrap the call in your own AbortController.
+   */
   timeout?: number;
   /** User-Agent header value. */
   userAgent?: string;

@@ -109,6 +109,24 @@ describe("QURLClient", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it.each([
+    [
+      "create",
+      (c: QURLClient): Promise<unknown> =>
+        c.create({ target_url: "https://example.com", label: "" }),
+    ],
+    ["mintLink", (c: QURLClient): Promise<unknown> => c.mintLink("r_abc", { label: "" })],
+  ])("%s rejects empty-string label client-side (server has minLength: 1)", async (_, call) => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+
+    const error = await call(client).catch((e: unknown) => e as ValidationError);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).detail).toContain("label");
+    expect((error as ValidationError).detail).toContain("empty");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("validateCreateInput collects ALL field errors (not fail-fast)", async () => {
     // Documented batchCreate UX: "All failures are collected into a
     // single ValidationError" — must hold per-item too. Previously
@@ -1577,6 +1595,35 @@ describe("QURLClient", () => {
     expect(dropLog).toBeDefined();
   });
 
+  it("mapQurlsField logs when `qurls` is bare null (without access_tokens)", async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: {
+        data: {
+          resource_id: "r_null",
+          target_url: "https://example.com",
+          status: "active",
+          qurls: null,
+        },
+      },
+    });
+    const debugFn = vi.fn();
+    const client = new QURLClient({
+      apiKey: "lv_live_test",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch,
+      maxRetries: 0,
+      debug: debugFn,
+    });
+
+    const result = await client.get("r_null");
+    expect((result as { qurls?: unknown }).qurls).toBeUndefined();
+    const log = debugFn.mock.calls.find(
+      (c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("was null"),
+    );
+    expect(log).toBeDefined();
+  });
+
   it("parseError synthesizes a title from HTTP status when statusText is empty (HTTP/2)", async () => {
     // HTTP/2 omits reason-phrases — fallback must keep Error.message legible.
     const fetch = mockFetch({
@@ -1828,6 +1875,19 @@ describe("QURLClient", () => {
     expect(thrown).toBeInstanceOf(ValidationError);
     expect((thrown as ValidationError).code).toBe(ERROR_CODE_CLIENT_VALIDATION);
     expect((thrown as ValidationError).detail).toContain("apiKey");
+  });
+
+  it("rejects apiKey containing CR/LF (header-injection guard)", () => {
+    for (const bad of ["lv_live_abc\r\nX-Injected: 1", "lv_live\nbar", "lv_live\rxyz"]) {
+      let thrown: unknown;
+      try {
+        new QURLClient({ apiKey: bad, fetch: mockFetch({ status: 200 }) });
+      } catch (e) {
+        thrown = e;
+      }
+      expect(thrown).toBeInstanceOf(ValidationError);
+      expect((thrown as ValidationError).detail).toContain("CR/LF");
+    }
   });
 
   it("retries on 429 and succeeds", async () => {
@@ -2171,64 +2231,87 @@ describe("QURLClient", () => {
 
   it("respects Retry-After header on 429 responses", async () => {
     vi.useFakeTimers();
-
-    const retryAfterResponse = {
-      ok: false,
-      status: 429,
-      statusText: "Too Many Requests",
-      headers: new Headers({ "Retry-After": "2" }),
-      json: () =>
-        Promise.resolve({
-          error: {
-            title: "Rate Limited",
-            status: 429,
-            detail: "Too many requests",
-            code: "rate_limited",
+    try {
+      const fetch = mockFetches([
+        {
+          status: 429,
+          body: {
+            error: {
+              title: "Rate Limited",
+              status: 429,
+              detail: "Too many requests",
+              code: "rate_limited",
+            },
           },
-        }),
-      text: () => Promise.resolve(""),
-    } satisfies Partial<Response> as Response;
+          headers: { "Retry-After": "2" },
+        },
+        {
+          status: 200,
+          body: { data: { plan: "growth", period_start: "2026-03-01", period_end: "2026-04-01" } },
+        },
+      ]);
+      const client = new QURLClient({
+        apiKey: "lv_live_test",
+        baseUrl: "https://api.test.layerv.ai",
+        fetch,
+        maxRetries: 1,
+      });
 
-    const successResponse = {
-      ok: true,
-      status: 200,
-      statusText: "OK",
-      headers: new Headers({}),
-      json: () =>
-        Promise.resolve({
-          data: {
-            plan: "growth",
-            period_start: "2026-03-01",
-            period_end: "2026-04-01",
+      const promise = client.getQuota();
+      await vi.advanceTimersByTimeAsync(100);
+      expect(fetch).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(2000);
+      const result = await promise;
+      expect(result.plan).toBe("growth");
+      expect(fetch).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("respects Retry-After header on 503 responses too (RFC 7231 §7.1.3)", async () => {
+    // Per RFC 7231, Retry-After is allowed on 429 AND 503. Earlier
+    // versions only honored it on 429; a 503 with Retry-After: 30
+    // would otherwise fall through to ≤30s exponential-with-jitter.
+    vi.useFakeTimers();
+    try {
+      const retryAfter503 = mockFetches([
+        {
+          status: 503,
+          body: {
+            error: {
+              title: "Service Unavailable",
+              status: 503,
+              detail: "Maintenance",
+              code: "service_unavailable",
+            },
           },
-        }),
-      text: () => Promise.resolve(""),
-    } satisfies Partial<Response> as Response;
+          headers: { "Retry-After": "2" },
+        },
+        {
+          status: 200,
+          body: { data: { plan: "growth", period_start: "2026-03-01", period_end: "2026-04-01" } },
+        },
+      ]);
+      const client = new QURLClient({
+        apiKey: "lv_live_test",
+        baseUrl: "https://api.test.layerv.ai",
+        fetch: retryAfter503,
+        maxRetries: 1,
+      });
 
-    const fetch = vi
-      .fn()
-      .mockResolvedValueOnce(retryAfterResponse)
-      .mockResolvedValueOnce(successResponse);
-
-    const client = new QURLClient({
-      apiKey: "lv_live_test",
-      baseUrl: "https://api.test.layerv.ai",
-      fetch: fetch as typeof globalThis.fetch,
-      maxRetries: 1,
-    });
-
-    const promise = client.getQuota();
-    // Allow first fetch to resolve, but retry should not fire yet
-    await vi.advanceTimersByTimeAsync(100);
-    expect(fetch).toHaveBeenCalledTimes(1);
-    // Advance past the 2000ms Retry-After delay
-    await vi.advanceTimersByTimeAsync(2000);
-    const result = await promise;
-
-    expect(result.plan).toBe("growth");
-    expect(fetch).toHaveBeenCalledTimes(2);
-
-    vi.useRealTimers();
+      const promise = client.getQuota();
+      // Just before the 2s server directive: must NOT have retried.
+      await vi.advanceTimersByTimeAsync(1999);
+      expect(retryAfter503).toHaveBeenCalledTimes(1);
+      // Just after the directive: retry fires.
+      await vi.advanceTimersByTimeAsync(2);
+      const result = await promise;
+      expect(result.plan).toBe("growth");
+      expect(retryAfter503).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("falls back to exponential backoff when Retry-After is an HTTP-date", async () => {

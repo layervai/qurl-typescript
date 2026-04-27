@@ -199,6 +199,13 @@ function requireMaxLength(value: string | undefined, field: string, max: number)
   }
 }
 
+function requireNonEmptyIfPresent(value: unknown, field: string): void {
+  // Reject `""` so uninitialized form state doesn't reach the wire.
+  if (value === "") {
+    throw clientValidationError(`${field}: must not be an empty string`);
+  }
+}
+
 function requireMaxSessionsInRange(value: number | undefined): void {
   if (value === undefined) return;
   if (!Number.isInteger(value) || value < 0 || value > MAX_MAX_SESSIONS) {
@@ -322,6 +329,7 @@ function validateCreateInput(input: CreateInput): void {
   };
   collect(() => requireValidTargetUrl(input.target_url));
   collect(() => requireMaxLength(input.label, "label", MAX_LABEL));
+  collect(() => requireNonEmptyIfPresent(input.label, "label"));
   collect(() => requireMaxLength(input.custom_domain, "custom_domain", MAX_CUSTOM_DOMAIN));
   collect(() => requireMaxSessionsInRange(input.max_sessions));
   if (errors.length > 0) {
@@ -454,6 +462,12 @@ export class QURLClient {
     if (!options.apiKey) {
       throw clientValidationError("apiKey is required");
     }
+    // Header-injection guard: `Authorization: Bearer ${apiKey}` would
+    // otherwise be exploitable on a CR/LF-bearing key. Surface as
+    // ValidationError at construction, not as TypeError on first request.
+    if (/[\r\n]/.test(options.apiKey)) {
+      throw clientValidationError("apiKey: must not contain CR/LF characters");
+    }
     this.apiKey = options.apiKey;
     const rawBaseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
     // Parse the URL so the loopback exemption matches on the hostname,
@@ -553,13 +567,18 @@ export class QURLClient {
   private mapQurlsField(raw: QURL & { qurls?: AccessToken[] }): QURL {
     if (!Object.prototype.hasOwnProperty.call(raw, "qurls")) return raw;
     const { qurls, ...rest } = raw;
-    // Defensive: drop non-array `qurls` so the type promise on
-    // `access_tokens: AccessToken[]` isn't violated by a misbehaving
-    // proxy.
+    // Defensive: drop non-array `qurls` to keep `access_tokens: AccessToken[]`'s
+    // type promise honest under a misbehaving proxy.
     if (qurls !== undefined && qurls !== null && !Array.isArray(qurls)) {
       this.log("mapQurlsField: 'qurls' was not an array; dropping", {
         qurls_type: typeof qurls,
       });
+      return rest;
+    }
+    // null is semantically "no tokens" — silent drop is fine, but surface
+    // via debug so operators spot it if the API starts emitting null.
+    if (qurls === null) {
+      this.log("mapQurlsField: 'qurls' was null; dropping", {});
       return rest;
     }
     if (qurls && !rest.access_tokens) {
@@ -1055,17 +1074,9 @@ export class QURLClient {
       }
     }
 
-    // Empty-string check on timing fields. `description: ""` has
-    // documented clear semantics (see UpdateInput JSDoc) and stays
-    // as-is; the timing fields don't — `extend_by: ""` would either
-    // trip the mutual-exclusion check below or hit the server as a
-    // malformed duration. Reject up front with a structured error
-    // matching the rest of the validators.
-    for (const key of ["extend_by", "expires_at"] as const) {
-      if (normalized[key] === "") {
-        throw clientValidationError(`${key}: must not be an empty string`);
-      }
-    }
+    // Timing fields have no clear-semantic (unlike `description: ""`).
+    requireNonEmptyIfPresent(normalized.extend_by, "extend_by");
+    requireNonEmptyIfPresent(normalized.expires_at, "expires_at");
 
     if (normalized.extend_by !== undefined && normalized.expires_at !== undefined) {
       throw clientValidationError(
@@ -1120,15 +1131,9 @@ export class QURLClient {
       // Content-Type, no body); server-side defaults are identical.
       normalized = hasAnyField ? (stripped as MintInput) : undefined;
     }
-    // Empty-string check on timing fields. Symmetric with update();
-    // the timing fields have no "clear" semantic, so an empty string
-    // is always a caller mistake (e.g. uninitialized form state).
     if (normalized !== undefined) {
-      for (const key of ["expires_in", "expires_at"] as const) {
-        if (normalized[key] === "") {
-          throw clientValidationError(`${key}: must not be an empty string`);
-        }
-      }
+      requireNonEmptyIfPresent(normalized.expires_in, "expires_in");
+      requireNonEmptyIfPresent(normalized.expires_at, "expires_at");
     }
     if (normalized?.expires_in !== undefined && normalized.expires_at !== undefined) {
       throw clientValidationError(
@@ -1137,6 +1142,7 @@ export class QURLClient {
     }
     if (normalized !== undefined) {
       requireMaxLength(normalized.label, "label", MAX_LABEL);
+      requireNonEmptyIfPresent(normalized.label, "label");
       requireMaxSessionsInRange(normalized.max_sessions);
       // `session_duration` and `expires_in` are intentionally NOT
       // validated client-side here, even though the JSDoc on MintInput
@@ -1397,7 +1403,8 @@ export class QURLClient {
   }
 
   private parseRetryAfter(response: Response): number | undefined {
-    if (response.status !== 429) return undefined;
+    // RFC 7231 §7.1.3: Retry-After honored on 429 + 503.
+    if (response.status !== 429 && response.status !== 503) return undefined;
     const header = response.headers.get("Retry-After");
     if (!header) return undefined;
     // TODO: parse HTTP-date format per RFC 7231 §7.1.3 — currently only

@@ -93,9 +93,11 @@ if (result.failed > 0) {
 
 Non-400 errors (401, 403, 429, 5xx, and unexpected 400 body shapes) still throw the appropriate `QURLError` subclass.
 
+**Slimmer per-item shape** — `BatchItemSuccess` returns `{ resource_id, qurl_link, qurl_site, expires_at? }` per item. Unlike single `client.create()`, the batch response intentionally **omits `qurl_id` and `label`** to keep the payload compact. If you migrate a per-item `create()` loop to `batchCreate` and rely on `qurl_id` for downstream addressing, fetch each via `client.get(resource_id)` after the batch (or stay on the single-create path).
+
 **Result ordering** — `result.results` is **not** guaranteed to be sorted by `index`. Each entry's `index` field carries the position in the original `items` array, so build per-input-position state by keying on `r.index` (e.g., `for (const r of result.results) { byInputIndex[r.index] = r; }`) rather than relying on iteration order.
 
-**Duplicate `index` values** — under a misbehaving server, duplicates are logged (debug) but not thrown. Callers building a `Map` keyed by `r.index` see last-write-wins; for high-stakes batches, assert uniqueness yourself: `new Set(result.results.map(r => r.index)).size === result.results.length`.
+**Out-of-range or duplicate `index` values** — the SDK throws `QURLError` (`code: "unexpected_response"`) on either condition, since both indicate server misbehavior that would silently break per-item attribution (a `Map` keyed on `r.index` would last-write-wins, an out-of-range index would attribute to a non-existent slot).
 
 ## Error Handling
 
