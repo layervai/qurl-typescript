@@ -24,7 +24,13 @@ const DEFAULT_BASE_URL = "https://api.layerv.ai";
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_TIMEOUT = 30_000;
 const RETRY_BASE_DELAY_MS = 500;
+// Bounds local exponential backoff (NOT server-asserted Retry-After —
+// see `RETRY_AFTER_HARD_CAP_MS` for that).
 const RETRY_MAX_DELAY_MS = 30_000;
+// Hard cap on server-asserted Retry-After. Guards against `Retry-After`
+// values >2^31-1 ms overflowing Node's setTimeout (silently truncated to
+// 1ms — turns a "wait a month" directive into a hot retry loop).
+const RETRY_AFTER_HARD_CAP_MS = 60 * 60 * 1000;
 const RETRYABLE_STATUS = new Set([429, 502, 503, 504]);
 const RETRYABLE_STATUS_MUTATING = new Set([429]);
 type HttpMethod = "GET" | "POST" | "PATCH" | "DELETE";
@@ -824,11 +830,20 @@ export class QURLClient {
     // source per the type, but absent meta means absent canonical, and
     // an over-eager strip would discard usable correlation data.
     const dataRequestId = (result as { request_id?: unknown }).request_id;
-    if (dataRequestId !== undefined && requestId !== undefined && dataRequestId !== requestId) {
-      this.log("batchCreate: response carries request_id on BOTH data and meta; keeping meta", {
-        meta_request_id: requestId,
-        data_request_id: String(dataRequestId).slice(0, 80),
-      });
+    if (dataRequestId !== undefined) {
+      const dataRequestIdRepr = String(dataRequestId).slice(0, 80);
+      if (requestId !== undefined && dataRequestId !== requestId) {
+        this.log("batchCreate: response carries request_id on BOTH data and meta; keeping meta", {
+          meta_request_id: requestId,
+          data_request_id: dataRequestIdRepr,
+        });
+      } else if (requestId === undefined) {
+        // Data-only request_id suggests an envelope-shape transition;
+        // surface for observability.
+        this.log("batchCreate: response carries request_id on data only (meta absent)", {
+          data_request_id: dataRequestIdRepr,
+        });
+      }
     }
     return requestId !== undefined ? { ...result, request_id: requestId } : result;
   }
@@ -1086,13 +1101,18 @@ export class QURLClient {
       // to the wire body. The compile-time `assertExhaustive` check
       // on MINT_FIELD_KEYS keeps this in sync with MintInput.
       const stripped: Record<string, unknown> = {};
+      let hasAnyField = false;
       for (const key of MINT_FIELD_KEYS) {
         const value = input[key];
         if (value !== null && value !== undefined) {
           stripped[key] = value;
+          hasAnyField = true;
         }
       }
-      normalized = stripped as MintInput;
+      // Collapse to `undefined` when stripping leaves nothing so
+      // `mintLink(id, {})` matches `mintLink(id)` on the wire (no
+      // Content-Type, no body); server-side defaults are identical.
+      normalized = hasAnyField ? (stripped as MintInput) : undefined;
     }
     // Empty-string check on timing fields. Symmetric with update();
     // the timing fields have no "clear" semantic, so an empty string
@@ -1387,7 +1407,15 @@ export class QURLClient {
    */
   private retryDelay(attempt: number, lastError?: Error): number {
     if (lastError instanceof QURLError && lastError.retryAfter !== undefined) {
-      return lastError.retryAfter * 1000;
+      const requestedMs = lastError.retryAfter * 1000;
+      if (requestedMs > RETRY_AFTER_HARD_CAP_MS) {
+        this.log("Retry-After exceeded hard cap, truncating", {
+          requested_seconds: lastError.retryAfter,
+          capped_ms: RETRY_AFTER_HARD_CAP_MS,
+        });
+        return RETRY_AFTER_HARD_CAP_MS;
+      }
+      return requestedMs;
     }
     const base = RETRY_BASE_DELAY_MS * Math.pow(2, attempt - 1);
     const jitter = Math.random() * base * 0.5;

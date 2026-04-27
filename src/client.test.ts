@@ -12,7 +12,7 @@ import {
   ValidationError,
 } from "./errors.js";
 import type { BatchCreateInput, CreateInput, MintInput } from "./types.js";
-import { mockFetch, createClient } from "./__tests__/test-helpers.js";
+import { mockFetch, mockFetches, createClient } from "./__tests__/test-helpers.js";
 
 describe("QURLClient", () => {
   it("creates a qURL", async () => {
@@ -193,6 +193,20 @@ describe("QURLClient", () => {
       expect((error as ValidationError).detail).toContain("http:// or https://");
     }
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("create accepts target_url with whitespace inside the path", async () => {
+    // Path grammar lives server-side; client validator checks
+    // scheme + length only. Pass-through behavior locked in.
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+    const client = createClient(fetch);
+
+    await expect(
+      client.create({ target_url: "https://example.com/with spaces/and%20encoded" }),
+    ).resolves.toBeDefined();
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const body = JSON.parse((fetch.mock.calls[0][1] as RequestInit).body as string);
+    expect(body.target_url).toBe("https://example.com/with spaces/and%20encoded");
   });
 
   it("create accepts http:// and https:// schemes", async () => {
@@ -860,6 +874,28 @@ describe("QURLClient", () => {
     expect(body).not.toHaveProperty("expires_in");
     expect(body).not.toHaveProperty("label");
     expect(body.expires_at).toBe("2026-04-01T00:00:00Z");
+  });
+
+  it("mintLink({}) and mintLink() produce the same wire request (no body)", async () => {
+    // Empty input → `undefined` → no Content-Type, no body — matches
+    // `mintLink(id)`. Three shapes exercise distinct strip-path branches.
+    const fetch = mockFetch({
+      status: 200,
+      body: { data: { qurl_link: "https://qurl.link/#at_x" } },
+    });
+    const client = createClient(fetch);
+
+    await client.mintLink("r_abc", {});
+    await client.mintLink("r_abc");
+    await client.mintLink("r_abc", { expires_in: null as unknown as string });
+
+    expect(fetch).toHaveBeenCalledTimes(3);
+    for (const call of fetch.mock.calls) {
+      const init = call[1] as RequestInit;
+      expect(init.body).toBeUndefined();
+      const headers = new Headers(init.headers);
+      expect(headers.get("content-type")).toBeNull();
+    }
   });
 
   it("mintLink rejects label longer than 500 chars", async () => {
@@ -2224,6 +2260,53 @@ describe("QURLClient", () => {
     }
   });
 
+  it("Retry-After exceeding hard cap is truncated and logged", async () => {
+    // Pathological `Retry-After` >2^31-1 ms overflows Node's setTimeout
+    // to 1ms — hot-loop hazard. Cap honored, retry attempted only after
+    // the cap (not before).
+    vi.useFakeTimers();
+    try {
+      const huge = 86400 * 30; // 30 days, well past the 1h cap
+      const retryAfterHuge = mockFetches([
+        {
+          status: 429,
+          body: {
+            error: { title: "Rate Limited", status: 429, detail: "x", code: "rate_limited" },
+          },
+          headers: { "Retry-After": String(huge) },
+        },
+        {
+          status: 200,
+          body: { data: { plan: "growth", period_start: "2026-03-01", period_end: "2026-04-01" } },
+        },
+      ]);
+
+      const debugMessages: string[] = [];
+      const client = new QURLClient({
+        apiKey: "lv_live_test",
+        baseUrl: "https://api.test.layerv.ai",
+        fetch: retryAfterHuge,
+        maxRetries: 1,
+        debug: (msg) => {
+          debugMessages.push(msg);
+        },
+      });
+
+      const promise = client.getQuota();
+      // Just under the cap: must NOT have fired the second fetch yet.
+      await vi.advanceTimersByTimeAsync(3_599_999);
+      expect(retryAfterHuge).toHaveBeenCalledTimes(1);
+      // Past the cap: retry fires.
+      await vi.advanceTimersByTimeAsync(2);
+      const result = await promise;
+      expect(result.plan).toBe("growth");
+      expect(retryAfterHuge).toHaveBeenCalledTimes(2);
+      expect(debugMessages.some((m) => m.includes("Retry-After exceeded hard cap"))).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("rejects Retry-After with trailing garbage (e.g. '60abc') as non-numeric", async () => {
     // `parseInt("60abc", 10)` returns 60 — a malformed header would
     // silently get honored without the digit-only pre-check. The strict
@@ -2981,6 +3064,18 @@ describe("QURLClient", () => {
 
     const messages = debugFn.mock.calls.map((c: unknown[]) => c[0]);
     expect(messages.some((m: string) => m.includes("unexpected error response shape"))).toBe(true);
+  });
+
+  it("5xx with JSON body but missing `error` envelope surfaces as ServerError with .code === 'unknown'", async () => {
+    // Locks in the documented `.code === "unknown"` sentinel for the
+    // parseError fallback path (JSON parses, `error` envelope absent).
+    const fetch = mockFetch({ status: 500, body: { unexpected_shape: true } });
+    const client = createClient(fetch);
+
+    const error = await client.getQuota().catch((e: unknown) => e as ServerError);
+    expect(error).toBeInstanceOf(ServerError);
+    expect((error as ServerError).status).toBe(500);
+    expect((error as ServerError).code).toBe("unknown");
   });
 
   it("parseError logs when the error body is not valid JSON", async () => {
@@ -3973,6 +4068,45 @@ describe("QURLClient", () => {
     });
     expect(result.failed).toBe(1);
     expect(result.request_id).toBe("req_batch_400_xyz");
+  });
+
+  it("batch create logs when request_id appears on data only (meta absent)", async () => {
+    // Data-side value passes through; debug log surfaces the divergence.
+    const fetch = mockFetch({
+      status: 201,
+      body: {
+        data: {
+          succeeded: 1,
+          failed: 0,
+          request_id: "req_data_only_abc",
+          results: [
+            {
+              index: 0,
+              success: true,
+              resource_id: "r_data_only",
+              qurl_link: "https://qurl.link/#at_x",
+              qurl_site: "https://r_data_only.qurl.site",
+            },
+          ],
+        },
+      },
+    });
+    const debugMessages: string[] = [];
+    const client = new QURLClient({
+      apiKey: "lv_live_test",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      debug: (msg) => {
+        debugMessages.push(msg);
+      },
+    });
+
+    const result = await client.batchCreate({
+      items: [{ target_url: "https://example.com" }],
+    });
+    // Data-side value preserved (no over-eager strip).
+    expect((result as { request_id?: unknown }).request_id).toBe("req_data_only_abc");
+    expect(debugMessages.some((m) => m.includes("request_id on data only"))).toBe(true);
   });
 
   it("batch create omits request_id when the server doesn't provide one", async () => {

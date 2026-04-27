@@ -10,6 +10,12 @@ import type { QURLErrorData } from "./types.js";
  * HTTP status code applies. To distinguish between these cases, branch on
  * `.code` rather than `.status`. Non-zero `.status` always reflects a real
  * HTTP status from the API (e.g. 400, 401, 429, 500).
+ *
+ * **`.code === "unknown"`** is a possible value when the server returns a
+ * non-RFC-7807 response (e.g. a Cloudflare HTML error page, a gateway
+ * timeout with a plaintext body, or a JSON body whose `error` envelope
+ * is missing). The HTTP `.status` is still real in those cases — use
+ * `.status` for the route, `.code` for the SDK-vs-API discriminant.
  */
 export class QURLError extends Error {
   readonly status: number;
