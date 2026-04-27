@@ -448,6 +448,29 @@ describe("QURLClient", () => {
     expect(detail).not.toContain("sensitive_suffix");
   });
 
+  it("delete rejects non-string ids with a structured ValidationError (untyped-JS safety)", async () => {
+    // Regression guard: without the typeof-string guard, an untyped JS
+    // caller passing `undefined`/`null`/`42` would hit a raw
+    // `TypeError: Cannot read properties of undefined (reading 'length')`
+    // from `id.length`, bypassing the SDK's structured error envelope.
+    // Match the typeof-guard pattern used in requireValidTags /
+    // requireValidTargetUrl / requireMaxLength.
+    const fetch = mockFetch({ status: 204 });
+    const client = createClient(fetch);
+
+    for (const badId of [undefined, null, 42, {}]) {
+      const error = await client
+        .delete(badId as unknown as string)
+        .catch((e: unknown) => e as ValidationError);
+      expect(error).toBeInstanceOf(ValidationError);
+      expect((error as ValidationError).code).toBe("client_validation");
+      // Must mention the type — operators need to know what came in.
+      const detail = (error as ValidationError).detail;
+      expect(detail).toMatch(/undefined|null|number|object/);
+    }
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("delete gives a distinct error for too-short / empty IDs", async () => {
     // An empty string or 1-2 char input isn't a plausible ID — the
     // "starting with X" wording would just echo noise (or nothing) and
@@ -709,6 +732,29 @@ describe("QURLClient", () => {
       .catch((e: unknown) => e as ValidationError);
     expect(error).toBeInstanceOf(ValidationError);
     expect((error as ValidationError).detail).toContain("description");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("requireMaxLength rejects non-string inputs (untyped-JS safety)", async () => {
+    // Regression guard: without the typeof-string guard inside
+    // requireMaxLength, an untyped JS caller passing `description: 42`
+    // would silently sail through to the wire — `(42).length` is
+    // `undefined`, and `undefined > 500` is `false`. Same surface as
+    // requireValidTags / requireValidTargetUrl. Exercise via update()
+    // since it's the most direct user of requireMaxLength.
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+
+    for (const badDescription of [42, true, {}, []]) {
+      const error = await client
+        .update("r_abc", { description: badDescription as unknown as string })
+        .catch((e: unknown) => e as ValidationError);
+      expect(error).toBeInstanceOf(ValidationError);
+      expect((error as ValidationError).code).toBe("client_validation");
+      const detail = (error as ValidationError).detail;
+      expect(detail).toContain("description");
+      expect(detail).toContain("must be a string");
+    }
     expect(fetch).not.toHaveBeenCalled();
   });
 
@@ -1762,6 +1808,64 @@ describe("QURLClient", () => {
     const result = await client.getQuota();
     expect(result.plan).toBe("growth");
     expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("honors Retry-After: 0 (immediate retry, not exponential backoff)", async () => {
+    // RFC 7231 §7.1.3 allows Retry-After: 0 ("retry immediately"). A
+    // truthy check on `lastError.retryAfter` would misclassify 0 as
+    // "unset" and fall through to exponential backoff (~500ms). The
+    // current `!== undefined` guard preserves the literal 0. Locks in
+    // the semantic against future regressions: the 50ms budget below
+    // is well under the 500ms exponential floor a truthy bug would hit.
+    vi.useFakeTimers();
+    try {
+      const retryAfterZero = {
+        ok: false,
+        status: 429,
+        statusText: "Too Many Requests",
+        headers: new Headers({ "Retry-After": "0" }),
+        json: () =>
+          Promise.resolve({
+            error: { title: "Rate Limited", status: 429, detail: "x", code: "rate_limited" },
+          }),
+        text: () => Promise.resolve(""),
+      } satisfies Partial<Response> as Response;
+
+      const successResponse = {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        headers: new Headers({}),
+        json: () =>
+          Promise.resolve({
+            data: { plan: "growth", period_start: "2026-03-01", period_end: "2026-04-01" },
+          }),
+        text: () => Promise.resolve(""),
+      } satisfies Partial<Response> as Response;
+
+      const fetch = vi
+        .fn()
+        .mockResolvedValueOnce(retryAfterZero)
+        .mockResolvedValueOnce(successResponse);
+
+      const client = new QURLClient({
+        apiKey: "lv_live_test",
+        baseUrl: "https://api.test.layerv.ai",
+        fetch: fetch as typeof globalThis.fetch,
+        maxRetries: 1,
+      });
+
+      const promise = client.getQuota();
+      // 50ms is well under the 500ms exponential floor a truthy bug
+      // would hit, so it cleanly distinguishes "Retry-After: 0 honored"
+      // from "fell through to exponential backoff."
+      await vi.advanceTimersByTimeAsync(50);
+      const result = await promise;
+      expect(result.plan).toBe("growth");
+      expect(fetch).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("clamps negative maxRetries to 0 (defensive against caller misuse)", async () => {

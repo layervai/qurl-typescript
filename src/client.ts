@@ -128,7 +128,17 @@ const TAG_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9 _-]*$/;
 const RESOURCE_ID_PREFIX = "r_";
 
 function requireMaxLength(value: string | undefined, field: string, max: number): void {
-  if (value !== undefined && value.length > max) {
+  if (value === undefined) return;
+  // Untyped-JS safety: a non-string `value` would silently pass since
+  // `(42).length === undefined > max` is `false` and the bad value would
+  // sail through to the wire. Match the typeof guard pattern used by
+  // requireValidTags / requireValidTargetUrl.
+  if (typeof value !== "string") {
+    throw clientValidationError(
+      `${field}: must be a string (got ${value === null ? "null" : typeof value})`,
+    );
+  }
+  if (value.length > max) {
     throw clientValidationError(
       `${field}: must be ${max} characters or fewer (got ${value.length})`,
     );
@@ -352,13 +362,15 @@ export class QURLClient {
     this.apiKey = options.apiKey;
     const rawBaseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
     // Reject http:// to prevent the bearer token from being sent in the
-    // clear over a typo'd or downgraded base URL. `http://localhost` and
-    // `http://127.0.0.1` are exempted as the conventional escape hatch
-    // for local development against a non-TLS test server.
+    // clear over a typo'd or downgraded base URL. `http://localhost`,
+    // `http://127.0.0.1`, and `http://[::1]` are exempted as the
+    // conventional escape hatch for local development against a non-TLS
+    // test server (IPv4 + IPv6 + name-based loopback).
     if (
       !rawBaseUrl.startsWith("https://") &&
       !rawBaseUrl.startsWith("http://localhost") &&
-      !rawBaseUrl.startsWith("http://127.0.0.1")
+      !rawBaseUrl.startsWith("http://127.0.0.1") &&
+      !rawBaseUrl.startsWith("http://[::1]")
     ) {
       throw clientValidationError(
         `baseUrl: must use https:// scheme (got ${JSON.stringify(rawBaseUrl).slice(0, 60)})`,
@@ -709,6 +721,14 @@ export class QURLClient {
    * A client-side prefix check catches the mistake before the API round-trip.
    */
   async delete(id: string): Promise<void> {
+    // Type guard for untyped-JS callers — without it, `(undefined).length`
+    // is a raw TypeError instead of the structured ValidationError the
+    // rest of the surface produces.
+    if (typeof id !== "string") {
+      throw clientValidationError(
+        `delete: requires a resource ID (${RESOURCE_ID_PREFIX} prefix + suffix) — got ${id === null ? "null" : typeof id}`,
+      );
+    }
     // Too-short check runs BEFORE the prefix check so it catches
     // bare-prefix inputs like `"r_"` (right prefix, no suffix) in
     // addition to `""` / `"x"` / `"ab"` / `"q_"`. Without this
@@ -742,10 +762,13 @@ export class QURLClient {
    *
    * Accepts either a resource ID (`r_` prefix) or a QURL display ID (`q_`
    * prefix). Convenience method — delegates to {@link update} with only the
-   * expiration fields. `ExtendInput` is a strict subset of `UpdateInput`, but
-   * destructuring before delegation enforces the narrow type at runtime so
-   * spread or variable callers can't accidentally leak `description` / `tags`
-   * through this path.
+   * expiration fields. `ExtendInput` shares its `extend_by` / `expires_at`
+   * fields with `UpdateInput` but is *narrower in two ways*: (1) exactly
+   * one of the two must be present (XOR via `?: never`), where `UpdateInput`
+   * allows neither; and (2) `description` / `tags` are absent. Destructuring
+   * before delegation enforces the narrowing at runtime so spread or variable
+   * callers can't accidentally leak the wider fields through this path; the
+   * runtime XOR check still happens inside `update()`.
    */
   async extend(id: string, input: ExtendInput): Promise<QURL> {
     // No requireNonEmptyId here — update() validates the id.
@@ -1028,7 +1051,10 @@ export class QURLClient {
   }
 
   private retryDelay(attempt: number, lastError?: Error): number {
-    if (lastError instanceof QURLError && lastError.retryAfter) {
+    // `!== undefined` (not truthy) so `Retry-After: 0` — legal per RFC
+    // 7231 §7.1.3, meaning "retry immediately" — is honored instead of
+    // falling through to the exponential-backoff branch.
+    if (lastError instanceof QURLError && lastError.retryAfter !== undefined) {
       return Math.min(lastError.retryAfter * 1000, RETRY_MAX_DELAY_MS);
     }
     const base = RETRY_BASE_DELAY_MS * Math.pow(2, attempt - 1);
