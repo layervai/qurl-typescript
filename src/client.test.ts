@@ -1558,6 +1558,7 @@ describe("QURLClient", () => {
     expect(dualFieldLog).toBeDefined();
     expect(dualFieldLog![0]).toContain("received both");
     expect(dualFieldLog![1]).toEqual({
+      branch: "both",
       qurls_count: 2,
       access_tokens_count: 1,
     });

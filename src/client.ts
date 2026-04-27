@@ -60,24 +60,11 @@ const LIST_PARAM_KEYS = [
   "expires_after",
 ] as const satisfies readonly (keyof ListInput)[];
 
-// `assertExhaustive` is a compile-time witness: it accepts a value
-// only when its type parameter narrows to the literal `true`. Used
-// below (and for UPDATE_FIELD_KEYS / MINT_FIELD_KEYS) to verify that
-// each `*_KEYS` allowlist covers every key of the corresponding
-// `*Input` interface. The trick:
-//
-//   Exclude<keyof ListInput, (typeof LIST_PARAM_KEYS)[number]>
-//
-// is `never` when LIST_PARAM_KEYS already names every key in
-// ListInput, so the witness narrows to `true` and the call type-
-// checks. Add a key to ListInput without updating LIST_PARAM_KEYS
-// and the Exclude<> result becomes the missing key name (a string
-// literal), the witness narrows to `never`, and the `(true)`
-// argument fails to assign — surfacing the drift at compile time.
-//
-// `satisfies readonly (keyof ListInput)[]` on the array catches the
-// other direction (a key listed that isn't on ListInput), so the
-// pair is bidirectional drift detection without runtime cost.
+// Compile-time witness: `Exclude<keyof X, (typeof KEYS)[number]>` is
+// `never` iff KEYS lists every key of X. Paired with the
+// `satisfies readonly (keyof X)[]` clause on the array (which catches
+// the other direction), this gives bidirectional drift detection on
+// the *_KEYS allowlists at zero runtime cost.
 function assertExhaustive<T extends true>(_: T): void {
   /* type-only check */
 }
@@ -550,21 +537,12 @@ export class QURLClient {
   // --- Helpers ---
 
   /**
-   * Maps the API's "qurls" field to "access_tokens" on the SDK type.
-   * Uses destructuring to avoid mutation and unsafe casts.
+   * Map the API's wire-format `qurls` field to the SDK's `access_tokens`.
    *
-   * **Why `hasOwnProperty.call` (not `if (raw.qurls)`):** an empty
-   * array `qurls: []` is truthy as a value but the rename must still
-   * happen — consumers expect `access_tokens: []` (empty list of
-   * tokens), not `qurls: []` slipping through. The presence check
-   * triggers regardless of value, so empty / null / undefined `qurls`
-   * all enter the rename branch and the wire-format key gets stripped.
-   * Belt-and-suspenders form: `Object.prototype.hasOwnProperty.call`
-   * confines the check to own-properties (the bare `in` operator walks
-   * the prototype chain). `response.json()` already produces plain
-   * objects, but if the SDK ever consumes pre-parsed bodies from
-   * arbitrary sources, this stays safe. Locked in by the test
-   * `"preserves empty qurls: [] as access_tokens: []"`.
+   * Uses `hasOwnProperty.call` (not `if (raw.qurls)`) so empty `qurls: []`
+   * still enters the rename branch — consumers expect `access_tokens: []`,
+   * not `qurls: []` leaking through. `.call` form confines the check to
+   * own-properties; safe even on pre-parsed bodies from arbitrary sources.
    */
   private mapQurlsField(raw: QURL & { qurls?: AccessToken[] }): QURL {
     if (!Object.prototype.hasOwnProperty.call(raw, "qurls")) return raw;
@@ -573,6 +551,7 @@ export class QURLClient {
     // type promise honest under a misbehaving proxy.
     if (qurls !== undefined && qurls !== null && !Array.isArray(qurls)) {
       this.log("mapQurlsField: 'qurls' was not an array; dropping", {
+        branch: "non-array",
         qurls_type: typeof qurls,
       });
       return rest;
@@ -580,7 +559,7 @@ export class QURLClient {
     // null is semantically "no tokens" — silent drop is fine, but surface
     // via debug so operators spot it if the API starts emitting null.
     if (qurls === null) {
-      this.log("mapQurlsField: 'qurls' was null; dropping", {});
+      this.log("mapQurlsField: 'qurls' was null; dropping", { branch: "null" });
       return rest;
     }
     if (qurls && !rest.access_tokens) {
@@ -591,6 +570,7 @@ export class QURLClient {
       // disagree, no consistent reconciliation exists; a silent merge
       // could double-count or surface stale data.
       this.log("mapQurlsField: received both 'qurls' and 'access_tokens'; keeping access_tokens", {
+        branch: "both",
         qurls_count: qurls.length,
         access_tokens_count: rest.access_tokens.length,
       });
@@ -603,28 +583,15 @@ export class QURLClient {
    * the inner {@link BatchCreateOutput}. Throws
    * {@link unexpectedResponseError} on any shape-guard failure.
    *
-   * Enforces three layers of defense-in-depth:
-   *   1. **Top-level shape**: `result` exists, `succeeded`/`failed` are
-   *      numbers, `results` is an array. Catches non-`BatchCreateOutput`
-   *      bodies on the 400 passthrough path (e.g. a proxy/gateway
-   *      returning a different error envelope).
-   *   2. **Arithmetic invariant**: `succeeded + failed === results.length`.
-   *      Catches the realistic edge case where a proxy returns a body
-   *      that happens to have the right field names but inconsistent
-   *      counts (e.g. a generic error counter from a gateway).
-   *   3. **Per-entry discriminated-union contract**: every entry has a
-   *      boolean `success` and the non-optional fields for its branch
-   *      (`resource_id`/`qurl_link`/`qurl_site` on success, `error.code`/
-   *      `error.message` on failure). Protects TypeScript consumers who
-   *      narrow on `success` and then access branch-specific fields as
-   *      guaranteed-present.
+   * Three layers of defense:
+   *   1. Top-level shape (succeeded/failed are non-negative integers;
+   *      results is an array).
+   *   2. Arithmetic invariant: `succeeded + failed === results.length`.
+   *   3. Per-entry discriminated-union contract + index range / dedupe.
    *
-   * Error messages include the observed HTTP status ("(HTTP 400)" /
-   * "(HTTP 201)" / etc.) so operators can distinguish proxy-induced
-   * 400 from genuine API schema drift on the happy path. The response
-   * body content is intentionally omitted — unexpected bodies could
-   * contain sensitive data (auth details, request echoes) and error
-   * messages may end up in client-side logs.
+   * Error messages include the observed HTTP status as a suffix so
+   * operators can attribute drift; entry values are deliberately
+   * never echoed (unexpected bodies may carry sensitive data).
    */
   private validateBatchCreateResponse(
     envelope: ApiResponse<BatchCreateOutput>,
@@ -1105,6 +1072,10 @@ export class QURLClient {
    *
    * Accepts either a resource ID (`r_` prefix) or a qURL display ID (`q_`
    * prefix); the API resolves `q_` IDs to the parent resource automatically.
+   *
+   * Passing `{}` or an object with all fields `null`/`undefined` is
+   * equivalent to omitting the second argument: no body is sent, and the
+   * server applies its 24h default expiration.
    */
   async mintLink(id: string, input?: MintInput): Promise<MintOutput> {
     requireNonEmptyId(id, "mintLink");
@@ -1421,12 +1392,13 @@ export class QURLClient {
   /**
    * Compute the delay before the next retry attempt.
    *
-   * - If the server sent a usable `Retry-After`, that value (in ms) is
-   *   honored without the `RETRY_MAX_DELAY_MS` clamp — the cap exists
-   *   to bound exponential backoff against ourselves; clamping a
-   *   server-asserted directive (e.g. `Retry-After: 60`) down to 30s
-   *   would just re-trip the rate limit. `Retry-After: 0` is honored
-   *   verbatim per RFC 7231 §7.1.3 ("retry immediately").
+   * - If the server sent a usable `Retry-After`, the value (converted
+   *   from seconds to ms) is honored without the `RETRY_MAX_DELAY_MS`
+   *   clamp — the cap exists to bound exponential backoff against
+   *   ourselves; clamping a server-asserted directive (e.g.
+   *   `Retry-After: 60`) down to 30s would just re-trip the rate limit.
+   *   `Retry-After: 0` is honored verbatim per RFC 7231 §7.1.3 ("retry
+   *   immediately").
    * - Otherwise: `RETRY_BASE_DELAY_MS * 2^(attempt-1)` plus 0-50%
    *   jitter, capped at `RETRY_MAX_DELAY_MS`.
    */
