@@ -552,7 +552,7 @@ export class QURLClient {
   }
 
   /**
-   * Batch create multiple QURLs (1-100 items).
+   * Batch create multiple qURLs (1-100 items).
    *
    * **Partial failures do not throw.** Two paths resolve normally with
    * structured per-item results:

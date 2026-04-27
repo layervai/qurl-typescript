@@ -3264,7 +3264,7 @@ describe("QURLClient", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("batch creates QURLs successfully", async () => {
+  it("batch creates qURLs successfully", async () => {
     const fetch = mockFetch({
       status: 201,
       body: {
@@ -3317,7 +3317,7 @@ describe("QURLClient", () => {
     );
   });
 
-  it("batch creates QURLs with partial failure", async () => {
+  it("batch creates qURLs with partial failure", async () => {
     const fetch = mockFetch({
       status: 207,
       body: {
