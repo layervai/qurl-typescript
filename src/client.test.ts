@@ -1274,6 +1274,42 @@ describe("QURLClient", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("mintLink passes access_policy through unvalidated (server is authoritative)", async () => {
+    // Locks in the documented "server is authoritative for nested
+    // policy contents" rationale (mirrors validateCreateInput).
+    // Bogus CIDR / ISO-3166 / regex values must round-trip to the
+    // wire untouched — the SDK doesn't pre-validate them, the server
+    // does. If a client-side IP/geo/regex validator is ever added,
+    // this test should fail intentionally so the change is visible.
+    const fetch = mockFetch({
+      status: 200,
+      body: {
+        data: {
+          qurl_link: "https://qurl.link/#at_x",
+          expires_at: "2026-04-01T00:00:00Z",
+        },
+      },
+    });
+    const client = createClient(fetch);
+
+    await client.mintLink("r_abc", {
+      access_policy: {
+        ip_allowlist: ["not-a-cidr"],
+        geo_allowlist: ["XX"],
+        user_agent_allow_regex: "(unbalanced",
+        ai_agent_policy: { deny_categories: ["fictional-category"] },
+      },
+    });
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const body = JSON.parse((fetch as ReturnType<typeof vi.fn>).mock.calls[0][1].body as string);
+    // Round-tripped verbatim — the SDK didn't reject or normalize.
+    expect(body.access_policy.ip_allowlist).toEqual(["not-a-cidr"]);
+    expect(body.access_policy.geo_allowlist).toEqual(["XX"]);
+    expect(body.access_policy.user_agent_allow_regex).toBe("(unbalanced");
+    expect(body.access_policy.ai_agent_policy.deny_categories).toEqual(["fictional-category"]);
+  });
+
   it("update treats `{ extend_by: undefined }` as empty (no stealth empty-input)", async () => {
     // A caller who threads an `undefined` through their own types
     // should still hit the empty-input guard — the some()-based check
@@ -1284,6 +1320,22 @@ describe("QURLClient", () => {
 
     const error = await client
       .update("r_abc", { extend_by: undefined })
+      .catch((e: unknown) => e as ValidationError);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).detail).toContain("at least one field");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("update treats both fields explicitly-undefined as empty input", async () => {
+    // Defense against a future refactor that switches the empty-input
+    // accumulator from value-based to key-based: `{ extend_by:
+    // undefined, expires_at: undefined }` must still surface as
+    // empty input, not as "two fields provided."
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+
+    const error = await client
+      .update("r_abc", { extend_by: undefined, expires_at: undefined })
       .catch((e: unknown) => e as ValidationError);
     expect(error).toBeInstanceOf(ValidationError);
     expect((error as ValidationError).detail).toContain("at least one field");
@@ -4277,6 +4329,29 @@ describe("QURLClient", () => {
     // trace pasted into a support ticket carries the correlation
     // handle without a follow-up round-trip.
     expect((error as ValidationError).detail).toContain("[request_id=req_shape_guard_correlation]");
+  });
+
+  it("batch create shape-guard error has undefined requestId when meta is absent", async () => {
+    // Inverse of the propagation test above: a 400 passthrough with
+    // no `meta` envelope at all (just `{ data: <bad shape> }`) must
+    // surface a ValidationError with `.requestId === undefined`,
+    // and the detail must NOT contain a `[request_id=...]` suffix.
+    // We don't fabricate correlation IDs.
+    const fetch = mockFetch({
+      status: 400,
+      body: {
+        data: { unexpected: "not a batch response" },
+      },
+    });
+
+    const client = createClient(fetch);
+    const error = await client
+      .batchCreate({ items: [{ target_url: "https://example.com" }] })
+      .catch((e: unknown) => e as ValidationError);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).code).toBe("unexpected_response");
+    expect((error as ValidationError).requestId).toBeUndefined();
+    expect((error as ValidationError).detail).not.toContain("[request_id=");
   });
 
   it("batch create surfaces ValidationError on unexpected 400 response shape", async () => {

@@ -625,6 +625,11 @@ export class QURLClient {
 
     // Per-entry discriminated-union contract. Reason strings report
     // field NAMES only, never values — safe for observability pipelines.
+    // Also accumulate `index` values: a server bug returning duplicate
+    // indices would silently break the per-item attribution model
+    // documented in the README, so surface duplicates via debug.
+    const seenIndices = new Set<number>();
+    const duplicateIndices: number[] = [];
     for (let i = 0; i < result.results.length; i++) {
       const reason = batchItemResultValidationReason(result.results[i]);
       if (reason !== null) {
@@ -633,6 +638,23 @@ export class QURLClient {
           requestId,
         );
       }
+      const entry = result.results[i] as { index: number };
+      if (seenIndices.has(entry.index)) {
+        duplicateIndices.push(entry.index);
+      } else {
+        seenIndices.add(entry.index);
+      }
+    }
+
+    if (duplicateIndices.length > 0) {
+      this.log(
+        "batchCreate: response has duplicate index values (per-item attribution unreliable)",
+        {
+          duplicates: duplicateIndices,
+          results_length: result.results.length,
+          request_id: requestId,
+        },
+      );
     }
 
     // Suspicious-but-shape-valid: empty results AND zero counts on a
@@ -786,6 +808,13 @@ export class QURLClient {
     // spread silently lets `meta` win — fine, but operators should
     // see the divergence rather than discover it via support-ticket
     // archaeology.
+    //
+    // When meta is absent, the `requestId !== undefined ? ...` ternary
+    // skips the spread and `result` passes through verbatim. If a
+    // future server places `request_id` only on `data`, that data-side
+    // value is preserved (we don't strip it) — meta is the canonical
+    // source per the type, but absent meta means absent canonical, and
+    // an over-eager strip would discard usable correlation data.
     const dataRequestId = (result as { request_id?: unknown }).request_id;
     if (dataRequestId !== undefined && requestId !== undefined && dataRequestId !== requestId) {
       this.log("batchCreate: response carries request_id on BOTH data and meta; keeping meta", {
@@ -968,6 +997,10 @@ export class QURLClient {
    */
   async extend(id: string, input: ExtendInput): Promise<QURL> {
     // No requireNonEmptyId here — update() validates the id.
+    // ExtendInput's `?: never` types enforce XOR at compile time, so
+    // typed callers can never reach this with both fields present.
+    // Untyped-JS callers spreading wider objects could; the runtime
+    // XOR check inside update() is the safety net for that path.
     const { extend_by, expires_at } = input;
     return this.update(id, { extend_by, expires_at });
   }
@@ -1077,6 +1110,12 @@ export class QURLClient {
       // validateCreateInput: duration grammar lives server-side, and
       // duplicating it as a regex risks drift. Don't add a half-baked
       // client-side duration parser without a strong case.
+      //
+      // `access_policy` contents (CIDRs, ISO-3166 codes, regex
+      // patterns) are also intentionally pass-through — same
+      // server-is-authoritative rationale as validateCreateInput.
+      // Don't add half-baked client-side IP/geo/regex validators
+      // without a strong case.
     }
     return this.request<MintOutput>(
       "POST",
