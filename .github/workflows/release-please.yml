@@ -3,13 +3,27 @@ name: Release Please
 on:
   push:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      ref_name:
+        description: "Full 40-character commit SHA to publish to npm"
+        required: true
+        type: string
 
 permissions:
   contents: write
   pull-requests: write
 
+env:
+  # Trusted publishing requires npm >= 11.5.1; pin a known-good CLI past the
+  # repo's dependency-age fence and use it consistently before publish. Future
+  # bumps must also be old enough for .npmrc's min-release-age gate, including
+  # if the runner's bundled npm starts honoring that gate during bootstrap.
+  NPM_VERSION: "11.10.0"
+
 jobs:
   release-please:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
@@ -23,35 +37,97 @@ jobs:
 
   test:
     needs: release-please
-    if: needs.release-please.outputs.release_created
+    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.release-please.outputs.release_created == 'true') }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
+      # Load-bearing guard: keep this validation inline in the trusted workflow,
+      # not in code loaded from the operator-selected ref.
+      - name: Validate manual publish ref
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          REF_NAME: ${{ github.event.inputs.ref_name }}
+        run: |
+          if [[ ! "$REF_NAME" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "ref_name must be a full 40-character commit SHA"
+            exit 1
+          fi
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.inputs.ref_name || needs.release-please.outputs.tag_name }}
+          fetch-depth: ${{ github.event_name == 'workflow_dispatch' && '0' || '1' }}
+      - name: Validate manual publish ancestry
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          REF_NAME: ${{ github.event.inputs.ref_name }}
+        run: |
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor "$REF_NAME" origin/main; then
+            echo "ref_name must be an ancestor of main"
+            exit 1
+          fi
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: "22"
           cache: "npm"
+      - run: npm install -g npm@${{ env.NPM_VERSION }}
       - run: npm ci
       - run: npm run build
+      - run: npm run smoke:dist
       - run: npm test
 
   publish:
     needs: [release-please, test]
-    if: needs.release-please.outputs.release_created
+    if: ${{ !cancelled() && needs.test.result == 'success' && (github.event_name == 'workflow_dispatch' || needs.release-please.outputs.release_created == 'true') }}
     runs-on: ubuntu-latest
+    # Serialize only the npm publish boundary; release-please maintenance and
+    # validation jobs can still run while a manual publish waits for approval.
+    concurrency:
+      group: npm-publish
+      cancel-in-progress: false
+    # Manual dispatch can publish any approved ref; keep this environment's
+    # required-reviewer, no-self-review, and no-admin-bypass rules intact.
     environment: npm-publish
     permissions:
       contents: read
       id-token: write
     steps:
+      # Load-bearing guard: keep this validation inline in the trusted workflow,
+      # not in code loaded from the operator-selected ref.
+      - name: Validate manual publish ref
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          REF_NAME: ${{ github.event.inputs.ref_name }}
+        run: |
+          if [[ ! "$REF_NAME" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "ref_name must be a full 40-character commit SHA"
+            exit 1
+          fi
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.inputs.ref_name || needs.release-please.outputs.tag_name }}
+          fetch-depth: ${{ github.event_name == 'workflow_dispatch' && '0' || '1' }}
+      - name: Validate manual publish ancestry
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          REF_NAME: ${{ github.event.inputs.ref_name }}
+        run: |
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor "$REF_NAME" origin/main; then
+            echo "ref_name must be an ancestor of main"
+            exit 1
+          fi
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: "22"
-          cache: "npm"
+          # setup-node v6 auto-caches package managers by default; keep the
+          # privileged publish job independent of restored dependency caches.
+          package-manager-cache: false
           registry-url: "https://registry.npmjs.org"
+      - run: npm install -g npm@${{ env.NPM_VERSION }}
       - run: npm ci
+      # .npmrc disables lifecycle scripts, so build and smoke explicitly here.
       - run: npm run build
-      - run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - run: npm run smoke:dist
+      - run: npm publish --provenance

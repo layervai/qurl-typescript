@@ -1,6 +1,6 @@
-# @layerv/qurl
+# @layervai/qurl
 
-[![npm](https://img.shields.io/npm/v/@layerv/qurl)](https://www.npmjs.com/package/@layerv/qurl)
+[![npm](https://img.shields.io/npm/v/@layervai/qurl)](https://www.npmjs.com/package/@layervai/qurl)
 [![CI](https://github.com/layervai/qurl-typescript/actions/workflows/ci.yml/badge.svg)](https://github.com/layervai/qurl-typescript/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/layervai/qurl-typescript)](LICENSE)
 
@@ -15,15 +15,15 @@ AI agents need to access protected resources — APIs, databases, internal tools
 ## Installation
 
 ```bash
-npm install @layerv/qurl
+npm install @layervai/qurl
 ```
 
-Requires Node.js 18+. Both `import { QURLClient } from '@layerv/qurl'` (ESM) and `const { QURLClient } = require('@layerv/qurl')` (CJS) work.
+Requires Node.js 18+. Both `import { QURLClient } from '@layervai/qurl'` (ESM) and `const { QURLClient } = require('@layervai/qurl')` (CJS) work.
 
 ## Quick Start
 
 ```typescript
-import { QURLClient } from '@layerv/qurl';
+import { QURLClient } from '@layervai/qurl';
 
 const client = new QURLClient({ apiKey: 'lv_live_xxx' });
 
@@ -131,7 +131,7 @@ import {
   NotFoundError,
   RateLimitError,
   ValidationError,
-} from '@layerv/qurl';
+} from '@layervai/qurl';
 
 try {
   await client.create({ target_url: '' });
