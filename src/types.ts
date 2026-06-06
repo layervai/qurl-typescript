@@ -1,8 +1,53 @@
+type OpenString<T extends string> = T | (string & {});
+
+/** Common response metadata returned by the API envelope. */
+export interface Meta {
+  request_id?: string;
+  page_size?: number;
+  has_more?: boolean;
+  next_cursor?: string;
+  tombstone?: TombstoneInfo;
+}
+
+/** Read-only metadata returned on tombstoned-resource error envelopes. */
+export interface TombstoneInfo {
+  tombstoned_at: string;
+  final_access_count?: number;
+}
+
+/** Shared pagination fields the SDK flattens out of response `meta`. */
+export interface PaginatedOutput {
+  next_cursor?: string;
+  has_more: boolean;
+  request_id?: string;
+  page_size?: number;
+}
+
+/** Resource type values currently advertised by the API. */
+export type ResourceType = OpenString<"url" | "tunnel" | "transit">;
+
+/** A well-known AI agent category identifier. */
+export type AIAgentCategory = OpenString<
+  | "chatgpt"
+  | "gptbot"
+  | "claude"
+  | "gemini"
+  | "perplexity"
+  | "cohere"
+  | "meta"
+  | "bytedance"
+  | "amazon"
+  | "apple"
+  | "commoncrawl"
+  | "mistral"
+  | "generic_ai"
+>;
+
 /** AI agent access control policy. */
 export interface AIAgentPolicy {
   block_all?: boolean;
-  deny_categories?: string[];
-  allow_categories?: string[];
+  deny_categories?: AIAgentCategory[];
+  allow_categories?: AIAgentCategory[];
 }
 
 /** Access control policy for a qURL. */
@@ -16,7 +61,7 @@ export interface AccessPolicy {
   ai_agent_policy?: AIAgentPolicy;
 }
 
-/** An individual access token within a qURL. */
+/** An individual access token within a qURL resource. */
 export interface AccessToken {
   /** Display identifier for this token (q_ prefix). */
   qurl_id: string;
@@ -25,10 +70,8 @@ export interface AccessToken {
   one_time_use: boolean;
   max_sessions: number;
   /**
-   * Session lifetime in **seconds** (numeric). Note: the corresponding
-   * input field on {@link CreateInput} and {@link MintInput} takes a
-   * human-readable duration string like `"1h"` — the server parses the
-   * string on write and returns the resolved number of seconds on read.
+   * Session lifetime in seconds. The corresponding input fields take a
+   * human-readable duration string like `"1h"`; the API returns seconds.
    */
   session_duration: number;
   access_policy?: AccessPolicy;
@@ -38,41 +81,43 @@ export interface AccessToken {
   expires_at: string;
 }
 
+/** Per-qURL summary returned from resource-detail and token-update endpoints. */
+export interface QurlSummary {
+  qurl_id?: string;
+  label?: string;
+  status?: "active" | "consumed" | "expired" | "revoked";
+  one_time_use?: boolean;
+  max_sessions?: number;
+  /** Session lifetime in seconds. */
+  session_duration?: number;
+  access_policy?: AccessPolicy;
+  use_count?: number;
+  qurl_site?: string;
+  created_at?: string;
+  expires_at?: string;
+}
+
 /**
- * A qURL resource as returned by the API.
+ * A qURL resource as returned by the legacy `/v1/qurls` management surface.
  *
- * Note: `status` is narrower than {@link AccessToken.status}. Resources only
- * have two states — `active` or `revoked` — per `QurlData.status` in the
- * OpenAPI spec. Individual access tokens can additionally be `consumed` or
- * `expired`; see {@link AccessToken.status}.
- *
- * **`description` is set via {@link UpdateInput}, not on create.** The API
- * uses `label` on create (a token-level label) and `description` on the
- * resource itself. See the JSDoc on {@link CreateInput} for details.
- *
- * **`qurl_link` is delivered exactly once.** It appears on
- * {@link CreateOutput} (`POST /v1/qurls`) and {@link MintOutput}
- * (`POST /v1/qurls/{id}/mint_link`) but is *not* on this read-side
- * shape — `get()` and `list()` cannot recover the link. Persist it at
- * create or mint time; if you lose it, mint a new one.
+ * `qurl_link` is delivered exactly once on create/mint responses and is not
+ * recoverable from read-side shapes. Persist it at create or mint time.
  */
 export interface QURL {
   resource_id: string;
+  type?: ResourceType;
   target_url: string;
   status: "active" | "revoked";
   description?: string;
   tags?: string[];
   /**
-   * The custom hostname this resource is reachable under, or `null` when
-   * no custom domain is configured. The read-side type is `string | null`
-   * (matching the OpenAPI `nullable: true` declaration on
-   * `ResourceData.custom_domain`) while the write-side type on
-   * {@link CreateInput.custom_domain} is `string | undefined` (absent =
-   * "don't set"). The asymmetry is deliberate — JSON `null` and an
-   * absent field have different semantics, and the API surface uses
-   * the convention across reads and writes.
+   * The custom hostname this resource is reachable under, or `null` when no
+   * custom domain is configured. Read shapes use `string | null`; write shapes
+   * use `string | undefined` because JSON `null` and an absent field have
+   * different semantics.
    */
   custom_domain?: string | null;
+  slug?: string;
   qurl_site?: string;
   qurl_count?: number;
   access_tokens?: AccessToken[];
@@ -83,14 +128,16 @@ export interface QURL {
 /**
  * Input for creating a qURL.
  *
- * Note: `tags` and `description` are **not** accepted on create — they live
- * on the resource (see {@link QURL.tags} / {@link QURL.description}) and must
- * be set via {@link UpdateInput} after creation. The API uses different field
- * names for the create-time token label ({@link CreateInput.label}) and the
- * resource-level description on update/get responses.
+ * `target_url` remains required for default `url` qURLs. It is optional in the
+ * type so callers can create non-url resource types such as tunnels without a
+ * URL; the client still throws a `ValidationError` when a url qURL omits it.
+ *
+ * `tags` and `description` are not accepted on this create path. They live on
+ * the resource and must be set through {@link UpdateInput} after creation.
  */
 export interface CreateInput {
-  target_url: string;
+  type?: ResourceType;
+  target_url?: string;
   expires_in?: string;
   one_time_use?: boolean;
   max_sessions?: number;
@@ -105,30 +152,21 @@ export interface CreateOutput {
   qurl_id: string;
   resource_id: string;
   qurl_link: string;
+  branded_domain?: string;
   qurl_site: string;
   expires_at?: string;
   label?: string;
+  type?: ResourceType;
 }
 
 /** Input for listing qURLs. */
 export interface ListInput {
   limit?: number;
   cursor?: string;
-  /**
-   * Filter by status. Accepts a single value or comma-separated values to
-   * combine multiple (e.g. `"active,revoked"`). The union lists the
-   * canonical single values for autocomplete and uses the `(string & {})`
-   * trick to still accept arbitrary strings — CSV combinations in any
-   * order, plus any filter-only values the API may add later.
-   */
   status?: "active" | "revoked" | (string & {});
   /** Free-text search over description and target_url. */
   q?: string;
-  /**
-   * Sort field and direction as `field:direction`. Valid fields:
-   * `created_at`, `expires_at`. Valid directions: `asc`, `desc` (default
-   * `desc`). Example: `created_at:desc`.
-   */
+  /** Sort field and direction as `field:direction`, for example `created_at:desc`. */
   sort?: string;
   /** RFC 3339 timestamp. */
   created_after?: string;
@@ -141,24 +179,19 @@ export interface ListInput {
 }
 
 /** Response from listing qURLs. */
-export interface ListOutput {
+export interface ListOutput extends PaginatedOutput {
   qurls: QURL[];
-  next_cursor?: string;
-  has_more: boolean;
 }
 
 /**
- * Input for extending a qURL's expiration. Exactly one of `extend_by`
- * or `expires_at` must be provided — the discriminated union form moves
- * the "provide at least one" check from runtime into the TypeScript
- * type system, so `extend(id, {})` is a compile error instead of a
- * runtime `ValidationError`. The `?: never` on the *other* field also
- * catches the "provide both" mistake at compile time.
+ * Input for extending a qURL's expiration. Exactly one of `extend_by` or
+ * `expires_at` must be provided. The union moves the "provide at least one"
+ * and "do not provide both" checks into TypeScript for typed callers.
  *
  * ```ts
- * client.extend("r_x", { extend_by: "7d" });      // OK
- * client.extend("r_x", { expires_at: "2026-..." }); // OK
- * client.extend("r_x", {});                         // compile error
+ * client.extend("r_x", { extend_by: "7d" });
+ * client.extend("r_x", { expires_at: "2026-06-06T00:00:00Z" });
+ * client.extend("r_x", {}); // compile error
  * client.extend("r_x", { extend_by: "7d", expires_at: "..." }); // compile error
  * ```
  */
@@ -175,70 +208,60 @@ export type ExtendInput =
     };
 
 /**
- * Input for updating a qURL — extend expiration, change description, etc.
+ * Input for updating a qURL resource.
  *
- * `extend_by` and `expires_at` are mutually exclusive — provide at most one.
- * At least one field must be set for the request to be valid.
- *
- * **`access_policy` is not included** and cannot be updated after create.
- * The OpenAPI `UpdateQurlRequest` schema only accepts `extend_by`,
- * `expires_at`, `tags`, and `description`; access policy is immutable
- * from the server's perspective and must be set via {@link CreateInput}
- * when the qURL is first created.
+ * `access_policy` is intentionally absent: token access policy is immutable on
+ * the resource-level update path and must be supplied at create/mint time or
+ * changed through the resource-scoped qURL-token endpoint.
  */
 export interface UpdateInput {
-  /** Relative duration to extend by (e.g., `"24h"`, `"7d"`). Mutually exclusive with `expires_at`. */
+  /** Relative duration to extend by (e.g., `"24h"`, `"7d"`). */
   extend_by?: string;
-  /** Absolute RFC 3339 expiration timestamp. Mutually exclusive with `extend_by`. */
+  /** Absolute RFC 3339 expiration timestamp. */
   expires_at?: string;
-  /**
-   * Resource-level description. Distinct from the token-level `label` on
-   * {@link CreateInput} / {@link MintInput} — the API intentionally uses
-   * different field names for the create and update flows.
-   *
-   * Pass an empty string to clear the existing description.
-   */
+  /** Resource-level description. Pass an empty string to clear. */
   description?: string;
-  /**
-   * Replace all tags on this resource. Pass an empty array to clear all tags.
-   */
+  /** Replace all tags on this resource. Pass an empty array to clear all tags. */
   tags?: string[];
 }
 
 /**
  * Input for minting an access link.
  *
- * `expires_in` and `expires_at` are mutually exclusive — provide at most one.
- * If neither is specified, the link defaults to 24 hours from now.
+ * `expires_in` and `expires_at` are mutually exclusive. If neither is set, the
+ * server applies its default expiration.
  *
- * **Why this isn't a {@link ExtendInput}-style discriminated union:**
- * `ExtendInput` requires *exactly one* of the two fields, which fits
- * `T1 | T2` cleanly. `MintInput` allows *at most one* (zero is valid —
- * the server applies the 24h default), which would need a three-arm
- * union (`{ expires_in } | { expires_at } | { neither }`). The runtime
- * check in {@link QURLClient.mintLink} catches the "both provided"
- * case at minimal cost; the type-system gain isn't worth the noisier
- * type for consumers who just want to omit both and accept the default.
+ * This is intentionally not an {@link ExtendInput}-style union: minting allows
+ * zero or one expiration field, while extending requires exactly one. A
+ * three-arm union would make the common "omit both" case noisier than the
+ * runtime mutual-exclusion check is worth.
  */
 export interface MintInput {
-  /** Relative duration until expiration (e.g., `"5m"`, `"24h"`, `"7d"`). Mutually exclusive with `expires_at`. */
+  /** Relative duration until expiration (e.g., `"5m"`, `"24h"`, `"7d"`). */
   expires_in?: string;
-  /** Absolute RFC 3339 expiration timestamp. Mutually exclusive with `expires_in`. */
+  /** Absolute RFC 3339 expiration timestamp. */
   expires_at?: string;
   /** Human-readable label identifying who this link is for. Max 500 chars. */
   label?: string;
   one_time_use?: boolean;
   /** Maximum concurrent sessions. `0` = unlimited (default); max `1000`. */
   max_sessions?: number;
-  /** How long access lasts after clicking (e.g., `"1h"`). Min 5m, max 24h. */
+  /**
+   * How long access lasts after the page loads (e.g., `"1h"`). Min 1s, max
+   * 24h. The first create for a `target_url` anchors the resource-level cap;
+   * later mints/updates that exceed it are rejected by the server.
+   */
   session_duration?: string;
   access_policy?: AccessPolicy;
 }
 
 /** Response from minting an access link. */
 export interface MintOutput {
+  qurl_id?: string;
   qurl_link: string;
+  branded_domain?: string;
   expires_at?: string;
+  type?: ResourceType;
 }
 
 /** Input for headless qURL resolution. */
@@ -262,20 +285,12 @@ export interface ResolveOutput {
 
 /** Quota information. */
 export interface Quota {
-  /**
-   * Subscription plan. Open union — see `ListInput.status` JSDoc for the
-   * `(string & {})` pattern explanation.
-   */
   plan: "free" | "growth" | "enterprise" | (string & {});
   period_start: string;
   period_end: string;
   /**
-   * Rate limit configuration. The parent is optional (older API
-   * deployments and partial responses may omit it entirely), and
-   * every inner field is also optional — if a future plan tier
-   * exposes only a subset of limits, consumers must guard each
-   * field individually rather than trusting `rate_limits` to
-   * imply the full shape.
+   * The parent object and each inner limit are optional. Guard each field
+   * individually; partial responses and future tiers may expose only a subset.
    */
   rate_limits?: {
     create_per_minute?: number;
@@ -286,20 +301,13 @@ export interface Quota {
     max_tokens_per_qurl?: number;
     max_expiry_seconds?: number;
   };
-  /**
-   * Usage snapshot. Same optional-parent + optional-fields shape as
-   * {@link rate_limits}: a partial response (e.g. `{ data: { plan } }`
-   * with no usage at all) is valid, and individual usage counters
-   * may be absent on plans that don't track them.
-   */
   usage?: {
     qurls_created?: number;
     active_qurls?: number;
     /**
-     * Active qURLs as a percentage of the plan's `max_active_qurls`,
-     * or `null` when the plan is unlimited (no denominator). Callers
-     * doing arithmetic must guard the null case — `usage.active_qurls_percent * 0.01`
-     * yields `NaN` if the plan is unlimited.
+     * Active qURLs as a percentage of the plan's `max_active_qurls`, or `null`
+     * when the plan is unlimited. Guard the null case before arithmetic:
+     * `usage.active_qurls_percent * 0.01` yields `NaN` on unlimited plans.
      */
     active_qurls_percent?: number | null;
     total_accesses?: number;
@@ -308,23 +316,23 @@ export interface Quota {
 
 /** Input for batch creating qURLs. */
 export interface BatchCreateInput {
-  /** Max 100 items per request; min 1. The client rejects out-of-range arrays before the round-trip. */
+  /** Max 100 items per request; min 1. */
   items: CreateInput[];
 }
 
 /**
  * A successfully created item in a batch create response.
  *
- * Note: the batch response is intentionally slimmer than {@link CreateOutput}
- * — it does **not** include `qurl_id` or `label`. This matches the API's
- * `BatchItemResult` schema in `openapi.yaml`. If you need `qurl_id` / `label`
- * per item, call {@link QURLClient.create} individually.
+ * This shape is intentionally slimmer than {@link CreateOutput}: batch items do
+ * not include `qurl_id` or `label`. Use the returned `resource_id` to fetch more
+ * detail when per-token identifiers are needed.
  */
 export interface BatchItemSuccess {
   index: number;
   success: true;
   resource_id: string;
   qurl_link: string;
+  branded_domain?: string;
   qurl_site: string;
   expires_at?: string;
 }
@@ -336,20 +344,7 @@ export interface BatchItemFailure {
   error: { code: string; message: string };
 }
 
-/**
- * Result for a single item in a batch create response.
- *
- * Discriminate on `success` for type-safe narrowing:
- * ```ts
- * for (const r of result.results) {
- *   if (r.success) {
- *     console.log(r.resource_id); // success fields narrowed
- *   } else {
- *     console.log(r.error.message); // error narrowed
- *   }
- * }
- * ```
- */
+/** Result for a single item in a batch create response. */
 export type BatchItemResult = BatchItemSuccess | BatchItemFailure;
 
 /** Response from batch creating qURLs. */
@@ -357,14 +352,490 @@ export interface BatchCreateOutput {
   succeeded: number;
   failed: number;
   results: BatchItemResult[];
-  /**
-   * Server-assigned request ID from the response `meta.request_id` field.
-   * Propagated through the 400-passthrough path so consumers filing
-   * support tickets on partial/total batch failures have a correlation
-   * ID. Optional because older API versions or non-JSON responses may
-   * omit it.
-   */
   request_id?: string;
+}
+
+/** Input for creating a resource directly. */
+export interface CreateResourceInput {
+  type?: ResourceType;
+  target_url?: string;
+  description?: string;
+  tags?: string[];
+  custom_domain?: string;
+  alias?: string;
+  slug?: string;
+  find_or_create?: boolean;
+}
+
+/** Input for updating resource metadata. */
+export interface UpdateResourceInput {
+  description?: string;
+  tags?: string[];
+  /** Omit to leave unchanged; send `""` to clear. `null` is not a clear signal. */
+  custom_domain?: string;
+  preserve_host?: boolean;
+  /** Use `null` to clear the alias. */
+  alias?: string | null;
+}
+
+/** Resource data returned by the `/v1/resources` surface. */
+export interface Resource {
+  resource_id: string;
+  type?: ResourceType;
+  target_url?: string;
+  knock_resource_id?: string;
+  status?: "active" | "revoked" | (string & {});
+  description?: string;
+  tags?: string[];
+  custom_domain?: string | null;
+  alias?: string | null;
+  slug?: string;
+  preserve_host?: boolean;
+  session_duration_cap?: number;
+  qurl_count?: number;
+  created_at?: string;
+  expires_at?: string;
+  tombstoned_at?: string;
+}
+
+/** Detail payload for one resource plus its bounded qURL preview. */
+export interface ResourceDetail {
+  resource?: Resource;
+  qurls?: QurlSummary[];
+}
+
+export interface ResourceListInput {
+  cursor?: string;
+  limit?: number;
+  alias?: string;
+  slug?: string;
+  status?: "active" | "revoked" | (string & {});
+  type?: ResourceType;
+}
+
+export interface ResourceListOutput extends PaginatedOutput {
+  resources: Resource[];
+}
+
+/** Input for minting a qURL against an existing resource. */
+export type CreateQurlForResourceInput = Omit<CreateInput, "target_url" | "custom_domain" | "type">;
+
+type UpdateResourceQurlBaseInput = {
+  label?: string;
+  access_policy?: AccessPolicy;
+  max_sessions?: number;
+  session_duration?: string;
+};
+
+/**
+ * Input for updating a specific qURL token on a resource.
+ *
+ * `extend_by` and `expires_at` are mutually exclusive. Callers may omit both
+ * when only updating non-expiration token fields such as `label`,
+ * `max_sessions`, `session_duration`, or `access_policy`.
+ */
+export type UpdateResourceQurlInput =
+  | (UpdateResourceQurlBaseInput & {
+      extend_by?: string;
+      expires_at?: never;
+    })
+  | (UpdateResourceQurlBaseInput & {
+      expires_at?: string;
+      extend_by?: never;
+    });
+
+export interface Session {
+  session_id?: string;
+  qurl_id?: string;
+  src_ip?: string;
+  user_agent?: string;
+  created_at?: string;
+  last_seen_at?: string;
+}
+
+/** Metadata surfaced by list endpoints that are not paginated today. */
+export interface UnpaginatedOutput {
+  request_id?: string;
+  /**
+   * These endpoints do not accept cursor query params today; pagination drift
+   * is surfaced through debug logs, not through a pageable output contract.
+   */
+  has_more: false;
+  page_size?: number;
+}
+
+export interface SessionListOutput extends UnpaginatedOutput {
+  /**
+   * Active sessions. The current OpenAPI contract has no cursor query params;
+   * if pagination metadata appears, the SDK surfaces it for observability but
+   * returns this page only.
+   */
+  sessions: Session[];
+}
+
+export interface SessionTerminateOutput {
+  terminated: number;
+  request_id?: string;
+}
+
+export interface ConnectorInstallationStats {
+  resources: number;
+  qurls: number;
+  accesses_24h: number;
+  accesses_7d: number;
+  errors_24h: number;
+}
+
+export interface ConnectorInstallationCapabilities {
+  configure: boolean;
+  disconnect: boolean;
+  reauth: boolean;
+  view_activity: boolean;
+}
+
+export interface ConnectorInstallation {
+  installation_id: string;
+  plugin_id: string;
+  label: string;
+  subject_kind: string;
+  subject_display_name: string;
+  status: OpenString<"active" | "degraded" | "disconnected" | "needs_reauth">;
+  installed_at: string;
+  last_activity_at?: string | null;
+  stats: ConnectorInstallationStats;
+  capabilities: ConnectorInstallationCapabilities;
+}
+
+export interface ListConnectorInstallationsInput {
+  cursor?: string;
+  limit?: number;
+}
+
+export interface ConnectorInstallationListOutput extends PaginatedOutput {
+  installations: ConnectorInstallation[];
+}
+
+export interface UsageCostEstimate {
+  currency: string;
+  amount_cents: number;
+  description: string;
+}
+
+export interface UsageCurrentPeriod {
+  tier: "free" | "growth" | "enterprise" | (string & {});
+  period_start: string;
+  period_end: string;
+  qurls_created: number;
+  active_qurls: number;
+  cost_estimate?: UsageCostEstimate;
+}
+
+export interface UsageDailyEntry {
+  date: string;
+  qurls_created: number;
+}
+
+export interface UsageDaily {
+  tier: "free" | "growth" | "enterprise" | (string & {});
+  period_start: string;
+  period_end: string;
+  daily: UsageDailyEntry[];
+}
+
+export interface Customer {
+  tier: "free" | "growth" | "enterprise" | (string & {});
+  spending_cap_cents: number;
+  current_period_usage: number;
+  frozen: boolean;
+  frozen_reason?: OpenString<"spending_cap" | "payment_failed" | "manual"> | null;
+}
+
+export interface UpdateCustomerInput {
+  /** Non-negative spending cap in cents. Clearing/removal is not exposed by the current contract. */
+  spending_cap_cents: number;
+}
+
+export interface CreateBillingCheckoutInput {
+  plan: OpenString<"growth">;
+}
+
+export interface CheckoutSession {
+  url: string;
+}
+
+export interface PortalSession {
+  url: string;
+}
+
+export interface Invoice {
+  id: string;
+  amount_cents: number;
+  status: "paid" | "open" | "void" | "draft" | (string & {});
+  created_at: string;
+  pdf_url?: string | null;
+}
+
+export interface ListBillingInvoicesInput {
+  limit?: number;
+  cursor?: string;
+}
+
+export interface BillingInvoiceListOutput extends PaginatedOutput {
+  invoices: Invoice[];
+}
+
+export interface RegisterDomainInput {
+  domain: string;
+}
+
+export interface DnsRecord {
+  type?: string;
+  name?: string;
+  value?: string;
+  verified?: boolean;
+}
+
+export interface Domain {
+  domain?: string;
+  status?: OpenString<
+    "pending_verification" | "verified" | "provisioning_tls" | "active" | "failed"
+  >;
+  verification_token?: string;
+  token_expires_at?: string | null;
+  acme_cname_target?: string;
+  created_at?: string;
+  verified_at?: string | null;
+  activated_at?: string | null;
+  ready_for_qurls?: boolean;
+  dns_records?: DnsRecord[];
+}
+
+export interface ListDomainsInput {
+  limit?: number;
+  cursor?: string;
+}
+
+export interface DomainListOutput extends PaginatedOutput {
+  domains: Domain[];
+}
+
+export interface DomainCheckDetail {
+  verified: boolean;
+  error?: string;
+  found?: string;
+}
+
+export interface DomainVerifyResult {
+  domain?: string;
+  status?: Domain["status"];
+  checks?: {
+    txt?: DomainCheckDetail;
+    acme_cname?: DomainCheckDetail;
+    traffic_routing?: DomainCheckDetail;
+  };
+}
+
+export type WebhookEventType = OpenString<
+  | "qurl.created"
+  | "qurl.expired"
+  | "qurl.revoked"
+  | "qurl.updated"
+  | "resource.closed"
+  | "qurl.accessed"
+  | "qurl.access_denied"
+  | "qurl.token_exhausted"
+  | "quota.warning"
+  | "quota.exceeded"
+  | "token.minted"
+  | "token.expired"
+  | "domain.verified"
+  | "domain.failed"
+  | "domain.deleted"
+>;
+
+export interface CreateWebhookInput {
+  /** Webhook receiver URL. The service accepts public http/https URLs; prefer https in production. */
+  url: string;
+  events: WebhookEventType[];
+  description?: string;
+}
+
+export interface UpdateWebhookInput {
+  url?: string;
+  events?: WebhookEventType[];
+  description?: string;
+  status?: "active" | "disabled" | (string & {});
+}
+
+export interface Webhook {
+  webhook_id?: string;
+  owner_id?: string;
+  url?: string;
+  events?: WebhookEventType[];
+  status?: "active" | "disabled" | (string & {});
+  description?: string;
+  created_at?: string;
+  updated_at?: string;
+  failure_count?: number;
+  last_delivery_success?: boolean;
+  last_delivery_time?: number;
+}
+
+export interface WebhookWithSecret extends Webhook {
+  secret?: string;
+}
+
+export interface ListWebhooksInput {
+  limit?: number;
+  cursor?: string;
+}
+
+export interface WebhookListOutput extends PaginatedOutput {
+  webhooks: Webhook[];
+}
+
+export interface WebhookDelivery {
+  delivery_id?: string;
+  webhook_id?: string;
+  event_type?: WebhookEventType;
+  status?: "pending" | "success" | "failed" | "retrying" | "abandoned" | (string & {});
+  response_code?: number;
+  response_body?: string;
+  error_message?: string;
+  duration_ms?: number;
+  retry_count?: number;
+  created_at?: string;
+  completed_at?: string;
+}
+
+export interface ListWebhookDeliveriesInput {
+  limit?: number;
+  cursor?: string;
+}
+
+export interface WebhookDeliveryListOutput extends PaginatedOutput {
+  deliveries: WebhookDelivery[];
+}
+
+export interface WebhookEventTypeInfo {
+  type?: WebhookEventType;
+  category?: "resource" | "access" | "quota" | "token" | (string & {});
+  description?: string;
+}
+
+export interface WebhookPayload {
+  id?: string;
+  type?: WebhookEventType;
+  owner_id?: string;
+  timestamp?: string;
+  api_version?: string;
+  data?: Record<string, unknown>;
+}
+
+export type ApiKeyScope = OpenString<"qurl:read" | "qurl:write" | "qurl:resolve" | "qurl:agent">;
+
+export interface CreateApiKeyInput {
+  name: string;
+  scopes: ApiKeyScope[];
+  expires_in?: string;
+  purpose?: "tunnel_bootstrap";
+  tunnel_slug?: string;
+}
+
+export interface UpdateApiKeyInput {
+  name?: string;
+  scopes?: ApiKeyScope[];
+}
+
+export interface ApiKey {
+  key_id?: string;
+  key_prefix?: string;
+  name?: string;
+  scopes?: ApiKeyScope[];
+  status?: "active" | "revoked" | (string & {});
+  created_at?: string;
+  updated_at?: string;
+  last_used_at?: string;
+  expires_at?: string;
+  purpose?: "tunnel_bootstrap" | (string & {});
+  tunnel_slug?: string;
+}
+
+export interface CreateApiKeyOutput extends ApiKey {
+  /** Full API key secret, returned only on create. Store it immediately. */
+  api_key?: string;
+}
+
+export interface ListApiKeysInput {
+  limit?: number;
+  cursor?: string;
+  status?: "active" | "revoked" | (string & {});
+}
+
+export interface ApiKeyListOutput extends PaginatedOutput {
+  api_keys: ApiKey[];
+}
+
+export interface RedeemAccessCodeInput {
+  code: string;
+  honeypot?: string;
+  elapsed_ms?: number;
+}
+
+export interface RedeemAccessCodeOutput {
+  redirect_url?: string;
+}
+
+export interface CreateAccessCodeInput {
+  resource_id: string;
+  name?: string;
+  max_uses?: number;
+  expires_at?: string;
+}
+
+export interface AccessCode {
+  access_code_id?: string;
+  resource_id?: string;
+  name?: string;
+  status?: "active" | "revoked" | (string & {});
+  max_uses?: number;
+  use_count?: number;
+  created_at?: string;
+  expires_at?: string | null;
+}
+
+export interface CreateAccessCodeOutput extends AccessCode {
+  /** Full access code secret, returned only on create. Store it immediately. */
+  code?: string;
+}
+
+export interface AccessCodeListOutput extends UnpaginatedOutput {
+  /**
+   * Access codes. The current OpenAPI contract has no cursor query params; if
+   * pagination metadata appears, the SDK surfaces it for observability but
+   * returns this page only.
+   */
+  access_codes: AccessCode[];
+}
+
+export interface AgentBootstrapInput {
+  public_key: string;
+  agent_id?: string;
+  hostname?: string;
+  version?: string;
+}
+
+export interface NHPServerPeerInfo {
+  public_key_b64: string;
+  host: string;
+  port: number;
+  expire_time: number;
+}
+
+export interface AgentBootstrapOutput {
+  agent_id: string;
+  registered_at: string;
+  nhp_server_peer: NHPServerPeerInfo;
 }
 
 /** API error from the qURL service (RFC 7807). */
@@ -394,11 +865,10 @@ export interface ClientOptions {
   /** Maximum retry attempts for transient errors (429, 5xx). Default: 3. */
   maxRetries?: number;
   /**
-   * Request timeout in milliseconds, **per attempt** (not total). Default: 30000.
+   * Request timeout in milliseconds, per attempt (not total). Default: 30000.
    *
-   * Worst-case total time for a request that exhausts all retries is
-   * approximately `timeout * (maxRetries + 1) + sum(retryDelay)`. If you
-   * need a hard total budget, wrap the call in your own AbortController.
+   * Worst-case total time for a request that exhausts all retries is roughly
+   * `timeout * (maxRetries + 1) + sum(retryDelay)`.
    */
   timeout?: number;
   /** User-Agent header value. */

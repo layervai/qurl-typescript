@@ -63,12 +63,33 @@ console.log(`Access granted to ${access.target_url} for ${access.access_grant?.e
 | `get(id)` | Get qURL details |
 | `list(input?)` | List qURLs (single page) |
 | `listAll(input?)` | Iterate all qURLs (auto-paginating) |
-| `delete(id)` | Revoke a qURL |
+| `delete(id)` | Revoke a qURL resource and all its tokens |
 | `extend(id, input)` | Extend expiration |
-| `update(id, input)` | Update qURL properties |
+| `update(id, input)` | Update qURL resource properties |
 | `mintLink(id, input?)` | Mint a new access link |
 | `resolve(input)` | Resolve token + open firewall |
 | `getQuota()` | Get quota/usage info |
+| `bootstrapAgent(input)` | Bootstrap a qURL Connector agent |
+| `listResources(input?)` / `listAllResources(input?)` / `createResource(input)` / `getResource(id)` | Resource management |
+| `updateResource(id, input)` / `deleteResource(id)` | Update or revoke resources |
+| `createQurlForResource(id, input?)` | Mint a qURL for an existing resource |
+| `updateResourceQurl(id, qurlId, input)` / `revokeResourceQurl(id, qurlId)` | Manage one token on a resource |
+| `listResourceSessions(id)` / `terminateAllResourceSessions(id)` / `terminateResourceSession(id, sessionId)` | Inspect or terminate active sessions |
+| `listConnectorInstallations(input?)` / `listAllConnectorInstallations(input?)` | List connector installations |
+| `getUsageCurrentPeriod()` / `getUsageDaily()` | Usage reporting |
+| `getCustomer()` / `updateCustomer(input)` | Customer settings |
+| `createBillingCheckout(input)` / `createBillingPortal()` / `listBillingInvoices(input?)` / `listAllBillingInvoices(input?)` | Billing flows |
+| `registerDomain(input)` / `listDomains(input?)` / `listAllDomains(input?)` / `getDomain(domain)` | Custom domain management |
+| `verifyDomain(domain)` / `regenerateDomainToken(domain)` / `deleteDomain(domain)` | Domain verification and removal |
+| `listWebhooks(input?)` / `listAllWebhooks(input?)` / `createWebhook(input)` / `getWebhook(id)` | Webhook management |
+| `updateWebhook(id, input)` / `deleteWebhook(id)` / `regenerateWebhookSecret(id)` | Webhook updates and secret rotation |
+| `listWebhookEventTypes()` / `listWebhookDeliveries(id, input?)` / `listAllWebhookDeliveries(id, input?)` | Webhook metadata and delivery history |
+| `createApiKey(input)` / `listApiKeys(input?)` / `listAllApiKeys(input?)` / `updateApiKey(id, input)` / `revokeApiKey(id)` | API key management |
+| `createAccessCode(input)` / `listAccessCodes()` / `redeemAccessCode(input)` / `revokeAccessCode(id)` | Access code management |
+
+`listResourceSessions(id)` and `listAccessCodes()` reflect currently unpaginated service endpoints. Their outputs always return `has_more: false`; if the service starts surfacing cursor metadata, the SDK emits a debug log rather than exposing an unactionable next-page signal.
+
+`listAll*()` methods validate ids and query params when called, before the async iterator is consumed. Wrap the `listAll*()` call itself in `try/catch` when passing dynamic input.
 
 ### `batchCreate(input)`
 

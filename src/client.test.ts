@@ -14,7 +14,7 @@ import {
   TimeoutError,
   ValidationError,
 } from "./errors.js";
-import type { BatchCreateInput, CreateInput, MintInput } from "./types.js";
+import type { BatchCreateInput, CreateInput, ExtendInput, MintInput } from "./types.js";
 import { mockFetch, mockFetches, createClient } from "./__tests__/test-helpers.js";
 
 describe("QURLClient", () => {
@@ -289,7 +289,7 @@ describe("QURLClient", () => {
     const fetch = mockFetch({ status: 201, body: { data: {} } });
     const client = createClient(fetch);
 
-    for (const badUrl of [null, undefined, 42, { toString: () => "evil" }, []]) {
+    for (const badUrl of [null, 42, { toString: () => "evil" }, []]) {
       const error = await client
         // Deliberately bypassing the type system to simulate untyped-JS callers.
         .create({ target_url: badUrl as unknown as string })
@@ -303,6 +303,78 @@ describe("QURLClient", () => {
       // actual string inputs with the wrong scheme.
       expect(detail).not.toContain("http:// or https://");
     }
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("create requires target_url for default url qURLs but allows omission for non-url resource types", async () => {
+    const fetch = mockFetch({
+      status: 201,
+      body: {
+        data: {
+          resource_id: "r_abc123def45",
+          qurl_link: "https://qurl.link/#at_test",
+          qurl_site: "https://r_abc123def45.qurl.site",
+        },
+      },
+    });
+    const client = createClient(fetch);
+
+    const error = await client
+      .create({} as Parameters<QURLClient["create"]>[0])
+      .catch((e: unknown) => e as ValidationError);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error.detail).toContain("target_url: is required for url qURLs");
+
+    await expect(client.create({ type: "tunnel" })).resolves.toBeDefined();
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("create rejects non-boolean one_time_use for untyped callers", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+    const client = createClient(fetch);
+
+    const error = await client
+      .create({
+        target_url: "https://example.com",
+        one_time_use: "yes" as unknown as boolean,
+      })
+      .catch((e: unknown) => e as ValidationError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error.detail).toContain("one_time_use: must be a boolean");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("legacy write methods reject unknown fields before making requests", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+    const client = createClient(fetch);
+
+    const createError = await client
+      .create({
+        target_url: "https://example.com",
+        ignored: true,
+      } as unknown as Parameters<QURLClient["create"]>[0])
+      .catch((e: unknown) => e as ValidationError);
+    expect(createError).toBeInstanceOf(ValidationError);
+    expect(createError.detail).toContain('create: unknown field "ignored"');
+
+    const updateError = await client
+      .update("r_x", {
+        description: "primary",
+        ignored: true,
+      } as unknown as Parameters<QURLClient["update"]>[1])
+      .catch((e: unknown) => e as ValidationError);
+    expect(updateError).toBeInstanceOf(ValidationError);
+    expect(updateError.detail).toContain('update: unknown field "ignored"');
+
+    const mintError = await client
+      .mintLink("r_x", {
+        expires_in: "1h",
+        ignored: true,
+      } as unknown as Parameters<QURLClient["mintLink"]>[1])
+      .catch((e: unknown) => e as ValidationError);
+    expect(mintError).toBeInstanceOf(ValidationError);
+    expect(mintError.detail).toContain('mintLink: unknown field "ignored"');
     expect(fetch).not.toHaveBeenCalled();
   });
 
@@ -557,6 +629,7 @@ describe("QURLClient", () => {
     const error = await client.list({ limit: 0 }).catch((e: unknown) => e as ValidationError);
     expect(error).toBeInstanceOf(ValidationError);
     expect((error as ValidationError).code).toBe(ERROR_CODE_CLIENT_VALIDATION);
+    expect((error as ValidationError).detail).toContain("list: limit:");
     expect((error as ValidationError).detail).toContain("1 and 100");
     expect(fetch).not.toHaveBeenCalled();
   });
@@ -626,6 +699,1198 @@ describe("QURLClient", () => {
       "https://api.test.layerv.ai/v1/qurls",
       expect.objectContaining({ method: "GET" }),
     );
+  });
+
+  it("listResources builds allowed query params and flattens pagination metadata", async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: {
+        data: [{ resource_id: "r_abc123def45" }],
+        meta: {
+          request_id: "req_x",
+          page_size: 1,
+          has_more: true,
+          next_cursor: "cursor_2",
+        },
+      },
+    });
+    const client = createClient(fetch);
+
+    const result = await client.listResources({
+      limit: 1,
+      cursor: "cursor_1",
+      alias: "dev-dashboard",
+      status: "active",
+      type: "url",
+    });
+
+    expect(result.resources).toHaveLength(1);
+    expect(result.next_cursor).toBe("cursor_2");
+    expect(result.has_more).toBe(true);
+    expect(result.request_id).toBe("req_x");
+    expect(result.page_size).toBe(1);
+    const [url] = vi.mocked(fetch).mock.calls[0];
+    expect(url).toContain("/v1/resources?");
+    expect(url).toContain("limit=1");
+    expect(url).toContain("cursor=cursor_1");
+    expect(url).toContain("alias=dev-dashboard");
+    expect(url).toContain("status=active");
+    expect(url).toContain("type=url");
+  });
+
+  it("listResources infers has_more when the API returns next_cursor without a flag", async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: {
+        data: [{ resource_id: "r_abc123def45" }],
+        meta: { next_cursor: "cursor_2" },
+      },
+    });
+    const client = createClient(fetch);
+
+    const result = await client.listResources();
+
+    expect(result.next_cursor).toBe("cursor_2");
+    expect(result.has_more).toBe(true);
+  });
+
+  it("list infers has_more when the API returns next_cursor without a flag", async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: {
+        data: [{ resource_id: "r_abc123def45" }],
+        meta: { next_cursor: "cursor_2" },
+      },
+    });
+    const client = createClient(fetch);
+
+    const result = await client.list();
+
+    expect(result.next_cursor).toBe("cursor_2");
+    expect(result.has_more).toBe(true);
+  });
+
+  it.each([
+    ["listConnectorInstallations", (client: QURLClient) => client.listConnectorInstallations()],
+    ["listDomains", (client: QURLClient) => client.listDomains()],
+    ["listWebhooks", (client: QURLClient) => client.listWebhooks()],
+    ["listWebhookDeliveries", (client: QURLClient) => client.listWebhookDeliveries("wh_x")],
+    ["listApiKeys", (client: QURLClient) => client.listApiKeys()],
+  ])("%s infers has_more from next_cursor", async (_, call) => {
+    const fetch = mockFetch({
+      status: 200,
+      body: { data: [], meta: { next_cursor: "cursor_2" } },
+    });
+    const client = createClient(fetch);
+
+    const result = await call(client);
+
+    expect(result.next_cursor).toBe("cursor_2");
+    expect(result.has_more).toBe(true);
+  });
+
+  it("new list endpoints share limit and cursor type validation", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: [], meta: {} } });
+    const client = createClient(fetch);
+
+    const badLimit = await client
+      .listResources({ limit: 0 })
+      .catch((e: unknown) => e as ValidationError);
+    expect(badLimit).toBeInstanceOf(ValidationError);
+    expect(badLimit.detail).toContain("listResources: limit:");
+    expect(badLimit.detail).toContain("1 and 100");
+
+    const stringLimit = await client
+      .listResources({ limit: "50" as unknown as number })
+      .catch((e: unknown) => e as ValidationError);
+    expect(stringLimit).toBeInstanceOf(ValidationError);
+    expect(stringLimit.detail).toContain("listResources: limit:");
+    expect(stringLimit.detail).toContain('"50"');
+
+    const badCursor = await client
+      .listDomains({ cursor: 42 as unknown as string })
+      .catch((e: unknown) => e as ValidationError);
+    expect(badCursor).toBeInstanceOf(ValidationError);
+    expect(badCursor.detail).toContain("listDomains: cursor: must be a string");
+
+    const arrayCursor = await client
+      .listDomains({ cursor: [] as unknown as string })
+      .catch((e: unknown) => e as ValidationError);
+    expect(arrayCursor).toBeInstanceOf(ValidationError);
+    expect(arrayCursor.detail).toContain("listDomains: cursor: must be a string (got array)");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("listAll wrappers validate ids and query params before iteration", () => {
+    const fetch = mockFetch({ status: 200, body: { data: [], meta: {} } });
+    const client = createClient(fetch);
+
+    expect(() => client.listAllResources({ limit: 0 })).toThrow(ValidationError);
+    expect(() => client.listAllWebhookDeliveries("", { limit: 10 })).toThrow(ValidationError);
+    expect(() =>
+      client.listAllApiKeys({
+        limit: "50" as unknown as number,
+      }),
+    ).toThrow(ValidationError);
+    expect(() =>
+      client.listAllResources({
+        rogue: "should-fail",
+      } as unknown as Parameters<typeof client.listAllResources>[0]),
+    ).toThrow(ValidationError);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("listAllResources paginates and threads filters across pages", async () => {
+    const fetch = mockFetches([
+      {
+        status: 200,
+        body: {
+          data: [{ resource_id: "r_page1" }],
+          meta: { has_more: true, next_cursor: "cursor_2" },
+        },
+      },
+      {
+        status: 200,
+        body: {
+          data: [{ resource_id: "r_page2" }],
+          meta: { has_more: false },
+        },
+      },
+    ]);
+    const client = createClient(fetch);
+
+    const seen: string[] = [];
+    for await (const resource of client.listAllResources({ limit: 10, status: "active" })) {
+      seen.push(resource.resource_id);
+    }
+
+    expect(seen).toEqual(["r_page1", "r_page2"]);
+    const firstUrl = vi.mocked(fetch).mock.calls[0][0] as string;
+    const secondUrl = vi.mocked(fetch).mock.calls[1][0] as string;
+    expect(firstUrl).toContain("limit=10");
+    expect(firstUrl).toContain("status=active");
+    expect(firstUrl).not.toContain("cursor=");
+    expect(secondUrl).toContain("limit=10");
+    expect(secondUrl).toContain("status=active");
+    expect(secondUrl).toContain("cursor=cursor_2");
+  });
+
+  it.each([
+    {
+      name: "listAllConnectorInstallations",
+      path: "/v1/connectors/installations",
+      run: (client: QURLClient): AsyncIterable<unknown> =>
+        client.listAllConnectorInstallations({ limit: 10 }),
+      page1: { data: [{ connector_id: "ci_page1" }] },
+      page2: { data: [{ connector_id: "ci_page2" }] },
+    },
+    {
+      name: "listAllBillingInvoices",
+      path: "/v1/billing/invoices",
+      run: (client: QURLClient): AsyncIterable<unknown> =>
+        client.listAllBillingInvoices({ limit: 10 }),
+      page1: { data: { invoices: [{ id: "inv_page1" }] } },
+      page2: { data: { invoices: [{ id: "inv_page2" }] } },
+    },
+    {
+      name: "listAllDomains",
+      path: "/v1/domains",
+      run: (client: QURLClient): AsyncIterable<unknown> => client.listAllDomains({ limit: 10 }),
+      page1: { data: [{ domain: "page1.example.com" }] },
+      page2: { data: [{ domain: "page2.example.com" }] },
+    },
+    {
+      name: "listAllWebhooks",
+      path: "/v1/webhooks",
+      run: (client: QURLClient): AsyncIterable<unknown> => client.listAllWebhooks({ limit: 10 }),
+      page1: { data: [{ id: "wh_page1" }] },
+      page2: { data: [{ id: "wh_page2" }] },
+    },
+    {
+      name: "listAllWebhookDeliveries",
+      path: "/v1/webhooks/wh_x/deliveries",
+      run: (client: QURLClient): AsyncIterable<unknown> =>
+        client.listAllWebhookDeliveries("wh_x", { limit: 10 }),
+      page1: { data: [{ id: "del_page1" }] },
+      page2: { data: [{ id: "del_page2" }] },
+    },
+    {
+      name: "listAllApiKeys",
+      path: "/v1/api-keys",
+      run: (client: QURLClient): AsyncIterable<unknown> => client.listAllApiKeys({ limit: 10 }),
+      page1: { data: [{ id: "key_page1" }] },
+      page2: { data: [{ id: "key_page2" }] },
+    },
+  ])("$name paginates and threads cursor across pages", async ({ run, path, page1, page2 }) => {
+    const fetch = mockFetches([
+      {
+        status: 200,
+        body: {
+          ...page1,
+          meta: { has_more: true, next_cursor: "cursor_2" },
+        },
+      },
+      {
+        status: 200,
+        body: {
+          ...page2,
+          meta: { has_more: false },
+        },
+      },
+    ]);
+    const client = createClient(fetch);
+
+    const seen: unknown[] = [];
+    for await (const item of run(client)) {
+      seen.push(item);
+    }
+
+    expect(seen).toHaveLength(2);
+    expect(fetch).toHaveBeenCalledTimes(2);
+
+    const firstUrl = new URL(vi.mocked(fetch).mock.calls[0][0] as string);
+    const secondUrl = new URL(vi.mocked(fetch).mock.calls[1][0] as string);
+    expect(firstUrl.pathname).toBe(path);
+    expect(firstUrl.searchParams.get("limit")).toBe("10");
+    expect(firstUrl.searchParams.has("cursor")).toBe(false);
+    expect(secondUrl.pathname).toBe(path);
+    expect(secondUrl.searchParams.get("limit")).toBe("10");
+    expect(secondUrl.searchParams.get("cursor")).toBe("cursor_2");
+  });
+
+  it("listAllResources stops when has_more is false even if a stale cursor is present", async () => {
+    const fetch = mockFetches([
+      {
+        status: 200,
+        body: {
+          data: [{ resource_id: "r_page1" }],
+          meta: { has_more: false, next_cursor: "stale_cursor" },
+        },
+      },
+    ]);
+    const client = createClient(fetch);
+
+    const seen: string[] = [];
+    for await (const resource of client.listAllResources()) {
+      seen.push(resource.resource_id);
+    }
+
+    expect(seen).toEqual(["r_page1"]);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("listAllResources fails closed on duplicate cursors", async () => {
+    const fetch = mockFetches([
+      {
+        status: 200,
+        body: {
+          data: [{ resource_id: "r_page1" }],
+          meta: { has_more: true, next_cursor: "cursor_stuck" },
+        },
+      },
+      {
+        status: 200,
+        body: {
+          data: [{ resource_id: "r_page2" }],
+          meta: { has_more: true, next_cursor: "cursor_stuck" },
+        },
+      },
+    ]);
+    const client = createClient(fetch);
+
+    const seen: string[] = [];
+    const error = await (async () => {
+      for await (const resource of client.listAllResources()) {
+        seen.push(resource.resource_id);
+      }
+    })().catch((e: unknown) => e);
+
+    expect(seen).toEqual(["r_page1", "r_page2"]);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).detail).toContain(
+      "listAllResources: server returned repeated cursor after 2 auto-pagination pages",
+    );
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("listAllResources fails closed on nonconsecutive repeated cursors", async () => {
+    const fetch = mockFetches([
+      {
+        status: 200,
+        body: {
+          data: [{ resource_id: "r_page1" }],
+          meta: { has_more: true, next_cursor: "cursor_a" },
+        },
+      },
+      {
+        status: 200,
+        body: {
+          data: [{ resource_id: "r_page2" }],
+          meta: { has_more: true, next_cursor: "cursor_b" },
+        },
+      },
+      {
+        status: 200,
+        body: {
+          data: [{ resource_id: "r_page3" }],
+          meta: { has_more: true, next_cursor: "cursor_a" },
+        },
+      },
+    ]);
+    const client = createClient(fetch);
+
+    const seen: string[] = [];
+    const error = await (async () => {
+      for await (const resource of client.listAllResources()) {
+        seen.push(resource.resource_id);
+      }
+    })().catch((e: unknown) => e);
+
+    expect(seen).toEqual(["r_page1", "r_page2", "r_page3"]);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).detail).toContain(
+      "listAllResources: server returned repeated cursor after 3 auto-pagination pages",
+    );
+    expect(fetch).toHaveBeenCalledTimes(3);
+  });
+
+  it("new resource methods reject empty IDs before making requests", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+
+    await expect(client.getResource("")).rejects.toBeInstanceOf(ValidationError);
+    await expect(client.revokeResourceQurl("r_x", "")).rejects.toBeInstanceOf(ValidationError);
+    await expect(client.listWebhookDeliveries("")).rejects.toBeInstanceOf(ValidationError);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("createQurlForResource validates shared qURL token options client-side", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+    const client = createClient(fetch);
+
+    const error = await client
+      .createQurlForResource("r_x", { max_sessions: 1001 })
+      .catch((e: unknown) => e as ValidationError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error.detail).toContain("max_sessions");
+    expect(error.detail).toContain("1000");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("createQurlForResource rejects non-boolean one_time_use for untyped callers", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+    const client = createClient(fetch);
+
+    const error = await client
+      .createQurlForResource("r_x", { one_time_use: "yes" as unknown as boolean })
+      .catch((e: unknown) => e as ValidationError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error.detail).toContain("one_time_use: must be a boolean");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("createQurlForResource rejects non-object bodies before making requests", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+    const client = createClient(fetch);
+
+    const error = await client
+      .createQurlForResource("r_x", [] as Parameters<QURLClient["createQurlForResource"]>[1])
+      .catch((e: unknown) => e as ValidationError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error.detail).toContain("createQurlForResource: input must be an object");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("createQurlForResource normalizes null optional fields before serialization", async () => {
+    const fetch = mockFetch({
+      status: 201,
+      body: { data: { qurl_link: "https://qurl.link/#at_x" } },
+    });
+    const client = createClient(fetch);
+
+    await client.createQurlForResource("r_x", {
+      expires_in: "1h",
+      label: null as unknown as string,
+      one_time_use: null as unknown as boolean,
+    });
+
+    const body = JSON.parse(vi.mocked(fetch).mock.calls[0][1]?.body as string) as unknown;
+    expect(body).toEqual({ expires_in: "1h" });
+  });
+
+  it("updateResourceQurl validates shared qURL token options client-side", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+
+    const error = await client
+      .updateResourceQurl("r_x", "q_y", { max_sessions: 1001 })
+      .catch((e: unknown) => e as ValidationError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error.detail).toContain("max_sessions");
+    expect(error.detail).toContain("1000");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("listBillingInvoices preserves the empty fallback for missing invoices arrays", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {}, meta: { has_more: false } } });
+    const client = createClient(fetch);
+
+    const result = await client.listBillingInvoices();
+
+    expect(result.invoices).toEqual([]);
+    expect(result.has_more).toBe(false);
+  });
+
+  it("listBillingInvoices preserves the empty fallback on 204 No Content", async () => {
+    const fetch = mockFetch({ status: 204 });
+    const client = createClient(fetch);
+
+    const result = await client.listBillingInvoices();
+
+    expect(result.invoices).toEqual([]);
+    expect(result.has_more).toBe(false);
+  });
+
+  it("body-returning methods throw on unexpected 204 No Content", async () => {
+    const fetch = mockFetch({ status: 204 });
+    const client = createClient(fetch);
+
+    const error = await client.getCustomer().catch((e: unknown) => e as ValidationError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error.detail).toContain(
+      "Unexpected 204 No Content from GET /v1/customer; expected response body",
+    );
+  });
+
+  it("terminateAllResourceSessions preserves the zero fallback when count is omitted", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {}, meta: { request_id: "req_x" } } });
+    const debug = vi.fn();
+    const client = new QURLClient({
+      apiKey: "lv_live_test",
+      baseUrl: "https://api.test.layerv.ai",
+      debug,
+      fetch,
+      maxRetries: 0,
+    });
+
+    const result = await client.terminateAllResourceSessions("r_x");
+
+    expect(result.terminated).toBe(0);
+    expect(result.request_id).toBe("req_x");
+    expect(debug).toHaveBeenCalledWith(
+      "terminateAllResourceSessions: missing terminated count; defaulting to zero",
+      { request_id: "req_x" },
+    );
+  });
+
+  it("terminateAllResourceSessions throws on unexpected 204 No Content", async () => {
+    const fetch = mockFetch({ status: 204 });
+    const client = createClient(fetch);
+
+    const error = await client
+      .terminateAllResourceSessions("r_x")
+      .catch((e: unknown) => e as QURLError);
+
+    expect(error).toBeInstanceOf(QURLError);
+    expect(error.code).toBe(ERROR_CODE_UNEXPECTED_RESPONSE);
+    expect(error.message).toContain(
+      "Unexpected 204 No Content from DELETE /v1/resources/r_x/sessions; expected response body",
+    );
+  });
+
+  it("unpaginated list methods log additive pagination metadata without exposing paging", async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: { data: [], meta: { has_more: true, next_cursor: "cursor_2", request_id: "req_page" } },
+    });
+    const debug = vi.fn();
+    const client = new QURLClient({
+      apiKey: "lv_live_test",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch,
+      maxRetries: 0,
+      debug,
+    });
+
+    const sessions = await client.listResourceSessions("r_x");
+    const accessCodes = await client.listAccessCodes();
+
+    expect(sessions).toEqual({
+      sessions: [],
+      request_id: "req_page",
+      has_more: false,
+      page_size: undefined,
+    });
+    expect(accessCodes).toEqual({
+      access_codes: [],
+      request_id: "req_page",
+      has_more: false,
+      page_size: undefined,
+    });
+    expect(debug).toHaveBeenCalledWith(
+      "listResourceSessions: pagination metadata surfaced on unpaginated endpoint",
+      { has_more: true, next_cursor: "cursor_2" },
+    );
+    expect(debug).toHaveBeenCalledWith(
+      "listAccessCodes: pagination metadata surfaced on unpaginated endpoint",
+      { has_more: true, next_cursor: "cursor_2" },
+    );
+  });
+
+  it("unpaginated list methods warn on cursor-only pagination drift", async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: { data: [], meta: { next_cursor: "cursor_only" } },
+    });
+    const debug = vi.fn();
+    const client = new QURLClient({
+      apiKey: "lv_live_test",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch,
+      maxRetries: 0,
+      debug,
+    });
+
+    const sessions = await client.listResourceSessions("r_x");
+    const accessCodes = await client.listAccessCodes();
+
+    expect(sessions.has_more).toBe(false);
+    expect(accessCodes.has_more).toBe(false);
+    expect(debug).toHaveBeenCalledWith(
+      "listResourceSessions: pagination metadata surfaced on unpaginated endpoint",
+      { has_more: undefined, next_cursor: "cursor_only" },
+    );
+    expect(debug).toHaveBeenCalledWith(
+      "listAccessCodes: pagination metadata surfaced on unpaginated endpoint",
+      { has_more: undefined, next_cursor: "cursor_only" },
+    );
+  });
+
+  it("unpaginated list methods preserve empty fallbacks on 204 No Content", async () => {
+    const fetch = mockFetch({ status: 204 });
+    const client = createClient(fetch);
+
+    const sessions = await client.listResourceSessions("r_x");
+    const accessCodes = await client.listAccessCodes();
+
+    expect(sessions.sessions).toEqual([]);
+    expect(sessions.request_id).toBeUndefined();
+    expect(sessions.has_more).toBe(false);
+    expect(accessCodes.access_codes).toEqual([]);
+    expect(accessCodes.request_id).toBeUndefined();
+    expect(accessCodes.has_more).toBe(false);
+  });
+
+  it("paginated list methods preserve empty fallbacks on 204 No Content", async () => {
+    const fetch = mockFetch({ status: 204 });
+    const client = createClient(fetch);
+
+    const qurls = await client.list();
+    const resources = await client.listResources();
+    const connectors = await client.listConnectorInstallations();
+    const invoices = await client.listBillingInvoices();
+    const domains = await client.listDomains();
+    const webhooks = await client.listWebhooks();
+    const deliveries = await client.listWebhookDeliveries("wh_x");
+    const apiKeys = await client.listApiKeys();
+
+    expect(qurls.qurls).toEqual([]);
+    expect(qurls.has_more).toBe(false);
+    expect(resources.resources).toEqual([]);
+    expect(connectors.installations).toEqual([]);
+    expect(invoices.invoices).toEqual([]);
+    expect(domains.domains).toEqual([]);
+    expect(webhooks.webhooks).toEqual([]);
+    expect(deliveries.deliveries).toEqual([]);
+    expect(apiKeys.api_keys).toEqual([]);
+  });
+
+  it("new write methods serialize request bodies exactly", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+
+    await client.createWebhook({
+      url: "https://example.com/hook",
+      events: ["qurl.created"],
+      description: "primary",
+    });
+    await client.createApiKey({ name: "dashboard", scopes: ["qurl:read"] });
+    await client.updateCustomer({ spending_cap_cents: 5000 });
+
+    const webhookBody = JSON.parse(vi.mocked(fetch).mock.calls[0][1]?.body as string) as unknown;
+    const apiKeyBody = JSON.parse(vi.mocked(fetch).mock.calls[1][1]?.body as string) as unknown;
+    const customerBody = JSON.parse(vi.mocked(fetch).mock.calls[2][1]?.body as string) as unknown;
+    expect(webhookBody).toEqual({
+      url: "https://example.com/hook",
+      events: ["qurl.created"],
+      description: "primary",
+    });
+    expect(apiKeyBody).toEqual({ name: "dashboard", scopes: ["qurl:read"] });
+    expect(customerBody).toEqual({ spending_cap_cents: 5000 });
+  });
+
+  it("POST write methods normalize optional null fields before serialization", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+
+    await client.bootstrapAgent({
+      public_key: "pk_test",
+      agent_id: null as unknown as string,
+      hostname: null as unknown as string,
+      version: null as unknown as string,
+    });
+    await client.createWebhook({
+      url: "https://example.com/hook",
+      events: ["qurl.created"],
+      description: null as unknown as string,
+    });
+    await client.createApiKey({
+      name: "dashboard",
+      scopes: ["qurl:read"],
+      expires_in: null as unknown as string,
+      purpose: null as unknown as "tunnel_bootstrap",
+      tunnel_slug: null as unknown as string,
+    });
+    await client.redeemAccessCode({
+      code: "invite-code",
+      honeypot: null as unknown as string,
+      elapsed_ms: null as unknown as number,
+    });
+    await client.createAccessCode({
+      resource_id: "r_x",
+      name: null as unknown as string,
+      max_uses: null as unknown as number,
+      expires_at: null as unknown as string,
+    });
+
+    const bodies = vi.mocked(fetch).mock.calls.map((call) => {
+      return JSON.parse(call[1]?.body as string) as unknown;
+    });
+    expect(bodies).toEqual([
+      { public_key: "pk_test" },
+      { url: "https://example.com/hook", events: ["qurl.created"] },
+      { name: "dashboard", scopes: ["qurl:read"] },
+      { code: "invite-code" },
+      { resource_id: "r_x" },
+    ]);
+  });
+
+  it("new PATCH methods reject empty bodies before making requests", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+
+    await expect(client.updateResource("r_x", {})).rejects.toBeInstanceOf(ValidationError);
+    await expect(client.updateResourceQurl("r_x", "q_y", {})).rejects.toBeInstanceOf(
+      ValidationError,
+    );
+    await expect(client.updateWebhook("wh_x", {})).rejects.toBeInstanceOf(ValidationError);
+    await expect(client.updateApiKey("key_x", {})).rejects.toBeInstanceOf(ValidationError);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("new PATCH methods normalize null fields before validation and serialization", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+
+    await client.updateResource("r_x", {
+      description: "primary",
+      tags: null as unknown as string[],
+      custom_domain: null as unknown as string,
+      preserve_host: null as unknown as boolean,
+    });
+    await client.updateResourceQurl("r_x", "q_y", {
+      extend_by: null as unknown as string,
+      expires_at: "2026-04-01T00:00:00Z",
+      label: null as unknown as string,
+    });
+    await client.updateWebhook("wh_x", {
+      description: null as unknown as string,
+      events: null as unknown as string[],
+      status: "disabled",
+    });
+    await client.updateApiKey("key_x", {
+      name: "dashboard",
+      scopes: null as unknown as string[],
+    });
+
+    const bodies = vi.mocked(fetch).mock.calls.map((call) => {
+      return JSON.parse(call[1]?.body as string) as unknown;
+    });
+    expect(bodies).toEqual([
+      { description: "primary" },
+      { expires_at: "2026-04-01T00:00:00Z" },
+      { status: "disabled" },
+      { name: "dashboard" },
+    ]);
+  });
+
+  it("new PATCH methods reject null-only bodies after normalization", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+
+    await expect(
+      client.updateResource("r_x", { description: null as unknown as string }),
+    ).rejects.toBeInstanceOf(ValidationError);
+    await expect(
+      client.updateResourceQurl("r_x", "q_y", { extend_by: null as unknown as string }),
+    ).rejects.toBeInstanceOf(ValidationError);
+    await expect(
+      client.updateWebhook("wh_x", { description: null as unknown as string }),
+    ).rejects.toBeInstanceOf(ValidationError);
+    await expect(
+      client.updateApiKey("key_x", { scopes: null as unknown as string[] }),
+    ).rejects.toBeInstanceOf(ValidationError);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("updateResource preserves alias null as the clear-alias signal", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: { resource_id: "r_x" } } });
+    const client = createClient(fetch);
+
+    await client.updateResource("r_x", { alias: null });
+
+    const body = JSON.parse(vi.mocked(fetch).mock.calls[0][1]?.body as string) as unknown;
+    expect(body).toEqual({ alias: null });
+  });
+
+  it("updateResource sends empty custom_domain as the clear-domain signal", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: { resource_id: "r_x" } } });
+    const client = createClient(fetch);
+
+    await client.updateResource("r_x", { custom_domain: "" });
+
+    const body = JSON.parse(vi.mocked(fetch).mock.calls[0][1]?.body as string) as unknown;
+    expect(body).toEqual({ custom_domain: "" });
+  });
+
+  it("updateResource rejects unaccepted fields before making requests", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: { resource_id: "r_x" } } });
+    const client = createClient(fetch);
+
+    const error = await client
+      .updateResource("r_x", {
+        description: "primary",
+        target_url: "ftp://example.com",
+      } as unknown as Parameters<QURLClient["updateResource"]>[1])
+      .catch((e: unknown) => e as ValidationError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error.detail).toContain('updateResource: unknown field "target_url"');
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("new write methods reject unknown fields before making requests", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+    const cases: Array<[string, () => Promise<unknown>]> = [
+      [
+        "bootstrapAgent",
+        () =>
+          client.bootstrapAgent({
+            public_key: "pk_test",
+            ignored: true,
+          } as unknown as Parameters<QURLClient["bootstrapAgent"]>[0]),
+      ],
+      [
+        "createQurlForResource",
+        () =>
+          client.createQurlForResource("r_x", {
+            expires_in: "1h",
+            ignored: true,
+          } as unknown as Parameters<QURLClient["createQurlForResource"]>[1]),
+      ],
+      [
+        "updateResourceQurl",
+        () =>
+          client.updateResourceQurl("r_x", "q_y", {
+            label: "primary",
+            ignored: true,
+          } as unknown as Parameters<QURLClient["updateResourceQurl"]>[2]),
+      ],
+      [
+        "updateCustomer",
+        () =>
+          client.updateCustomer({
+            spending_cap_cents: 5000,
+            ignored: true,
+          } as unknown as Parameters<QURLClient["updateCustomer"]>[0]),
+      ],
+      [
+        "createBillingCheckout",
+        () =>
+          client.createBillingCheckout({
+            plan: "starter",
+            ignored: true,
+          } as unknown as Parameters<QURLClient["createBillingCheckout"]>[0]),
+      ],
+      [
+        "registerDomain",
+        () =>
+          client.registerDomain({
+            domain: "example.com",
+            ignored: true,
+          } as unknown as Parameters<QURLClient["registerDomain"]>[0]),
+      ],
+      [
+        "createWebhook",
+        () =>
+          client.createWebhook({
+            url: "https://example.com/hook",
+            events: ["qurl.created"],
+            ignored: true,
+          } as unknown as Parameters<QURLClient["createWebhook"]>[0]),
+      ],
+      [
+        "updateWebhook",
+        () =>
+          client.updateWebhook("wh_x", {
+            description: "primary",
+            ignored: true,
+          } as unknown as Parameters<QURLClient["updateWebhook"]>[1]),
+      ],
+      [
+        "createApiKey",
+        () =>
+          client.createApiKey({
+            name: "dashboard",
+            scopes: ["qurl:read"],
+            ignored: true,
+          } as unknown as Parameters<QURLClient["createApiKey"]>[0]),
+      ],
+      [
+        "updateApiKey",
+        () =>
+          client.updateApiKey("key_x", {
+            name: "dashboard",
+            ignored: true,
+          } as unknown as Parameters<QURLClient["updateApiKey"]>[1]),
+      ],
+      [
+        "redeemAccessCode",
+        () =>
+          client.redeemAccessCode({
+            code: "invite-code",
+            ignored: true,
+          } as unknown as Parameters<QURLClient["redeemAccessCode"]>[0]),
+      ],
+      [
+        "createAccessCode",
+        () =>
+          client.createAccessCode({
+            resource_id: "r_x",
+            ignored: true,
+          } as unknown as Parameters<QURLClient["createAccessCode"]>[0]),
+      ],
+    ];
+
+    for (const [method, call] of cases) {
+      const error = await call().catch((e: unknown) => e as ValidationError);
+      expect(error).toBeInstanceOf(ValidationError);
+      expect(error.detail).toContain(`${method}: unknown field "ignored"`);
+    }
+
+    const multiFieldError = await client
+      .createBillingCheckout({
+        plan: "starter",
+        ignored: true,
+        also_ignored: true,
+      } as unknown as Parameters<QURLClient["createBillingCheckout"]>[0])
+      .catch((e: unknown) => e as ValidationError);
+    expect(multiFieldError).toBeInstanceOf(ValidationError);
+    expect(multiFieldError.detail).toContain(
+      'createBillingCheckout: unknown fields "ignored", "also_ignored"',
+    );
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("updateCustomer rejects invalid spending caps client-side", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+
+    await expect(client.updateCustomer({ spending_cap_cents: -1 })).rejects.toBeInstanceOf(
+      ValidationError,
+    );
+    await expect(client.updateCustomer({ spending_cap_cents: 1.5 })).rejects.toBeInstanceOf(
+      ValidationError,
+    );
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("updateCustomer rejects missing spending caps with a required-field error", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+
+    const error = await client
+      .updateCustomer({} as Parameters<QURLClient["updateCustomer"]>[0])
+      .catch((e: unknown) => e as ValidationError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error.detail).toContain("spending_cap_cents is required");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("createWebhook rejects non-http URLs client-side", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+
+    const error = await client
+      .createWebhook({ url: "ftp://example.com/hook", events: ["qurl.created"] })
+      .catch((e: unknown) => e as ValidationError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error.detail).toContain("url: must start with http:// or https://");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("createWebhook rejects non-string event entries client-side", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+
+    const error = await client
+      .createWebhook({ url: "https://example.com/hook", events: ["" as never] })
+      .catch((e: unknown) => e as ValidationError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error.detail).toContain("createWebhook: events[0] must be a non-empty string");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("createApiKey rejects non-string scope entries client-side", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+
+    const error = await client
+      .createApiKey({ name: "dashboard", scopes: ["" as never] })
+      .catch((e: unknown) => e as ValidationError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error.detail).toContain("createApiKey: scopes[0] must be a non-empty string");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("createApiKey rejects missing required fields client-side", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+
+    await expect(
+      client.createApiKey({ scopes: ["qurl:read"] } as Parameters<QURLClient["createApiKey"]>[0]),
+    ).rejects.toBeInstanceOf(ValidationError);
+    await expect(
+      client.createApiKey({ name: "dashboard" } as Parameters<QURLClient["createApiKey"]>[0]),
+    ).rejects.toBeInstanceOf(ValidationError);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("new required-body methods reject missing required fields client-side", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+
+    const cases: Array<[string, () => Promise<unknown>, string]> = [
+      [
+        "createBillingCheckout",
+        () =>
+          client.createBillingCheckout({} as Parameters<QURLClient["createBillingCheckout"]>[0]),
+        "plan",
+      ],
+      [
+        "redeemAccessCode",
+        () => client.redeemAccessCode({} as Parameters<QURLClient["redeemAccessCode"]>[0]),
+        "code",
+      ],
+      [
+        "createAccessCode",
+        () => client.createAccessCode({} as Parameters<QURLClient["createAccessCode"]>[0]),
+        "resource_id",
+      ],
+    ];
+
+    for (const [method, call, field] of cases) {
+      const error = await call().catch((e: unknown) => e as ValidationError);
+      expect(error).toBeInstanceOf(ValidationError);
+      expect(error.detail).toContain(method);
+      expect(error.detail).toContain(field);
+    }
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("registerDomain rejects domains over the contract maximum", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+    const client = createClient(fetch);
+
+    const error = await client
+      .registerDomain({ domain: "a".repeat(254) })
+      .catch((e: unknown) => e as ValidationError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error.detail).toContain("domain: must be 253 characters or fewer");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("domain path validators use domain-specific error labels", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+
+    const emptyCalls = [
+      () => client.getDomain(""),
+      () => client.deleteDomain(""),
+      () => client.verifyDomain(""),
+      () => client.regenerateDomainToken(""),
+    ];
+    for (const call of emptyCalls) {
+      const error = await call().catch((e: unknown) => e as ValidationError);
+      expect(error).toBeInstanceOf(ValidationError);
+      expect(error.detail).toContain("domain is required");
+    }
+
+    const whitespaceError = await client
+      .getDomain(" example.com ")
+      .catch((e: unknown) => e as ValidationError);
+    expect(whitespaceError).toBeInstanceOf(ValidationError);
+    expect(whitespaceError.detail).toContain(
+      "domain must not include leading or trailing whitespace",
+    );
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("createResource validates shared resource fields client-side", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+    const client = createClient(fetch);
+
+    const error = await client
+      .createResource({ target_url: "ftp://example.com" })
+      .catch((e: unknown) => e as ValidationError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error.detail).toContain("http:// or https://");
+
+    const emptyDomain = await client
+      .createResource({ target_url: "https://example.com", custom_domain: "" })
+      .catch((e: unknown) => e as ValidationError);
+    expect(emptyDomain).toBeInstanceOf(ValidationError);
+    expect(emptyDomain.detail).toContain("custom_domain: must not be an empty string");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("createResource rejects unknown fields before making requests", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+    const client = createClient(fetch);
+
+    const error = await client
+      .createResource({
+        type: "tunnel",
+        slug: "prod-dashboard",
+        target_url_override: "https://example.com",
+      } as unknown as Parameters<QURLClient["createResource"]>[0])
+      .catch((e: unknown) => e as ValidationError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error.detail).toContain('createResource: unknown field "target_url_override"');
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("resource write methods reject non-boolean option fields client-side", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+    const client = createClient(fetch);
+
+    await expect(
+      client.createResource({
+        type: "tunnel",
+        slug: "prod-dashboard",
+        find_or_create: "yes" as unknown as boolean,
+      }),
+    ).rejects.toBeInstanceOf(ValidationError);
+    await expect(
+      client.updateResource("r_x", {
+        description: "primary",
+        preserve_host: "yes" as unknown as boolean,
+      }),
+    ).rejects.toBeInstanceOf(ValidationError);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("resource write methods reject non-string text fields client-side", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+    const client = createClient(fetch);
+
+    const createError = await client
+      .createResource({
+        type: "tunnel",
+        slug: "prod-dashboard",
+        description: 42 as unknown as string,
+      })
+      .catch((e: unknown) => e as ValidationError);
+    expect(createError).toBeInstanceOf(ValidationError);
+    expect(createError.detail).toContain("description: must be a string");
+
+    const updateError = await client
+      .updateResource("r_x", {
+        custom_domain: { hostname: "example.com" } as unknown as string,
+      })
+      .catch((e: unknown) => e as ValidationError);
+    expect(updateError).toBeInstanceOf(ValidationError);
+    expect(updateError.detail).toContain("custom_domain: must be a string");
+
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("createResource normalizes null optional fields before serialization", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: { resource_id: "r_x" } } });
+    const client = createClient(fetch);
+
+    await client.createResource({
+      type: "tunnel",
+      tags: null as unknown as string[],
+      alias: null as unknown as string,
+      slug: null as unknown as string,
+      find_or_create: null as unknown as boolean,
+    });
+
+    const body = JSON.parse(vi.mocked(fetch).mock.calls[0][1]?.body as string) as unknown;
+    expect(body).toEqual({ type: "tunnel" });
+  });
+
+  it("createResource aggregates resource field validation errors", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+    const client = createClient(fetch);
+
+    const error = await client
+      .createResource({
+        type: 42,
+        description: 42,
+        custom_domain: "",
+        alias: "",
+        slug: "",
+        find_or_create: "yes",
+      } as unknown as Parameters<QURLClient["createResource"]>[0])
+      .catch((e: unknown) => e as ValidationError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error.detail).toContain("type: must be a string");
+    expect(error.detail).toContain("description: must be a string");
+    expect(error.detail).toContain("custom_domain: must not be an empty string");
+    expect(error.detail).toContain("alias: must not be an empty string");
+    expect(error.detail).toContain("slug: must not be an empty string");
+    expect(error.detail).toContain("find_or_create: must be a boolean");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("createResource requires target_url for default url resources", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+    const client = createClient(fetch);
+
+    const error = await client.createResource({}).catch((e: unknown) => e as ValidationError);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error.detail).toContain("target_url: is required for url resources");
+
+    await expect(
+      client.createResource({ type: "tunnel", slug: "prod-dashboard" }),
+    ).resolves.toBeDefined();
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   it("deletes a qURL", async () => {
@@ -728,6 +1993,21 @@ describe("QURLClient", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("path id validators reject leading or trailing whitespace before encoding", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+
+    const getError = await client.getResource(" r_x ").catch((e: unknown) => e as ValidationError);
+    expect(getError).toBeInstanceOf(ValidationError);
+    expect(getError.detail).toContain("leading or trailing whitespace");
+
+    const deleteError = await client.delete(" r_x ").catch((e: unknown) => e as ValidationError);
+    expect(deleteError).toBeInstanceOf(ValidationError);
+    expect(deleteError.detail).toContain("leading or trailing whitespace");
+
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("update rejects empty id", async () => {
     const fetch = mockFetch({ status: 200, body: { data: {} } });
     const client = createClient(fetch);
@@ -747,6 +2027,34 @@ describe("QURLClient", () => {
       .catch((e: unknown) => e as ValidationError);
     expect(error).toBeInstanceOf(ValidationError);
     expect((error as ValidationError).detail).toContain("id is required");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("extend validates id before input shape", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+    const error = await client
+      .extend("", null as unknown as ExtendInput)
+      .catch((e: unknown) => e as ValidationError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error.detail).toContain("extend: id is required");
+    expect(error.detail).not.toContain("input must be an object");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("extend rejects null/undefined input with structured ValidationError", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+
+    for (const badInput of [null, undefined]) {
+      const error = await client
+        .extend("r_abc", badInput as unknown as ExtendInput)
+        .catch((e: unknown) => e as ValidationError);
+
+      expect(error).toBeInstanceOf(ValidationError);
+      expect(error.detail).toContain("extend: input must be an object");
+    }
     expect(fetch).not.toHaveBeenCalled();
   });
 
@@ -846,43 +2154,37 @@ describe("QURLClient", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("extend throws ValidationError when extend_by and expires_at are both set (inherits from update)", async () => {
+  it("extend throws ValidationError when extend_by and expires_at are both set", async () => {
     const fetch = mockFetch({ status: 200, body: { data: {} } });
     const client = createClient(fetch);
 
-    // extend() delegates to update(), so it inherits the mutual-exclusion
-    // check. The new `ExtendInput` discriminated union makes this a
-    // COMPILE error for typed callers, but the runtime check is still
-    // load-bearing for untyped JS callers who bypass the type system —
-    // cast through `unknown` to simulate that path and lock the
-    // runtime guard in as a regression.
+    // ExtendInput makes this a compile error for typed callers. Cast through
+    // unknown to simulate untyped JS callers and pin the runtime guard.
     const bothFields = { extend_by: "24h", expires_at: "2026-04-01T00:00:00Z" };
     const error = await client
       .extend("r_abc", bothFields as unknown as Parameters<typeof client.extend>[1])
       .catch((e: unknown) => e as ValidationError);
     expect(error).toBeInstanceOf(ValidationError);
     expect((error as ValidationError).code).toBe(ERROR_CODE_CLIENT_VALIDATION);
+    expect((error as ValidationError).detail).toContain("extend:");
+    expect((error as ValidationError).detail).toContain("mutually exclusive");
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("extend() rejects empty input at compile time (discriminated union)", async () => {
+  it("extend() rejects empty input for untyped callers", async () => {
     // The ExtendInput type is a discriminated union that requires
-    // exactly one of `extend_by` / `expires_at`. This test documents
-    // the compile-time guarantee for typed callers — the runtime
-    // "at least one field" check in update() still catches the
-    // untyped-JS path (also tested separately).
+    // exactly one of `extend_by` / `expires_at`; this locks in the
+    // runtime guard for untyped-JS callers who bypass TypeScript.
     const fetch = mockFetch({ status: 200, body: { data: {} } });
     const client = createClient(fetch);
 
-    // Untyped-JS path: empty object bypassed compile-time type check
-    // via unknown cast, hits the update() runtime "at least one
-    // field" guard.
     const error = await client
       .extend("r_abc", {} as unknown as Parameters<typeof client.extend>[1])
       .catch((e: unknown) => e as ValidationError);
     expect(error).toBeInstanceOf(ValidationError);
     expect((error as ValidationError).code).toBe(ERROR_CODE_CLIENT_VALIDATION);
-    expect((error as ValidationError).detail).toContain("at least one field");
+    expect((error as ValidationError).detail).toContain("extend:");
+    expect((error as ValidationError).detail).toContain("exactly one");
     expect(fetch).not.toHaveBeenCalled();
   });
 
@@ -2001,6 +3303,24 @@ describe("QURLClient", () => {
         thrown = e;
       }
       expect(thrown).toBeInstanceOf(ValidationError);
+      expect((thrown as ValidationError).detail).toContain("CR/LF");
+    }
+  });
+
+  it("rejects userAgent containing CR/LF (header-injection guard)", () => {
+    for (const bad of ["qurl-sdk\r\nX-Injected: 1", "qurl-sdk\nbar", "qurl-sdk\rxyz"]) {
+      let thrown: unknown;
+      try {
+        new QURLClient({
+          apiKey: "lv_live_test",
+          fetch: mockFetch({ status: 200 }),
+          userAgent: bad,
+        });
+      } catch (e) {
+        thrown = e;
+      }
+      expect(thrown).toBeInstanceOf(ValidationError);
+      expect((thrown as ValidationError).detail).toContain("userAgent");
       expect((thrown as ValidationError).detail).toContain("CR/LF");
     }
   });
@@ -3851,10 +5171,10 @@ describe("QURLClient", () => {
     expect(fetch.mock.calls[1][0] as string).toContain("cursor=cur_combined");
   });
 
-  it("listAll terminates on duplicate cursor (stale-cursor guard)", async () => {
+  it("listAll fails closed on duplicate cursor (stale-cursor guard)", async () => {
     // If the server has a bug and returns the same cursor on
-    // consecutive pages, listAll should break to prevent an
-    // infinite loop rather than re-requesting the same page forever.
+    // consecutive pages, listAll should throw to make the truncated
+    // traversal observable rather than re-requesting the same page forever.
     const page1Response = {
       ok: true,
       status: 200,
@@ -3884,13 +5204,50 @@ describe("QURLClient", () => {
 
     const client = createClient(fetch as typeof globalThis.fetch);
     const items: string[] = [];
-    for await (const qurl of client.listAll()) {
-      items.push((qurl as { resource_id: string }).resource_id);
-    }
-    // Both pages yielded, then iteration stopped.
+    const error = await (async () => {
+      for await (const qurl of client.listAll()) {
+        items.push((qurl as { resource_id: string }).resource_id);
+      }
+    })().catch((e: unknown) => e);
+    // Both pages yielded, then the truncated traversal surfaced.
     expect(items).toEqual(["r_stale1", "r_stale2"]);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).detail).toContain(
+      "listAll: server returned repeated cursor after 2 auto-pagination pages",
+    );
     // Only 2 fetches — no infinite loop.
     expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("listAll fails closed when pagination never terminates", async () => {
+    let page = 0;
+    const fetch = vi.fn(async () => {
+      page += 1;
+      return {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        headers: new Headers({}),
+        json: () =>
+          Promise.resolve({
+            data: [],
+            meta: { has_more: true, next_cursor: `cur_${page}` },
+          }),
+      } satisfies Partial<Response> as Response;
+    });
+
+    const client = createClient(fetch as typeof globalThis.fetch);
+    const error = await (async () => {
+      for await (const qurl of client.listAll()) {
+        void qurl;
+      }
+    })().catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).detail).toContain(
+      "listAll: exceeded 10000 auto-pagination pages without termination",
+    );
+    expect(fetch).toHaveBeenCalledTimes(10_000);
   });
 
   it("list passes all filter params simultaneously", async () => {
@@ -3937,7 +5294,7 @@ describe("QURLClient", () => {
     expect(calledUrl).toContain("expires_after=2026-03-01T00%3A00%3A00Z");
   });
 
-  it("list ignores unknown properties on the input object", async () => {
+  it("list rejects unknown properties on the input object", async () => {
     const fetch = mockFetch({
       status: 200,
       body: { data: [], meta: { has_more: false } },
@@ -3945,15 +5302,15 @@ describe("QURLClient", () => {
     const client = createClient(fetch);
 
     // Simulates a caller spreading an untyped object with extra properties.
-    // The allowlist in list() should drop anything that isn't a known field.
-    const untypedInput = { limit: 10, rogue: "should-not-appear" } as unknown as Parameters<
+    // The allowlist in list() should reject anything that isn't a known field.
+    const untypedInput = { limit: 10, rogue: "should-fail" } as unknown as Parameters<
       typeof client.list
     >[0];
-    await client.list(untypedInput);
+    const error = await client.list(untypedInput).catch((e: unknown) => e as ValidationError);
 
-    const calledUrl = (fetch as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
-    expect(calledUrl).toContain("limit=10");
-    expect(calledUrl).not.toContain("rogue");
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error.detail).toContain('list: unknown field "rogue"');
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("list filters null and empty-string filter params from the query string", async () => {
@@ -4036,7 +5393,7 @@ describe("QURLClient", () => {
         .catch((e: unknown) => e as ValidationError);
       expect(error).toBeInstanceOf(ValidationError);
       const detail = (error as ValidationError).detail;
-      expect(detail).toContain(key);
+      expect(detail).toContain(`list: ${key}:`);
       expect(detail).toContain("must be a string");
     }
     expect(fetch).not.toHaveBeenCalled();

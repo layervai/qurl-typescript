@@ -16,6 +16,42 @@ info:
   title: QURL API — SDK contract surface
   version: "1"
 paths:
+  /v1/agent/bootstrap:
+    post: {}
+  /v1/api-keys:
+    get: {}
+    post: {}
+  /v1/api-keys/{key_id}:
+    patch: {}
+    delete: {}
+  /v1/access-codes:
+    get: {}
+    post: {}
+  /v1/access-codes/redeem:
+    post: {}
+  /v1/access-codes/{id}:
+    delete: {}
+  /v1/billing/checkout:
+    post: {}
+  /v1/billing/invoices:
+    get: {}
+  /v1/billing/portal:
+    post: {}
+  /v1/connectors/installations:
+    get: {}
+  /v1/customer:
+    get: {}
+    patch: {}
+  /v1/domains:
+    get: {}
+    post: {}
+  /v1/domains/{domain}:
+    get: {}
+    delete: {}
+  /v1/domains/{domain}/regenerate-token:
+    post: {}
+  /v1/domains/{domain}/verify:
+    post: {}
   /v1/qurls:
     get: {}
     post: {}
@@ -29,5 +65,39 @@ paths:
     post: {}
   /v1/resolve:
     post: {}
+  /v1/resources:
+    get: {}
+    post: {}
+  /v1/resources/{id}:
+    get: {}
+    patch: {}
+    delete: {}
+  /v1/resources/{id}/qurls:
+    post: {}
+  /v1/resources/{id}/qurls/{qurl_id}:
+    patch: {}
+    delete: {}
+  /v1/resources/{id}/sessions:
+    get: {}
+    delete: {}
+  /v1/resources/{id}/sessions/{session_id}:
+    delete: {}
   /v1/quota:
     get: {}
+  /v1/usage/current-period:
+    get: {}
+  /v1/usage/daily:
+    get: {}
+  /v1/webhooks:
+    get: {}
+    post: {}
+  /v1/webhooks/events:
+    get: {}
+  /v1/webhooks/{id}:
+    get: {}
+    patch: {}
+    delete: {}
+  /v1/webhooks/{id}/deliveries:
+    get: {}
+  /v1/webhooks/{id}/secret:
+    post: {}

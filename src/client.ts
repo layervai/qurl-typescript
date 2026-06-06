@@ -11,23 +11,77 @@ import {
 import type {
   AccessPolicy,
   AccessToken,
+  AccessCode,
+  AccessCodeListOutput,
   AIAgentPolicy,
+  AgentBootstrapInput,
+  AgentBootstrapOutput,
+  ApiKey,
+  ApiKeyListOutput,
+  BillingInvoiceListOutput,
   BatchCreateInput,
   BatchCreateOutput,
   ClientOptions,
+  ConnectorInstallation,
+  ConnectorInstallationListOutput,
+  CreateAccessCodeInput,
+  CreateAccessCodeOutput,
+  CreateApiKeyInput,
+  CreateApiKeyOutput,
+  CreateBillingCheckoutInput,
   CreateInput,
   CreateOutput,
+  CreateQurlForResourceInput,
+  CreateResourceInput,
+  CreateWebhookInput,
+  Customer,
+  CheckoutSession,
+  Domain,
+  DomainListOutput,
+  DomainVerifyResult,
   ExtendInput,
+  Invoice,
   ListInput,
   ListOutput,
+  ListApiKeysInput,
+  ListBillingInvoicesInput,
+  ListConnectorInstallationsInput,
+  ListDomainsInput,
+  ListWebhookDeliveriesInput,
+  ListWebhooksInput,
   MintInput,
   MintOutput,
+  PortalSession,
   QURL,
   QURLErrorData,
+  QurlSummary,
   Quota,
+  RedeemAccessCodeInput,
+  RedeemAccessCodeOutput,
+  RegisterDomainInput,
+  Resource,
+  ResourceDetail,
+  ResourceListInput,
+  ResourceListOutput,
   ResolveInput,
   ResolveOutput,
+  Session,
+  SessionListOutput,
+  SessionTerminateOutput,
+  UpdateApiKeyInput,
+  UpdateCustomerInput,
   UpdateInput,
+  UpdateResourceInput,
+  UpdateResourceQurlInput,
+  UpdateWebhookInput,
+  UsageCurrentPeriod,
+  UsageDaily,
+  Webhook,
+  WebhookDelivery,
+  WebhookDeliveryListOutput,
+  WebhookEventTypeInfo,
+  WebhookListOutput,
+  WebhookWithSecret,
 } from "./types.js";
 import { VERSION } from "./version.js";
 
@@ -63,8 +117,6 @@ const LIST_PARAM_KEYS = [
   "expires_after",
 ] as const satisfies readonly (keyof ListInput)[];
 
-const NUMERIC_LIST_KEYS: ReadonlySet<keyof ListInput> = new Set(["limit"]);
-
 // Compile-time witness: `Exclude<keyof X, (typeof KEYS)[number]>` is
 // `never` iff KEYS lists every key of X. Paired with the
 // `satisfies readonly (keyof X)[]` clause on the array (which catches
@@ -75,6 +127,22 @@ function assertExhaustive<T extends true>(_: T): void {
 }
 assertExhaustive<
   Exclude<keyof ListInput, (typeof LIST_PARAM_KEYS)[number]> extends never ? true : never
+>(true);
+
+const CREATE_FIELD_KEYS = [
+  "type",
+  "target_url",
+  "expires_in",
+  "one_time_use",
+  "max_sessions",
+  "session_duration",
+  "label",
+  "access_policy",
+  "custom_domain",
+] as const satisfies readonly (keyof CreateInput)[];
+
+assertExhaustive<
+  Exclude<keyof CreateInput, (typeof CREATE_FIELD_KEYS)[number]> extends never ? true : never
 >(true);
 
 /**
@@ -113,6 +181,285 @@ const MINT_FIELD_KEYS = [
 
 assertExhaustive<
   Exclude<keyof MintInput, (typeof MINT_FIELD_KEYS)[number]> extends never ? true : never
+>(true);
+
+const RESOURCE_LIST_PARAM_KEYS = [
+  "cursor",
+  "limit",
+  "alias",
+  "slug",
+  "status",
+  "type",
+] as const satisfies readonly (keyof ResourceListInput)[];
+
+assertExhaustive<
+  Exclude<keyof ResourceListInput, (typeof RESOURCE_LIST_PARAM_KEYS)[number]> extends never
+    ? true
+    : never
+>(true);
+
+const CREATE_RESOURCE_FIELD_KEYS = [
+  "type",
+  "target_url",
+  "description",
+  "tags",
+  "custom_domain",
+  "alias",
+  "slug",
+  "find_or_create",
+] as const satisfies readonly (keyof CreateResourceInput)[];
+
+assertExhaustive<
+  Exclude<keyof CreateResourceInput, (typeof CREATE_RESOURCE_FIELD_KEYS)[number]> extends never
+    ? true
+    : never
+>(true);
+
+const UPDATE_RESOURCE_FIELD_KEYS = [
+  "description",
+  "tags",
+  "custom_domain",
+  "preserve_host",
+  "alias",
+] as const satisfies readonly (keyof UpdateResourceInput)[];
+
+assertExhaustive<
+  Exclude<keyof UpdateResourceInput, (typeof UPDATE_RESOURCE_FIELD_KEYS)[number]> extends never
+    ? true
+    : never
+>(true);
+
+const CREATE_QURL_FOR_RESOURCE_FIELD_KEYS = [
+  "expires_in",
+  "one_time_use",
+  "max_sessions",
+  "session_duration",
+  "label",
+  "access_policy",
+] as const satisfies readonly (keyof CreateQurlForResourceInput)[];
+
+assertExhaustive<
+  Exclude<
+    keyof CreateQurlForResourceInput,
+    (typeof CREATE_QURL_FOR_RESOURCE_FIELD_KEYS)[number]
+  > extends never
+    ? true
+    : never
+>(true);
+
+const UPDATE_RESOURCE_QURL_FIELD_KEYS = [
+  "extend_by",
+  "expires_at",
+  "label",
+  "access_policy",
+  "max_sessions",
+  "session_duration",
+] as const satisfies readonly (keyof UpdateResourceQurlInput)[];
+
+assertExhaustive<
+  Exclude<
+    keyof UpdateResourceQurlInput,
+    (typeof UPDATE_RESOURCE_QURL_FIELD_KEYS)[number]
+  > extends never
+    ? true
+    : never
+>(true);
+
+const AGENT_BOOTSTRAP_FIELD_KEYS = [
+  "public_key",
+  "agent_id",
+  "hostname",
+  "version",
+] as const satisfies readonly (keyof AgentBootstrapInput)[];
+
+assertExhaustive<
+  Exclude<keyof AgentBootstrapInput, (typeof AGENT_BOOTSTRAP_FIELD_KEYS)[number]> extends never
+    ? true
+    : never
+>(true);
+
+const UPDATE_CUSTOMER_FIELD_KEYS = [
+  "spending_cap_cents",
+] as const satisfies readonly (keyof UpdateCustomerInput)[];
+
+assertExhaustive<
+  Exclude<keyof UpdateCustomerInput, (typeof UPDATE_CUSTOMER_FIELD_KEYS)[number]> extends never
+    ? true
+    : never
+>(true);
+
+const CREATE_BILLING_CHECKOUT_FIELD_KEYS = [
+  "plan",
+] as const satisfies readonly (keyof CreateBillingCheckoutInput)[];
+
+assertExhaustive<
+  Exclude<
+    keyof CreateBillingCheckoutInput,
+    (typeof CREATE_BILLING_CHECKOUT_FIELD_KEYS)[number]
+  > extends never
+    ? true
+    : never
+>(true);
+
+const REGISTER_DOMAIN_FIELD_KEYS = [
+  "domain",
+] as const satisfies readonly (keyof RegisterDomainInput)[];
+
+assertExhaustive<
+  Exclude<keyof RegisterDomainInput, (typeof REGISTER_DOMAIN_FIELD_KEYS)[number]> extends never
+    ? true
+    : never
+>(true);
+
+const CREATE_WEBHOOK_FIELD_KEYS = [
+  "url",
+  "events",
+  "description",
+] as const satisfies readonly (keyof CreateWebhookInput)[];
+
+assertExhaustive<
+  Exclude<keyof CreateWebhookInput, (typeof CREATE_WEBHOOK_FIELD_KEYS)[number]> extends never
+    ? true
+    : never
+>(true);
+
+const UPDATE_WEBHOOK_FIELD_KEYS = [
+  "url",
+  "events",
+  "description",
+  "status",
+] as const satisfies readonly (keyof UpdateWebhookInput)[];
+
+assertExhaustive<
+  Exclude<keyof UpdateWebhookInput, (typeof UPDATE_WEBHOOK_FIELD_KEYS)[number]> extends never
+    ? true
+    : never
+>(true);
+
+const CREATE_API_KEY_FIELD_KEYS = [
+  "name",
+  "scopes",
+  "expires_in",
+  "purpose",
+  "tunnel_slug",
+] as const satisfies readonly (keyof CreateApiKeyInput)[];
+
+assertExhaustive<
+  Exclude<keyof CreateApiKeyInput, (typeof CREATE_API_KEY_FIELD_KEYS)[number]> extends never
+    ? true
+    : never
+>(true);
+
+const UPDATE_API_KEY_FIELD_KEYS = [
+  "name",
+  "scopes",
+] as const satisfies readonly (keyof UpdateApiKeyInput)[];
+
+assertExhaustive<
+  Exclude<keyof UpdateApiKeyInput, (typeof UPDATE_API_KEY_FIELD_KEYS)[number]> extends never
+    ? true
+    : never
+>(true);
+
+const REDEEM_ACCESS_CODE_FIELD_KEYS = [
+  "code",
+  "honeypot",
+  "elapsed_ms",
+] as const satisfies readonly (keyof RedeemAccessCodeInput)[];
+
+assertExhaustive<
+  Exclude<keyof RedeemAccessCodeInput, (typeof REDEEM_ACCESS_CODE_FIELD_KEYS)[number]> extends never
+    ? true
+    : never
+>(true);
+
+const CREATE_ACCESS_CODE_FIELD_KEYS = [
+  "resource_id",
+  "name",
+  "max_uses",
+  "expires_at",
+] as const satisfies readonly (keyof CreateAccessCodeInput)[];
+
+assertExhaustive<
+  Exclude<keyof CreateAccessCodeInput, (typeof CREATE_ACCESS_CODE_FIELD_KEYS)[number]> extends never
+    ? true
+    : never
+>(true);
+
+const CONNECTOR_INSTALLATION_LIST_PARAM_KEYS = [
+  "cursor",
+  "limit",
+] as const satisfies readonly (keyof ListConnectorInstallationsInput)[];
+
+assertExhaustive<
+  Exclude<
+    keyof ListConnectorInstallationsInput,
+    (typeof CONNECTOR_INSTALLATION_LIST_PARAM_KEYS)[number]
+  > extends never
+    ? true
+    : never
+>(true);
+
+const BILLING_INVOICE_LIST_PARAM_KEYS = [
+  "limit",
+  "cursor",
+] as const satisfies readonly (keyof ListBillingInvoicesInput)[];
+
+assertExhaustive<
+  Exclude<
+    keyof ListBillingInvoicesInput,
+    (typeof BILLING_INVOICE_LIST_PARAM_KEYS)[number]
+  > extends never
+    ? true
+    : never
+>(true);
+
+const DOMAIN_LIST_PARAM_KEYS = [
+  "limit",
+  "cursor",
+] as const satisfies readonly (keyof ListDomainsInput)[];
+
+assertExhaustive<
+  Exclude<keyof ListDomainsInput, (typeof DOMAIN_LIST_PARAM_KEYS)[number]> extends never
+    ? true
+    : never
+>(true);
+
+const WEBHOOK_LIST_PARAM_KEYS = [
+  "limit",
+  "cursor",
+] as const satisfies readonly (keyof ListWebhooksInput)[];
+
+assertExhaustive<
+  Exclude<keyof ListWebhooksInput, (typeof WEBHOOK_LIST_PARAM_KEYS)[number]> extends never
+    ? true
+    : never
+>(true);
+
+const WEBHOOK_DELIVERY_LIST_PARAM_KEYS = [
+  "limit",
+  "cursor",
+] as const satisfies readonly (keyof ListWebhookDeliveriesInput)[];
+
+assertExhaustive<
+  Exclude<
+    keyof ListWebhookDeliveriesInput,
+    (typeof WEBHOOK_DELIVERY_LIST_PARAM_KEYS)[number]
+  > extends never
+    ? true
+    : never
+>(true);
+
+const API_KEY_LIST_PARAM_KEYS = [
+  "limit",
+  "cursor",
+  "status",
+] as const satisfies readonly (keyof ListApiKeysInput)[];
+
+assertExhaustive<
+  Exclude<keyof ListApiKeysInput, (typeof API_KEY_LIST_PARAM_KEYS)[number]> extends never
+    ? true
+    : never
 >(true);
 
 /**
@@ -167,8 +514,12 @@ const MAX_BATCH_ITEMS = 100;
 const MAX_DESCRIPTION = 500;
 const MAX_CUSTOM_DOMAIN = 253;
 const MAX_MAX_SESSIONS = 1000;
+const MAX_API_KEY_NAME = 100;
+const MAX_ALIAS = 64;
+const MAX_SLUG = 64;
 const MAX_TAGS = 10;
 const MAX_TAG_LENGTH = 50;
+const MAX_AUTO_PAGINATION_PAGES = 10_000;
 // CreateQurlRequest.target_url pattern is loose (just a URI) but
 // UpdateQurlRequest.tags pattern is specific — enforce it here.
 const TAG_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9 _-]*$/;
@@ -208,23 +559,106 @@ function requireMaxSessionsInRange(value: number | undefined): void {
   }
 }
 
+function requireBooleanIfPresent(value: unknown, field: string): void {
+  if (value === undefined) return;
+  if (typeof value !== "boolean") {
+    throw clientValidationError(`${field}: must be a boolean (got ${describeShape(value)})`);
+  }
+}
+
+function requireListLimitInRange(value: unknown, methodName: string): void {
+  if (value === undefined || value === null) return;
+  // All current paginated OpenAPI query params share 1..100. If a future
+  // endpoint diverges, add a per-endpoint bound rather than changing this
+  // shared guard silently.
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1 || value > 100) {
+    const rendered = typeof value === "string" ? JSON.stringify(value) : String(value);
+    throw clientValidationError(
+      `${methodName}: limit: must be an integer between 1 and 100 (got ${rendered})`,
+    );
+  }
+}
+
+function appendQuery(
+  path: string,
+  input: Record<string, unknown>,
+  keys: readonly string[],
+  methodName: string,
+): string {
+  validateQueryInput(input, keys, methodName);
+  const params = new URLSearchParams();
+  for (const key of keys) {
+    const value = input[key];
+    if (value === null || value === undefined || value === "") continue;
+    params.set(key, String(value));
+  }
+  const query = params.toString();
+  return query ? `${path}?${query}` : path;
+}
+
+function validateQueryInput(
+  input: Record<string, unknown>,
+  keys: readonly string[],
+  methodName: string,
+): void {
+  requireNoUnknownFields(input, keys, methodName);
+  if (keys.includes("limit")) {
+    requireListLimitInRange(input.limit as number | undefined | null, methodName);
+  }
+  for (const key of keys) {
+    const value = input[key];
+    if (value === null || value === undefined || value === "") continue;
+    if (key === "limit") continue;
+    if (typeof value !== "string") {
+      throw clientValidationError(
+        `${methodName}: ${key}: must be a string (got ${describeShape(value)})`,
+      );
+    }
+  }
+}
+
+function validateListAllInput(
+  input: Record<string, unknown>,
+  keys: readonly string[],
+  methodName: string,
+): void {
+  // Eager validation keeps listAll* call sites consistent with single-page
+  // list methods: bad input throws before the async generator is consumed.
+  // paginateAll intentionally re-enters the single-page method per page, so
+  // each request revalidates the threaded cursor/filter set before dispatch.
+  validateQueryInput(input, keys, methodName);
+}
+
+function pageFromMeta<T extends Record<string, unknown>>(
+  out: T,
+  meta: ApiResponse<unknown>["meta"],
+): T & { next_cursor?: string; has_more: boolean; request_id?: string; page_size?: number } {
+  return {
+    ...out,
+    next_cursor: meta?.next_cursor,
+    has_more: meta?.has_more ?? Boolean(meta?.next_cursor),
+    request_id: meta?.request_id,
+    page_size: meta?.page_size,
+  };
+}
+
 /**
- * Validates that an ID argument is a non-empty string. Endpoints that
- * accept resource or qURL display IDs (`get`, `update`, `extend`,
- * `mintLink`) use this to catch empty strings early — without it,
- * `encodeURIComponent("")` returns `""` and the path collapses
- * (e.g. `GET /v1/qurls/` hits the list endpoint, not get).
- *
- * Unlike `delete()`, these endpoints accept both `r_` and `q_` IDs,
- * so no prefix check is needed — just non-empty.
- *
+ * Validates that a path-parameter argument is a non-empty string. Some callers
+ * pass resource/qURL display IDs, while newer endpoints also pass domains,
+ * session IDs, webhook IDs, and API-key IDs, so this intentionally enforces
+ * only basic shape and leaves endpoint-specific grammar to the service.
  */
-function requireNonEmptyId(id: string, method: string): void {
-  // `.trim()` rejects whitespace-only IDs — without it, " " round-trips to
-  // `encodeURIComponent(" ") === "%20"` which the server returns 404 for.
+function requireNonEmptyId(id: string, method: string, field = "id"): void {
+  // `.trim()` catches whitespace-only and padded IDs before they round-trip as
+  // `%20...%20` paths that the server can only reject with a less useful 404.
   // The pre-flight error is more actionable than the 404.
   if (typeof id !== "string" || id.trim() === "") {
-    throw clientValidationError(`${method}: id is required`);
+    throw clientValidationError(`${method}: ${field} is required`);
+  }
+  if (id.trim() !== id) {
+    throw clientValidationError(
+      `${method}: ${field} must not include leading or trailing whitespace`,
+    );
   }
 }
 
@@ -346,30 +780,34 @@ function requireValidAccessPolicy(policy: AccessPolicy | null | undefined): void
 // and private-range hosts; the SDK doesn't need to duplicate that).
 const ALLOWED_URL_SCHEMES = ["http://", "https://"] as const;
 
-function requireValidTargetUrl(target_url: unknown): void {
+function requireValidHttpUrl(value: unknown, field: string): void {
   // Three checks in priority order: type guard, scheme, length.
-  // Stop at the first failure so a non-string target_url doesn't
+  // Stop at the first failure so a non-string URL doesn't
   // produce both "must be a string" AND "must be ≤ 2048 characters"
   // (the length check on a non-string would also typeof-fail and
   // duplicate the type message). The collect-all loop in
-  // validateCreateInput runs each FIELD's validator independently —
-  // within target_url itself we want fail-fast.
-  if (typeof target_url !== "string") {
+  // validateCreateInput runs each FIELD's validator independently — within
+  // a single URL field itself we want fail-fast.
+  if (typeof value !== "string") {
     throw clientValidationError(
-      `target_url: must be a string (got ${target_url === null ? "null" : typeof target_url})`,
+      `${field}: must be a string (got ${value === null ? "null" : typeof value})`,
     );
   }
-  if (!ALLOWED_URL_SCHEMES.some((scheme) => target_url.startsWith(scheme))) {
+  if (!ALLOWED_URL_SCHEMES.some((scheme) => value.startsWith(scheme))) {
     // Truncate to keep the error message compact and avoid
     // pathologically long schemes from filling logs.
-    const repr = JSON.stringify(target_url).slice(0, 40);
-    throw clientValidationError(`target_url: must start with http:// or https:// (got ${repr})`);
+    const repr = JSON.stringify(value).slice(0, 40);
+    throw clientValidationError(`${field}: must start with http:// or https:// (got ${repr})`);
   }
-  if (target_url.length > MAX_TARGET_URL) {
+  if (value.length > MAX_TARGET_URL) {
     throw clientValidationError(
-      `target_url: must be ${MAX_TARGET_URL} characters or fewer (got ${target_url.length})`,
+      `${field}: must be ${MAX_TARGET_URL} characters or fewer (got ${value.length})`,
     );
   }
+}
+
+function requireValidTargetUrl(target_url: unknown): void {
+  requireValidHttpUrl(target_url, "target_url");
 }
 
 function validateCreateInput(input: CreateInput): void {
@@ -396,11 +834,29 @@ function validateCreateInput(input: CreateInput): void {
       throw err;
     }
   };
-  collect(() => requireValidTargetUrl(input.target_url));
+  collect(() =>
+    requireNoUnknownFields(input as Record<string, unknown>, CREATE_FIELD_KEYS, "create"),
+  );
+  const resourceType = input.type;
+  if (resourceType !== undefined && typeof resourceType !== "string") {
+    errors.push(
+      `type: must be a string (got ${resourceType === null ? "null" : typeof resourceType})`,
+    );
+  }
+  collect(() => {
+    if (input.target_url === undefined) {
+      if (resourceType === undefined || resourceType === "url") {
+        throw clientValidationError("target_url: is required for url qURLs");
+      }
+      return;
+    }
+    requireValidTargetUrl(input.target_url);
+  });
   collect(() => requireMaxLength(input.label, "label", MAX_LABEL));
   collect(() => requireNonEmptyIfPresent(input.label, "label"));
   collect(() => requireMaxLength(input.custom_domain, "custom_domain", MAX_CUSTOM_DOMAIN));
   collect(() => requireNonEmptyIfPresent(input.custom_domain, "custom_domain"));
+  collect(() => requireBooleanIfPresent(input.one_time_use, "one_time_use"));
   collect(() => requireMaxSessionsInRange(input.max_sessions));
   collect(() => requireNonEmptyIfPresent(input.expires_in, "expires_in"));
   collect(() => requireNonEmptyIfPresent(input.session_duration, "session_duration"));
@@ -421,6 +877,247 @@ function validateCreateInput(input: CreateInput): void {
   // are pass-through for the same reason. The shape-guard above only
   // catches structural mistakes (string-instead-of-array on list fields)
   // an untyped-JS caller is likely to make.
+}
+
+function validateQurlTokenOptions(input: CreateQurlForResourceInput | undefined): void {
+  if (input === undefined) return;
+  requireMaxLength(input.label, "label", MAX_LABEL);
+  requireNonEmptyIfPresent(input.label, "label");
+  requireNonEmptyIfPresent(input.expires_in, "expires_in");
+  requireNonEmptyIfPresent(input.session_duration, "session_duration");
+  requireBooleanIfPresent(input.one_time_use, "one_time_use");
+  requireMaxSessionsInRange(input.max_sessions);
+  requireValidAccessPolicy(input.access_policy);
+}
+
+function validateResourceQurlUpdateInput(input: UpdateResourceQurlInput): void {
+  requireMaxLength(input.label, "label", MAX_LABEL);
+  requireNonEmptyIfPresent(input.label, "label");
+  requireNonEmptyIfPresent(input.extend_by, "extend_by");
+  requireNonEmptyIfPresent(input.expires_at, "expires_at");
+  requireNonEmptyIfPresent(input.session_duration, "session_duration");
+  requireMaxSessionsInRange(input.max_sessions);
+  requireValidAccessPolicy(input.access_policy);
+  if (input.extend_by !== undefined && input.expires_at !== undefined) {
+    throw clientValidationError(
+      "updateResourceQurl: `extend_by` and `expires_at` are mutually exclusive — provide at most one",
+    );
+  }
+}
+
+function requireObjectInput(
+  input: unknown,
+  method: string,
+): asserts input is Record<string, unknown> {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) {
+    throw clientValidationError(
+      `${method}: input must be an object (got ${input === null ? "null" : typeof input})`,
+    );
+  }
+}
+
+function requireNonEmptyStringField(
+  input: Record<string, unknown>,
+  field: string,
+  method: string,
+): void {
+  const value = input[field];
+  if (typeof value !== "string" || value.length === 0) {
+    throw clientValidationError(`${method}: ${field} must be a non-empty string`);
+  }
+}
+
+function requireNonEmptyArrayField(
+  input: Record<string, unknown>,
+  field: string,
+  method: string,
+): void {
+  const value = input[field];
+  if (!Array.isArray(value) || value.length === 0) {
+    throw clientValidationError(`${method}: ${field} must be a non-empty array`);
+  }
+}
+
+function requireStringArrayElements(
+  value: unknown,
+  field: string,
+  method: string,
+): asserts value is string[] {
+  if (!Array.isArray(value)) {
+    throw clientValidationError(`${method}: ${field} must be a non-empty array`);
+  }
+  value.forEach((entry, index) => {
+    if (typeof entry !== "string" || entry.length === 0) {
+      throw clientValidationError(`${method}: ${field}[${index}] must be a non-empty string`);
+    }
+  });
+}
+
+function requireAtLeastOneField(
+  input: Record<string, unknown>,
+  fields: readonly string[],
+  method: string,
+): void {
+  if (!fields.some((field) => input[field] !== undefined)) {
+    throw clientValidationError(
+      `${method}: at least one field (${fields.join(", ")}) must be provided`,
+    );
+  }
+}
+
+function requireNoUnknownFields(
+  input: Record<string, unknown>,
+  fields: readonly string[],
+  method: string,
+): void {
+  const unknown = Object.keys(input).filter((field) => !fields.includes(field));
+  if (unknown.length > 0) {
+    const rendered = unknown.map((field) => `"${field}"`).join(", ");
+    const label = unknown.length === 1 ? "unknown field" : "unknown fields";
+    throw clientValidationError(`${method}: ${label} ${rendered}`);
+  }
+}
+
+function normalizePatchFields(
+  input: Record<string, unknown>,
+  fields: readonly string[],
+  options: { preserveNullFields?: readonly string[] } = {},
+): Record<string, unknown> {
+  const preserveNull = new Set(options.preserveNullFields ?? []);
+  const normalized: Record<string, unknown> = {};
+  for (const key of fields) {
+    const value = input[key];
+    if (value !== undefined && (value !== null || preserveNull.has(key))) {
+      normalized[key] = value;
+    }
+  }
+  return normalized;
+}
+
+function validateResourceWriteFields(
+  input: Record<string, unknown>,
+  options: {
+    allowAliasClear?: boolean;
+    allowCustomDomainClear?: boolean;
+    requireUrlTarget?: boolean;
+    validateFindOrCreate?: boolean;
+    validatePreserveHost?: boolean;
+  } = {},
+): void {
+  const errors: string[] = [];
+  const collect = (fn: () => void): void => {
+    try {
+      fn();
+    } catch (err) {
+      if (err instanceof ValidationError) {
+        errors.push(err.detail);
+        return;
+      }
+      throw err;
+    }
+  };
+  const resourceType = input.type;
+  if (resourceType !== undefined && typeof resourceType !== "string") {
+    errors.push(
+      `type: must be a string (got ${resourceType === null ? "null" : typeof resourceType})`,
+    );
+  }
+  collect(() => {
+    if (input.target_url === undefined) {
+      if (options.requireUrlTarget && (resourceType === undefined || resourceType === "url")) {
+        throw clientValidationError("target_url: is required for url resources");
+      }
+      return;
+    }
+    requireValidTargetUrl(input.target_url);
+  });
+  collect(() =>
+    requireMaxLength(input.description as string | undefined, "description", MAX_DESCRIPTION),
+  );
+  collect(() =>
+    requireMaxLength(input.custom_domain as string | undefined, "custom_domain", MAX_CUSTOM_DOMAIN),
+  );
+  collect(() => {
+    if (options.allowCustomDomainClear && input.custom_domain === "") return;
+    requireNonEmptyIfPresent(input.custom_domain, "custom_domain");
+  });
+  collect(() => requireValidTags(input.tags as string[] | null | undefined));
+  collect(() => {
+    if (input.alias !== undefined) {
+      if (input.alias === null) {
+        if (!options.allowAliasClear) {
+          throw clientValidationError("alias: must be a string (got null)");
+        }
+      } else {
+        requireMaxLength(input.alias as string | undefined, "alias", MAX_ALIAS);
+        requireNonEmptyIfPresent(input.alias, "alias");
+      }
+    }
+  });
+  collect(() => {
+    if (input.slug === undefined) return;
+    requireMaxLength(input.slug as string | undefined, "slug", MAX_SLUG);
+    requireNonEmptyIfPresent(input.slug, "slug");
+  });
+  collect(() => {
+    if (
+      options.validateFindOrCreate &&
+      input.find_or_create !== undefined &&
+      typeof input.find_or_create !== "boolean"
+    ) {
+      throw clientValidationError(
+        `find_or_create: must be a boolean (got ${describeShape(input.find_or_create)})`,
+      );
+    }
+  });
+  collect(() => {
+    if (
+      options.validatePreserveHost &&
+      input.preserve_host !== undefined &&
+      typeof input.preserve_host !== "boolean"
+    ) {
+      throw clientValidationError(
+        `preserve_host: must be a boolean (got ${describeShape(input.preserve_host)})`,
+      );
+    }
+  });
+  if (errors.length > 0) {
+    throw clientValidationError(errors.join("; "));
+  }
+}
+
+function validateWebhookWriteFields(
+  input: Record<string, unknown>,
+  method: string,
+  requiredFields: { url?: boolean; events?: boolean } = {},
+): void {
+  if (requiredFields.url || input.url !== undefined) {
+    requireNonEmptyStringField(input, "url", method);
+    requireValidHttpUrl(input.url, "url");
+  }
+  if (requiredFields.events || input.events !== undefined) {
+    requireNonEmptyArrayField(input, "events", method);
+    requireStringArrayElements(input.events, "events", method);
+  }
+  requireMaxLength(input.description as string | undefined, "description", MAX_DESCRIPTION);
+  if (input.status !== undefined) {
+    requireNonEmptyStringField(input, "status", method);
+  }
+}
+
+function validateApiKeyWriteFields(
+  input: Record<string, unknown>,
+  method: string,
+  requiredFields: { name?: boolean; scopes?: boolean } = {},
+): void {
+  if (requiredFields.name || input.name !== undefined) {
+    requireNonEmptyStringField(input, "name", method);
+    requireMaxLength(input.name as string, "name", MAX_API_KEY_NAME);
+  }
+  if (requiredFields.scopes || input.scopes !== undefined) {
+    requireNonEmptyArrayField(input, "scopes", method);
+    requireStringArrayElements(input.scopes, "scopes", method);
+  }
 }
 
 /**
@@ -594,7 +1291,11 @@ export class QURLClient {
       Number.isFinite(requestedTimeout) && requestedTimeout > 0
         ? requestedTimeout
         : DEFAULT_TIMEOUT;
-    this.userAgent = options.userAgent ?? `qurl-typescript/${VERSION}`;
+    const userAgent = options.userAgent ?? `qurl-typescript/${VERSION}`;
+    if (/[\r\n]/.test(userAgent)) {
+      throw clientValidationError("userAgent: must not contain CR/LF characters");
+    }
+    this.userAgent = userAgent;
 
     if (options.debug === true) {
       this.debugFn = (msg, data) => console.debug(`[qurl] ${msg}`, data ?? "");
@@ -789,6 +1490,50 @@ export class QURLClient {
     return result;
   }
 
+  private async *paginateAll<
+    TItem,
+    TInput extends { cursor?: string },
+    TPage extends { next_cursor?: string; has_more?: boolean; request_id?: string },
+  >(
+    methodName: string,
+    input: Omit<TInput, "cursor">,
+    loadPage: (input: TInput) => Promise<TPage>,
+    itemsFromPage: (page: TPage) => TItem[],
+  ): AsyncGenerator<TItem, void, undefined> {
+    let cursor: string | undefined;
+    let pageCount = 0;
+    // Bounded by MAX_AUTO_PAGINATION_PAGES, so pathological cursor streams
+    // cannot grow this set without limit.
+    const seenCursors = new Set<string>();
+    do {
+      pageCount += 1;
+      const page = await loadPage({ ...input, cursor } as TInput);
+      for (const item of itemsFromPage(page)) {
+        yield item;
+      }
+      cursor = page.next_cursor;
+      if (page.has_more === false) {
+        break;
+      }
+      if (!cursor) {
+        break;
+      }
+      if (seenCursors.has(cursor)) {
+        throw unexpectedResponseError(
+          `${methodName}: server returned repeated cursor after ${pageCount} auto-pagination pages`,
+          page.request_id,
+        );
+      }
+      seenCursors.add(cursor);
+      if (pageCount >= MAX_AUTO_PAGINATION_PAGES) {
+        throw unexpectedResponseError(
+          `${methodName}: exceeded ${MAX_AUTO_PAGINATION_PAGES} auto-pagination pages without termination`,
+          page.request_id,
+        );
+      }
+    } while (cursor);
+  }
+
   // --- Public API ---
 
   /** Create a new qURL. */
@@ -974,89 +1719,42 @@ export class QURLClient {
    * validation style used for `max_sessions`, `tag count`, URL length.
    */
   async list(input: ListInput = {}): Promise<ListOutput> {
-    // The `!== null` check is intentional despite `ListInput.limit`
-    // being typed as `number | undefined`: an untyped JS caller can
-    // pass `{ limit: null }` which would serialize to `?limit=null`
-    // via `String(null)` in the query-param loop below. Matches the
-    // null-tolerance pattern used for tags and other list filters.
-    if (input.limit !== undefined && input.limit !== null) {
-      if (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > 100) {
-        throw clientValidationError(
-          `limit: must be an integer between 1 and 100 (got ${input.limit})`,
-        );
-      }
-    }
-    const params = new URLSearchParams();
-    // Explicit allowlist rather than Object.entries: TypeScript's structural
-    // typing can't prevent callers from spreading untyped objects with extra
-    // properties, and String(value) on an unexpected array/object would emit
-    // "[object Object]" as a query param.
-    // Per the OpenAPI spec, only `limit` is numeric; every other
-    // filter field is a string. Enforce per-key type expectations
-    // so untyped-JS callers passing `cursor: 42` (or worse,
-    // `q: ["foo", "bar"]`) get a structured ValidationError instead
-    // of silently coercing to `"42"` / `"foo,bar"`.
-    for (const key of LIST_PARAM_KEYS) {
-      const value = input[key];
-      // Drop null/undefined and empty strings — an empty string from
-      // an untyped JS caller would otherwise produce `?status=&q=`
-      // garbage that the API might interpret as an explicit empty
-      // filter. `limit` is validated separately above.
-      if (value === null || value === undefined || value === "") continue;
-      const expectedType = NUMERIC_LIST_KEYS.has(key) ? "number" : "string";
-      if (typeof value !== expectedType) {
-        throw clientValidationError(
-          `${key}: must be a ${expectedType} (got ${value === null ? "null" : typeof value})`,
-        );
-      }
-      params.set(key, String(value));
-    }
-
-    const query = params.toString();
-    const path = query ? `/v1/qurls?${query}` : "/v1/qurls";
+    const path = appendQuery(
+      "/v1/qurls",
+      input as Record<string, unknown>,
+      LIST_PARAM_KEYS,
+      "list",
+    );
 
     const { data, meta } = await this.rawRequest<(QURL & { qurls?: AccessToken[] })[]>("GET", path);
-    return {
-      // Defensive: map in case API includes nested tokens on list items in the future.
-      qurls: data.map((raw) => this.mapQurlsField(raw)),
-      next_cursor: meta?.next_cursor,
-      has_more: meta?.has_more ?? false,
-    };
+    return pageFromMeta(
+      {
+        // Defensive: map in case API includes nested tokens on list items in the future.
+        qurls: (data ?? []).map((raw) => this.mapQurlsField(raw)),
+      },
+      meta,
+    );
   }
 
   /**
    * Iterate over all qURLs, automatically paginating.
    *
-   * Termination is **cursor-driven**: the loop stops as soon as the API
-   * returns a page with no `next_cursor`, not when `has_more === false`.
-   * This is deliberate — if the API ever returned `has_more: true` with
-   * a missing or empty `next_cursor` (a server bug), a has_more-driven
-   * loop would spin forever, while this cursor-driven loop terminates
-   * cleanly. The trade-off is that `has_more: false` with a spurious
-   * trailing cursor would cause one extra round-trip; we accept that
-   * over the risk of an infinite loop.
+   * Termination honors explicit `has_more: false` first, then falls back
+   * to the cursor shape. A missing `next_cursor` still terminates even if
+   * a buggy response claimed `has_more: true`, and a stale cursor with
+   * `has_more: false` does not trigger an extra round-trip.
+   *
+   * Input is validated synchronously when this method is called, before
+   * iteration begins.
    */
-  async *listAll(input: Omit<ListInput, "cursor"> = {}): AsyncGenerator<QURL, void, undefined> {
-    let cursor: string | undefined;
-    let previousCursor: string | undefined;
-    do {
-      const page = await this.list({ ...input, cursor });
-      for (const qurl of page.qurls) {
-        yield qurl;
-      }
-      previousCursor = cursor;
-      cursor = page.next_cursor;
-      // Stale-cursor guard: catches CONSECUTIVE duplicates only —
-      // an A→B→A→B oscillation would still loop. Tracking the full
-      // history would grow unboundedly on long paginations; the
-      // common server-bug shape is a stuck cursor, which this catches.
-      if (cursor && cursor === previousCursor) {
-        this.log(
-          `listAll: server returned duplicate cursor "${cursor}", terminating to prevent infinite loop`,
-        );
-        break;
-      }
-    } while (cursor);
+  listAll(input: Omit<ListInput, "cursor"> = {}): AsyncGenerator<QURL, void, undefined> {
+    validateListAllInput(input as Record<string, unknown>, LIST_PARAM_KEYS, "listAll");
+    return this.paginateAll<QURL, ListInput, ListOutput>(
+      "listAll",
+      input,
+      (pageInput) => this.list(pageInput),
+      (page) => page.qurls,
+    );
   }
 
   /**
@@ -1075,6 +1773,9 @@ export class QURLClient {
       throw clientValidationError(
         `delete: requires a resource ID (${RESOURCE_ID_PREFIX} prefix + suffix) — got ${id === null ? "null" : typeof id}`,
       );
+    }
+    if (id.trim() !== id) {
+      throw clientValidationError("delete: id must not include leading or trailing whitespace");
     }
     // Too-short check runs BEFORE the prefix check so it catches
     // bare-prefix inputs like `"r_"` (right prefix, no suffix) in
@@ -1120,12 +1821,17 @@ export class QURLClient {
    * enforced separately by the runtime check inside `update()`.
    */
   async extend(id: string, input: ExtendInput): Promise<QURL> {
-    // No requireNonEmptyId here — update() validates the id.
-    // ExtendInput's `?: never` types enforce XOR at compile time, so
-    // typed callers can never reach this with both fields present.
-    // Untyped-JS callers spreading wider objects could; the runtime
-    // XOR check inside update() is the safety net for that path.
+    requireNonEmptyId(id, "extend");
+    requireObjectInput(input, "extend");
     const { extend_by, expires_at } = input;
+    if (extend_by === undefined && expires_at === undefined) {
+      throw clientValidationError("extend: exactly one of `extend_by` or `expires_at` is required");
+    }
+    if (extend_by !== undefined && expires_at !== undefined) {
+      throw clientValidationError(
+        "extend: `extend_by` and `expires_at` are mutually exclusive — provide exactly one",
+      );
+    }
     return this.update(id, { extend_by, expires_at });
   }
 
@@ -1137,18 +1843,15 @@ export class QURLClient {
    */
   async update(id: string, input: UpdateInput): Promise<QURL> {
     requireNonEmptyId(id, "update");
+    requireObjectInput(input, "update");
+    requireNoUnknownFields(input, UPDATE_FIELD_KEYS, "update");
     // Normalize null → undefined so untyped-JS callers passing
     // `{ tags: null }` don't leak null into the wire body or crash
     // downstream validators. Shallow copy keeps caller input untouched.
-    const normalized: UpdateInput = {};
-    let hasAnyField = false;
-    for (const key of UPDATE_FIELD_KEYS) {
-      const value = input[key];
-      if (value !== null && value !== undefined) {
-        (normalized as Record<string, unknown>)[key] = value;
-        hasAnyField = true;
-      }
-    }
+    const normalized = normalizePatchFields(
+      input as Record<string, unknown>,
+      UPDATE_FIELD_KEYS,
+    ) as UpdateInput;
 
     // Timing fields have no clear-semantic (unlike `description: ""`).
     requireNonEmptyIfPresent(normalized.extend_by, "extend_by");
@@ -1159,11 +1862,7 @@ export class QURLClient {
         "update: `extend_by` and `expires_at` are mutually exclusive — provide at most one",
       );
     }
-    if (!hasAnyField) {
-      throw clientValidationError(
-        `update: at least one field (${UPDATE_FIELD_KEYS.join(", ")}) must be provided`,
-      );
-    }
+    requireAtLeastOneField(normalized as Record<string, unknown>, UPDATE_FIELD_KEYS, "update");
     // Per-field validators run after the empty-input guard so the
     // cheap binary check short-circuits first; order is correctness-neutral
     // (`requireMaxLength(undefined, …)` is a no-op).
@@ -1196,6 +1895,8 @@ export class QURLClient {
     // pattern used by update(); keeps the two write surfaces symmetric.
     let normalized: MintInput | undefined = input;
     if (input !== undefined) {
+      requireObjectInput(input, "mintLink");
+      requireNoUnknownFields(input, MINT_FIELD_KEYS, "mintLink");
       // Iterate the explicit allowlist (matching update() / list())
       // so unknown keys from untyped-JS callers can't leak through
       // to the wire body. The compile-time `assertExhaustive` check
@@ -1273,6 +1974,718 @@ export class QURLClient {
     return this.request<Quota>("GET", "/v1/quota");
   }
 
+  /** Bootstrap a LayerV qURL Connector agent. */
+  async bootstrapAgent(input: AgentBootstrapInput): Promise<AgentBootstrapOutput> {
+    requireObjectInput(input, "bootstrapAgent");
+    requireNoUnknownFields(input, AGENT_BOOTSTRAP_FIELD_KEYS, "bootstrapAgent");
+    const normalizedRecord = normalizePatchFields(
+      input as Record<string, unknown>,
+      AGENT_BOOTSTRAP_FIELD_KEYS,
+    );
+    const normalized = normalizedRecord as unknown as AgentBootstrapInput;
+    requireNonEmptyStringField(normalizedRecord, "public_key", "bootstrapAgent");
+    return this.request<AgentBootstrapOutput>("POST", "/v1/agent/bootstrap", normalized);
+  }
+
+  /** List resources from the `/v1/resources` API. */
+  async listResources(input: ResourceListInput = {}): Promise<ResourceListOutput> {
+    const { data, meta } = await this.rawRequest<Resource[]>(
+      "GET",
+      appendQuery(
+        "/v1/resources",
+        input as Record<string, unknown>,
+        RESOURCE_LIST_PARAM_KEYS,
+        "listResources",
+      ),
+    );
+    return pageFromMeta({ resources: data ?? [] }, meta);
+  }
+
+  /**
+   * Iterate all resources, automatically paginating.
+   *
+   * Input is validated synchronously when this method is called, before
+   * iteration begins.
+   */
+  listAllResources(
+    input: Omit<ResourceListInput, "cursor"> = {},
+  ): AsyncGenerator<Resource, void, undefined> {
+    validateListAllInput(
+      input as Record<string, unknown>,
+      RESOURCE_LIST_PARAM_KEYS,
+      "listAllResources",
+    );
+    return this.paginateAll<Resource, ResourceListInput, ResourceListOutput>(
+      "listAllResources",
+      input,
+      (pageInput) => this.listResources(pageInput),
+      (page) => page.resources,
+    );
+  }
+
+  /** Create a resource directly. */
+  async createResource(input: CreateResourceInput): Promise<Resource> {
+    requireObjectInput(input, "createResource");
+    requireNoUnknownFields(input, CREATE_RESOURCE_FIELD_KEYS, "createResource");
+    const normalized = normalizePatchFields(
+      input as Record<string, unknown>,
+      CREATE_RESOURCE_FIELD_KEYS,
+    ) as CreateResourceInput;
+    validateResourceWriteFields(normalized as Record<string, unknown>, {
+      requireUrlTarget: true,
+      validateFindOrCreate: true,
+    });
+    return this.request<Resource>("POST", "/v1/resources", normalized);
+  }
+
+  /** Get one resource plus its bounded qURL preview. */
+  async getResource(id: string): Promise<ResourceDetail> {
+    requireNonEmptyId(id, "getResource");
+    return this.request<ResourceDetail>("GET", `/v1/resources/${encodeURIComponent(id)}`);
+  }
+
+  /** Update resource metadata. */
+  async updateResource(id: string, input: UpdateResourceInput): Promise<Resource> {
+    requireNonEmptyId(id, "updateResource");
+    requireObjectInput(input, "updateResource");
+    requireNoUnknownFields(input, UPDATE_RESOURCE_FIELD_KEYS, "updateResource");
+    const validationInput = normalizePatchFields(
+      input as Record<string, unknown>,
+      UPDATE_RESOURCE_FIELD_KEYS,
+      { preserveNullFields: ["alias"] },
+    ) as UpdateResourceInput;
+    requireAtLeastOneField(
+      validationInput as Record<string, unknown>,
+      UPDATE_RESOURCE_FIELD_KEYS,
+      "updateResource",
+    );
+    validateResourceWriteFields(validationInput as Record<string, unknown>, {
+      allowAliasClear: true,
+      allowCustomDomainClear: true,
+      validatePreserveHost: true,
+    });
+    return this.request<Resource>(
+      "PATCH",
+      `/v1/resources/${encodeURIComponent(id)}`,
+      validationInput,
+    );
+  }
+
+  /** Revoke a resource and all of its qURLs. */
+  async deleteResource(id: string): Promise<void> {
+    requireNonEmptyId(id, "deleteResource");
+    await this.rawRequest("DELETE", `/v1/resources/${encodeURIComponent(id)}`);
+  }
+
+  /** Mint a qURL against an existing resource. */
+  async createQurlForResource(
+    id: string,
+    input?: CreateQurlForResourceInput,
+  ): Promise<CreateOutput> {
+    requireNonEmptyId(id, "createQurlForResource");
+    let normalized: CreateQurlForResourceInput | undefined = input;
+    if (input !== undefined) {
+      requireObjectInput(input, "createQurlForResource");
+      requireNoUnknownFields(input, CREATE_QURL_FOR_RESOURCE_FIELD_KEYS, "createQurlForResource");
+      const stripped = normalizePatchFields(
+        input as Record<string, unknown>,
+        CREATE_QURL_FOR_RESOURCE_FIELD_KEYS,
+      ) as CreateQurlForResourceInput;
+      normalized = Object.keys(stripped).length > 0 ? stripped : undefined;
+    }
+    validateQurlTokenOptions(normalized);
+    return this.request<CreateOutput>(
+      "POST",
+      `/v1/resources/${encodeURIComponent(id)}/qurls`,
+      normalized,
+    );
+  }
+
+  /** Revoke a specific qURL token on a resource. */
+  async revokeResourceQurl(id: string, qurlId: string): Promise<void> {
+    requireNonEmptyId(id, "revokeResourceQurl");
+    requireNonEmptyId(qurlId, "revokeResourceQurl");
+    await this.rawRequest(
+      "DELETE",
+      `/v1/resources/${encodeURIComponent(id)}/qurls/${encodeURIComponent(qurlId)}`,
+    );
+  }
+
+  /** Update a specific qURL token on a resource. */
+  async updateResourceQurl(
+    id: string,
+    qurlId: string,
+    input: UpdateResourceQurlInput,
+  ): Promise<QurlSummary> {
+    requireNonEmptyId(id, "updateResourceQurl");
+    requireNonEmptyId(qurlId, "updateResourceQurl");
+    requireObjectInput(input, "updateResourceQurl");
+    requireNoUnknownFields(input, UPDATE_RESOURCE_QURL_FIELD_KEYS, "updateResourceQurl");
+    const normalized = normalizePatchFields(
+      input as Record<string, unknown>,
+      UPDATE_RESOURCE_QURL_FIELD_KEYS,
+    ) as UpdateResourceQurlInput;
+    requireAtLeastOneField(
+      normalized as Record<string, unknown>,
+      UPDATE_RESOURCE_QURL_FIELD_KEYS,
+      "updateResourceQurl",
+    );
+    validateResourceQurlUpdateInput(normalized);
+    return this.request<QurlSummary>(
+      "PATCH",
+      `/v1/resources/${encodeURIComponent(id)}/qurls/${encodeURIComponent(qurlId)}`,
+      normalized,
+    );
+  }
+
+  /**
+   * List active access sessions for a resource.
+   *
+   * The current API contract has no cursor query params for this endpoint.
+   * If the service later advertises pagination metadata, the SDK returns
+   * this page and emits a debug log rather than pretending it fetched all pages.
+   */
+  async listResourceSessions(id: string): Promise<SessionListOutput> {
+    requireNonEmptyId(id, "listResourceSessions");
+    const { data, meta } = await this.rawRequest<Session[]>(
+      "GET",
+      `/v1/resources/${encodeURIComponent(id)}/sessions`,
+    );
+    if (meta?.has_more || meta?.next_cursor) {
+      this.log("listResourceSessions: pagination metadata surfaced on unpaginated endpoint", {
+        has_more: meta.has_more,
+        next_cursor: meta.next_cursor,
+      });
+    }
+    return {
+      sessions: data ?? [],
+      request_id: meta?.request_id,
+      has_more: false,
+      page_size: meta?.page_size,
+    };
+  }
+
+  /**
+   * Terminate all active sessions for a resource.
+   *
+   * The returned count is best-effort under retries: if the first DELETE
+   * succeeds server-side but the response is lost, a retried request may
+   * return `0` because there are no sessions left to terminate.
+   */
+  async terminateAllResourceSessions(id: string): Promise<SessionTerminateOutput> {
+    requireNonEmptyId(id, "terminateAllResourceSessions");
+    const path = `/v1/resources/${encodeURIComponent(id)}/sessions`;
+    const { data, meta, __http_status } = await this.rawRequest<{ terminated?: number }>(
+      "DELETE",
+      path,
+    );
+    if (__http_status === 204) {
+      throw unexpectedResponseError(
+        `Unexpected 204 No Content from DELETE ${path}; expected response body`,
+      );
+    }
+    if (data?.terminated === undefined) {
+      this.log("terminateAllResourceSessions: missing terminated count; defaulting to zero", {
+        request_id: meta?.request_id,
+      });
+    }
+    return { terminated: data?.terminated ?? 0, request_id: meta?.request_id };
+  }
+
+  /** Terminate a specific resource session. */
+  async terminateResourceSession(id: string, sessionId: string): Promise<void> {
+    requireNonEmptyId(id, "terminateResourceSession");
+    requireNonEmptyId(sessionId, "terminateResourceSession");
+    await this.rawRequest(
+      "DELETE",
+      `/v1/resources/${encodeURIComponent(id)}/sessions/${encodeURIComponent(sessionId)}`,
+    );
+  }
+
+  /** List connector installations. */
+  async listConnectorInstallations(
+    input: ListConnectorInstallationsInput = {},
+  ): Promise<ConnectorInstallationListOutput> {
+    const { data, meta } = await this.rawRequest<ConnectorInstallationListOutput["installations"]>(
+      "GET",
+      appendQuery(
+        "/v1/connectors/installations",
+        input as Record<string, unknown>,
+        CONNECTOR_INSTALLATION_LIST_PARAM_KEYS,
+        "listConnectorInstallations",
+      ),
+    );
+    return pageFromMeta({ installations: data ?? [] }, meta);
+  }
+
+  /**
+   * Iterate all connector installations, automatically paginating.
+   *
+   * Input is validated synchronously when this method is called, before
+   * iteration begins.
+   */
+  listAllConnectorInstallations(
+    input: Omit<ListConnectorInstallationsInput, "cursor"> = {},
+  ): AsyncGenerator<ConnectorInstallation, void, undefined> {
+    validateListAllInput(
+      input as Record<string, unknown>,
+      CONNECTOR_INSTALLATION_LIST_PARAM_KEYS,
+      "listAllConnectorInstallations",
+    );
+    return this.paginateAll<
+      ConnectorInstallation,
+      ListConnectorInstallationsInput,
+      ConnectorInstallationListOutput
+    >(
+      "listAllConnectorInstallations",
+      input,
+      (pageInput) => this.listConnectorInstallations(pageInput),
+      (page) => page.installations,
+    );
+  }
+
+  /** Get current-period usage. */
+  async getUsageCurrentPeriod(): Promise<UsageCurrentPeriod> {
+    return this.request<UsageCurrentPeriod>("GET", "/v1/usage/current-period");
+  }
+
+  /** Get daily usage for the current period. */
+  async getUsageDaily(): Promise<UsageDaily> {
+    return this.request<UsageDaily>("GET", "/v1/usage/daily");
+  }
+
+  /** Get the customer profile. */
+  async getCustomer(): Promise<Customer> {
+    return this.request<Customer>("GET", "/v1/customer");
+  }
+
+  /** Update customer settings. */
+  async updateCustomer(input: UpdateCustomerInput): Promise<Customer> {
+    requireObjectInput(input, "updateCustomer");
+    requireNoUnknownFields(input, UPDATE_CUSTOMER_FIELD_KEYS, "updateCustomer");
+    const normalizedRecord = normalizePatchFields(
+      input as Record<string, unknown>,
+      UPDATE_CUSTOMER_FIELD_KEYS,
+    );
+    const normalized = normalizedRecord as unknown as UpdateCustomerInput;
+    const spendingCap = normalized.spending_cap_cents;
+    if (spendingCap === undefined) {
+      throw clientValidationError("updateCustomer: spending_cap_cents is required");
+    }
+    if (!Number.isInteger(spendingCap) || spendingCap < 0) {
+      const rendered =
+        typeof spendingCap === "number" ? String(spendingCap) : describeShape(spendingCap);
+      throw clientValidationError(
+        `updateCustomer: spending_cap_cents must be a non-negative integer (got ${rendered})`,
+      );
+    }
+    return this.request<Customer>("PATCH", "/v1/customer", normalized);
+  }
+
+  /** Create a Stripe checkout session. */
+  async createBillingCheckout(input: CreateBillingCheckoutInput): Promise<CheckoutSession> {
+    requireObjectInput(input, "createBillingCheckout");
+    requireNoUnknownFields(input, CREATE_BILLING_CHECKOUT_FIELD_KEYS, "createBillingCheckout");
+    const normalizedRecord = normalizePatchFields(
+      input as Record<string, unknown>,
+      CREATE_BILLING_CHECKOUT_FIELD_KEYS,
+    );
+    const normalized = normalizedRecord as unknown as CreateBillingCheckoutInput;
+    requireNonEmptyStringField(normalizedRecord, "plan", "createBillingCheckout");
+    return this.request<CheckoutSession>("POST", "/v1/billing/checkout", normalized);
+  }
+
+  /** Create a Stripe billing portal session. */
+  async createBillingPortal(): Promise<PortalSession> {
+    return this.request<PortalSession>("POST", "/v1/billing/portal");
+  }
+
+  /** List billing invoices. */
+  async listBillingInvoices(
+    input: ListBillingInvoicesInput = {},
+  ): Promise<BillingInvoiceListOutput> {
+    // This endpoint nests the list in `data.invoices` unlike the other list
+    // endpoints, which return `data` as the array directly.
+    const { data, meta } = await this.rawRequest<{ invoices?: Invoice[] }>(
+      "GET",
+      appendQuery(
+        "/v1/billing/invoices",
+        input as Record<string, unknown>,
+        BILLING_INVOICE_LIST_PARAM_KEYS,
+        "listBillingInvoices",
+      ),
+    );
+    return pageFromMeta({ invoices: data?.invoices ?? [] }, meta);
+  }
+
+  /**
+   * Iterate all billing invoices, automatically paginating.
+   *
+   * Input is validated synchronously when this method is called, before
+   * iteration begins.
+   */
+  listAllBillingInvoices(
+    input: Omit<ListBillingInvoicesInput, "cursor"> = {},
+  ): AsyncGenerator<Invoice, void, undefined> {
+    validateListAllInput(
+      input as Record<string, unknown>,
+      BILLING_INVOICE_LIST_PARAM_KEYS,
+      "listAllBillingInvoices",
+    );
+    return this.paginateAll<Invoice, ListBillingInvoicesInput, BillingInvoiceListOutput>(
+      "listAllBillingInvoices",
+      input,
+      (pageInput) => this.listBillingInvoices(pageInput),
+      (page) => page.invoices,
+    );
+  }
+
+  /** Register a custom domain. */
+  async registerDomain(input: RegisterDomainInput): Promise<Domain> {
+    requireObjectInput(input, "registerDomain");
+    requireNoUnknownFields(input, REGISTER_DOMAIN_FIELD_KEYS, "registerDomain");
+    const normalizedRecord = normalizePatchFields(
+      input as Record<string, unknown>,
+      REGISTER_DOMAIN_FIELD_KEYS,
+    );
+    const normalized = normalizedRecord as unknown as RegisterDomainInput;
+    requireNonEmptyStringField(normalizedRecord, "domain", "registerDomain");
+    requireMaxLength(normalized.domain as string, "domain", MAX_CUSTOM_DOMAIN);
+    return this.request<Domain>("POST", "/v1/domains", normalized);
+  }
+
+  /** List custom domains. */
+  async listDomains(input: ListDomainsInput = {}): Promise<DomainListOutput> {
+    const { data, meta } = await this.rawRequest<Domain[]>(
+      "GET",
+      appendQuery(
+        "/v1/domains",
+        input as Record<string, unknown>,
+        DOMAIN_LIST_PARAM_KEYS,
+        "listDomains",
+      ),
+    );
+    return pageFromMeta({ domains: data ?? [] }, meta);
+  }
+
+  /**
+   * Iterate all domains, automatically paginating.
+   *
+   * Input is validated synchronously when this method is called, before
+   * iteration begins.
+   */
+  listAllDomains(
+    input: Omit<ListDomainsInput, "cursor"> = {},
+  ): AsyncGenerator<Domain, void, undefined> {
+    validateListAllInput(
+      input as Record<string, unknown>,
+      DOMAIN_LIST_PARAM_KEYS,
+      "listAllDomains",
+    );
+    return this.paginateAll<Domain, ListDomainsInput, DomainListOutput>(
+      "listAllDomains",
+      input,
+      (pageInput) => this.listDomains(pageInput),
+      (page) => page.domains,
+    );
+  }
+
+  /** Get custom domain status. */
+  async getDomain(domain: string): Promise<Domain> {
+    requireNonEmptyId(domain, "getDomain", "domain");
+    return this.request<Domain>("GET", `/v1/domains/${encodeURIComponent(domain)}`);
+  }
+
+  /** Remove a custom domain. */
+  async deleteDomain(domain: string): Promise<void> {
+    requireNonEmptyId(domain, "deleteDomain", "domain");
+    await this.rawRequest("DELETE", `/v1/domains/${encodeURIComponent(domain)}`);
+  }
+
+  /** Trigger DNS verification for a custom domain. */
+  async verifyDomain(domain: string): Promise<DomainVerifyResult> {
+    requireNonEmptyId(domain, "verifyDomain", "domain");
+    return this.request<DomainVerifyResult>(
+      "POST",
+      `/v1/domains/${encodeURIComponent(domain)}/verify`,
+    );
+  }
+
+  /** Regenerate a domain verification token. */
+  async regenerateDomainToken(domain: string): Promise<Domain> {
+    requireNonEmptyId(domain, "regenerateDomainToken", "domain");
+    return this.request<Domain>(
+      "POST",
+      `/v1/domains/${encodeURIComponent(domain)}/regenerate-token`,
+    );
+  }
+
+  /** List webhooks. */
+  async listWebhooks(input: ListWebhooksInput = {}): Promise<WebhookListOutput> {
+    const { data, meta } = await this.rawRequest<Webhook[]>(
+      "GET",
+      appendQuery(
+        "/v1/webhooks",
+        input as Record<string, unknown>,
+        WEBHOOK_LIST_PARAM_KEYS,
+        "listWebhooks",
+      ),
+    );
+    return pageFromMeta({ webhooks: data ?? [] }, meta);
+  }
+
+  /**
+   * Iterate all webhooks, automatically paginating.
+   *
+   * Input is validated synchronously when this method is called, before
+   * iteration begins.
+   */
+  listAllWebhooks(
+    input: Omit<ListWebhooksInput, "cursor"> = {},
+  ): AsyncGenerator<Webhook, void, undefined> {
+    validateListAllInput(
+      input as Record<string, unknown>,
+      WEBHOOK_LIST_PARAM_KEYS,
+      "listAllWebhooks",
+    );
+    return this.paginateAll<Webhook, ListWebhooksInput, WebhookListOutput>(
+      "listAllWebhooks",
+      input,
+      (pageInput) => this.listWebhooks(pageInput),
+      (page) => page.webhooks,
+    );
+  }
+
+  /** Create a webhook. */
+  async createWebhook(input: CreateWebhookInput): Promise<WebhookWithSecret> {
+    requireObjectInput(input, "createWebhook");
+    requireNoUnknownFields(input, CREATE_WEBHOOK_FIELD_KEYS, "createWebhook");
+    const normalizedRecord = normalizePatchFields(
+      input as Record<string, unknown>,
+      CREATE_WEBHOOK_FIELD_KEYS,
+    );
+    const normalized = normalizedRecord as unknown as CreateWebhookInput;
+    validateWebhookWriteFields(normalizedRecord, "createWebhook", {
+      url: true,
+      events: true,
+    });
+    return this.request<WebhookWithSecret>("POST", "/v1/webhooks", normalized);
+  }
+
+  /** List available webhook event types. */
+  async listWebhookEventTypes(): Promise<WebhookEventTypeInfo[]> {
+    return this.request<WebhookEventTypeInfo[]>("GET", "/v1/webhooks/events");
+  }
+
+  /** Get a webhook. */
+  async getWebhook(id: string): Promise<Webhook> {
+    requireNonEmptyId(id, "getWebhook");
+    return this.request<Webhook>("GET", `/v1/webhooks/${encodeURIComponent(id)}`);
+  }
+
+  /** Update a webhook. */
+  async updateWebhook(id: string, input: UpdateWebhookInput): Promise<Webhook> {
+    requireNonEmptyId(id, "updateWebhook");
+    requireObjectInput(input, "updateWebhook");
+    requireNoUnknownFields(input, UPDATE_WEBHOOK_FIELD_KEYS, "updateWebhook");
+    const normalized = normalizePatchFields(
+      input as Record<string, unknown>,
+      UPDATE_WEBHOOK_FIELD_KEYS,
+    ) as UpdateWebhookInput;
+    requireAtLeastOneField(
+      normalized as Record<string, unknown>,
+      UPDATE_WEBHOOK_FIELD_KEYS,
+      "updateWebhook",
+    );
+    validateWebhookWriteFields(normalized as Record<string, unknown>, "updateWebhook");
+    return this.request<Webhook>("PATCH", `/v1/webhooks/${encodeURIComponent(id)}`, normalized);
+  }
+
+  /** Delete a webhook. */
+  async deleteWebhook(id: string): Promise<void> {
+    requireNonEmptyId(id, "deleteWebhook");
+    await this.rawRequest("DELETE", `/v1/webhooks/${encodeURIComponent(id)}`);
+  }
+
+  /** Regenerate a webhook signing secret. */
+  async regenerateWebhookSecret(id: string): Promise<WebhookWithSecret> {
+    requireNonEmptyId(id, "regenerateWebhookSecret");
+    return this.request<WebhookWithSecret>("POST", `/v1/webhooks/${encodeURIComponent(id)}/secret`);
+  }
+
+  /** List delivery attempts for a webhook. */
+  async listWebhookDeliveries(
+    id: string,
+    input: ListWebhookDeliveriesInput = {},
+  ): Promise<WebhookDeliveryListOutput> {
+    requireNonEmptyId(id, "listWebhookDeliveries");
+    const { data, meta } = await this.rawRequest<WebhookDelivery[]>(
+      "GET",
+      appendQuery(
+        `/v1/webhooks/${encodeURIComponent(id)}/deliveries`,
+        input as Record<string, unknown>,
+        WEBHOOK_DELIVERY_LIST_PARAM_KEYS,
+        "listWebhookDeliveries",
+      ),
+    );
+    return pageFromMeta({ deliveries: data ?? [] }, meta);
+  }
+
+  /**
+   * Iterate all delivery attempts for a webhook, automatically paginating.
+   *
+   * Input is validated synchronously when this method is called, before
+   * iteration begins.
+   */
+  listAllWebhookDeliveries(
+    id: string,
+    input: Omit<ListWebhookDeliveriesInput, "cursor"> = {},
+  ): AsyncGenerator<WebhookDelivery, void, undefined> {
+    requireNonEmptyId(id, "listAllWebhookDeliveries");
+    validateListAllInput(
+      input as Record<string, unknown>,
+      WEBHOOK_DELIVERY_LIST_PARAM_KEYS,
+      "listAllWebhookDeliveries",
+    );
+    return this.paginateAll<WebhookDelivery, ListWebhookDeliveriesInput, WebhookDeliveryListOutput>(
+      "listAllWebhookDeliveries",
+      input,
+      (pageInput) => this.listWebhookDeliveries(id, pageInput),
+      (page) => page.deliveries,
+    );
+  }
+
+  /** Create a new API key. */
+  async createApiKey(input: CreateApiKeyInput): Promise<CreateApiKeyOutput> {
+    requireObjectInput(input, "createApiKey");
+    requireNoUnknownFields(input, CREATE_API_KEY_FIELD_KEYS, "createApiKey");
+    const normalizedRecord = normalizePatchFields(
+      input as Record<string, unknown>,
+      CREATE_API_KEY_FIELD_KEYS,
+    );
+    const normalized = normalizedRecord as unknown as CreateApiKeyInput;
+    validateApiKeyWriteFields(normalizedRecord, "createApiKey", {
+      name: true,
+      scopes: true,
+    });
+    return this.request<CreateApiKeyOutput>("POST", "/v1/api-keys", normalized);
+  }
+
+  /** List API keys. */
+  async listApiKeys(input: ListApiKeysInput = {}): Promise<ApiKeyListOutput> {
+    const { data, meta } = await this.rawRequest<ApiKey[]>(
+      "GET",
+      appendQuery(
+        "/v1/api-keys",
+        input as Record<string, unknown>,
+        API_KEY_LIST_PARAM_KEYS,
+        "listApiKeys",
+      ),
+    );
+    return pageFromMeta({ api_keys: data ?? [] }, meta);
+  }
+
+  /**
+   * Iterate all API keys, automatically paginating.
+   *
+   * Input is validated synchronously when this method is called, before
+   * iteration begins.
+   */
+  listAllApiKeys(
+    input: Omit<ListApiKeysInput, "cursor"> = {},
+  ): AsyncGenerator<ApiKey, void, undefined> {
+    validateListAllInput(
+      input as Record<string, unknown>,
+      API_KEY_LIST_PARAM_KEYS,
+      "listAllApiKeys",
+    );
+    return this.paginateAll<ApiKey, ListApiKeysInput, ApiKeyListOutput>(
+      "listAllApiKeys",
+      input,
+      (pageInput) => this.listApiKeys(pageInput),
+      (page) => page.api_keys,
+    );
+  }
+
+  /** Update an API key. */
+  async updateApiKey(keyId: string, input: UpdateApiKeyInput): Promise<ApiKey> {
+    requireNonEmptyId(keyId, "updateApiKey");
+    requireObjectInput(input, "updateApiKey");
+    requireNoUnknownFields(input, UPDATE_API_KEY_FIELD_KEYS, "updateApiKey");
+    const normalized = normalizePatchFields(
+      input as Record<string, unknown>,
+      UPDATE_API_KEY_FIELD_KEYS,
+    ) as UpdateApiKeyInput;
+    requireAtLeastOneField(
+      normalized as Record<string, unknown>,
+      UPDATE_API_KEY_FIELD_KEYS,
+      "updateApiKey",
+    );
+    validateApiKeyWriteFields(normalized as Record<string, unknown>, "updateApiKey");
+    return this.request<ApiKey>("PATCH", `/v1/api-keys/${encodeURIComponent(keyId)}`, normalized);
+  }
+
+  /** Revoke an API key. */
+  async revokeApiKey(keyId: string): Promise<void> {
+    requireNonEmptyId(keyId, "revokeApiKey");
+    await this.rawRequest("DELETE", `/v1/api-keys/${encodeURIComponent(keyId)}`);
+  }
+
+  /** Redeem an access code. */
+  async redeemAccessCode(input: RedeemAccessCodeInput): Promise<RedeemAccessCodeOutput> {
+    requireObjectInput(input, "redeemAccessCode");
+    requireNoUnknownFields(input, REDEEM_ACCESS_CODE_FIELD_KEYS, "redeemAccessCode");
+    const normalizedRecord = normalizePatchFields(
+      input as Record<string, unknown>,
+      REDEEM_ACCESS_CODE_FIELD_KEYS,
+    );
+    const normalized = normalizedRecord as unknown as RedeemAccessCodeInput;
+    requireNonEmptyStringField(normalizedRecord, "code", "redeemAccessCode");
+    return this.request<RedeemAccessCodeOutput>("POST", "/v1/access-codes/redeem", normalized);
+  }
+
+  /** Create an access code. */
+  async createAccessCode(input: CreateAccessCodeInput): Promise<CreateAccessCodeOutput> {
+    requireObjectInput(input, "createAccessCode");
+    requireNoUnknownFields(input, CREATE_ACCESS_CODE_FIELD_KEYS, "createAccessCode");
+    const normalizedRecord = normalizePatchFields(
+      input as Record<string, unknown>,
+      CREATE_ACCESS_CODE_FIELD_KEYS,
+    );
+    const normalized = normalizedRecord as unknown as CreateAccessCodeInput;
+    requireNonEmptyStringField(normalizedRecord, "resource_id", "createAccessCode");
+    return this.request<CreateAccessCodeOutput>("POST", "/v1/access-codes", normalized);
+  }
+
+  /**
+   * List access codes.
+   *
+   * The current API contract has no cursor query params for this endpoint.
+   * If the service later advertises pagination metadata, the SDK returns
+   * this page and emits a debug log rather than pretending it fetched all pages.
+   */
+  async listAccessCodes(): Promise<AccessCodeListOutput> {
+    const { data, meta } = await this.rawRequest<AccessCode[]>("GET", "/v1/access-codes");
+    if (meta?.has_more || meta?.next_cursor) {
+      this.log("listAccessCodes: pagination metadata surfaced on unpaginated endpoint", {
+        has_more: meta.has_more,
+        next_cursor: meta.next_cursor,
+      });
+    }
+    return {
+      access_codes: data ?? [],
+      request_id: meta?.request_id,
+      has_more: false,
+      page_size: meta?.page_size,
+    };
+  }
+
+  /** Revoke an access code. */
+  async revokeAccessCode(id: string): Promise<void> {
+    requireNonEmptyId(id, "revokeAccessCode");
+    await this.rawRequest("DELETE", `/v1/access-codes/${encodeURIComponent(id)}`);
+  }
+
   // --- Internal HTTP plumbing ---
 
   private async request<T>(
@@ -1281,7 +2694,19 @@ export class QURLClient {
     body?: unknown,
     passthroughStatuses?: readonly number[],
   ): Promise<T> {
-    const { data } = await this.rawRequest<T>(method, path, body, passthroughStatuses);
+    // List methods call rawRequest directly so 204 can degrade to an empty page.
+    // Body-returning endpoints declare 200 JSON today, so this path fails closed.
+    const { data, __http_status } = await this.rawRequest<T>(
+      method,
+      path,
+      body,
+      passthroughStatuses,
+    );
+    if (__http_status === 204) {
+      throw unexpectedResponseError(
+        `Unexpected 204 No Content from ${method} ${path}; expected response body`,
+      );
+    }
     return data;
   }
 
@@ -1372,6 +2797,8 @@ export class QURLClient {
       const isPassthrough = !response.ok && passthroughStatuses.includes(response.status);
       if (response.ok || isPassthrough) {
         if (response.status === 204) {
+          // rawRequest list callers may intentionally degrade 204/missing bodies
+          // to empty collections; scalar/body helpers fail closed in request().
           // 204 on a non-DELETE method would deliver `undefined` to a
           // caller whose return type expects data — silent failure.
           // Surface via debug so operators see drift; the actual return

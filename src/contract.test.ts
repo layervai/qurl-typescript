@@ -256,6 +256,423 @@ const METHOD_CASES: MethodCase[] = [
     mockBody: { data: { plan: "free" } },
     invoke: (c) => c.getQuota(),
   },
+  {
+    method: "bootstrapAgent",
+    verb: "POST",
+    template: "/v1/agent/bootstrap",
+    mockBody: {
+      data: {
+        agent_id: "agent-1",
+        registered_at: "2026-01-01T00:00:00Z",
+        nhp_server_peer: {
+          public_key_b64: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa=",
+          host: "nhp.layerv.ai",
+          port: 62206,
+          expire_time: 0,
+        },
+      },
+    },
+    invoke: (c) => c.bootstrapAgent({ public_key: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa=" }),
+  },
+  {
+    method: "listResources",
+    verb: "GET",
+    template: "/v1/resources",
+    mockBody: { data: [], meta: { has_more: false } },
+    invoke: (c) => c.listResources(),
+  },
+  {
+    method: "listAllResources",
+    verb: "GET",
+    template: "/v1/resources",
+    mockBody: { data: [], meta: { has_more: false } },
+    invoke: async (c) => {
+      const iter = c.listAllResources();
+      while (!(await iter.next()).done) {
+        /* no-op */
+      }
+    },
+  },
+  {
+    method: "createResource",
+    verb: "POST",
+    template: "/v1/resources",
+    mockBody: { data: { resource_id: "r_x" } },
+    invoke: (c) => c.createResource({ target_url: "https://example.com" }),
+  },
+  {
+    method: "getResource",
+    verb: "GET",
+    template: "/v1/resources/{id}",
+    mockBody: { data: { resource: { resource_id: "r_x" }, qurls: [] } },
+    invoke: (c) => c.getResource("r_x"),
+  },
+  {
+    method: "updateResource",
+    verb: "PATCH",
+    template: "/v1/resources/{id}",
+    mockBody: { data: { resource_id: "r_x" } },
+    invoke: (c) => c.updateResource("r_x", { description: "x" }),
+  },
+  {
+    method: "deleteResource",
+    verb: "DELETE",
+    template: "/v1/resources/{id}",
+    mockBody: undefined,
+    mockStatus: 204,
+    invoke: (c) => c.deleteResource("r_x"),
+  },
+  {
+    method: "createQurlForResource",
+    verb: "POST",
+    template: "/v1/resources/{id}/qurls",
+    mockBody: {
+      data: {
+        qurl_id: "q_y",
+        resource_id: "r_x",
+        qurl_link: "https://qurl.link/#at_y",
+        qurl_site: "https://q_y.qurl.site",
+      },
+    },
+    invoke: (c) => c.createQurlForResource("r_x"),
+  },
+  {
+    method: "revokeResourceQurl",
+    verb: "DELETE",
+    template: "/v1/resources/{id}/qurls/{qurl_id}",
+    mockBody: undefined,
+    mockStatus: 204,
+    invoke: (c) => c.revokeResourceQurl("r_x", "q_y"),
+  },
+  {
+    method: "updateResourceQurl",
+    verb: "PATCH",
+    template: "/v1/resources/{id}/qurls/{qurl_id}",
+    mockBody: { data: { qurl_id: "q_y" } },
+    invoke: (c) => c.updateResourceQurl("r_x", "q_y", { label: "Alice" }),
+  },
+  {
+    method: "listResourceSessions",
+    verb: "GET",
+    template: "/v1/resources/{id}/sessions",
+    mockBody: { data: [] },
+    invoke: (c) => c.listResourceSessions("r_x"),
+  },
+  {
+    method: "terminateAllResourceSessions",
+    verb: "DELETE",
+    template: "/v1/resources/{id}/sessions",
+    mockBody: { data: { terminated: 1 } },
+    invoke: (c) => c.terminateAllResourceSessions("r_x"),
+  },
+  {
+    method: "terminateResourceSession",
+    verb: "DELETE",
+    template: "/v1/resources/{id}/sessions/{session_id}",
+    mockBody: undefined,
+    mockStatus: 204,
+    invoke: (c) => c.terminateResourceSession("r_x", "sess_y"),
+  },
+  {
+    method: "listConnectorInstallations",
+    verb: "GET",
+    template: "/v1/connectors/installations",
+    mockBody: { data: [], meta: { has_more: false } },
+    invoke: (c) => c.listConnectorInstallations(),
+  },
+  {
+    method: "listAllConnectorInstallations",
+    verb: "GET",
+    template: "/v1/connectors/installations",
+    mockBody: { data: [], meta: { has_more: false } },
+    invoke: async (c) => {
+      const iter = c.listAllConnectorInstallations();
+      while (!(await iter.next()).done) {
+        /* no-op */
+      }
+    },
+  },
+  {
+    method: "getUsageCurrentPeriod",
+    verb: "GET",
+    template: "/v1/usage/current-period",
+    mockBody: {
+      data: {
+        tier: "free",
+        period_start: "2026-01-01",
+        period_end: "2026-02-01",
+        qurls_created: 0,
+        active_qurls: 0,
+      },
+    },
+    invoke: (c) => c.getUsageCurrentPeriod(),
+  },
+  {
+    method: "getUsageDaily",
+    verb: "GET",
+    template: "/v1/usage/daily",
+    mockBody: {
+      data: { tier: "free", period_start: "2026-01-01", period_end: "2026-02-01", daily: [] },
+    },
+    invoke: (c) => c.getUsageDaily(),
+  },
+  {
+    method: "getCustomer",
+    verb: "GET",
+    template: "/v1/customer",
+    mockBody: {
+      data: { tier: "free", spending_cap_cents: 0, current_period_usage: 0, frozen: false },
+    },
+    invoke: (c) => c.getCustomer(),
+  },
+  {
+    method: "updateCustomer",
+    verb: "PATCH",
+    template: "/v1/customer",
+    mockBody: {
+      data: { tier: "free", spending_cap_cents: 0, current_period_usage: 0, frozen: false },
+    },
+    invoke: (c) => c.updateCustomer({ spending_cap_cents: 0 }),
+  },
+  {
+    method: "createBillingCheckout",
+    verb: "POST",
+    template: "/v1/billing/checkout",
+    mockBody: { data: { url: "https://checkout.stripe.test" } },
+    invoke: (c) => c.createBillingCheckout({ plan: "growth" }),
+  },
+  {
+    method: "createBillingPortal",
+    verb: "POST",
+    template: "/v1/billing/portal",
+    mockBody: { data: { url: "https://billing.stripe.test" } },
+    invoke: (c) => c.createBillingPortal(),
+  },
+  {
+    method: "listBillingInvoices",
+    verb: "GET",
+    template: "/v1/billing/invoices",
+    mockBody: { data: { invoices: [] }, meta: { has_more: false } },
+    invoke: (c) => c.listBillingInvoices(),
+  },
+  {
+    method: "listAllBillingInvoices",
+    verb: "GET",
+    template: "/v1/billing/invoices",
+    mockBody: { data: { invoices: [] }, meta: { has_more: false } },
+    invoke: async (c) => {
+      const iter = c.listAllBillingInvoices();
+      while (!(await iter.next()).done) {
+        /* no-op */
+      }
+    },
+  },
+  {
+    method: "registerDomain",
+    verb: "POST",
+    template: "/v1/domains",
+    mockBody: { data: { domain: "example.com" } },
+    invoke: (c) => c.registerDomain({ domain: "example.com" }),
+  },
+  {
+    method: "listDomains",
+    verb: "GET",
+    template: "/v1/domains",
+    mockBody: { data: [], meta: { has_more: false } },
+    invoke: (c) => c.listDomains(),
+  },
+  {
+    method: "listAllDomains",
+    verb: "GET",
+    template: "/v1/domains",
+    mockBody: { data: [], meta: { has_more: false } },
+    invoke: async (c) => {
+      const iter = c.listAllDomains();
+      while (!(await iter.next()).done) {
+        /* no-op */
+      }
+    },
+  },
+  {
+    method: "getDomain",
+    verb: "GET",
+    template: "/v1/domains/{domain}",
+    mockBody: { data: { domain: "example.com" } },
+    invoke: (c) => c.getDomain("example.com"),
+  },
+  {
+    method: "deleteDomain",
+    verb: "DELETE",
+    template: "/v1/domains/{domain}",
+    mockBody: undefined,
+    mockStatus: 204,
+    invoke: (c) => c.deleteDomain("example.com"),
+  },
+  {
+    method: "verifyDomain",
+    verb: "POST",
+    template: "/v1/domains/{domain}/verify",
+    mockBody: { data: { domain: "example.com" } },
+    invoke: (c) => c.verifyDomain("example.com"),
+  },
+  {
+    method: "regenerateDomainToken",
+    verb: "POST",
+    template: "/v1/domains/{domain}/regenerate-token",
+    mockBody: { data: { domain: "example.com" } },
+    invoke: (c) => c.regenerateDomainToken("example.com"),
+  },
+  {
+    method: "listWebhooks",
+    verb: "GET",
+    template: "/v1/webhooks",
+    mockBody: { data: [], meta: { has_more: false } },
+    invoke: (c) => c.listWebhooks(),
+  },
+  {
+    method: "listAllWebhooks",
+    verb: "GET",
+    template: "/v1/webhooks",
+    mockBody: { data: [], meta: { has_more: false } },
+    invoke: async (c) => {
+      const iter = c.listAllWebhooks();
+      while (!(await iter.next()).done) {
+        /* no-op */
+      }
+    },
+  },
+  {
+    method: "createWebhook",
+    verb: "POST",
+    template: "/v1/webhooks",
+    mockBody: { data: { webhook_id: "wh_x" } },
+    invoke: (c) => c.createWebhook({ url: "https://example.com/hook", events: ["qurl.created"] }),
+  },
+  {
+    method: "listWebhookEventTypes",
+    verb: "GET",
+    template: "/v1/webhooks/events",
+    mockBody: { data: [] },
+    invoke: (c) => c.listWebhookEventTypes(),
+  },
+  {
+    method: "getWebhook",
+    verb: "GET",
+    template: "/v1/webhooks/{id}",
+    mockBody: { data: { webhook_id: "wh_x" } },
+    invoke: (c) => c.getWebhook("wh_x"),
+  },
+  {
+    method: "updateWebhook",
+    verb: "PATCH",
+    template: "/v1/webhooks/{id}",
+    mockBody: { data: { webhook_id: "wh_x" } },
+    invoke: (c) => c.updateWebhook("wh_x", { status: "disabled" }),
+  },
+  {
+    method: "deleteWebhook",
+    verb: "DELETE",
+    template: "/v1/webhooks/{id}",
+    mockBody: undefined,
+    mockStatus: 204,
+    invoke: (c) => c.deleteWebhook("wh_x"),
+  },
+  {
+    method: "regenerateWebhookSecret",
+    verb: "POST",
+    template: "/v1/webhooks/{id}/secret",
+    mockBody: { data: { webhook_id: "wh_x", secret: "whsec_x" } },
+    invoke: (c) => c.regenerateWebhookSecret("wh_x"),
+  },
+  {
+    method: "listWebhookDeliveries",
+    verb: "GET",
+    template: "/v1/webhooks/{id}/deliveries",
+    mockBody: { data: [], meta: { has_more: false } },
+    invoke: (c) => c.listWebhookDeliveries("wh_x"),
+  },
+  {
+    method: "listAllWebhookDeliveries",
+    verb: "GET",
+    template: "/v1/webhooks/{id}/deliveries",
+    mockBody: { data: [], meta: { has_more: false } },
+    invoke: async (c) => {
+      const iter = c.listAllWebhookDeliveries("wh_x");
+      while (!(await iter.next()).done) {
+        /* no-op */
+      }
+    },
+  },
+  {
+    method: "createApiKey",
+    verb: "POST",
+    template: "/v1/api-keys",
+    mockBody: { data: { key_id: "key_x", api_key: "lv_live_x" } },
+    invoke: (c) => c.createApiKey({ name: "test", scopes: ["qurl:read"] }),
+  },
+  {
+    method: "listApiKeys",
+    verb: "GET",
+    template: "/v1/api-keys",
+    mockBody: { data: [], meta: { has_more: false } },
+    invoke: (c) => c.listApiKeys(),
+  },
+  {
+    method: "listAllApiKeys",
+    verb: "GET",
+    template: "/v1/api-keys",
+    mockBody: { data: [], meta: { has_more: false } },
+    invoke: async (c) => {
+      const iter = c.listAllApiKeys();
+      while (!(await iter.next()).done) {
+        /* no-op */
+      }
+    },
+  },
+  {
+    method: "updateApiKey",
+    verb: "PATCH",
+    template: "/v1/api-keys/{key_id}",
+    mockBody: { data: { key_id: "key_x" } },
+    invoke: (c) => c.updateApiKey("key_x", { name: "renamed" }),
+  },
+  {
+    method: "revokeApiKey",
+    verb: "DELETE",
+    template: "/v1/api-keys/{key_id}",
+    mockBody: undefined,
+    mockStatus: 204,
+    invoke: (c) => c.revokeApiKey("key_x"),
+  },
+  {
+    method: "redeemAccessCode",
+    verb: "POST",
+    template: "/v1/access-codes/redeem",
+    mockBody: { data: { redirect_url: "https://qurl.link/#at_y" } },
+    invoke: (c) => c.redeemAccessCode({ code: "ac_y" }),
+  },
+  {
+    method: "createAccessCode",
+    verb: "POST",
+    template: "/v1/access-codes",
+    mockBody: { data: { access_code_id: "acd_x", code: "ac_y" } },
+    invoke: (c) => c.createAccessCode({ resource_id: "r_x" }),
+  },
+  {
+    method: "listAccessCodes",
+    verb: "GET",
+    template: "/v1/access-codes",
+    mockBody: { data: [] },
+    invoke: (c) => c.listAccessCodes(),
+  },
+  {
+    method: "revokeAccessCode",
+    verb: "DELETE",
+    template: "/v1/access-codes/{id}",
+    mockBody: undefined,
+    mockStatus: 204,
+    invoke: (c) => c.revokeAccessCode("acd_x"),
+  },
 ];
 
 // `toJSON` is a diagnostic helper (used by console.log/JSON.stringify),
@@ -277,6 +694,7 @@ const INTERNAL_HELPERS: ReadonlySet<string> = new Set([
   "log",
   "parseError",
   "parseRetryAfter",
+  "paginateAll",
   "retryDelay",
   "classifyFetchError",
   "mapQurlsField",
