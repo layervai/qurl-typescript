@@ -1942,7 +1942,7 @@ export class QURLClient {
   /**
    * Resolve a qURL access token (headless).
    *
-   * Triggers an NHP knock to open firewall access for the caller's IP.
+   * Triggers an NHP knock to grant network access for the caller's IP.
    * Requires `qurl:resolve` scope on the API key.
    *
    * Accepts a plain token string or a `ResolveInput` object.
