@@ -269,7 +269,7 @@ export interface ResolveInput {
   access_token: string;
 }
 
-/** Details of the firewall access that was granted. */
+/** Details of the network access that was granted. */
 export interface AccessGrant {
   expires_in: number;
   granted_at: string;

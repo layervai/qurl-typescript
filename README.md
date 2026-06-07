@@ -35,7 +35,7 @@ const result = await client.create({
 });
 console.log(result.qurl_link);
 
-// Resolve a token (opens firewall for your IP)
+// Resolve a token (grants network access for your IP)
 const access = await client.resolve('at_...');
 console.log(`Access granted to ${access.target_url} for ${access.access_grant?.expires_in}s`);
 ```
@@ -67,7 +67,7 @@ console.log(`Access granted to ${access.target_url} for ${access.access_grant?.e
 | `extend(id, input)` | Extend expiration |
 | `update(id, input)` | Update qURL resource properties |
 | `mintLink(id, input?)` | Mint a new access link |
-| `resolve(input)` | Resolve token + open firewall |
+| `resolve(input)` | Resolve token + grant network access |
 | `getQuota()` | Get quota/usage info |
 | `bootstrapAgent(input)` | Bootstrap a qURL Connector agent |
 | `listResources(input?)` / `listAllResources(input?)` / `createResource(input)` / `getResource(id)` | Resource management |
