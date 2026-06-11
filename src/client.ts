@@ -1469,6 +1469,11 @@ export class QURLClient {
         `updateQurlToken: at least one field (${UPDATE_TOKEN_FIELD_KEYS.join(", ")}) must be provided`,
       );
     }
+    // label: the max-length and empty-string checks are complementary, not
+    // redundant — together they enforce 1–500 chars. `""` is rejected (a
+    // likely mistake, not a clear-the-label directive), matching how
+    // create()/mintLink() treat the same field. Contrast `session_duration`
+    // just below, where `""` is a meaningful directive and is allowed through.
     requireMaxLength(normalized.label, "label", MAX_LABEL);
     requireNonEmptyIfPresent(normalized.label, "label");
     requireMaxSessionsInRange(normalized.max_sessions);

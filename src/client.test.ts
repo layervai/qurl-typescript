@@ -5767,6 +5767,15 @@ describe("QURLClient", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("updateResource wires in the shared length validator (description > 500 chars)", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+    await expect(
+      client.updateResource("r_abc123def45", { description: "x".repeat(501) }),
+    ).rejects.toBeInstanceOf(ValidationError);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("revokeQurlToken sends DELETE to /v1/resources/{id}/qurls/{qurl_id}", async () => {
     const fetch = mockFetch({ status: 204 });
     const client = createClient(fetch);
@@ -5827,6 +5836,15 @@ describe("QURLClient", () => {
     const client = createClient(fetch);
     await expect(
       client.updateQurlToken("r_abc123def45", "q_a1b2c3d4e5f", {}),
+    ).rejects.toBeInstanceOf(ValidationError);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("updateQurlToken wires in the shared max_sessions range validator (> 1000)", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+    await expect(
+      client.updateQurlToken("r_abc123def45", "q_a1b2c3d4e5f", { max_sessions: 1001 }),
     ).rejects.toBeInstanceOf(ValidationError);
     expect(fetch).not.toHaveBeenCalled();
   });

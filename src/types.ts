@@ -66,11 +66,11 @@ export interface QURL {
    */
   target_url?: string;
   /**
-   * Resource lifecycle status. The OpenAPI `ResourceData.status` enum lists
-   * only `active`/`revoked`, but reads surface `expired` as a documented
-   * lifecycle value once a resource passes `expires_at` without an explicit
-   * revoke. Treat the set as open — tolerate values you don't recognize
-   * rather than asserting exhaustiveness.
+   * Resource lifecycle status. The OpenAPI enum lists only `active`/`revoked`,
+   * but reads compute `expired` at response time for resources past their
+   * `expires_at` that were never explicitly revoked (per the `QurlData.status`
+   * description), so it is included here. Closed union, mirroring
+   * {@link AccessToken.status}.
    */
   status: "active" | "revoked" | "expired";
   description?: string;
@@ -250,6 +250,12 @@ export interface UpdateInput {
  *
  * At least one field must be provided. Pass `description: ""`, `tags: []`, or
  * `custom_domain: ""` to clear those fields.
+ *
+ * **`alias` is intentionally not handled here.** The endpoint accepts it, but
+ * its RFC 7396 tri-valued semantics (`null` clears) don't fit this SDK's
+ * shared null-stripping normalization, so alias set/clear is tracked
+ * separately — see
+ * {@link https://github.com/layervai/qurl-typescript/issues/125 | #125}.
  */
 export interface UpdateResourceInput {
   /** Replace all tags on this resource. Pass an empty array to clear all tags. */
