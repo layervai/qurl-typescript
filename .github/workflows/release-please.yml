@@ -124,17 +124,16 @@ jobs:
           # setup-node v6 auto-caches package managers by default; keep the
           # privileged publish job independent of restored dependency caches.
           package-manager-cache: false
-          # Intentionally NO `registry-url`. With it, setup-node writes an
-          # .npmrc containing `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}`
-          # and exports a *placeholder* NODE_AUTH_TOKEN (XXXXX-XXXXX-XXXXX-XXXXX)
-          # when no real token is provided. npm then authenticates the publish
-          # with that bogus token and never falls back to OIDC trusted
-          # publishing — first publish fails with `E404 ... not found or you do
-          # not have permission`. Omitting it leaves no token auth configured,
-          # so `npm publish` (npm 11.5.1+) uses the trusted publisher (the
-          # id-token: write permission below) to mint a short-lived publish
-          # token. The default registry is already registry.npmjs.org and
-          # `publishConfig.access: public` in package.json handles scope access.
+          # `registry-url` is REQUIRED for OIDC trusted publishing — it's in
+          # npm's canonical example, and without it `npm publish` never
+          # attempts the OIDC exchange and fails ENEEDAUTH. setup-node also
+          # exports a placeholder NODE_AUTH_TOKEN here, but that's fine: once
+          # the npm-side trusted-publisher config matches the workflow's OIDC
+          # claims, npm's OIDC auth takes precedence over the placeholder. The
+          # match must cover repo `layervai/qurl-typescript`, workflow file
+          # `release-please.yml`, AND the `npm-publish` environment used below
+          # (an env-scoped job changes the OIDC `sub` claim).
+          registry-url: "https://registry.npmjs.org"
       - run: npm install -g npm@${{ env.NPM_VERSION }}
       - run: npm ci
       # .npmrc disables lifecycle scripts, so build and smoke explicitly here.
