@@ -256,6 +256,51 @@ const METHOD_CASES: MethodCase[] = [
     mockBody: { data: { plan: "free" } },
     invoke: (c) => c.getQuota(),
   },
+  {
+    method: "updateResource",
+    verb: "PATCH",
+    template: "/v1/resources/{id}",
+    mockBody: { data: { resource_id: "r_x" } },
+    invoke: (c) => c.updateResource("r_x", { description: "d" }),
+  },
+  {
+    method: "revokeQurlToken",
+    verb: "DELETE",
+    template: "/v1/resources/{id}/qurls/{qurl_id}",
+    // Real API returns 204 No Content; match it so the 204-branch runs.
+    mockBody: undefined,
+    mockStatus: 204,
+    invoke: (c) => c.revokeQurlToken("r_x", "q_x"),
+  },
+  {
+    method: "updateQurlToken",
+    verb: "PATCH",
+    template: "/v1/resources/{id}/qurls/{qurl_id}",
+    mockBody: { data: { qurl_id: "q_x", status: "active" } },
+    invoke: (c) => c.updateQurlToken("r_x", "q_x", { label: "L" }),
+  },
+  {
+    method: "listResourceSessions",
+    verb: "GET",
+    template: "/v1/resources/{id}/sessions",
+    mockBody: { data: [] },
+    invoke: (c) => c.listResourceSessions("r_x"),
+  },
+  {
+    method: "terminateAllResourceSessions",
+    verb: "DELETE",
+    template: "/v1/resources/{id}/sessions",
+    mockBody: { data: { terminated: 0 } },
+    invoke: (c) => c.terminateAllResourceSessions("r_x"),
+  },
+  {
+    method: "terminateResourceSession",
+    verb: "DELETE",
+    template: "/v1/resources/{id}/sessions/{session_id}",
+    mockBody: undefined,
+    mockStatus: 204,
+    invoke: (c) => c.terminateResourceSession("r_x", "sess_1"),
+  },
 ];
 
 // `toJSON` is a diagnostic helper (used by console.log/JSON.stringify),

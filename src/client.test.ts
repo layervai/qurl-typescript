@@ -5693,4 +5693,238 @@ describe("QURLClient", () => {
       expect(fetch, `status ${c.status}`).toHaveBeenCalledTimes(1);
     }
   });
+
+  // --- Resource-scoped operations: updateResource, token + session mgmt ---
+
+  it("updateResource sends a PATCH to /v1/resources/{id} and maps qurls", async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: {
+        data: {
+          resource_id: "r_abc123def45",
+          status: "active",
+          tags: ["prod"],
+          created_at: "2026-03-10T10:00:00Z",
+          qurls: [{ qurl_id: "q_a1b2c3d4e5f", status: "active" }],
+        },
+      },
+    });
+    const client = createClient(fetch);
+    const result = await client.updateResource("r_abc123def45", {
+      tags: ["prod"],
+      description: "updated",
+    });
+
+    expect(result.tags).toEqual(["prod"]);
+    // The wire `qurls` field is renamed to `access_tokens`, like get()/update().
+    expect(result.access_tokens?.[0]?.qurl_id).toBe("q_a1b2c3d4e5f");
+    expect((result as { qurls?: unknown }).qurls).toBeUndefined();
+    expect(fetch).toHaveBeenCalledWith(
+      "https://api.test.layerv.ai/v1/resources/r_abc123def45",
+      expect.objectContaining({
+        method: "PATCH",
+        body: JSON.stringify({ tags: ["prod"], description: "updated" }),
+      }),
+    );
+  });
+
+  it("updateResource preserves custom_domain: '' and preserve_host: false (clear semantics)", async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: { data: { resource_id: "r_abc123def45", status: "active", created_at: "t" } },
+    });
+    const client = createClient(fetch);
+    await client.updateResource("r_abc123def45", { custom_domain: "", preserve_host: false });
+
+    expect(fetch).toHaveBeenCalledWith(
+      "https://api.test.layerv.ai/v1/resources/r_abc123def45",
+      expect.objectContaining({
+        method: "PATCH",
+        body: JSON.stringify({ custom_domain: "", preserve_host: false }),
+      }),
+    );
+  });
+
+  it("updateResource rejects a q_ display ID client-side", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+    const err = await client
+      .updateResource("q_a1b2c3d4e5f", { description: "x" })
+      .catch((e: unknown) => e as ValidationError);
+
+    expect(err).toBeInstanceOf(ValidationError);
+    expect((err as ValidationError).code).toBe(ERROR_CODE_CLIENT_VALIDATION);
+    expect((err as ValidationError).detail).toContain("r_ prefix");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("updateResource rejects empty input (no fields)", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+    await expect(client.updateResource("r_abc123def45", {})).rejects.toBeInstanceOf(
+      ValidationError,
+    );
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("revokeQurlToken sends DELETE to /v1/resources/{id}/qurls/{qurl_id}", async () => {
+    const fetch = mockFetch({ status: 204 });
+    const client = createClient(fetch);
+    await expect(client.revokeQurlToken("r_abc123def45", "q_a1b2c3d4e5f")).resolves.toBeUndefined();
+    expect(fetch).toHaveBeenCalledWith(
+      "https://api.test.layerv.ai/v1/resources/r_abc123def45/qurls/q_a1b2c3d4e5f",
+      expect.objectContaining({ method: "DELETE" }),
+    );
+  });
+
+  it("revokeQurlToken rejects a non-r_ resource ID and a non-q_ token ID", async () => {
+    const fetch = mockFetch({ status: 204 });
+    const client = createClient(fetch);
+    await expect(client.revokeQurlToken("q_a1b2c3d4e5f", "q_a1b2c3d4e5f")).rejects.toBeInstanceOf(
+      ValidationError,
+    );
+    await expect(client.revokeQurlToken("r_abc123def45", "r_abc123def45")).rejects.toBeInstanceOf(
+      ValidationError,
+    );
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("updateQurlToken sends PATCH to the token endpoint and returns the token", async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: { data: { qurl_id: "q_a1b2c3d4e5f", status: "active", label: "renamed" } },
+    });
+    const client = createClient(fetch);
+    const result = await client.updateQurlToken("r_abc123def45", "q_a1b2c3d4e5f", {
+      label: "renamed",
+      max_sessions: 5,
+    });
+
+    expect(result.qurl_id).toBe("q_a1b2c3d4e5f");
+    expect(fetch).toHaveBeenCalledWith(
+      "https://api.test.layerv.ai/v1/resources/r_abc123def45/qurls/q_a1b2c3d4e5f",
+      expect.objectContaining({
+        method: "PATCH",
+        body: JSON.stringify({ label: "renamed", max_sessions: 5 }),
+      }),
+    );
+  });
+
+  it("updateQurlToken throws when extend_by and expires_at are both set", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+    await expect(
+      client.updateQurlToken("r_abc123def45", "q_a1b2c3d4e5f", {
+        extend_by: "24h",
+        expires_at: "2026-03-10T10:00:00Z",
+      }),
+    ).rejects.toBeInstanceOf(ValidationError);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("updateQurlToken rejects empty input (no fields)", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+    await expect(
+      client.updateQurlToken("r_abc123def45", "q_a1b2c3d4e5f", {}),
+    ).rejects.toBeInstanceOf(ValidationError);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("updateQurlToken forwards session_duration: '' (apply parent cap) without rejecting it", async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: { data: { qurl_id: "q_a1b2c3d4e5f", status: "active" } },
+    });
+    const client = createClient(fetch);
+    await client.updateQurlToken("r_abc123def45", "q_a1b2c3d4e5f", { session_duration: "" });
+
+    expect(fetch).toHaveBeenCalledWith(
+      "https://api.test.layerv.ai/v1/resources/r_abc123def45/qurls/q_a1b2c3d4e5f",
+      expect.objectContaining({
+        method: "PATCH",
+        body: JSON.stringify({ session_duration: "" }),
+      }),
+    );
+  });
+
+  it("listResourceSessions returns the session array", async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: {
+        data: [{ session_id: "sess_1", qurl_id: "q_a1b2c3d4e5f", src_ip: "203.0.113.5" }],
+        meta: { request_id: "req_1" },
+      },
+    });
+    const client = createClient(fetch);
+    const sessions = await client.listResourceSessions("r_abc123def45");
+
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].session_id).toBe("sess_1");
+    expect(fetch).toHaveBeenCalledWith(
+      "https://api.test.layerv.ai/v1/resources/r_abc123def45/sessions",
+      expect.objectContaining({ method: "GET" }),
+    );
+  });
+
+  it("listResourceSessions returns [] when there are no active sessions", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: [] } });
+    const client = createClient(fetch);
+    await expect(client.listResourceSessions("r_abc123def45")).resolves.toEqual([]);
+  });
+
+  it("listResourceSessions throws unexpected_response when data is not an array", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: { not: "an array" } } });
+    const client = createClient(fetch);
+    const err = await client
+      .listResourceSessions("r_abc123def45")
+      .catch((e: unknown) => e as ValidationError);
+
+    expect(err).toBeInstanceOf(ValidationError);
+    expect((err as ValidationError).code).toBe(ERROR_CODE_UNEXPECTED_RESPONSE);
+  });
+
+  it("terminateResourceSession sends DELETE to the per-session endpoint", async () => {
+    const fetch = mockFetch({ status: 204 });
+    const client = createClient(fetch);
+    await expect(
+      client.terminateResourceSession("r_abc123def45", "sess_1"),
+    ).resolves.toBeUndefined();
+    expect(fetch).toHaveBeenCalledWith(
+      "https://api.test.layerv.ai/v1/resources/r_abc123def45/sessions/sess_1",
+      expect.objectContaining({ method: "DELETE" }),
+    );
+  });
+
+  it("terminateResourceSession rejects an empty session_id", async () => {
+    const fetch = mockFetch({ status: 204 });
+    const client = createClient(fetch);
+    await expect(client.terminateResourceSession("r_abc123def45", "")).rejects.toBeInstanceOf(
+      ValidationError,
+    );
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("terminateAllResourceSessions returns the terminated count", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: { terminated: 3 } } });
+    const client = createClient(fetch);
+    await expect(client.terminateAllResourceSessions("r_abc123def45")).resolves.toEqual({
+      terminated: 3,
+    });
+    expect(fetch).toHaveBeenCalledWith(
+      "https://api.test.layerv.ai/v1/resources/r_abc123def45/sessions",
+      expect.objectContaining({ method: "DELETE" }),
+    );
+  });
+
+  it("terminateAllResourceSessions throws unexpected_response when terminated is missing", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+    const err = await client
+      .terminateAllResourceSessions("r_abc123def45")
+      .catch((e: unknown) => e as ValidationError);
+
+    expect(err).toBeInstanceOf(ValidationError);
+    expect((err as ValidationError).code).toBe(ERROR_CODE_UNEXPECTED_RESPONSE);
+  });
 });

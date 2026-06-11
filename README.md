@@ -1,6 +1,6 @@
-# @layerv/qurl
+# @layervai/qurl
 
-[![npm](https://img.shields.io/npm/v/@layerv/qurl)](https://www.npmjs.com/package/@layerv/qurl)
+[![npm](https://img.shields.io/npm/v/@layervai/qurl)](https://www.npmjs.com/package/@layervai/qurl)
 [![CI](https://github.com/layervai/qurl-typescript/actions/workflows/ci.yml/badge.svg)](https://github.com/layervai/qurl-typescript/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/layervai/qurl-typescript)](LICENSE)
 
@@ -15,15 +15,15 @@ AI agents need to access protected resources — APIs, databases, internal tools
 ## Installation
 
 ```bash
-npm install @layerv/qurl
+npm install @layervai/qurl
 ```
 
-Requires Node.js 18+. Both `import { QURLClient } from '@layerv/qurl'` (ESM) and `const { QURLClient } = require('@layerv/qurl')` (CJS) work.
+Requires Node.js 18+. Both `import { QURLClient } from '@layervai/qurl'` (ESM) and `const { QURLClient } = require('@layervai/qurl')` (CJS) work.
 
 ## Quick Start
 
 ```typescript
-import { QURLClient } from '@layerv/qurl';
+import { QURLClient } from '@layervai/qurl';
 
 const client = new QURLClient({ apiKey: 'lv_live_xxx' });
 
@@ -69,6 +69,14 @@ console.log(`Access granted to ${access.target_url} for ${access.access_grant?.e
 | `mintLink(id, input?)` | Mint a new access link |
 | `resolve(input)` | Resolve token + open firewall |
 | `getQuota()` | Get quota/usage info |
+| `updateResource(id, input)` | Update resource metadata (tags, description, custom domain, preserve_host) |
+| `revokeQurlToken(resourceId, qurlId)` | Revoke a single access token, leaving siblings active |
+| `updateQurlToken(resourceId, qurlId, input)` | Update one access token (expiry, label, access policy, sessions) |
+| `listResourceSessions(resourceId)` | List a resource's active access sessions |
+| `terminateResourceSession(resourceId, sessionId)` | Terminate one active session |
+| `terminateAllResourceSessions(resourceId)` | Terminate all active sessions for a resource |
+
+> The last six target the resource-scoped surface (`/v1/resources/...`) and require an `r_` resource ID.
 
 ### `batchCreate(input)`
 
@@ -110,7 +118,7 @@ import {
   NotFoundError,
   RateLimitError,
   ValidationError,
-} from '@layerv/qurl';
+} from '@layervai/qurl';
 
 try {
   await client.create({ target_url: '' });

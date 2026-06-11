@@ -6,8 +6,8 @@ import { createRequire } from "node:module";
 import assert from "node:assert/strict";
 
 const require = createRequire(import.meta.url);
-const cjs = require("@layerv/qurl");
-const esm = await import("@layerv/qurl");
+const cjs = require("@layervai/qurl");
+const esm = await import("@layervai/qurl");
 
 // Raw Object.keys on both — no filtering. A `default` export landing in
 // only one build is exactly the ESM-only drift this check exists to

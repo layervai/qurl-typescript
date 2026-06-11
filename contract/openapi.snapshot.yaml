@@ -31,3 +31,13 @@ paths:
     post: {}
   /v1/quota:
     get: {}
+  /v1/resources/{id}:
+    patch: {}
+  /v1/resources/{id}/qurls/{qurl_id}:
+    patch: {}
+    delete: {}
+  /v1/resources/{id}/sessions:
+    get: {}
+    delete: {}
+  /v1/resources/{id}/sessions/{session_id}:
+    delete: {}

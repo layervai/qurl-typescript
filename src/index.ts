@@ -40,5 +40,9 @@ export type {
   Quota,
   ResolveInput,
   ResolveOutput,
+  Session,
+  SessionTerminateResult,
   UpdateInput,
+  UpdateQurlTokenInput,
+  UpdateResourceInput,
 } from "./types.js";

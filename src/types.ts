@@ -58,8 +58,21 @@ export interface AccessToken {
  */
 export interface QURL {
   resource_id: string;
-  target_url: string;
-  status: "active" | "revoked";
+  /**
+   * The protected URL. Optional: the API omits it (field absent, not
+   * `null`) when not applicable to the resource — most notably on
+   * connector-owned rows, whose user-content fields are redacted from
+   * management reads. Matches `ResourceData.target_url` in the OpenAPI spec.
+   */
+  target_url?: string;
+  /**
+   * Resource lifecycle status. The OpenAPI `ResourceData.status` enum lists
+   * only `active`/`revoked`, but reads surface `expired` as a documented
+   * lifecycle value once a resource passes `expires_at` without an explicit
+   * revoke. Treat the set as open — tolerate values you don't recognize
+   * rather than asserting exhaustiveness.
+   */
+  status: "active" | "revoked" | "expired";
   description?: string;
   tags?: string[];
   /**
@@ -75,6 +88,18 @@ export interface QURL {
   custom_domain?: string | null;
   qurl_site?: string;
   qurl_count?: number;
+  /**
+   * Per-owner immutable identity supplied at create time (`slug` on
+   * `POST /v1/resources`). Read-only and absent on resources created
+   * without one. Distinct from a mutable alias.
+   */
+  slug?: string;
+  /**
+   * When `true`, the original `Host` header is preserved when proxying
+   * via the custom domain. Only meaningful when `custom_domain` is set;
+   * defaults to `false` server-side.
+   */
+  preserve_host?: boolean;
   access_tokens?: AccessToken[];
   created_at: string;
   expires_at?: string;
@@ -108,6 +133,15 @@ export interface CreateOutput {
   qurl_site: string;
   expires_at?: string;
   label?: string;
+  /**
+   * Customer's bare branded hostname for anchor-text display alongside
+   * `qurl_link` (render as `<a href="{qurl_link}">{branded_domain}</a>`).
+   * Present only when the resource has a usable `custom_domain`; omitted
+   * otherwise.
+   */
+  branded_domain?: string;
+  /** Resource type — echoes the `type` from the create request. */
+  type?: string;
 }
 
 /** Input for listing qURLs. */
@@ -206,6 +240,64 @@ export interface UpdateInput {
 }
 
 /**
+ * Input for updating resource-level metadata via `PATCH /v1/resources/{id}`.
+ *
+ * Distinct from {@link UpdateInput}, which targets `PATCH /v1/qurls/{id}` and
+ * carries expiration fields. This endpoint owns the resource-only fields —
+ * `custom_domain` and `preserve_host` — that have no equivalent on the qURL
+ * path. `tags`/`description` are accepted on both; route them here when you
+ * also need to change a resource-only field in the same call.
+ *
+ * At least one field must be provided. Pass `description: ""`, `tags: []`, or
+ * `custom_domain: ""` to clear those fields.
+ */
+export interface UpdateResourceInput {
+  /** Replace all tags on this resource. Pass an empty array to clear all tags. */
+  tags?: string[];
+  /** Resource-level description. Pass an empty string to clear it. */
+  description?: string;
+  /**
+   * The custom hostname this resource is reachable under. Pass an empty
+   * string to clear (unbind) the existing custom domain. Max 253 chars;
+   * the host must be registered/active/owned by the caller.
+   */
+  custom_domain?: string;
+  /**
+   * Whether to preserve the original `Host` header when proxying via the
+   * custom domain. Only meaningful when `custom_domain` is set.
+   */
+  preserve_host?: boolean;
+}
+
+/**
+ * Input for updating a single access token via
+ * `PATCH /v1/resources/{id}/qurls/{qurl_id}`.
+ *
+ * Operates on one token under a resource without touching sibling tokens or
+ * resource-level metadata. `extend_by` and `expires_at` are mutually
+ * exclusive; at least one field must be provided. Unlike {@link UpdateInput},
+ * `access_policy` *can* be changed here — token policy is mutable per-token
+ * even though it's immutable at the resource level.
+ */
+export interface UpdateQurlTokenInput {
+  /** Relative duration to extend this token by (e.g., `"24h"`). Mutually exclusive with `expires_at`. */
+  extend_by?: string;
+  /** Absolute RFC 3339 expiration timestamp. Mutually exclusive with `extend_by`. */
+  expires_at?: string;
+  /** Human-readable label for this token. Max 500 chars. */
+  label?: string;
+  /** Replace the access policy for this token. */
+  access_policy?: AccessPolicy;
+  /** Maximum concurrent sessions. `0` = unlimited (default); max `1000`. */
+  max_sessions?: number;
+  /**
+   * How long access lasts after clicking (e.g., `"1h"`). An empty string
+   * applies the parent resource's cap when one is set.
+   */
+  session_duration?: string;
+}
+
+/**
  * Input for minting an access link.
  *
  * `expires_in` and `expires_at` are mutually exclusive — provide at most one.
@@ -237,8 +329,22 @@ export interface MintInput {
 
 /** Response from minting an access link. */
 export interface MintOutput {
+  /**
+   * The minted qURL's primary key (`q_` prefix), same identifier as
+   * {@link CreateOutput.qurl_id}. `qurl.accessed` webhook events are keyed
+   * on this ID — capture it at mint time to correlate access events back
+   * to the recipient/context you minted for.
+   */
+  qurl_id: string;
   qurl_link: string;
   expires_at?: string;
+  /**
+   * Customer's bare branded hostname for anchor-text display alongside
+   * `qurl_link`. See {@link CreateOutput.branded_domain}.
+   */
+  branded_domain?: string;
+  /** Resource type — echoes the type of the underlying resource. */
+  type?: string;
 }
 
 /** Input for headless qURL resolution. */
@@ -304,6 +410,25 @@ export interface Quota {
     active_qurls_percent?: number | null;
     total_accesses?: number;
   };
+}
+
+/** An active access session against a resource. */
+export interface Session {
+  /** Unique session identifier. */
+  session_id: string;
+  /** qURL display ID (`q_` prefix) that created this session. */
+  qurl_id?: string;
+  /** Client IP that created the session. */
+  src_ip?: string;
+  user_agent?: string;
+  created_at?: string;
+  last_seen_at?: string;
+}
+
+/** Result of terminating sessions for a resource. */
+export interface SessionTerminateResult {
+  /** Number of sessions terminated. */
+  terminated: number;
 }
 
 /** Input for batch creating qURLs. */

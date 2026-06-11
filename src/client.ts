@@ -27,7 +27,11 @@ import type {
   Quota,
   ResolveInput,
   ResolveOutput,
+  Session,
+  SessionTerminateResult,
   UpdateInput,
+  UpdateQurlTokenInput,
+  UpdateResourceInput,
 } from "./types.js";
 import { VERSION } from "./version.js";
 
@@ -116,6 +120,44 @@ assertExhaustive<
 >(true);
 
 /**
+ * Fields accepted by `updateResource()`. Iterated by the null-stripping
+ * normalization + empty-input guard in {@link QURLClient.updateResource};
+ * the paired `assertExhaustive` witness fails compilation if a new
+ * {@link UpdateResourceInput} field isn't listed here.
+ */
+const UPDATE_RESOURCE_FIELD_KEYS = [
+  "tags",
+  "description",
+  "custom_domain",
+  "preserve_host",
+] as const satisfies readonly (keyof UpdateResourceInput)[];
+
+assertExhaustive<
+  Exclude<keyof UpdateResourceInput, (typeof UPDATE_RESOURCE_FIELD_KEYS)[number]> extends never
+    ? true
+    : never
+>(true);
+
+/**
+ * Fields accepted by `updateQurlToken()`. Same normalization + exhaustiveness
+ * contract as the other `*_FIELD_KEYS` allowlists.
+ */
+const UPDATE_TOKEN_FIELD_KEYS = [
+  "extend_by",
+  "expires_at",
+  "label",
+  "access_policy",
+  "max_sessions",
+  "session_duration",
+] as const satisfies readonly (keyof UpdateQurlTokenInput)[];
+
+assertExhaustive<
+  Exclude<keyof UpdateQurlTokenInput, (typeof UPDATE_TOKEN_FIELD_KEYS)[number]> extends never
+    ? true
+    : never
+>(true);
+
+/**
  * Construct a {@link ValidationError} for a client-side pre-flight check.
  * Uses `status: 0` (matching {@link NetworkError}/{@link TimeoutError}) and
  * `code: "client_validation"` so catch-by-class still works and callers can
@@ -173,6 +215,7 @@ const MAX_TAG_LENGTH = 50;
 // UpdateQurlRequest.tags pattern is specific — enforce it here.
 const TAG_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9 _-]*$/;
 const RESOURCE_ID_PREFIX = "r_";
+const QURL_ID_PREFIX = "q_";
 
 function requireMaxLength(value: string | undefined, field: string, max: number): void {
   if (value === undefined) return;
@@ -225,6 +268,50 @@ function requireNonEmptyId(id: string, method: string): void {
   // The pre-flight error is more actionable than the 404.
   if (typeof id !== "string" || id.trim() === "") {
     throw clientValidationError(`${method}: id is required`);
+  }
+}
+
+/**
+ * Validate that an ID is an `r_` resource ID. The resource-scoped endpoints
+ * (`PATCH /v1/resources/{id}`, `.../sessions`, `.../qurls/{qurl_id}`) only
+ * accept resource IDs — a `q_` display ID or bare prefix collapses the path
+ * or 404s server-side, so catch it before the round-trip. Only the prefix is
+ * echoed in the error (never the raw ID) to keep caller identifiers out of
+ * observability pipelines, matching {@link QURLClient.delete}.
+ */
+function requireResourceId(id: string, method: string): void {
+  if (typeof id !== "string" || id.trim() === "") {
+    throw clientValidationError(`${method}: resource id is required`);
+  }
+  if (!id.startsWith(RESOURCE_ID_PREFIX) || id.length <= RESOURCE_ID_PREFIX.length) {
+    throw clientValidationError(
+      `${method}: requires a resource ID (${RESOURCE_ID_PREFIX} prefix) — ` +
+        `got an ID starting with "${id.slice(0, RESOURCE_ID_PREFIX.length)}"`,
+    );
+  }
+}
+
+/**
+ * Validate that an ID is a `q_` qURL display ID, for the per-token
+ * resource-scoped endpoints. Same prefix-only error-echo posture as
+ * {@link requireResourceId}.
+ */
+function requireQurlId(qurlId: string, method: string): void {
+  if (typeof qurlId !== "string" || qurlId.trim() === "") {
+    throw clientValidationError(`${method}: qurl_id is required`);
+  }
+  if (!qurlId.startsWith(QURL_ID_PREFIX) || qurlId.length <= QURL_ID_PREFIX.length) {
+    throw clientValidationError(
+      `${method}: requires a qURL display ID (${QURL_ID_PREFIX} prefix) — ` +
+        `got an ID starting with "${qurlId.slice(0, QURL_ID_PREFIX.length)}"`,
+    );
+  }
+}
+
+/** Validate a non-empty session ID for the per-session terminate endpoint. */
+function requireNonEmptySessionId(sessionId: string, method: string): void {
+  if (typeof sessionId !== "string" || sessionId.trim() === "") {
+    throw clientValidationError(`${method}: session_id is required`);
   }
 }
 
@@ -1271,6 +1358,188 @@ export class QURLClient {
   /** Get quota and usage information. */
   async getQuota(): Promise<Quota> {
     return this.request<Quota>("GET", "/v1/quota");
+  }
+
+  // --- Resource-scoped operations ---
+  // These target the `/v1/resources/...` surface — resource metadata,
+  // per-token mutations, and sessions — rather than the `/v1/qurls/...`
+  // surface above. All require an `r_` resource ID; a `q_` display ID is
+  // rejected client-side because these paths don't auto-resolve the parent.
+
+  /**
+   * Update resource-level metadata (`tags`, `description`, `custom_domain`,
+   * `preserve_host`) via `PATCH /v1/resources/{id}`.
+   *
+   * Only accepts an `r_` resource ID. Use {@link update} for expiration
+   * changes and for tag/description edits addressed by a `q_` display ID;
+   * `custom_domain` / `preserve_host` live only on this endpoint. At least
+   * one field must be provided. Pass `description: ""`, `tags: []`, or
+   * `custom_domain: ""` to clear those fields.
+   */
+  async updateResource(id: string, input: UpdateResourceInput): Promise<QURL> {
+    requireResourceId(id, "updateResource");
+    if (typeof input !== "object" || input === null) {
+      throw clientValidationError(
+        `updateResource: input must be an object (got ${input === null ? "null" : typeof input})`,
+      );
+    }
+    // Normalize null → omitted (matches update()/mintLink()). Empty strings
+    // are preserved — they are the documented "clear the field" directive
+    // for description / custom_domain, and `preserve_host: false` is a real
+    // value, so the strip key is null/undefined only.
+    const normalized: UpdateResourceInput = {};
+    let hasAnyField = false;
+    for (const key of UPDATE_RESOURCE_FIELD_KEYS) {
+      const value = input[key];
+      if (value !== null && value !== undefined) {
+        (normalized as Record<string, unknown>)[key] = value;
+        hasAnyField = true;
+      }
+    }
+    if (!hasAnyField) {
+      throw clientValidationError(
+        `updateResource: at least one field (${UPDATE_RESOURCE_FIELD_KEYS.join(", ")}) must be provided`,
+      );
+    }
+    requireValidTags(normalized.tags);
+    requireMaxLength(normalized.description, "description", MAX_DESCRIPTION);
+    requireMaxLength(normalized.custom_domain, "custom_domain", MAX_CUSTOM_DOMAIN);
+    const raw = await this.request<QURL & { qurls?: AccessToken[] }>(
+      "PATCH",
+      `/v1/resources/${encodeURIComponent(id)}`,
+      normalized,
+    );
+    return this.mapQurlsField(raw);
+  }
+
+  /**
+   * Revoke a single access token under a resource via
+   * `DELETE /v1/resources/{id}/qurls/{qurl_id}`, leaving sibling tokens on
+   * the same resource active. Use {@link delete} to revoke the whole
+   * resource and every token under it.
+   */
+  async revokeQurlToken(resourceId: string, qurlId: string): Promise<void> {
+    requireResourceId(resourceId, "revokeQurlToken");
+    requireQurlId(qurlId, "revokeQurlToken");
+    await this.rawRequest(
+      "DELETE",
+      `/v1/resources/${encodeURIComponent(resourceId)}/qurls/${encodeURIComponent(qurlId)}`,
+    );
+  }
+
+  /**
+   * Update a single access token (expiration, label, access policy,
+   * `max_sessions`, `session_duration`) via
+   * `PATCH /v1/resources/{id}/qurls/{qurl_id}`.
+   *
+   * `extend_by` and `expires_at` are mutually exclusive; at least one field
+   * must be provided. Returns the updated token summary.
+   */
+  async updateQurlToken(
+    resourceId: string,
+    qurlId: string,
+    input: UpdateQurlTokenInput,
+  ): Promise<AccessToken> {
+    requireResourceId(resourceId, "updateQurlToken");
+    requireQurlId(qurlId, "updateQurlToken");
+    if (typeof input !== "object" || input === null) {
+      throw clientValidationError(
+        `updateQurlToken: input must be an object (got ${input === null ? "null" : typeof input})`,
+      );
+    }
+    const normalized: UpdateQurlTokenInput = {};
+    let hasAnyField = false;
+    for (const key of UPDATE_TOKEN_FIELD_KEYS) {
+      const value = input[key];
+      if (value !== null && value !== undefined) {
+        (normalized as Record<string, unknown>)[key] = value;
+        hasAnyField = true;
+      }
+    }
+    // Timing fields have no clear-semantic; reject empty strings up front.
+    requireNonEmptyIfPresent(normalized.extend_by, "extend_by");
+    requireNonEmptyIfPresent(normalized.expires_at, "expires_at");
+    if (normalized.extend_by !== undefined && normalized.expires_at !== undefined) {
+      throw clientValidationError(
+        "updateQurlToken: `extend_by` and `expires_at` are mutually exclusive — provide at most one",
+      );
+    }
+    if (!hasAnyField) {
+      throw clientValidationError(
+        `updateQurlToken: at least one field (${UPDATE_TOKEN_FIELD_KEYS.join(", ")}) must be provided`,
+      );
+    }
+    requireMaxLength(normalized.label, "label", MAX_LABEL);
+    requireNonEmptyIfPresent(normalized.label, "label");
+    requireMaxSessionsInRange(normalized.max_sessions);
+    requireValidAccessPolicy(normalized.access_policy);
+    // `session_duration: ""` is intentionally NOT rejected here: an empty
+    // string is the documented directive to apply the parent resource's cap
+    // (unlike create/mint, where empty durations are invalid).
+    return this.request<AccessToken>(
+      "PATCH",
+      `/v1/resources/${encodeURIComponent(resourceId)}/qurls/${encodeURIComponent(qurlId)}`,
+      normalized,
+    );
+  }
+
+  /**
+   * List active access sessions for a resource via
+   * `GET /v1/resources/{id}/sessions`. Returns an empty array when there are
+   * no active sessions.
+   */
+  async listResourceSessions(resourceId: string): Promise<Session[]> {
+    requireResourceId(resourceId, "listResourceSessions");
+    const data = await this.request<Session[]>(
+      "GET",
+      `/v1/resources/${encodeURIComponent(resourceId)}/sessions`,
+    );
+    // Defensive: the return type promises `Session[]`. A misbehaving proxy
+    // that drops `data` or sends a non-array would otherwise hand callers a
+    // value that lies about its type.
+    if (!Array.isArray(data)) {
+      throw unexpectedResponseError(
+        "Unexpected response shape from GET /v1/resources/{id}/sessions: `data` was not an array",
+      );
+    }
+    return data;
+  }
+
+  /**
+   * Terminate one active session via
+   * `DELETE /v1/resources/{id}/sessions/{session_id}`. The qURL tokens
+   * themselves are not revoked — only the live session is closed.
+   */
+  async terminateResourceSession(resourceId: string, sessionId: string): Promise<void> {
+    requireResourceId(resourceId, "terminateResourceSession");
+    requireNonEmptySessionId(sessionId, "terminateResourceSession");
+    await this.rawRequest(
+      "DELETE",
+      `/v1/resources/${encodeURIComponent(resourceId)}/sessions/${encodeURIComponent(sessionId)}`,
+    );
+  }
+
+  /**
+   * Terminate ALL active sessions for a resource via
+   * `DELETE /v1/resources/{id}/sessions`. Returns the count terminated. The
+   * qURL tokens themselves are not revoked — only live sessions are closed.
+   */
+  async terminateAllResourceSessions(resourceId: string): Promise<SessionTerminateResult> {
+    requireResourceId(resourceId, "terminateAllResourceSessions");
+    const data = await this.request<{ terminated?: unknown }>(
+      "DELETE",
+      `/v1/resources/${encodeURIComponent(resourceId)}/sessions`,
+    );
+    // Shape guard: the count drives caller-facing messaging, so a missing or
+    // non-numeric `terminated` is a server-contract violation worth failing
+    // loudly rather than coercing to NaN/undefined downstream.
+    if (!data || typeof data.terminated !== "number" || !Number.isFinite(data.terminated)) {
+      throw unexpectedResponseError(
+        "Unexpected response shape from DELETE /v1/resources/{id}/sessions: " +
+          "`data.terminated` was not a number",
+      );
+    }
+    return { terminated: data.terminated };
   }
 
   // --- Internal HTTP plumbing ---

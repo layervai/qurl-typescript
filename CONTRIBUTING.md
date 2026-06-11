@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for your interest in contributing to `@layerv/qurl`!
+Thanks for your interest in contributing to `@layervai/qurl`!
 
 ## Development Setup
 
@@ -36,7 +36,7 @@ points each condition (`import`, `require`) at its matching build, with
 per-condition `types` so `moduleResolution: Node16` consumers get the
 right `.d.ts`.
 
-`smoke/cjs.cjs` and `smoke/esm.mjs` self-reference `@layerv/qurl` and
+`smoke/cjs.cjs` and `smoke/esm.mjs` self-reference `@layervai/qurl` and
 exercise both entry points end-to-end; `smoke/parity.mjs` additionally
 asserts both builds export the same runtime name set. CI runs all three
 after the build. These are the load-bearing checks that the consumer-
