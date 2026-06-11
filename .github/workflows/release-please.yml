@@ -139,4 +139,23 @@ jobs:
       # .npmrc disables lifecycle scripts, so build and smoke explicitly here.
       - run: npm run build
       - run: npm run smoke:dist
+      # setup-node's `registry-url` injects a placeholder auth token
+      # (`//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}` with
+      # NODE_AUTH_TOKEN=XXXXX-XXXXX-XXXXX-XXXXX). npm prefers ANY configured
+      # token over OIDC, so the placeholder shadows trusted publishing —
+      # observed as E404 on run 27317922844 despite a correct trusted-publisher
+      # config, and ENEEDAUTH once registry-url (and the registry) was removed.
+      # Strip only the auth line, leaving the registry configured but
+      # tokenless, so `npm publish` performs the OIDC exchange against the
+      # trusted publisher via the job's id-token: write.
+      - name: Strip placeholder npm auth so OIDC trusted publishing engages
+        env:
+          USERCONFIG: ${{ env.NPM_CONFIG_USERCONFIG }}
+        run: |
+          if [ -n "${USERCONFIG:-}" ] && [ -f "${USERCONFIG}" ]; then
+            sed -i '/_authToken/d' "${USERCONFIG}"
+            echo "Stripped _authToken from ${USERCONFIG}"
+          else
+            echo "No NPM_CONFIG_USERCONFIG file present; nothing to strip"
+          fi
       - run: npm publish --provenance
