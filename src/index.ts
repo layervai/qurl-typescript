@@ -86,6 +86,7 @@ export type {
   ResourceListInput,
   ResourceListOutput,
   ResourceType,
+  RequestOptions,
   ResolveInput,
   ResolveOutput,
   Session,

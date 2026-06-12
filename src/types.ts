@@ -854,6 +854,18 @@ export interface QURLErrorData {
   retry_after?: number;
 }
 
+/** Per-call options accepted by mutating requests. */
+export interface RequestOptions {
+  /**
+   * Override the auto-generated `Idempotency-Key` sent on POST/PUT/PATCH.
+   *
+   * Use this when an upstream operation already has a stable request ID
+   * and retries should deduplicate against that ID instead of an SDK-created
+   * UUIDv7.
+   */
+  idempotencyKey?: string;
+}
+
 /** Client configuration options. */
 export interface ClientOptions {
   /** API key (required). */
