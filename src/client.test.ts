@@ -3394,6 +3394,12 @@ describe("QURLClient", () => {
       ),
     ).rejects.toThrow(ValidationError);
     await expect(
+      client.create({ target_url: "https://example.com" }, { idempotencyKey: " job-1" }),
+    ).rejects.toThrow(ValidationError);
+    await expect(
+      client.create({ target_url: "https://example.com" }, { idempotencyKey: "job-1 " }),
+    ).rejects.toThrow(ValidationError);
+    await expect(
       client.create({ target_url: "https://example.com" }, { idempotencyKey: "x".repeat(257) }),
     ).rejects.toThrow(ValidationError);
     expect(fetch).not.toHaveBeenCalled();

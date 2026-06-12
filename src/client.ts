@@ -103,7 +103,7 @@ const RETRYABLE_STATUS_MUTATING = new Set([429]);
 type HttpMethod = "GET" | "POST" | "PATCH" | "DELETE";
 const IDEMPOTENCY_KEY_METHODS = new Set<HttpMethod>(["POST", "PATCH"]);
 const MAX_IDEMPOTENCY_KEY = 256;
-const IDEMPOTENCY_KEY_VALUE_RE = /^[\x20-\x7e]+$/;
+const IDEMPOTENCY_KEY_VALUE_RE = /^[\x21-\x7e](?:[\x20-\x7e]*[\x21-\x7e])?$/;
 const UUID_HEX = Array.from({ length: 256 }, (_, i) => i.toString(16).padStart(2, "0"));
 
 type RawRequestOptions = {
@@ -513,11 +513,10 @@ function validateRequestOptions(options: unknown): asserts options is RequestOpt
       throw clientValidationError("idempotencyKey: must be a non-empty string");
     }
     requireMaxLength(key, "idempotencyKey", MAX_IDEMPOTENCY_KEY);
-    if (/[\r\n]/.test(key)) {
-      throw clientValidationError("idempotencyKey: must not contain CR/LF characters");
-    }
     if (!IDEMPOTENCY_KEY_VALUE_RE.test(key)) {
-      throw clientValidationError("idempotencyKey: must contain only visible ASCII characters");
+      throw clientValidationError(
+        "idempotencyKey: must contain only printable ASCII characters and must not start or end with spaces",
+      );
     }
   }
 }
