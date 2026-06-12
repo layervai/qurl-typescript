@@ -3382,6 +3382,12 @@ describe("QURLClient", () => {
     const client = createClient(fetch);
 
     await expect(
+      client.create({ target_url: "https://example.com" }, { idempotencyKey: "" }),
+    ).rejects.toThrow(ValidationError);
+    await expect(
+      client.create({ target_url: "https://example.com" }, { idempotencyKey: "job-1\tbad" }),
+    ).rejects.toThrow(ValidationError);
+    await expect(
       client.create(
         { target_url: "https://example.com" },
         { idempotencyKey: "job-1\r\nX-Injected: 1" },
