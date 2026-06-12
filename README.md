@@ -210,7 +210,7 @@ await client.create(
 );
 ```
 
-SDK-generated keys require `globalThis.crypto.getRandomValues` (available in supported Node 18+ runtimes and modern edge/browser runtimes). In a custom runtime without Web Crypto, pass an explicit `idempotencyKey` override on POST/PATCH calls.
+SDK-generated keys use `globalThis.crypto.getRandomValues` when available and fall back to Node's `crypto.randomFillSync` in Node runtimes without the Web Crypto global.
 
 ## Versioning & breaking changes
 

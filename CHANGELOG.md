@@ -1,11 +1,5 @@
 # Changelog
 
-## Unreleased
-
-### Bug Fixes
-
-* send `Idempotency-Key` on POST/PATCH SDK-managed retries; SDK-generated keys require `globalThis.crypto.getRandomValues`, while callers in custom runtimes can pass `RequestOptions.idempotencyKey`
-
 ## [0.2.0](https://github.com/layervai/qurl-typescript/compare/qurl-v0.1.0...qurl-v0.2.0) (2026-06-06)
 
 
