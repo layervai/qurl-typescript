@@ -3622,6 +3622,43 @@ describe("QURLClient", () => {
     expect(secondKey).toBe(firstKey);
   });
 
+  it("reuses Idempotency-Key across POST timeout retries", async () => {
+    const successResponse = {
+      ok: true,
+      status: 201,
+      statusText: "Created",
+      headers: new Headers({}),
+      json: () =>
+        Promise.resolve({
+          data: {
+            resource_id: "r_after_timeout",
+            qurl_link: "https://qurl.link/#at_after_timeout",
+            qurl_site: "https://r_after_timeout.qurl.site",
+          },
+        }),
+      text: () => Promise.resolve(""),
+    } satisfies Partial<Response> as Response;
+    const fetch = vi
+      .fn()
+      .mockRejectedValueOnce(new DOMException("deadline exceeded", "TimeoutError"))
+      .mockResolvedValueOnce(successResponse);
+    const client = new QURLClient({
+      apiKey: "lv_live_test",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 1,
+    });
+
+    const result = await client.create({ target_url: "https://example.com" });
+
+    expect(result.resource_id).toBe("r_after_timeout");
+    expect(fetch).toHaveBeenCalledTimes(2);
+    const firstKey = callHeaders(fetch, 0)["Idempotency-Key"];
+    const secondKey = callHeaders(fetch, 1)["Idempotency-Key"];
+    expect(firstKey).toMatch(UUID_V7_RE);
+    expect(secondKey).toBe(firstKey);
+  });
+
   it("returns quota response shape", async () => {
     const fetch = mockFetch({
       status: 200,

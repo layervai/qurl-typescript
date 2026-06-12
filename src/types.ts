@@ -860,10 +860,10 @@ export interface RequestOptions {
    * Override the auto-generated `Idempotency-Key` sent on POST/PATCH.
    *
    * Use this when an upstream operation already has a stable request ID
-   * and retries should deduplicate against that ID instead of an SDK-created
-   * UUIDv7. Values must be non-empty printable ASCII strings of at most
-   * 256 characters and must not start or end with spaces. Use a unique key
-   * for each logical operation.
+   * and application-level retry loops should deduplicate against that ID
+   * instead of a fresh SDK-created UUIDv7. Values must be non-empty printable
+   * ASCII strings of at most 256 characters and must not start or end with
+   * spaces. Use a unique key for each logical operation.
    */
   idempotencyKey?: string;
 }

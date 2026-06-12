@@ -201,7 +201,7 @@ Configure with `maxRetries` (default: 3). Set to `0` to disable.
 
 > **Worst-case latency**: `timeout` is enforced per *attempt*, not for the whole request. Total worst-case latency is roughly `timeout × (maxRetries + 1) + sum(retry delays)`. Operators tuning `timeout` should account for this when sizing health-check budgets.
 
-For POST/PATCH requests, the SDK generates a UUIDv7 `Idempotency-Key` once per logical call and reuses it across retries, so the API can return the original result instead of creating duplicate resources. Caller-provided keys must be non-empty printable ASCII strings of at most 256 characters and must not start or end with spaces. Use a unique key for each logical operation; reusing one key for a different request can return the first cached response. To tie retries to your own upstream job or request ID, pass a per-call override:
+For POST/PATCH requests, the SDK generates a UUIDv7 `Idempotency-Key` once per logical call and reuses it across SDK-managed retries, so the API can return the original result instead of creating duplicate resources. If your application catches an error and calls the SDK again, pass a stable override so the new call deduplicates with the first one. Caller-provided keys must be non-empty printable ASCII strings of at most 256 characters and must not start or end with spaces. Use a unique key for each logical operation; reusing one key for a different request can return the first cached response. To tie retries to your own upstream job or request ID, pass a per-call override:
 
 ```typescript
 await client.create(

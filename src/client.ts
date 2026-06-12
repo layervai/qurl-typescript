@@ -530,10 +530,10 @@ function idempotencyKeyForRequest(
   method: HttpMethod,
   options: RequestOptions | undefined,
 ): string | undefined {
-  validateRequestOptions(options);
   if (!IDEMPOTENCY_KEY_METHODS.has(method)) {
     return undefined;
   }
+  validateRequestOptions(options);
   return options?.idempotencyKey ?? generateUuidV7();
 }
 
