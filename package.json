@@ -27,7 +27,7 @@
     "lint": "eslint src/",
     "format": "prettier --write 'src/**/*.ts' 'smoke/**/*.{cjs,mjs}' 'scripts/**/*.mjs'",
     "format:check": "prettier --check 'src/**/*.ts' 'smoke/**/*.{cjs,mjs}' 'scripts/**/*.mjs'",
-    "smoke:dist": "node smoke/cjs.cjs && node smoke/esm.mjs && node smoke/parity.mjs",
+    "smoke:dist": "node smoke/cjs.cjs && node smoke/esm.mjs && node smoke/parity.mjs && node smoke/idempotency.mjs",
     "prepublishOnly": "npm run build && npm run smoke:dist"
   },
   "keywords": [
@@ -55,7 +55,7 @@
     "yaml": "^2.9.0"
   },
   "engines": {
-    "node": ">=18.17"
+    "node": ">=20"
   },
   "files": [
     "dist/"

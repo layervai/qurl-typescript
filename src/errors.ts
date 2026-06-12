@@ -173,7 +173,7 @@ export class RuntimeError extends QURLError {
   constructor(message: string, options?: { cause?: unknown }) {
     super({ status: 0, code: ERROR_CODE_RUNTIME, title: "Runtime Error", detail: message });
     this.name = "RuntimeError";
-    if (options?.cause) {
+    if (options && "cause" in options) {
       this.cause = options.cause;
     }
   }

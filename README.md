@@ -210,7 +210,7 @@ await client.create(
 );
 ```
 
-SDK-generated keys require `globalThis.crypto.getRandomValues`, which is available in supported Node 18.17+ runtimes and modern edge/browser runtimes. In constrained runtimes without Web Crypto, pass a caller-provided key with `idempotencyKey`.
+SDK-generated keys require `globalThis.crypto.getRandomValues`, which is available in supported Node 20+ runtimes and modern edge/browser runtimes. In constrained runtimes without Web Crypto, pass a caller-provided key with `idempotencyKey`.
 
 ## Versioning & breaking changes
 
