@@ -3314,6 +3314,23 @@ describe("QURLClient", () => {
     expect(callHeaders(fetch)["Idempotency-Key"]).toMatch(UUID_V7_RE);
   });
 
+  it("sends a UUIDv7 Idempotency-Key on POST requests without a body", async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: { data: { url: "https://billing.example.com/portal" } },
+    });
+
+    const client = createClient(fetch);
+    await client.createBillingPortal();
+
+    expect(fetch).toHaveBeenCalledWith(
+      "https://api.test.layerv.ai/v1/billing/portal",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(callHeaders(fetch)["Idempotency-Key"]).toMatch(UUID_V7_RE);
+    expect(callHeaders(fetch)).not.toHaveProperty("Content-Type");
+  });
+
   it("generates a fresh Idempotency-Key for separate logical calls", async () => {
     const fetch = mockFetch({
       status: 201,

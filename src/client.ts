@@ -530,6 +530,8 @@ function idempotencyKeyForRequest(
   method: HttpMethod,
   options: RequestOptions | undefined,
 ): string | undefined {
+  // Validate before method gating so future read-only methods that accept
+  // RequestOptions fail loudly on malformed options instead of discarding them.
   validateRequestOptions(options);
   if (!IDEMPOTENCY_KEY_METHODS.has(method)) {
     return undefined;
