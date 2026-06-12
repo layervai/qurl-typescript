@@ -9,7 +9,6 @@ import {
   TimeoutError,
   ValidationError,
 } from "./errors.js";
-import { randomFillSync } from "node:crypto";
 import type {
   AccessPolicy,
   AccessToken,
@@ -582,14 +581,9 @@ function fillRandomBytes(bytes: Uint8Array<ArrayBuffer>): void {
     crypto.getRandomValues(bytes);
     return;
   }
-  try {
-    randomFillSync(bytes);
-  } catch (cause) {
-    throw new RuntimeError(
-      "globalThis.crypto.getRandomValues or node:crypto.randomFillSync is required to generate Idempotency-Key",
-      { cause },
-    );
-  }
+  throw new RuntimeError(
+    "globalThis.crypto.getRandomValues is required to generate Idempotency-Key",
+  );
 }
 
 /**

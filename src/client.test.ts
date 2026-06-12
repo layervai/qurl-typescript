@@ -4,12 +4,14 @@ import {
   AuthenticationError,
   AuthorizationError,
   ERROR_CODE_CLIENT_VALIDATION,
+  ERROR_CODE_RUNTIME,
   ERROR_CODE_UNEXPECTED_RESPONSE,
   ERROR_CODE_UNKNOWN,
   NetworkError,
   NotFoundError,
   QURLError,
   RateLimitError,
+  RuntimeError,
   ServerError,
   TimeoutError,
   ValidationError,
@@ -3411,19 +3413,48 @@ describe("QURLClient", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("uses node crypto fallback when global crypto.getRandomValues is unavailable", async () => {
+  it("uses caller-provided Idempotency-Key override when global crypto is unavailable", async () => {
     const fetch = mockFetch({
       status: 201,
-      body: { data: { resource_id: "r_fallback", qurl_link: "https://qurl.link/#at_fallback" } },
+      body: { data: { resource_id: "r_override", qurl_link: "https://qurl.link/#at_override" } },
     });
     const originalCrypto = globalThis.crypto;
     Object.defineProperty(globalThis, "crypto", { configurable: true, value: undefined });
     try {
       const client = createClient(fetch);
-      const result = await client.create({ target_url: "https://example.com" });
+      const result = await client.create(
+        { target_url: "https://example.com" },
+        { idempotencyKey: "upstream-job-123" },
+      );
 
-      expect(result.resource_id).toBe("r_fallback");
-      expect(callHeaders(fetch)["Idempotency-Key"]).toMatch(UUID_V7_RE);
+      expect(result.resource_id).toBe("r_override");
+      expect(callHeaders(fetch)["Idempotency-Key"]).toBe("upstream-job-123");
+    } finally {
+      Object.defineProperty(globalThis, "crypto", { configurable: true, value: originalCrypto });
+    }
+  });
+
+  it("throws RuntimeError when generating Idempotency-Key without Web Crypto", async () => {
+    const fetch = mockFetch({
+      status: 201,
+      body: { data: { resource_id: "r_unused", qurl_link: "https://qurl.link/#at_unused" } },
+    });
+    const originalCrypto = globalThis.crypto;
+    Object.defineProperty(globalThis, "crypto", { configurable: true, value: undefined });
+    try {
+      const client = createClient(fetch);
+
+      let thrown: unknown;
+      try {
+        await client.create({ target_url: "https://example.com" });
+      } catch (e) {
+        thrown = e;
+      }
+
+      expect(thrown).toBeInstanceOf(RuntimeError);
+      expect((thrown as RuntimeError).code).toBe(ERROR_CODE_RUNTIME);
+      expect((thrown as RuntimeError).detail).toContain("globalThis.crypto.getRandomValues");
+      expect(fetch).not.toHaveBeenCalled();
     } finally {
       Object.defineProperty(globalThis, "crypto", { configurable: true, value: originalCrypto });
     }
