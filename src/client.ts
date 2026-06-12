@@ -100,6 +100,9 @@ const RETRY_MAX_DELAY_MS = 30_000;
 const RETRY_AFTER_HARD_CAP_MS = 60 * 60 * 1000;
 const RETRY_AFTER_PARSE_LIMIT_S = RETRY_AFTER_HARD_CAP_MS / 1000;
 const RETRYABLE_STATUS = new Set([429, 502, 503, 504]);
+// Keep mutating status retries 429-only until the service-side idempotency
+// cache contract is proven across 5xx, TTL, and replay-window edge cases.
+// Network-error retries still reuse Idempotency-Key below.
 const RETRYABLE_STATUS_MUTATING = new Set([429]);
 type HttpMethod = "GET" | "POST" | "PATCH" | "DELETE";
 const IDEMPOTENCY_KEY_METHODS = new Set<HttpMethod>(["POST", "PATCH"]);
