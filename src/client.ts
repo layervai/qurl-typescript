@@ -530,10 +530,10 @@ function idempotencyKeyForRequest(
   method: HttpMethod,
   options: RequestOptions | undefined,
 ): string | undefined {
+  validateRequestOptions(options);
   if (!IDEMPOTENCY_KEY_METHODS.has(method)) {
     return undefined;
   }
-  validateRequestOptions(options);
   return options?.idempotencyKey ?? generateUuidV7();
 }
 
@@ -542,6 +542,8 @@ function generateUuidV7(): string {
   fillRandomBytes(bytes);
 
   const timestamp = Date.now();
+  // Avoid right-shift operators here: JS bitwise shifts truncate to 32 bits,
+  // while UUIDv7 stores a 48-bit millisecond timestamp.
   bytes[0] = Math.floor(timestamp / 0x10000000000) & 0xff;
   bytes[1] = Math.floor(timestamp / 0x100000000) & 0xff;
   bytes[2] = Math.floor(timestamp / 0x1000000) & 0xff;
