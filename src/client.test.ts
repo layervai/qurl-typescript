@@ -4,18 +4,32 @@ import {
   AuthenticationError,
   AuthorizationError,
   ERROR_CODE_CLIENT_VALIDATION,
+  ERROR_CODE_RUNTIME,
   ERROR_CODE_UNEXPECTED_RESPONSE,
   ERROR_CODE_UNKNOWN,
   NetworkError,
   NotFoundError,
   QURLError,
   RateLimitError,
+  RuntimeError,
   ServerError,
   TimeoutError,
   ValidationError,
 } from "./errors.js";
 import type { BatchCreateInput, CreateInput, ExtendInput, MintInput } from "./types.js";
 import { mockFetch, mockFetches, createClient } from "./__tests__/test-helpers.js";
+
+const UUID_V7_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+function callHeaders(
+  fetch: typeof globalThis.fetch | ReturnType<typeof vi.fn>,
+  callIndex = 0,
+): Record<string, string> {
+  return (fetch as ReturnType<typeof vi.fn>).mock.calls[callIndex][1].headers as Record<
+    string,
+    string
+  >;
+}
 
 describe("QURLClient", () => {
   it("creates a qURL", async () => {
@@ -3282,6 +3296,187 @@ describe("QURLClient", () => {
     expect(calledHeaders["Content-Type"]).toBe("application/json");
   });
 
+  it("sends a UUIDv7 Idempotency-Key on POST requests", async () => {
+    const fetch = mockFetch({
+      status: 201,
+      body: {
+        data: {
+          resource_id: "r_abc123def45",
+          qurl_link: "https://qurl.link/#at_test",
+          qurl_site: "https://r_abc123def45.qurl.site",
+        },
+      },
+    });
+
+    const client = createClient(fetch);
+    await client.create({ target_url: "https://example.com" });
+
+    expect(callHeaders(fetch)["Idempotency-Key"]).toMatch(UUID_V7_RE);
+  });
+
+  it("sends a UUIDv7 Idempotency-Key on POST requests without a body", async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: { data: { url: "https://billing.example.com/portal" } },
+    });
+
+    const client = createClient(fetch);
+    await client.createBillingPortal();
+
+    expect(fetch).toHaveBeenCalledWith(
+      "https://api.test.layerv.ai/v1/billing/portal",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(callHeaders(fetch)["Idempotency-Key"]).toMatch(UUID_V7_RE);
+    expect(callHeaders(fetch)).not.toHaveProperty("Content-Type");
+  });
+
+  it("generates a fresh Idempotency-Key for separate logical calls", async () => {
+    const fetch = mockFetch({
+      status: 201,
+      body: {
+        data: {
+          resource_id: "r_abc123def45",
+          qurl_link: "https://qurl.link/#at_test",
+          qurl_site: "https://r_abc123def45.qurl.site",
+        },
+      },
+    });
+
+    const client = createClient(fetch);
+    await client.create({ target_url: "https://example.com/a" });
+    await client.create({ target_url: "https://example.com/b" });
+
+    const firstKey = callHeaders(fetch, 0)["Idempotency-Key"];
+    const secondKey = callHeaders(fetch, 1)["Idempotency-Key"];
+    expect(firstKey).toMatch(UUID_V7_RE);
+    expect(secondKey).toMatch(UUID_V7_RE);
+    expect(secondKey).not.toBe(firstKey);
+  });
+
+  it("does not send Idempotency-Key on read-only requests", async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: {
+        data: {
+          plan: "growth",
+          period_start: "2026-03-01",
+          period_end: "2026-04-01",
+        },
+      },
+    });
+
+    const client = createClient(fetch);
+    await client.getQuota();
+
+    expect(callHeaders(fetch)).not.toHaveProperty("Idempotency-Key");
+  });
+
+  it("uses caller-provided Idempotency-Key override", async () => {
+    const fetch = mockFetch({
+      status: 201,
+      body: {
+        data: {
+          resource_id: "r_abc123def45",
+          qurl_link: "https://qurl.link/#at_test",
+          qurl_site: "https://r_abc123def45.qurl.site",
+        },
+      },
+    });
+
+    const client = createClient(fetch);
+    await client.create(
+      { target_url: "https://example.com" },
+      { idempotencyKey: "upstream-job-123" },
+    );
+
+    expect(callHeaders(fetch)["Idempotency-Key"]).toBe("upstream-job-123");
+  });
+
+  it("rejects invalid Idempotency-Key overrides before making a request", async () => {
+    const fetch = mockFetch({
+      status: 201,
+      body: { data: { resource_id: "r_unused", qurl_link: "https://qurl.link/#at_unused" } },
+    });
+    const client = createClient(fetch);
+
+    await expect(
+      client.create({ target_url: "https://example.com" }, { idempotencyKey: "" }),
+    ).rejects.toThrow(ValidationError);
+    await expect(
+      client.create({ target_url: "https://example.com" }, { idempotencyKey: "job-1\tbad" }),
+    ).rejects.toThrow(ValidationError);
+    await expect(
+      client.create(
+        { target_url: "https://example.com" },
+        { idempotencyKey: "job-1\r\nX-Injected: 1" },
+      ),
+    ).rejects.toThrow(ValidationError);
+    await expect(
+      client.create({ target_url: "https://example.com" }, { idempotencyKey: " job-1" }),
+    ).rejects.toThrow(ValidationError);
+    await expect(
+      client.create({ target_url: "https://example.com" }, { idempotencyKey: "job-1 " }),
+    ).rejects.toThrow(ValidationError);
+    await expect(
+      client.create({ target_url: "https://example.com" }, { idempotencyKey: 123 } as never),
+    ).rejects.toThrow(ValidationError);
+    await expect(
+      client.create({ target_url: "https://example.com" }, { idempotencyKey: null } as never),
+    ).rejects.toThrow(ValidationError);
+    await expect(
+      client.create({ target_url: "https://example.com" }, { idempotencyKey: "x".repeat(257) }),
+    ).rejects.toThrow(ValidationError);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("uses caller-provided Idempotency-Key override when global crypto is unavailable", async () => {
+    const fetch = mockFetch({
+      status: 201,
+      body: { data: { resource_id: "r_override", qurl_link: "https://qurl.link/#at_override" } },
+    });
+    const originalCrypto = globalThis.crypto;
+    Object.defineProperty(globalThis, "crypto", { configurable: true, value: undefined });
+    try {
+      const client = createClient(fetch);
+      const result = await client.create(
+        { target_url: "https://example.com" },
+        { idempotencyKey: "upstream-job-123" },
+      );
+
+      expect(result.resource_id).toBe("r_override");
+      expect(callHeaders(fetch)["Idempotency-Key"]).toBe("upstream-job-123");
+    } finally {
+      Object.defineProperty(globalThis, "crypto", { configurable: true, value: originalCrypto });
+    }
+  });
+
+  it("throws RuntimeError when generating Idempotency-Key without Web Crypto", async () => {
+    const fetch = mockFetch({
+      status: 201,
+      body: { data: { resource_id: "r_unused", qurl_link: "https://qurl.link/#at_unused" } },
+    });
+    const originalCrypto = globalThis.crypto;
+    Object.defineProperty(globalThis, "crypto", { configurable: true, value: undefined });
+    try {
+      const client = createClient(fetch);
+
+      let thrown: unknown;
+      try {
+        await client.create({ target_url: "https://example.com" });
+      } catch (e) {
+        thrown = e;
+      }
+
+      expect(thrown).toBeInstanceOf(RuntimeError);
+      expect((thrown as RuntimeError).code).toBe(ERROR_CODE_RUNTIME);
+      expect((thrown as RuntimeError).detail).toContain("globalThis.crypto.getRandomValues");
+      expect(fetch).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(globalThis, "crypto", { configurable: true, value: originalCrypto });
+    }
+  });
+
   it("throws ValidationError (not generic Error) when apiKey is empty", () => {
     let thrown: unknown;
     try {
@@ -3431,6 +3626,80 @@ describe("QURLClient", () => {
     await expect(client.getQuota()).rejects.toThrow("fetch failed");
     // 1 initial + 1 retry = 2 attempts
     expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("reuses Idempotency-Key across POST network-error retries", async () => {
+    const successResponse = {
+      ok: true,
+      status: 201,
+      statusText: "Created",
+      headers: new Headers({}),
+      json: () =>
+        Promise.resolve({
+          data: {
+            resource_id: "r_after_retry",
+            qurl_link: "https://qurl.link/#at_after_retry",
+            qurl_site: "https://r_after_retry.qurl.site",
+          },
+        }),
+      text: () => Promise.resolve(""),
+    } satisfies Partial<Response> as Response;
+    const fetch = vi
+      .fn()
+      .mockRejectedValueOnce(new TypeError("socket reset"))
+      .mockResolvedValueOnce(successResponse);
+    const client = new QURLClient({
+      apiKey: "lv_live_test",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 1,
+    });
+
+    const result = await client.create({ target_url: "https://example.com" });
+
+    expect(result.resource_id).toBe("r_after_retry");
+    expect(fetch).toHaveBeenCalledTimes(2);
+    const firstKey = callHeaders(fetch, 0)["Idempotency-Key"];
+    const secondKey = callHeaders(fetch, 1)["Idempotency-Key"];
+    expect(firstKey).toMatch(UUID_V7_RE);
+    expect(secondKey).toBe(firstKey);
+  });
+
+  it("reuses Idempotency-Key across POST timeout retries", async () => {
+    const successResponse = {
+      ok: true,
+      status: 201,
+      statusText: "Created",
+      headers: new Headers({}),
+      json: () =>
+        Promise.resolve({
+          data: {
+            resource_id: "r_after_timeout",
+            qurl_link: "https://qurl.link/#at_after_timeout",
+            qurl_site: "https://r_after_timeout.qurl.site",
+          },
+        }),
+      text: () => Promise.resolve(""),
+    } satisfies Partial<Response> as Response;
+    const fetch = vi
+      .fn()
+      .mockRejectedValueOnce(new DOMException("deadline exceeded", "TimeoutError"))
+      .mockResolvedValueOnce(successResponse);
+    const client = new QURLClient({
+      apiKey: "lv_live_test",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 1,
+    });
+
+    const result = await client.create({ target_url: "https://example.com" });
+
+    expect(result.resource_id).toBe("r_after_timeout");
+    expect(fetch).toHaveBeenCalledTimes(2);
+    const firstKey = callHeaders(fetch, 0)["Idempotency-Key"];
+    const secondKey = callHeaders(fetch, 1)["Idempotency-Key"];
+    expect(firstKey).toMatch(UUID_V7_RE);
+    expect(secondKey).toBe(firstKey);
   });
 
   it("returns quota response shape", async () => {
@@ -4441,7 +4710,7 @@ describe("QURLClient", () => {
 
   // --- Mutating-safe retry ---
 
-  it("does not retry POST on 502", async () => {
+  it("does not retry POST on 502 but still sends Idempotency-Key", async () => {
     const fetch = mockFetch({
       status: 502,
       body: {
@@ -4457,9 +4726,10 @@ describe("QURLClient", () => {
 
     await expect(client.create({ target_url: "https://example.com" })).rejects.toThrow(ServerError);
     expect(fetch).toHaveBeenCalledTimes(1);
+    expect(callHeaders(fetch)["Idempotency-Key"]).toMatch(UUID_V7_RE);
   });
 
-  it("does not retry PATCH on 502", async () => {
+  it("does not retry PATCH on 502 but still sends Idempotency-Key", async () => {
     const fetch = mockFetch({
       status: 502,
       body: {
@@ -4475,6 +4745,49 @@ describe("QURLClient", () => {
 
     await expect(client.update("r_abc", { description: "test" })).rejects.toThrow(ServerError);
     expect(fetch).toHaveBeenCalledTimes(1);
+    expect(callHeaders(fetch)["Idempotency-Key"]).toMatch(UUID_V7_RE);
+  });
+
+  it("reuses caller-provided Idempotency-Key across PATCH network-error retries", async () => {
+    const successResponse = {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      headers: new Headers({}),
+      json: () =>
+        Promise.resolve({
+          data: {
+            resource_id: "r_abc",
+            target_url: "https://example.com",
+            status: "active",
+            created_at: "2026-03-15T10:00:00Z",
+          },
+        }),
+      text: () => Promise.resolve(""),
+    } satisfies Partial<Response> as Response;
+    const fetch = vi
+      .fn()
+      .mockRejectedValueOnce(new TypeError("socket reset"))
+      .mockResolvedValueOnce(successResponse);
+    const client = new QURLClient({
+      apiKey: "lv_live_test",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 2,
+    });
+
+    const result = await client.update(
+      "r_abc",
+      { description: "test" },
+      { idempotencyKey: "upstream-patch-job-123" },
+    );
+
+    expect(result.resource_id).toBe("r_abc");
+    expect(fetch).toHaveBeenCalledTimes(2);
+    const firstKey = callHeaders(fetch, 0)["Idempotency-Key"];
+    const secondKey = callHeaders(fetch, 1)["Idempotency-Key"];
+    expect(firstKey).toBe("upstream-patch-job-123");
+    expect(secondKey).toBe(firstKey);
   });
 
   it("retries GET on 502", async () => {
@@ -4523,14 +4836,13 @@ describe("QURLClient", () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
-  it("retries DELETE on 502 (idempotent — not in the mutating retry set)", async () => {
+  it("retries DELETE on 502 without Idempotency-Key", async () => {
     // DELETE is intentionally classified as non-mutating for retry
     // purposes: HTTP DELETE is idempotent by spec (deleting an
     // already-deleted resource is a no-op), and 204 responses carry
     // no body to duplicate. Retrying 5xx on DELETE is safe and
-    // desirable. Lock this behavior in — a refactor that naively
-    // unified DELETE with POST/PATCH under the mutating retry set
-    // would silently regress this.
+    // desirable. It does not need Idempotency-Key because the method
+    // itself is idempotent.
     const badGatewayResponse = {
       ok: false,
       status: 502,
@@ -4570,6 +4882,8 @@ describe("QURLClient", () => {
 
     await expect(client.delete("r_abc123def45")).resolves.toBeUndefined();
     expect(fetch).toHaveBeenCalledTimes(2);
+    expect(callHeaders(fetch, 0)).not.toHaveProperty("Idempotency-Key");
+    expect(callHeaders(fetch, 1)).not.toHaveProperty("Idempotency-Key");
   });
 
   it("retries POST on 429", async () => {
@@ -6856,9 +7170,9 @@ describe("QURLClient", () => {
     ).rejects.toBeInstanceOf(AuthenticationError);
   });
 
-  it("batch create retries on 429 (mutating retry allows rate limits)", async () => {
-    // POST is mutating, so RETRYABLE_STATUS_MUTATING only contains 429.
-    // Verify the batch endpoint inherits this behavior.
+  it("batch create retries on 429 with the same Idempotency-Key", async () => {
+    // POST requests carry Idempotency-Key, so retry attempts should
+    // deduplicate server-side instead of creating a second batch.
     const rateLimitResponse = {
       ok: false,
       status: 429,
@@ -6916,11 +7230,62 @@ describe("QURLClient", () => {
     });
     expect(result.succeeded).toBe(1);
     expect(fetch).toHaveBeenCalledTimes(2);
+    const firstKey = callHeaders(fetch, 0)["Idempotency-Key"];
+    const secondKey = callHeaders(fetch, 1)["Idempotency-Key"];
+    expect(firstKey).toMatch(UUID_V7_RE);
+    expect(secondKey).toBe(firstKey);
+  });
+
+  it("batch create reuses Idempotency-Key across network-error retries", async () => {
+    const successResponse = {
+      ok: true,
+      status: 201,
+      statusText: "Created",
+      headers: new Headers({}),
+      json: () =>
+        Promise.resolve({
+          data: {
+            succeeded: 1,
+            failed: 0,
+            results: [
+              {
+                index: 0,
+                success: true,
+                resource_id: "r_batch_retry",
+                qurl_link: "https://qurl.link/#at_batch_retry",
+                qurl_site: "https://r_batch_retry.qurl.site",
+              },
+            ],
+          },
+        }),
+      text: () => Promise.resolve(""),
+    } satisfies Partial<Response> as Response;
+    const fetch = vi
+      .fn()
+      .mockRejectedValueOnce(new TypeError("socket reset"))
+      .mockResolvedValueOnce(successResponse);
+    const client = new QURLClient({
+      apiKey: "lv_live_test",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 1,
+    });
+
+    const result = await client.batchCreate({
+      items: [{ target_url: "https://example.com" }],
+    });
+
+    expect(result.succeeded).toBe(1);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    const firstKey = callHeaders(fetch, 0)["Idempotency-Key"];
+    const secondKey = callHeaders(fetch, 1)["Idempotency-Key"];
+    expect(firstKey).toMatch(UUID_V7_RE);
+    expect(secondKey).toBe(firstKey);
   });
 
   it("batch create 400 passthrough works after a 429 retry boundary", async () => {
-    // Edge case: first attempt returns 429 (retry-eligible per
-    // RETRYABLE_STATUS_MUTATING), retry gets 400 with a populated
+    // Edge case: first attempt returns 429 (retry-eligible for POST),
+    // retry gets 400 with a populated
     // BatchCreateOutput body (per-item errors). The 400 passthrough
     // logic must work ACROSS retry boundaries, not just on a clean
     // first attempt — otherwise a 429 → 400 sequence would mis-route
@@ -7013,11 +7378,9 @@ describe("QURLClient", () => {
     }
   });
 
-  it("batch create does NOT retry POST on 5xx (502/503/504 — only 429 is retried for mutating verbs)", async () => {
-    // RETRYABLE_STATUS_MUTATING only includes 429, not 502/503/504, so POST
-    // callers must not replay batch requests on 5xx (prevents duplicate
-    // item creation). Direct guard for the asymmetric retry policy: GET
-    // retries on these statuses, POST does not.
+  it("batch create does NOT retry POST on 5xx but still sends Idempotency-Key", async () => {
+    // POST status-code retries stay 429-only; network errors are the
+    // retry path protected by Idempotency-Key for batch creates.
     const cases = [
       { status: 502, code: "bad_gateway", title: "Bad Gateway" },
       { status: 503, code: "service_unavailable", title: "Service Unavailable" },
@@ -7048,6 +7411,7 @@ describe("QURLClient", () => {
         client.batchCreate({ items: [{ target_url: "https://example.com" }] }),
       ).rejects.toBeInstanceOf(ServerError);
       expect(fetch, `status ${c.status}`).toHaveBeenCalledTimes(1);
+      expect(callHeaders(fetch)["Idempotency-Key"], `status ${c.status}`).toMatch(UUID_V7_RE);
     }
   });
 });

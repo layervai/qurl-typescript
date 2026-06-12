@@ -5,6 +5,7 @@ import {
   ERROR_CODE_UNKNOWN,
   NetworkError,
   QURLError,
+  RuntimeError,
   TimeoutError,
   ValidationError,
 } from "./errors.js";
@@ -63,6 +64,7 @@ import type {
   ResourceDetail,
   ResourceListInput,
   ResourceListOutput,
+  RequestOptions,
   ResolveInput,
   ResolveOutput,
   Session,
@@ -98,8 +100,21 @@ const RETRY_MAX_DELAY_MS = 30_000;
 const RETRY_AFTER_HARD_CAP_MS = 60 * 60 * 1000;
 const RETRY_AFTER_PARSE_LIMIT_S = RETRY_AFTER_HARD_CAP_MS / 1000;
 const RETRYABLE_STATUS = new Set([429, 502, 503, 504]);
+// Keep mutating status retries 429-only until the service-side idempotency
+// cache contract is proven across 5xx, TTL, and replay-window edge cases.
+// Network-error retries still reuse Idempotency-Key below.
 const RETRYABLE_STATUS_MUTATING = new Set([429]);
 type HttpMethod = "GET" | "POST" | "PATCH" | "DELETE";
+const IDEMPOTENCY_KEY_METHODS = new Set<HttpMethod>(["POST", "PATCH"]);
+const MUTATING_RETRY_METHODS = new Set<HttpMethod>(["POST", "PATCH"]);
+const MAX_IDEMPOTENCY_KEY = 256;
+const IDEMPOTENCY_KEY_VALUE_RE = /^[\x21-\x7e](?:[\x20-\x7e]*[\x21-\x7e])?$/;
+const UUID_HEX = Array.from({ length: 256 }, (_, i) => i.toString(16).padStart(2, "0"));
+
+type RawRequestOptions = {
+  passthroughStatuses?: readonly number[];
+  requestOptions?: RequestOptions;
+};
 
 const NO_PASSTHROUGH_STATUSES: readonly number[] = [];
 const BATCH_PASSTHROUGH_STATUSES: readonly number[] = [400];
@@ -117,6 +132,8 @@ const LIST_PARAM_KEYS = [
   "expires_after",
 ] as const satisfies readonly (keyof ListInput)[];
 
+const REQUEST_OPTION_KEYS = ["idempotencyKey"] as const satisfies readonly (keyof RequestOptions)[];
+
 // Compile-time witness: `Exclude<keyof X, (typeof KEYS)[number]>` is
 // `never` iff KEYS lists every key of X. Paired with the
 // `satisfies readonly (keyof X)[]` clause on the array (which catches
@@ -127,6 +144,10 @@ function assertExhaustive<T extends true>(_: T): void {
 }
 assertExhaustive<
   Exclude<keyof ListInput, (typeof LIST_PARAM_KEYS)[number]> extends never ? true : never
+>(true);
+
+assertExhaustive<
+  Exclude<keyof RequestOptions, (typeof REQUEST_OPTION_KEYS)[number]> extends never ? true : never
 >(true);
 
 const CREATE_FIELD_KEYS = [
@@ -475,6 +496,98 @@ function clientValidationError(detail: string): ValidationError {
     title: "Invalid Argument",
     detail,
   });
+}
+
+function validateRequestOptions(options: unknown): asserts options is RequestOptions | undefined {
+  if (options === undefined) {
+    return;
+  }
+  if (typeof options !== "object" || options === null || Array.isArray(options)) {
+    throw clientValidationError(
+      `request options: must be an object (got ${options === null ? "null" : describeShape(options)})`,
+    );
+  }
+  requireNoUnknownFields(
+    options as Record<string, unknown>,
+    REQUEST_OPTION_KEYS,
+    "request options",
+  );
+  const key = (options as RequestOptions).idempotencyKey;
+  if (key !== undefined) {
+    if (typeof key !== "string" || key.length === 0) {
+      throw clientValidationError("idempotencyKey: must be a non-empty string");
+    }
+    requireMaxLength(key, "idempotencyKey", MAX_IDEMPOTENCY_KEY);
+    if (!IDEMPOTENCY_KEY_VALUE_RE.test(key)) {
+      throw clientValidationError(
+        "idempotencyKey: must contain only printable ASCII characters and must not start or end with spaces",
+      );
+    }
+  }
+}
+
+function idempotencyKeyForRequest(
+  method: HttpMethod,
+  options: RequestOptions | undefined,
+): string | undefined {
+  // Validate before method gating so future read-only methods that accept
+  // RequestOptions fail loudly on malformed options instead of discarding them.
+  validateRequestOptions(options);
+  if (!IDEMPOTENCY_KEY_METHODS.has(method)) {
+    return undefined;
+  }
+  return options?.idempotencyKey ?? generateUuidV7();
+}
+
+function generateUuidV7(): string {
+  const bytes = new Uint8Array(16);
+  fillRandomBytes(bytes);
+
+  const timestamp = Date.now();
+  // Avoid right-shift operators here: JS bitwise shifts truncate to 32 bits,
+  // while UUIDv7 stores a 48-bit millisecond timestamp.
+  bytes[0] = Math.floor(timestamp / 0x10000000000) & 0xff;
+  bytes[1] = Math.floor(timestamp / 0x100000000) & 0xff;
+  bytes[2] = Math.floor(timestamp / 0x1000000) & 0xff;
+  bytes[3] = Math.floor(timestamp / 0x10000) & 0xff;
+  bytes[4] = Math.floor(timestamp / 0x100) & 0xff;
+  bytes[5] = timestamp & 0xff;
+  bytes[6] = (bytes[6] & 0x0f) | 0x70;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+
+  return (
+    UUID_HEX[bytes[0]] +
+    UUID_HEX[bytes[1]] +
+    UUID_HEX[bytes[2]] +
+    UUID_HEX[bytes[3]] +
+    "-" +
+    UUID_HEX[bytes[4]] +
+    UUID_HEX[bytes[5]] +
+    "-" +
+    UUID_HEX[bytes[6]] +
+    UUID_HEX[bytes[7]] +
+    "-" +
+    UUID_HEX[bytes[8]] +
+    UUID_HEX[bytes[9]] +
+    "-" +
+    UUID_HEX[bytes[10]] +
+    UUID_HEX[bytes[11]] +
+    UUID_HEX[bytes[12]] +
+    UUID_HEX[bytes[13]] +
+    UUID_HEX[bytes[14]] +
+    UUID_HEX[bytes[15]]
+  );
+}
+
+function fillRandomBytes(bytes: Uint8Array<ArrayBuffer>): void {
+  const crypto = globalThis.crypto;
+  if (crypto?.getRandomValues) {
+    crypto.getRandomValues(bytes);
+    return;
+  }
+  throw new RuntimeError(
+    "globalThis.crypto.getRandomValues is required to generate Idempotency-Key",
+  );
 }
 
 /**
@@ -1537,9 +1650,9 @@ export class QURLClient {
   // --- Public API ---
 
   /** Create a new qURL. */
-  async create(input: CreateInput): Promise<CreateOutput> {
+  async create(input: CreateInput, options?: RequestOptions): Promise<CreateOutput> {
     validateCreateInput(input);
-    return this.request<CreateOutput>("POST", "/v1/qurls", input);
+    return this.request<CreateOutput>("POST", "/v1/qurls", input, options);
   }
 
   /**
@@ -1594,7 +1707,7 @@ export class QURLClient {
    * }
    * ```
    */
-  async batchCreate(input: BatchCreateInput): Promise<BatchCreateOutput> {
+  async batchCreate(input: BatchCreateInput, options?: RequestOptions): Promise<BatchCreateOutput> {
     // Untyped-JS safety: the rest of the validators (requireValidTags,
     // requireMaxLength, etc.) all surface a structured ValidationError
     // for non-conforming inputs. Without this guard, `batchCreate({} as
@@ -1644,12 +1757,10 @@ export class QURLClient {
     // from the envelope and propagate it into the returned
     // BatchCreateOutput — consumers filing support tickets on partial
     // or total batch failures need the correlation ID.
-    const envelope = await this.rawRequest<BatchCreateOutput>(
-      "POST",
-      "/v1/qurls/batch",
-      input,
-      BATCH_PASSTHROUGH_STATUSES,
-    );
+    const envelope = await this.rawRequest<BatchCreateOutput>("POST", "/v1/qurls/batch", input, {
+      passthroughStatuses: BATCH_PASSTHROUGH_STATUSES,
+      requestOptions: options,
+    });
     const result = this.validateBatchCreateResponse(envelope, input.items.length);
     // Attach the server request_id from the envelope meta without
     // mutating `result` (which is the parsed JSON body). Mirrors the
@@ -1820,7 +1931,7 @@ export class QURLClient {
    * those through this path. The XOR (exactly-one-of-two) invariant is
    * enforced separately by the runtime check inside `update()`.
    */
-  async extend(id: string, input: ExtendInput): Promise<QURL> {
+  async extend(id: string, input: ExtendInput, options?: RequestOptions): Promise<QURL> {
     requireNonEmptyId(id, "extend");
     requireObjectInput(input, "extend");
     const { extend_by, expires_at } = input;
@@ -1832,7 +1943,7 @@ export class QURLClient {
         "extend: `extend_by` and `expires_at` are mutually exclusive — provide exactly one",
       );
     }
-    return this.update(id, { extend_by, expires_at });
+    return this.update(id, { extend_by, expires_at }, options);
   }
 
   /**
@@ -1841,7 +1952,7 @@ export class QURLClient {
    * Accepts either a resource ID (`r_` prefix) or a qURL display ID (`q_`
    * prefix); the API resolves `q_` IDs to the parent resource automatically.
    */
-  async update(id: string, input: UpdateInput): Promise<QURL> {
+  async update(id: string, input: UpdateInput, options?: RequestOptions): Promise<QURL> {
     requireNonEmptyId(id, "update");
     requireObjectInput(input, "update");
     requireNoUnknownFields(input, UPDATE_FIELD_KEYS, "update");
@@ -1872,6 +1983,7 @@ export class QURLClient {
       "PATCH",
       `/v1/qurls/${encodeURIComponent(id)}`,
       normalized,
+      options,
     );
     return this.mapQurlsField(raw);
   }
@@ -1886,7 +1998,7 @@ export class QURLClient {
    * equivalent to omitting the second argument: no body is sent, and the
    * server applies its 24h default expiration.
    */
-  async mintLink(id: string, input?: MintInput): Promise<MintOutput> {
+  async mintLink(id: string, input?: MintInput, options?: RequestOptions): Promise<MintOutput> {
     requireNonEmptyId(id, "mintLink");
     // Normalize null → omitted so untyped-JS callers passing
     // `{ expires_in: null, expires_at: "..." }` don't leak null into
@@ -1936,6 +2048,7 @@ export class QURLClient {
       "POST",
       `/v1/qurls/${encodeURIComponent(id)}/mint_link`,
       normalized,
+      options,
     );
   }
 
@@ -1947,7 +2060,7 @@ export class QURLClient {
    *
    * Accepts a plain token string or a `ResolveInput` object.
    */
-  async resolve(input: ResolveInput | string): Promise<ResolveOutput> {
+  async resolve(input: ResolveInput | string, options?: RequestOptions): Promise<ResolveOutput> {
     // Mirror get/update/mintLink: catch untyped-JS misuse client-side.
     let body: ResolveInput;
     if (typeof input === "string") {
@@ -1966,7 +2079,7 @@ export class QURLClient {
         `resolve: input must be a string or { access_token } object (got ${input === null ? "null" : typeof input})`,
       );
     }
-    return this.request<ResolveOutput>("POST", "/v1/resolve", body);
+    return this.request<ResolveOutput>("POST", "/v1/resolve", body, options);
   }
 
   /** Get quota and usage information. */
@@ -1975,7 +2088,10 @@ export class QURLClient {
   }
 
   /** Bootstrap a LayerV qURL Connector agent. */
-  async bootstrapAgent(input: AgentBootstrapInput): Promise<AgentBootstrapOutput> {
+  async bootstrapAgent(
+    input: AgentBootstrapInput,
+    options?: RequestOptions,
+  ): Promise<AgentBootstrapOutput> {
     requireObjectInput(input, "bootstrapAgent");
     requireNoUnknownFields(input, AGENT_BOOTSTRAP_FIELD_KEYS, "bootstrapAgent");
     const normalizedRecord = normalizePatchFields(
@@ -1984,7 +2100,7 @@ export class QURLClient {
     );
     const normalized = normalizedRecord as unknown as AgentBootstrapInput;
     requireNonEmptyStringField(normalizedRecord, "public_key", "bootstrapAgent");
-    return this.request<AgentBootstrapOutput>("POST", "/v1/agent/bootstrap", normalized);
+    return this.request<AgentBootstrapOutput>("POST", "/v1/agent/bootstrap", normalized, options);
   }
 
   /** List resources from the `/v1/resources` API. */
@@ -2024,7 +2140,7 @@ export class QURLClient {
   }
 
   /** Create a resource directly. */
-  async createResource(input: CreateResourceInput): Promise<Resource> {
+  async createResource(input: CreateResourceInput, options?: RequestOptions): Promise<Resource> {
     requireObjectInput(input, "createResource");
     requireNoUnknownFields(input, CREATE_RESOURCE_FIELD_KEYS, "createResource");
     const normalized = normalizePatchFields(
@@ -2035,7 +2151,7 @@ export class QURLClient {
       requireUrlTarget: true,
       validateFindOrCreate: true,
     });
-    return this.request<Resource>("POST", "/v1/resources", normalized);
+    return this.request<Resource>("POST", "/v1/resources", normalized, options);
   }
 
   /** Get one resource plus its bounded qURL preview. */
@@ -2045,7 +2161,11 @@ export class QURLClient {
   }
 
   /** Update resource metadata. */
-  async updateResource(id: string, input: UpdateResourceInput): Promise<Resource> {
+  async updateResource(
+    id: string,
+    input: UpdateResourceInput,
+    options?: RequestOptions,
+  ): Promise<Resource> {
     requireNonEmptyId(id, "updateResource");
     requireObjectInput(input, "updateResource");
     requireNoUnknownFields(input, UPDATE_RESOURCE_FIELD_KEYS, "updateResource");
@@ -2068,6 +2188,7 @@ export class QURLClient {
       "PATCH",
       `/v1/resources/${encodeURIComponent(id)}`,
       validationInput,
+      options,
     );
   }
 
@@ -2081,6 +2202,7 @@ export class QURLClient {
   async createQurlForResource(
     id: string,
     input?: CreateQurlForResourceInput,
+    options?: RequestOptions,
   ): Promise<CreateOutput> {
     requireNonEmptyId(id, "createQurlForResource");
     let normalized: CreateQurlForResourceInput | undefined = input;
@@ -2098,6 +2220,7 @@ export class QURLClient {
       "POST",
       `/v1/resources/${encodeURIComponent(id)}/qurls`,
       normalized,
+      options,
     );
   }
 
@@ -2116,6 +2239,7 @@ export class QURLClient {
     id: string,
     qurlId: string,
     input: UpdateResourceQurlInput,
+    options?: RequestOptions,
   ): Promise<QurlSummary> {
     requireNonEmptyId(id, "updateResourceQurl");
     requireNonEmptyId(qurlId, "updateResourceQurl");
@@ -2135,6 +2259,7 @@ export class QURLClient {
       "PATCH",
       `/v1/resources/${encodeURIComponent(id)}/qurls/${encodeURIComponent(qurlId)}`,
       normalized,
+      options,
     );
   }
 
@@ -2260,7 +2385,7 @@ export class QURLClient {
   }
 
   /** Update customer settings. */
-  async updateCustomer(input: UpdateCustomerInput): Promise<Customer> {
+  async updateCustomer(input: UpdateCustomerInput, options?: RequestOptions): Promise<Customer> {
     requireObjectInput(input, "updateCustomer");
     requireNoUnknownFields(input, UPDATE_CUSTOMER_FIELD_KEYS, "updateCustomer");
     const normalizedRecord = normalizePatchFields(
@@ -2279,11 +2404,14 @@ export class QURLClient {
         `updateCustomer: spending_cap_cents must be a non-negative integer (got ${rendered})`,
       );
     }
-    return this.request<Customer>("PATCH", "/v1/customer", normalized);
+    return this.request<Customer>("PATCH", "/v1/customer", normalized, options);
   }
 
   /** Create a Stripe checkout session. */
-  async createBillingCheckout(input: CreateBillingCheckoutInput): Promise<CheckoutSession> {
+  async createBillingCheckout(
+    input: CreateBillingCheckoutInput,
+    options?: RequestOptions,
+  ): Promise<CheckoutSession> {
     requireObjectInput(input, "createBillingCheckout");
     requireNoUnknownFields(input, CREATE_BILLING_CHECKOUT_FIELD_KEYS, "createBillingCheckout");
     const normalizedRecord = normalizePatchFields(
@@ -2292,12 +2420,12 @@ export class QURLClient {
     );
     const normalized = normalizedRecord as unknown as CreateBillingCheckoutInput;
     requireNonEmptyStringField(normalizedRecord, "plan", "createBillingCheckout");
-    return this.request<CheckoutSession>("POST", "/v1/billing/checkout", normalized);
+    return this.request<CheckoutSession>("POST", "/v1/billing/checkout", normalized, options);
   }
 
   /** Create a Stripe billing portal session. */
-  async createBillingPortal(): Promise<PortalSession> {
-    return this.request<PortalSession>("POST", "/v1/billing/portal");
+  async createBillingPortal(options?: RequestOptions): Promise<PortalSession> {
+    return this.request<PortalSession>("POST", "/v1/billing/portal", undefined, options);
   }
 
   /** List billing invoices. */
@@ -2341,7 +2469,7 @@ export class QURLClient {
   }
 
   /** Register a custom domain. */
-  async registerDomain(input: RegisterDomainInput): Promise<Domain> {
+  async registerDomain(input: RegisterDomainInput, options?: RequestOptions): Promise<Domain> {
     requireObjectInput(input, "registerDomain");
     requireNoUnknownFields(input, REGISTER_DOMAIN_FIELD_KEYS, "registerDomain");
     const normalizedRecord = normalizePatchFields(
@@ -2351,7 +2479,7 @@ export class QURLClient {
     const normalized = normalizedRecord as unknown as RegisterDomainInput;
     requireNonEmptyStringField(normalizedRecord, "domain", "registerDomain");
     requireMaxLength(normalized.domain as string, "domain", MAX_CUSTOM_DOMAIN);
-    return this.request<Domain>("POST", "/v1/domains", normalized);
+    return this.request<Domain>("POST", "/v1/domains", normalized, options);
   }
 
   /** List custom domains. */
@@ -2403,20 +2531,24 @@ export class QURLClient {
   }
 
   /** Trigger DNS verification for a custom domain. */
-  async verifyDomain(domain: string): Promise<DomainVerifyResult> {
+  async verifyDomain(domain: string, options?: RequestOptions): Promise<DomainVerifyResult> {
     requireNonEmptyId(domain, "verifyDomain", "domain");
     return this.request<DomainVerifyResult>(
       "POST",
       `/v1/domains/${encodeURIComponent(domain)}/verify`,
+      undefined,
+      options,
     );
   }
 
   /** Regenerate a domain verification token. */
-  async regenerateDomainToken(domain: string): Promise<Domain> {
+  async regenerateDomainToken(domain: string, options?: RequestOptions): Promise<Domain> {
     requireNonEmptyId(domain, "regenerateDomainToken", "domain");
     return this.request<Domain>(
       "POST",
       `/v1/domains/${encodeURIComponent(domain)}/regenerate-token`,
+      undefined,
+      options,
     );
   }
 
@@ -2457,7 +2589,10 @@ export class QURLClient {
   }
 
   /** Create a webhook. */
-  async createWebhook(input: CreateWebhookInput): Promise<WebhookWithSecret> {
+  async createWebhook(
+    input: CreateWebhookInput,
+    options?: RequestOptions,
+  ): Promise<WebhookWithSecret> {
     requireObjectInput(input, "createWebhook");
     requireNoUnknownFields(input, CREATE_WEBHOOK_FIELD_KEYS, "createWebhook");
     const normalizedRecord = normalizePatchFields(
@@ -2469,7 +2604,7 @@ export class QURLClient {
       url: true,
       events: true,
     });
-    return this.request<WebhookWithSecret>("POST", "/v1/webhooks", normalized);
+    return this.request<WebhookWithSecret>("POST", "/v1/webhooks", normalized, options);
   }
 
   /** List available webhook event types. */
@@ -2484,7 +2619,11 @@ export class QURLClient {
   }
 
   /** Update a webhook. */
-  async updateWebhook(id: string, input: UpdateWebhookInput): Promise<Webhook> {
+  async updateWebhook(
+    id: string,
+    input: UpdateWebhookInput,
+    options?: RequestOptions,
+  ): Promise<Webhook> {
     requireNonEmptyId(id, "updateWebhook");
     requireObjectInput(input, "updateWebhook");
     requireNoUnknownFields(input, UPDATE_WEBHOOK_FIELD_KEYS, "updateWebhook");
@@ -2498,7 +2637,12 @@ export class QURLClient {
       "updateWebhook",
     );
     validateWebhookWriteFields(normalized as Record<string, unknown>, "updateWebhook");
-    return this.request<Webhook>("PATCH", `/v1/webhooks/${encodeURIComponent(id)}`, normalized);
+    return this.request<Webhook>(
+      "PATCH",
+      `/v1/webhooks/${encodeURIComponent(id)}`,
+      normalized,
+      options,
+    );
   }
 
   /** Delete a webhook. */
@@ -2508,9 +2652,14 @@ export class QURLClient {
   }
 
   /** Regenerate a webhook signing secret. */
-  async regenerateWebhookSecret(id: string): Promise<WebhookWithSecret> {
+  async regenerateWebhookSecret(id: string, options?: RequestOptions): Promise<WebhookWithSecret> {
     requireNonEmptyId(id, "regenerateWebhookSecret");
-    return this.request<WebhookWithSecret>("POST", `/v1/webhooks/${encodeURIComponent(id)}/secret`);
+    return this.request<WebhookWithSecret>(
+      "POST",
+      `/v1/webhooks/${encodeURIComponent(id)}/secret`,
+      undefined,
+      options,
+    );
   }
 
   /** List delivery attempts for a webhook. */
@@ -2556,7 +2705,10 @@ export class QURLClient {
   }
 
   /** Create a new API key. */
-  async createApiKey(input: CreateApiKeyInput): Promise<CreateApiKeyOutput> {
+  async createApiKey(
+    input: CreateApiKeyInput,
+    options?: RequestOptions,
+  ): Promise<CreateApiKeyOutput> {
     requireObjectInput(input, "createApiKey");
     requireNoUnknownFields(input, CREATE_API_KEY_FIELD_KEYS, "createApiKey");
     const normalizedRecord = normalizePatchFields(
@@ -2568,7 +2720,7 @@ export class QURLClient {
       name: true,
       scopes: true,
     });
-    return this.request<CreateApiKeyOutput>("POST", "/v1/api-keys", normalized);
+    return this.request<CreateApiKeyOutput>("POST", "/v1/api-keys", normalized, options);
   }
 
   /** List API keys. */
@@ -2608,7 +2760,11 @@ export class QURLClient {
   }
 
   /** Update an API key. */
-  async updateApiKey(keyId: string, input: UpdateApiKeyInput): Promise<ApiKey> {
+  async updateApiKey(
+    keyId: string,
+    input: UpdateApiKeyInput,
+    options?: RequestOptions,
+  ): Promise<ApiKey> {
     requireNonEmptyId(keyId, "updateApiKey");
     requireObjectInput(input, "updateApiKey");
     requireNoUnknownFields(input, UPDATE_API_KEY_FIELD_KEYS, "updateApiKey");
@@ -2622,7 +2778,12 @@ export class QURLClient {
       "updateApiKey",
     );
     validateApiKeyWriteFields(normalized as Record<string, unknown>, "updateApiKey");
-    return this.request<ApiKey>("PATCH", `/v1/api-keys/${encodeURIComponent(keyId)}`, normalized);
+    return this.request<ApiKey>(
+      "PATCH",
+      `/v1/api-keys/${encodeURIComponent(keyId)}`,
+      normalized,
+      options,
+    );
   }
 
   /** Revoke an API key. */
@@ -2632,7 +2793,10 @@ export class QURLClient {
   }
 
   /** Redeem an access code. */
-  async redeemAccessCode(input: RedeemAccessCodeInput): Promise<RedeemAccessCodeOutput> {
+  async redeemAccessCode(
+    input: RedeemAccessCodeInput,
+    options?: RequestOptions,
+  ): Promise<RedeemAccessCodeOutput> {
     requireObjectInput(input, "redeemAccessCode");
     requireNoUnknownFields(input, REDEEM_ACCESS_CODE_FIELD_KEYS, "redeemAccessCode");
     const normalizedRecord = normalizePatchFields(
@@ -2641,11 +2805,19 @@ export class QURLClient {
     );
     const normalized = normalizedRecord as unknown as RedeemAccessCodeInput;
     requireNonEmptyStringField(normalizedRecord, "code", "redeemAccessCode");
-    return this.request<RedeemAccessCodeOutput>("POST", "/v1/access-codes/redeem", normalized);
+    return this.request<RedeemAccessCodeOutput>(
+      "POST",
+      "/v1/access-codes/redeem",
+      normalized,
+      options,
+    );
   }
 
   /** Create an access code. */
-  async createAccessCode(input: CreateAccessCodeInput): Promise<CreateAccessCodeOutput> {
+  async createAccessCode(
+    input: CreateAccessCodeInput,
+    options?: RequestOptions,
+  ): Promise<CreateAccessCodeOutput> {
     requireObjectInput(input, "createAccessCode");
     requireNoUnknownFields(input, CREATE_ACCESS_CODE_FIELD_KEYS, "createAccessCode");
     const normalizedRecord = normalizePatchFields(
@@ -2654,7 +2826,7 @@ export class QURLClient {
     );
     const normalized = normalizedRecord as unknown as CreateAccessCodeInput;
     requireNonEmptyStringField(normalizedRecord, "resource_id", "createAccessCode");
-    return this.request<CreateAccessCodeOutput>("POST", "/v1/access-codes", normalized);
+    return this.request<CreateAccessCodeOutput>("POST", "/v1/access-codes", normalized, options);
   }
 
   /**
@@ -2692,16 +2864,13 @@ export class QURLClient {
     method: HttpMethod,
     path: string,
     body?: unknown,
-    passthroughStatuses?: readonly number[],
+    requestOptions?: RequestOptions,
   ): Promise<T> {
     // List methods call rawRequest directly so 204 can degrade to an empty page.
     // Body-returning endpoints declare 200 JSON today, so this path fails closed.
-    const { data, __http_status } = await this.rawRequest<T>(
-      method,
-      path,
-      body,
-      passthroughStatuses,
-    );
+    const { data, __http_status } = await this.rawRequest<T>(method, path, body, {
+      requestOptions,
+    });
     if (__http_status === 204) {
       throw unexpectedResponseError(
         `Unexpected 204 No Content from ${method} ${path}; expected response body`,
@@ -2723,9 +2892,11 @@ export class QURLClient {
     method: HttpMethod,
     path: string,
     body?: unknown,
-    passthroughStatuses: readonly number[] = NO_PASSTHROUGH_STATUSES,
+    rawOptions: RawRequestOptions = {},
   ): Promise<ApiResponse<T>> {
     const url = `${this.baseUrl}${path}`;
+    const { passthroughStatuses = NO_PASSTHROUGH_STATUSES, requestOptions } = rawOptions;
+    const idempotencyKey = idempotencyKeyForRequest(method, requestOptions);
     const headers: Record<string, string> = {
       Authorization: `Bearer ${this.apiKey}`,
       Accept: "application/json",
@@ -2734,16 +2905,16 @@ export class QURLClient {
     if (body !== undefined) {
       headers["Content-Type"] = "application/json";
     }
+    if (idempotencyKey !== undefined) {
+      headers["Idempotency-Key"] = idempotencyKey;
+    }
 
-    // DELETE is intentionally NOT classified as mutating. HTTP DELETE
-    // is idempotent by spec — deleting an already-deleted resource is
-    // a safe no-op on the server side — and the response body is
-    // either empty (204) or carries no state worth duplicating. POST
-    // and PATCH are the real non-idempotent writes: retrying them on
-    // 5xx risks creating duplicate records or applying a PATCH twice,
-    // so those restrict retries to {429} (rate limits only).
-    const mutating = method === "POST" || method === "PATCH";
-    const retryable = mutating ? RETRYABLE_STATUS_MUTATING : RETRYABLE_STATUS;
+    // POST/PATCH keep status-code retries limited to rate limits. They
+    // still retry fetch-level failures below with the same Idempotency-Key,
+    // which fixes the duplicate-creation path from lost responses
+    // without broadening mutating 5xx replay behavior.
+    const mutatingForRetry = MUTATING_RETRY_METHODS.has(method);
+    const retryable = mutatingForRetry ? RETRYABLE_STATUS_MUTATING : RETRYABLE_STATUS;
     const serializedBody = body !== undefined ? JSON.stringify(body) : undefined;
     let lastError: Error | undefined;
 
