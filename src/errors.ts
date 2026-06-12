@@ -14,6 +14,7 @@ export const ERROR_CODE_CLIENT_VALIDATION = "client_validation";
 export const ERROR_CODE_UNEXPECTED_RESPONSE = "unexpected_response";
 export const ERROR_CODE_NETWORK = "network_error";
 export const ERROR_CODE_TIMEOUT = "timeout";
+export const ERROR_CODE_RUNTIME = "runtime_error";
 /** Fallback `.code` when the server returns a non-RFC-7807 response (HTML proxy page, plaintext gateway error, JSON without `error` envelope). */
 export const ERROR_CODE_UNKNOWN = "unknown";
 
@@ -22,11 +23,12 @@ export const ERROR_CODE_UNKNOWN = "unknown";
  *
  * **`status: 0` convention:** Client-detected failures — validation errors
  * (`code: "client_validation"`), unexpected response shapes
- * (`code: "unexpected_response"`), network errors (`code: "network_error"`),
- * and timeouts (`code: "timeout"`) — all use `status: 0` because no real
- * HTTP status code applies. To distinguish between these cases, branch on
- * `.code` rather than `.status`. Non-zero `.status` always reflects a real
- * HTTP status from the API (e.g. 400, 401, 429, 500).
+ * (`code: "unexpected_response"`), runtime capability errors
+ * (`code: "runtime_error"`), network errors (`code: "network_error"`), and
+ * timeouts (`code: "timeout"`) — all use `status: 0` because no real HTTP
+ * status code applies. To distinguish between these cases, branch on `.code`
+ * rather than `.status`. Non-zero `.status` always reflects a real HTTP
+ * status from the API (e.g. 400, 401, 429, 500).
  *
  * **`.code === "unknown"`** is a possible value when the server returns a
  * non-RFC-7807 response (e.g. a Cloudflare HTML error page, a gateway
@@ -160,6 +162,17 @@ export class TimeoutError extends QURLError {
   constructor(message: string = "Request timed out", options?: { cause?: unknown }) {
     super({ status: 0, code: ERROR_CODE_TIMEOUT, title: "Timeout", detail: message });
     this.name = "TimeoutError";
+    if (options?.cause) {
+      this.cause = options.cause;
+    }
+  }
+}
+
+/** SDK runtime capability error — unsupported JS runtime, missing Web Crypto, etc. */
+export class RuntimeError extends QURLError {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super({ status: 0, code: ERROR_CODE_RUNTIME, title: "Runtime Error", detail: message });
+    this.name = "RuntimeError";
     if (options?.cause) {
       this.cause = options.cause;
     }

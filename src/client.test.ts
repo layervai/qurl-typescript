@@ -6,10 +6,12 @@ import {
   ERROR_CODE_CLIENT_VALIDATION,
   ERROR_CODE_UNEXPECTED_RESPONSE,
   ERROR_CODE_UNKNOWN,
+  ERROR_CODE_RUNTIME,
   NetworkError,
   NotFoundError,
   QURLError,
   RateLimitError,
+  RuntimeError,
   ServerError,
   TimeoutError,
   ValidationError,
@@ -3400,6 +3402,12 @@ describe("QURLClient", () => {
       client.create({ target_url: "https://example.com" }, { idempotencyKey: "job-1 " }),
     ).rejects.toThrow(ValidationError);
     await expect(
+      client.create({ target_url: "https://example.com" }, { idempotencyKey: 123 } as never),
+    ).rejects.toThrow(ValidationError);
+    await expect(
+      client.create({ target_url: "https://example.com" }, { idempotencyKey: null } as never),
+    ).rejects.toThrow(ValidationError);
+    await expect(
       client.create({ target_url: "https://example.com" }, { idempotencyKey: "x".repeat(257) }),
     ).rejects.toThrow(ValidationError);
     expect(fetch).not.toHaveBeenCalled();
@@ -3414,7 +3422,10 @@ describe("QURLClient", () => {
     Object.defineProperty(globalThis, "crypto", { configurable: true, value: undefined });
     try {
       const client = createClient(fetch);
-      await expect(client.create({ target_url: "https://example.com" })).rejects.toThrow(
+      const error = await client.create({ target_url: "https://example.com" }).catch((err) => err);
+      expect(error).toBeInstanceOf(RuntimeError);
+      expect((error as RuntimeError).code).toBe(ERROR_CODE_RUNTIME);
+      expect((error as RuntimeError).detail).toBe(
         "globalThis.crypto.getRandomValues is required to generate Idempotency-Key",
       );
       expect(fetch).not.toHaveBeenCalled();

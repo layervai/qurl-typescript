@@ -862,7 +862,8 @@ export interface RequestOptions {
    * Use this when an upstream operation already has a stable request ID
    * and retries should deduplicate against that ID instead of an SDK-created
    * UUIDv7. Values must be non-empty printable ASCII strings of at most
-   * 256 characters and must not start or end with spaces.
+   * 256 characters and must not start or end with spaces. Use a unique key
+   * for each logical operation.
    */
   idempotencyKey?: string;
 }

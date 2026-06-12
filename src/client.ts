@@ -5,6 +5,7 @@ import {
   ERROR_CODE_UNKNOWN,
   NetworkError,
   QURLError,
+  RuntimeError,
   TimeoutError,
   ValidationError,
 } from "./errors.js";
@@ -102,6 +103,7 @@ const RETRYABLE_STATUS = new Set([429, 502, 503, 504]);
 const RETRYABLE_STATUS_MUTATING = new Set([429]);
 type HttpMethod = "GET" | "POST" | "PATCH" | "DELETE";
 const IDEMPOTENCY_KEY_METHODS = new Set<HttpMethod>(["POST", "PATCH"]);
+const MUTATING_RETRY_METHODS = new Set<HttpMethod>(["POST", "PATCH"]);
 const MAX_IDEMPOTENCY_KEY = 256;
 const IDEMPOTENCY_KEY_VALUE_RE = /^[\x21-\x7e](?:[\x20-\x7e]*[\x21-\x7e])?$/;
 const UUID_HEX = Array.from({ length: 256 }, (_, i) => i.toString(16).padStart(2, "0"));
@@ -576,7 +578,9 @@ function fillRandomBytes(bytes: Uint8Array<ArrayBuffer>): void {
     crypto.getRandomValues(bytes);
     return;
   }
-  throw new Error("globalThis.crypto.getRandomValues is required to generate Idempotency-Key");
+  throw new RuntimeError(
+    "globalThis.crypto.getRandomValues is required to generate Idempotency-Key",
+  );
 }
 
 /**
@@ -2902,8 +2906,8 @@ export class QURLClient {
     // still retry fetch-level failures below with the same Idempotency-Key,
     // which fixes the duplicate-creation path from lost responses
     // without broadening mutating 5xx replay behavior.
-    const mutating = IDEMPOTENCY_KEY_METHODS.has(method);
-    const retryable = mutating ? RETRYABLE_STATUS_MUTATING : RETRYABLE_STATUS;
+    const mutatingForRetry = MUTATING_RETRY_METHODS.has(method);
+    const retryable = mutatingForRetry ? RETRYABLE_STATUS_MUTATING : RETRYABLE_STATUS;
     const serializedBody = body !== undefined ? JSON.stringify(body) : undefined;
     let lastError: Error | undefined;
 
