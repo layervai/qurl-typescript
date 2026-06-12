@@ -857,7 +857,7 @@ export interface QURLErrorData {
 /** Per-call options accepted by mutating requests. */
 export interface RequestOptions {
   /**
-   * Override the auto-generated `Idempotency-Key` sent on POST/PUT/PATCH.
+   * Override the auto-generated `Idempotency-Key` sent on POST/PATCH.
    *
    * Use this when an upstream operation already has a stable request ID
    * and retries should deduplicate against that ID instead of an SDK-created

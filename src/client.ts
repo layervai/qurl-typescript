@@ -99,9 +99,10 @@ const RETRY_MAX_DELAY_MS = 30_000;
 const RETRY_AFTER_HARD_CAP_MS = 60 * 60 * 1000;
 const RETRY_AFTER_PARSE_LIMIT_S = RETRY_AFTER_HARD_CAP_MS / 1000;
 const RETRYABLE_STATUS = new Set([429, 502, 503, 504]);
-const RETRYABLE_STATUS_MUTATING = new Set([429, 502, 503, 504]);
-type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
-const IDEMPOTENCY_KEY_METHODS = new Set<HttpMethod>(["POST", "PUT", "PATCH"]);
+const RETRYABLE_STATUS_POST = new Set([429]);
+type HttpMethod = "GET" | "POST" | "PATCH" | "DELETE";
+const IDEMPOTENCY_KEY_METHODS = new Set<HttpMethod>(["POST", "PATCH"]);
+const MAX_IDEMPOTENCY_KEY = 256;
 const UUID_HEX = Array.from({ length: 256 }, (_, i) => i.toString(16).padStart(2, "0"));
 
 type RawRequestOptions = {
@@ -510,6 +511,7 @@ function validateRequestOptions(options: unknown): asserts options is RequestOpt
     if (typeof key !== "string" || key.length === 0) {
       throw clientValidationError("idempotencyKey: must be a non-empty string");
     }
+    requireMaxLength(key, "idempotencyKey", MAX_IDEMPOTENCY_KEY);
     if (/[\r\n]/.test(key)) {
       throw clientValidationError("idempotencyKey: must not contain CR/LF characters");
     }
@@ -571,9 +573,7 @@ function fillRandomBytes(bytes: Uint8Array<ArrayBuffer>): void {
     crypto.getRandomValues(bytes);
     return;
   }
-  for (let i = 0; i < bytes.length; i++) {
-    bytes[i] = Math.floor(Math.random() * 256);
-  }
+  throw clientValidationError("globalThis.crypto.getRandomValues is required");
 }
 
 /**
@@ -2895,14 +2895,11 @@ export class QURLClient {
       headers["Idempotency-Key"] = idempotencyKey;
     }
 
-    // DELETE is intentionally NOT classified as mutating. HTTP DELETE
-    // is idempotent by spec — deleting an already-deleted resource is
-    // a safe no-op on the server side — and the response body is
-    // either empty (204) or carries no state worth duplicating. POST,
-    // PUT, and PATCH carry Idempotency-Key so retries collapse onto the
-    // original server-side result instead of replaying side effects.
-    const mutating = IDEMPOTENCY_KEY_METHODS.has(method);
-    const retryable = mutating ? RETRYABLE_STATUS_MUTATING : RETRYABLE_STATUS;
+    // POST keeps status-code retries limited to rate limits. It still
+    // retries fetch-level failures below with the same Idempotency-Key,
+    // which fixes the duplicate-creation path from lost responses
+    // without replaying server-side 5xx responses automatically.
+    const retryable = method === "POST" ? RETRYABLE_STATUS_POST : RETRYABLE_STATUS;
     const serializedBody = body !== undefined ? JSON.stringify(body) : undefined;
     let lastError: Error | undefined;
 
