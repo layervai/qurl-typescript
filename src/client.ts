@@ -99,7 +99,7 @@ const RETRY_MAX_DELAY_MS = 30_000;
 const RETRY_AFTER_HARD_CAP_MS = 60 * 60 * 1000;
 const RETRY_AFTER_PARSE_LIMIT_S = RETRY_AFTER_HARD_CAP_MS / 1000;
 const RETRYABLE_STATUS = new Set([429, 502, 503, 504]);
-const RETRYABLE_STATUS_POST = new Set([429]);
+const RETRYABLE_STATUS_MUTATING = new Set([429]);
 type HttpMethod = "GET" | "POST" | "PATCH" | "DELETE";
 const IDEMPOTENCY_KEY_METHODS = new Set<HttpMethod>(["POST", "PATCH"]);
 const MAX_IDEMPOTENCY_KEY = 256;
@@ -573,7 +573,7 @@ function fillRandomBytes(bytes: Uint8Array<ArrayBuffer>): void {
     crypto.getRandomValues(bytes);
     return;
   }
-  throw clientValidationError("globalThis.crypto.getRandomValues is required");
+  throw new Error("globalThis.crypto.getRandomValues is required to generate Idempotency-Key");
 }
 
 /**
@@ -2895,11 +2895,12 @@ export class QURLClient {
       headers["Idempotency-Key"] = idempotencyKey;
     }
 
-    // POST keeps status-code retries limited to rate limits. It still
-    // retries fetch-level failures below with the same Idempotency-Key,
+    // POST/PATCH keep status-code retries limited to rate limits. They
+    // still retry fetch-level failures below with the same Idempotency-Key,
     // which fixes the duplicate-creation path from lost responses
-    // without replaying server-side 5xx responses automatically.
-    const retryable = method === "POST" ? RETRYABLE_STATUS_POST : RETRYABLE_STATUS;
+    // without broadening mutating 5xx replay behavior.
+    const mutating = IDEMPOTENCY_KEY_METHODS.has(method);
+    const retryable = mutating ? RETRYABLE_STATUS_MUTATING : RETRYABLE_STATUS;
     const serializedBody = body !== undefined ? JSON.stringify(body) : undefined;
     let lastError: Error | undefined;
 

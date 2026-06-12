@@ -192,8 +192,8 @@ const client = new QURLClient({
 
 The client automatically retries failed requests with exponential backoff:
 
-- **GET/DELETE/PATCH**: Retries on 429, 502, 503, 504
-- **POST**: Retries status responses only on 429
+- **GET/DELETE**: Retries on 429, 502, 503, 504
+- **POST/PATCH**: Retries status responses only on 429
 - **Network errors**: Always retried; POST/PATCH retries reuse the same `Idempotency-Key`
 - **`Retry-After` header**: Honored on 429 and 503 responses (RFC 7231 §7.1.3). Currently the SDK only parses **delta-seconds** values (e.g. `Retry-After: 30`); HTTP-date values (`Retry-After: Wed, 21 Oct 2026 07:28:00 GMT`) silently fall back to exponential backoff. Tracked in [#61](https://github.com/layervai/qurl-typescript/issues/61).
 
