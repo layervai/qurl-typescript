@@ -126,11 +126,12 @@ jobs:
           package-manager-cache: false
           # `registry-url` is REQUIRED for OIDC trusted publishing — it's in
           # npm's canonical example, and without it `npm publish` never
-          # attempts the OIDC exchange and fails ENEEDAUTH. setup-node also
-          # exports a placeholder NODE_AUTH_TOKEN here, but that's fine: once
-          # the npm-side trusted-publisher config matches the workflow's OIDC
-          # claims, npm's OIDC auth takes precedence over the placeholder. The
-          # match must cover repo `layervai/qurl-typescript`, workflow file
+          # attempts the OIDC exchange (fails ENEEDAUTH). setup-node also
+          # injects a placeholder NODE_AUTH_TOKEN here; npm prefers ANY
+          # configured token over OIDC, so the "Strip placeholder npm auth"
+          # step below removes that auth line before publish — otherwise the
+          # placeholder shadows trusted publishing. The npm-side trusted
+          # publisher must match repo `layervai/qurl-typescript`, workflow file
           # `release-please.yml`, AND the `npm-publish` environment used below
           # (an env-scoped job changes the OIDC `sub` claim).
           registry-url: "https://registry.npmjs.org"
@@ -139,4 +140,29 @@ jobs:
       # .npmrc disables lifecycle scripts, so build and smoke explicitly here.
       - run: npm run build
       - run: npm run smoke:dist
+      # setup-node's `registry-url` injects a placeholder auth token
+      # (`//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}` with
+      # NODE_AUTH_TOKEN=XXXXX-XXXXX-XXXXX-XXXXX). npm prefers ANY configured
+      # token over OIDC, so the placeholder shadows trusted publishing —
+      # observed as E404 on run 27317922844 despite a correct trusted-publisher
+      # config, and ENEEDAUTH once registry-url (and the registry) was removed.
+      # Strip only the auth line, leaving the registry configured but
+      # tokenless, so `npm publish` performs the OIDC exchange against the
+      # trusted publisher via the job's id-token: write.
+      - name: Strip placeholder npm auth so OIDC trusted publishing engages
+        env:
+          USERCONFIG: ${{ env.NPM_CONFIG_USERCONFIG }}
+        run: |
+          if [ -n "${USERCONFIG:-}" ] && [ -f "${USERCONFIG}" ]; then
+            sed -i '/_authToken/d' "${USERCONFIG}"
+            echo "Stripped _authToken from ${USERCONFIG}"
+          else
+            # Fail fast: with registry-url set above, setup-node always exports
+            # NPM_CONFIG_USERCONFIG. If it's missing, setup-node's mechanism
+            # changed and the placeholder token is NOT stripped — publish would
+            # then silently fall back to it and fail with a confusing E404.
+            # Surface the real cause here instead.
+            echo "::error::NPM_CONFIG_USERCONFIG is unset or missing; cannot strip the placeholder npm token. setup-node's auth mechanism likely changed — OIDC trusted publishing would be shadowed. Failing fast." >&2
+            exit 1
+          fi
       - run: npm publish --provenance
