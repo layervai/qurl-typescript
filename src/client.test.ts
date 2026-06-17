@@ -20,6 +20,7 @@ import type { BatchCreateInput, CreateInput, ExtendInput, MintInput } from "./ty
 import { mockFetch, mockFetches, createClient } from "./__tests__/test-helpers.js";
 
 const UUID_V7_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const TARGET_PATH_MAX_LENGTH = 2048;
 
 function callHeaders(
   fetch: typeof globalThis.fetch | ReturnType<typeof vi.fn>,
@@ -1166,12 +1167,27 @@ describe("QURLClient", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("createQurlForResource accepts target_path at the service length boundary", async () => {
+    const fetch = mockFetch({
+      status: 201,
+      body: { data: { qurl_link: "https://qurl.link/#at_x" } },
+    });
+    const client = createClient(fetch);
+    // The service cap applies to the complete target_path string, including
+    // the leading slash.
+    const maxLengthTargetPath = `/${"x".repeat(TARGET_PATH_MAX_LENGTH - 1)}`;
+
+    await client.createQurlForResource("r_x", { target_path: maxLengthTargetPath });
+
+    const body = JSON.parse(vi.mocked(fetch).mock.calls[0][1]?.body as string) as unknown;
+    expect(body).toEqual({ target_path: maxLengthTargetPath });
+  });
+
   it("createQurlForResource rejects an overlong target_path before making requests", async () => {
     const fetch = mockFetch({ status: 201, body: { data: {} } });
     const client = createClient(fetch);
-    const targetPathMaxLength = 2048;
-    // Leading "/" makes this one character over the service cap.
-    const overlongTargetPath = `/${"x".repeat(targetPathMaxLength)}`;
+    // Leading "/" makes this one character over the complete-string service cap.
+    const overlongTargetPath = `/${"x".repeat(TARGET_PATH_MAX_LENGTH)}`;
 
     const error = await client
       .createQurlForResource("r_x", { target_path: overlongTargetPath })
@@ -1179,7 +1195,7 @@ describe("QURLClient", () => {
 
     expect(error).toBeInstanceOf(ValidationError);
     expect(error.detail).toContain(
-      `target_path: must be ${targetPathMaxLength} characters or fewer`,
+      `target_path: must be ${TARGET_PATH_MAX_LENGTH} characters or fewer`,
     );
     expect(fetch).not.toHaveBeenCalled();
   });
