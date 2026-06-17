@@ -1135,6 +1135,37 @@ describe("QURLClient", () => {
     expect(body).toEqual({ expires_in: "1h" });
   });
 
+  it("createQurlForResource forwards target_path in the request body", async () => {
+    // `target_path` is a server-validated resource-qURL field (sets the path a
+    // tunnel qURL resolves to, e.g. for the Discord bot's detect tunnel). It
+    // must survive the field allowlist + normalization and reach the wire.
+    const fetch = mockFetch({
+      status: 201,
+      body: { data: { qurl_link: "https://qurl.link/#at_x" } },
+    });
+    const client = createClient(fetch);
+
+    await client.createQurlForResource("r_x", { target_path: "/api/detect" });
+
+    const call = vi.mocked(fetch).mock.calls[0];
+    expect(new URL(call[0] as string).pathname).toBe("/v1/resources/r_x/qurls");
+    const body = JSON.parse(call[1]?.body as string) as unknown;
+    expect(body).toEqual({ target_path: "/api/detect" });
+  });
+
+  it("createQurlForResource rejects an empty target_path before making requests", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+    const client = createClient(fetch);
+
+    const error = await client
+      .createQurlForResource("r_x", { target_path: "" })
+      .catch((e: unknown) => e as ValidationError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error.detail).toContain("target_path: must not be an empty string");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("updateResourceQurl validates shared qURL token options client-side", async () => {
     const fetch = mockFetch({ status: 200, body: { data: {} } });
     const client = createClient(fetch);

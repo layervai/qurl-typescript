@@ -418,7 +418,13 @@ export interface ResourceListOutput extends PaginatedOutput {
 }
 
 /** Input for minting a qURL against an existing resource. */
-export type CreateQurlForResourceInput = Omit<CreateInput, "target_url" | "custom_domain" | "type">;
+export type CreateQurlForResourceInput = Omit<
+  CreateInput,
+  "target_url" | "custom_domain" | "type"
+> & {
+  /** Path appended to the resource's target when this qURL resolves (e.g. "/api/detect"); server-validated, must start with "/". */
+  target_path?: string;
+};
 
 type UpdateResourceQurlBaseInput = {
   label?: string;

@@ -257,6 +257,7 @@ const CREATE_QURL_FOR_RESOURCE_FIELD_KEYS = [
   "session_duration",
   "label",
   "access_policy",
+  "target_path",
 ] as const satisfies readonly (keyof CreateQurlForResourceInput)[];
 
 assertExhaustive<
@@ -998,6 +999,11 @@ function validateQurlTokenOptions(input: CreateQurlForResourceInput | undefined)
   requireNonEmptyIfPresent(input.label, "label");
   requireNonEmptyIfPresent(input.expires_in, "expires_in");
   requireNonEmptyIfPresent(input.session_duration, "session_duration");
+  // Empty-string guard only, mirroring the other optional server-grammar
+  // string fields above. The leading-slash rule and path grammar are
+  // server-authoritative (`invalid_target_path`); a client-side regex would
+  // just create a drift surface, so it's intentionally omitted.
+  requireNonEmptyIfPresent(input.target_path, "target_path");
   requireBooleanIfPresent(input.one_time_use, "one_time_use");
   requireMaxSessionsInRange(input.max_sessions);
   requireValidAccessPolicy(input.access_policy);
