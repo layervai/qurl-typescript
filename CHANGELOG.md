@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.3.0](https://github.com/layervai/qurl-typescript/compare/qurl-v0.2.0...qurl-v0.3.0) (2026-06-17)
+
+
+### ⚠ BREAKING CHANGES
+
+* Mutating POST/PATCH requests now require `globalThis.crypto.getRandomValues` to generate SDK idempotency keys. Runtimes without Web Crypto must pass `RequestOptions.idempotencyKey`.
+
+### Features
+
+* send Idempotency-Key on mutating retries ([#131](https://github.com/layervai/qurl-typescript/issues/131)) ([70ee6ab](https://github.com/layervai/qurl-typescript/commit/70ee6ab85cde77caf1fac37df4635faaf275bcdb))
+* support target_path on createQurlForResource ([#145](https://github.com/layervai/qurl-typescript/issues/145)) ([5ec2305](https://github.com/layervai/qurl-typescript/commit/5ec2305d667c656130b37122e93cde4745774bc8))
+
+
+### Bug Fixes
+
+* **ci:** drop registry-url so trusted publishing works for @layervai/qurl ([#127](https://github.com/layervai/qurl-typescript/issues/127)) ([cd454a6](https://github.com/layervai/qurl-typescript/commit/cd454a6613e7782abda096023465f2c9efa71935))
+* **ci:** restore registry-url for OIDC trusted publishing (reverses [#127](https://github.com/layervai/qurl-typescript/issues/127)) ([#129](https://github.com/layervai/qurl-typescript/issues/129)) ([1bd18c0](https://github.com/layervai/qurl-typescript/commit/1bd18c00399c5c727f7b882cd666294e6a965348))
+
 ## [0.2.0](https://github.com/layervai/qurl-typescript/compare/qurl-v0.1.0...qurl-v0.2.0) (2026-06-06)
 
 
