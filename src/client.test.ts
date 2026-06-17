@@ -1181,6 +1181,19 @@ describe("QURLClient", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("createQurlForResource rejects a non-string target_path before making requests", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+    const client = createClient(fetch);
+
+    const error = await client
+      .createQurlForResource("r_x", { target_path: 42 } as never)
+      .catch((e: unknown) => e as ValidationError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error.detail).toContain("target_path: must be a string");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("updateResourceQurl validates shared qURL token options client-side", async () => {
     const fetch = mockFetch({ status: 200, body: { data: {} } });
     const client = createClient(fetch);

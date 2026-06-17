@@ -425,8 +425,9 @@ export type CreateQurlForResourceInput = Omit<
   /**
    * Path this resource qURL resolves to (e.g. "/api/detect").
    *
-   * Creation-only and valid only for tunnel resources. The API rejects invalid
-   * paths, including paths missing a leading "/" or exceeding 2048 characters.
+   * Creation-only and valid only for tunnel resources. Server validation
+   * rejects invalid paths, including paths missing a leading "/" or exceeding
+   * 2048 characters.
    */
   target_path?: string;
 };

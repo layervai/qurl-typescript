@@ -1003,7 +1003,8 @@ function validateQurlTokenOptions(input: CreateQurlForResourceInput | undefined)
   // Mirror the service-documented size cap, but keep host-safety grammar
   // (single leading slash, no scheme/host/backslash/etc.) and the tunnel-only
   // gate server-authoritative (`invalid_target_path`); a client-side regex
-  // would create a drift surface.
+  // would create a drift surface. Keep max-before-empty consistent with label;
+  // empty strings pass the length check and are rejected by the next guard.
   requireMaxLength(input.target_path, "target_path", MAX_TARGET_PATH);
   requireNonEmptyIfPresent(input.target_path, "target_path");
   requireBooleanIfPresent(input.one_time_use, "one_time_use");
