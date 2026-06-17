@@ -423,10 +423,10 @@ export type CreateQurlForResourceInput = Omit<
   "target_url" | "custom_domain" | "type"
 > & {
   /**
-   * Path appended to the resource's target when this qURL resolves (e.g. "/api/detect").
+   * Path this resource qURL resolves to (e.g. "/api/detect").
    *
-   * Server-validated; invalid paths such as those missing a leading "/" are
-   * rejected by the API.
+   * Creation-only and valid only for tunnel resources. The API rejects invalid
+   * paths, including paths missing a leading "/" or exceeding 2048 characters.
    */
   target_path?: string;
 };
