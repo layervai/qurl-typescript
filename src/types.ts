@@ -422,7 +422,12 @@ export type CreateQurlForResourceInput = Omit<
   CreateInput,
   "target_url" | "custom_domain" | "type"
 > & {
-  /** Path appended to the resource's target when this qURL resolves (e.g. "/api/detect"); server-validated, must start with "/". */
+  /**
+   * Path appended to the resource's target when this qURL resolves (e.g. "/api/detect").
+   *
+   * Server-validated; invalid paths such as those missing a leading "/" are
+   * rejected by the API.
+   */
   target_path?: string;
 };
 
