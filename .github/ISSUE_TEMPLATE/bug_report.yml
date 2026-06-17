@@ -86,7 +86,7 @@ body:
       label: Logs / Error output
       description: |
         Paste the error message and relevant stack trace.
-        **Redact before pasting:** bearer tokens, API keys (`lv_live_…`), and customer identifiers.
+        **Redact before pasting:** bearer tokens, API keys (including live-key-prefixed values), and customer identifiers.
       # No `render:` — `render: shell` shell-highlights content, which
       # miscolors TS stack traces and JSON-structured log lines.
   - type: textarea

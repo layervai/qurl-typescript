@@ -16,7 +16,7 @@ if (typeof VERSION !== "string") {
   throw new Error("VERSION not exported");
 }
 
-const client = new QURLClient({ apiKey: "lv_live_smoke" });
+const client = new QURLClient({ apiKey: "test-api-key" });
 if (typeof client.create !== "function" || typeof client.resolve !== "function") {
   throw new Error("client methods not callable");
 }

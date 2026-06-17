@@ -404,7 +404,7 @@ describe("QURLClient", () => {
           // API wire format uses "qurls"; client.get() maps to "access_tokens"
           qurls: [
             {
-              qurl_id: "at_token1",
+              qurl_id: "q_token1",
               status: "active",
               one_time_use: false,
               max_sessions: 3,
@@ -414,7 +414,7 @@ describe("QURLClient", () => {
               expires_at: "2026-03-20T10:00:00Z",
             },
             {
-              qurl_id: "at_token2",
+              qurl_id: "q_token2",
               status: "consumed",
               one_time_use: true,
               max_sessions: 1,
@@ -436,7 +436,7 @@ describe("QURLClient", () => {
     expect(result.status).toBe("active");
     expect(result.qurl_count).toBe(2);
     expect(result.access_tokens).toHaveLength(2);
-    expect(result.access_tokens![0].qurl_id).toBe("at_token1");
+    expect(result.access_tokens![0].qurl_id).toBe("q_token1");
     expect(result.access_tokens![0].one_time_use).toBe(false);
     expect(result.access_tokens![0].max_sessions).toBe(3);
     expect(result.access_tokens![1].status).toBe("consumed");
@@ -474,7 +474,7 @@ describe("QURLClient", () => {
     // and accidentally surfaces qurls: null on a typed QURL.
     const accessTokens = [
       {
-        qurl_id: "at_existing",
+        qurl_id: "q_existing",
         status: "active",
         one_time_use: false,
         max_sessions: 5,
@@ -607,7 +607,7 @@ describe("QURLClient", () => {
             created_at: "2026-03-10T10:00:00Z",
             qurls: [
               {
-                qurl_id: "at_xyz",
+                qurl_id: "q_embedded",
                 status: "active",
                 one_time_use: false,
                 max_sessions: 5,
@@ -628,7 +628,7 @@ describe("QURLClient", () => {
 
     expect(result.qurls).toHaveLength(1);
     expect(result.qurls[0].access_tokens).toHaveLength(1);
-    expect(result.qurls[0].access_tokens![0].qurl_id).toBe("at_xyz");
+    expect(result.qurls[0].access_tokens![0].qurl_id).toBe("q_embedded");
     // Wire-format key stripped from each item.
     expect((result.qurls[0] as unknown as { qurls?: unknown }).qurls).toBeUndefined();
   });
@@ -1185,7 +1185,7 @@ describe("QURLClient", () => {
     const fetch = mockFetch({ status: 200, body: { data: {}, meta: { request_id: "req_x" } } });
     const debug = vi.fn();
     const client = new QURLClient({
-      apiKey: "lv_live_test",
+      apiKey: "test-api-key",
       baseUrl: "https://api.test.layerv.ai",
       debug,
       fetch,
@@ -1224,7 +1224,7 @@ describe("QURLClient", () => {
     });
     const debug = vi.fn();
     const client = new QURLClient({
-      apiKey: "lv_live_test",
+      apiKey: "test-api-key",
       baseUrl: "https://api.test.layerv.ai",
       fetch,
       maxRetries: 0,
@@ -1263,7 +1263,7 @@ describe("QURLClient", () => {
     });
     const debug = vi.fn();
     const client = new QURLClient({
-      apiKey: "lv_live_test",
+      apiKey: "test-api-key",
       baseUrl: "https://api.test.layerv.ai",
       fetch,
       maxRetries: 0,
@@ -2932,7 +2932,7 @@ describe("QURLClient", () => {
     });
 
     const client = new QURLClient({
-      apiKey: "lv_live_test",
+      apiKey: "test-api-key",
       baseUrl: "https://api.test.layerv.ai",
       fetch,
       maxRetries: 0,
@@ -2980,7 +2980,7 @@ describe("QURLClient", () => {
     });
     const debugFn = vi.fn();
     const client = new QURLClient({
-      apiKey: "lv_live_test",
+      apiKey: "test-api-key",
       baseUrl: "https://api.test.layerv.ai",
       fetch,
       maxRetries: 0,
@@ -3015,7 +3015,7 @@ describe("QURLClient", () => {
       });
       const debugFn = vi.fn();
       const client = new QURLClient({
-        apiKey: "lv_live_test",
+        apiKey: "test-api-key",
         baseUrl: "https://api.test.layerv.ai",
         fetch,
         maxRetries: 0,
@@ -3065,7 +3065,7 @@ describe("QURLClient", () => {
 
     const client = createClient(fetch);
     const result = await client.resolve({
-      access_token: "at_k8xqp9h2sj9lx7r4a",
+      access_token: "test-access-token",
     });
 
     expect(result.target_url).toBe("https://api.example.com/data");
@@ -3118,8 +3118,8 @@ describe("QURLClient", () => {
     // — bare `__proto__:` would set the prototype, which JSON.stringify
     // already drops, so it wouldn't actually exercise the allowlist.
     const widerPayload = {
-      access_token: "at_token123",
-      apiKey: "lv_live_oops",
+      access_token: "test-access-token",
+      apiKey: "test-extra-api-key",
       arbitrary: "field",
       ["__proto__"]: "should-not-leak",
     };
@@ -3127,7 +3127,7 @@ describe("QURLClient", () => {
 
     expect(fetch).toHaveBeenCalledTimes(1);
     const body = JSON.parse((fetch.mock.calls[0][1] as RequestInit).body as string);
-    expect(body).toEqual({ access_token: "at_token123" });
+    expect(body).toEqual({ access_token: "test-access-token" });
   });
 
   it("throws QURLError on API errors", async () => {
@@ -3225,7 +3225,7 @@ describe("QURLClient", () => {
       expect.any(String),
       expect.objectContaining({
         headers: expect.objectContaining({
-          Authorization: "Bearer lv_live_test",
+          Authorization: "Bearer test-api-key",
         }),
       }),
     );
@@ -3490,7 +3490,7 @@ describe("QURLClient", () => {
   });
 
   it("rejects apiKey containing CR/LF (header-injection guard)", () => {
-    for (const bad of ["lv_live_abc\r\nX-Injected: 1", "lv_live\nbar", "lv_live\rxyz"]) {
+    for (const bad of ["test-api-key\r\nX-Injected: 1", "test-api-key\nbar", "test-api-key\rxyz"]) {
       let thrown: unknown;
       try {
         new QURLClient({ apiKey: bad, fetch: mockFetch({ status: 200 }) });
@@ -3507,7 +3507,7 @@ describe("QURLClient", () => {
       let thrown: unknown;
       try {
         new QURLClient({
-          apiKey: "lv_live_test",
+          apiKey: "test-api-key",
           fetch: mockFetch({ status: 200 }),
           userAgent: bad,
         });
@@ -3560,7 +3560,7 @@ describe("QURLClient", () => {
       .mockResolvedValueOnce(successResponse);
 
     const client = new QURLClient({
-      apiKey: "lv_live_test",
+      apiKey: "test-api-key",
       baseUrl: "https://api.test.layerv.ai",
       fetch: fetch as typeof globalThis.fetch,
       maxRetries: 2,
@@ -3593,7 +3593,7 @@ describe("QURLClient", () => {
     const fetch = vi.fn().mockResolvedValue(rateLimitResponse);
 
     const client = new QURLClient({
-      apiKey: "lv_live_test",
+      apiKey: "test-api-key",
       baseUrl: "https://api.test.layerv.ai",
       fetch: fetch as typeof globalThis.fetch,
       maxRetries: 2,
@@ -3617,7 +3617,7 @@ describe("QURLClient", () => {
     const fetch = vi.fn().mockRejectedValue(new TypeError("fetch failed"));
 
     const client = new QURLClient({
-      apiKey: "lv_live_test",
+      apiKey: "test-api-key",
       baseUrl: "https://api.test.layerv.ai",
       fetch: fetch as typeof globalThis.fetch,
       maxRetries: 1,
@@ -3649,7 +3649,7 @@ describe("QURLClient", () => {
       .mockRejectedValueOnce(new TypeError("socket reset"))
       .mockResolvedValueOnce(successResponse);
     const client = new QURLClient({
-      apiKey: "lv_live_test",
+      apiKey: "test-api-key",
       baseUrl: "https://api.test.layerv.ai",
       fetch: fetch as typeof globalThis.fetch,
       maxRetries: 1,
@@ -3686,7 +3686,7 @@ describe("QURLClient", () => {
       .mockRejectedValueOnce(new DOMException("deadline exceeded", "TimeoutError"))
       .mockResolvedValueOnce(successResponse);
     const client = new QURLClient({
-      apiKey: "lv_live_test",
+      apiKey: "test-api-key",
       baseUrl: "https://api.test.layerv.ai",
       fetch: fetch as typeof globalThis.fetch,
       maxRetries: 1,
@@ -3853,7 +3853,7 @@ describe("QURLClient", () => {
     });
 
     const client = new QURLClient({
-      apiKey: "lv_live_test",
+      apiKey: "test-api-key",
       baseUrl: "https://api.test.layerv.ai",
       fetch,
       maxRetries: 0,
@@ -3868,13 +3868,13 @@ describe("QURLClient", () => {
 
   it("masks API key in toJSON for keys longer than 8 chars", () => {
     const client = new QURLClient({
-      apiKey: "lv_live_abcdefgh1234",
+      apiKey: "test-api-key-long",
       baseUrl: "https://api.test.layerv.ai",
       fetch: mockFetch({ status: 200 }),
     });
 
     const json = client.toJSON();
-    expect(json.apiKey).toBe("lv_l***1234");
+    expect(json.apiKey).toBe("test***long");
     expect(json.baseUrl).toBe("https://api.test.layerv.ai");
   });
 
@@ -3891,7 +3891,7 @@ describe("QURLClient", () => {
 
   it("masks API key in Node.js inspect output", () => {
     const client = new QURLClient({
-      apiKey: "lv_live_abcdefgh1234",
+      apiKey: "test-api-key-long",
       baseUrl: "https://api.test.layerv.ai",
       fetch: mockFetch({ status: 200 }),
     });
@@ -3900,8 +3900,8 @@ describe("QURLClient", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const inspectFn = (client as any)[inspectSymbol] as () => string;
     const output = inspectFn.call(client);
-    expect(output).toContain("lv_l***1234");
-    expect(output).not.toContain("lv_live_abcdefgh1234");
+    expect(output).toContain("test***long");
+    expect(output).not.toContain("test-api-key-long");
   });
 
   it("handles non-JSON error responses", async () => {
@@ -3915,7 +3915,7 @@ describe("QURLClient", () => {
     } satisfies Partial<Response> as Response);
 
     const client = new QURLClient({
-      apiKey: "lv_live_test",
+      apiKey: "test-api-key",
       baseUrl: "https://api.test.layerv.ai",
       fetch: fetch as typeof globalThis.fetch,
       maxRetries: 0,
@@ -3955,7 +3955,7 @@ describe("QURLClient", () => {
         },
       ]);
       const client = new QURLClient({
-        apiKey: "lv_live_test",
+        apiKey: "test-api-key",
         baseUrl: "https://api.test.layerv.ai",
         fetch,
         maxRetries: 1,
@@ -3998,7 +3998,7 @@ describe("QURLClient", () => {
         },
       ]);
       const client = new QURLClient({
-        apiKey: "lv_live_test",
+        apiKey: "test-api-key",
         baseUrl: "https://api.test.layerv.ai",
         fetch: retryAfter503,
         maxRetries: 1,
@@ -4064,7 +4064,7 @@ describe("QURLClient", () => {
       .mockResolvedValueOnce(successResponse);
 
     const client = new QURLClient({
-      apiKey: "lv_live_test",
+      apiKey: "test-api-key",
       baseUrl: "https://api.test.layerv.ai",
       fetch: fetch as typeof globalThis.fetch,
       maxRetries: 1,
@@ -4118,7 +4118,7 @@ describe("QURLClient", () => {
         .mockResolvedValueOnce(successResponse);
 
       const client = new QURLClient({
-        apiKey: "lv_live_test",
+        apiKey: "test-api-key",
         baseUrl: "https://api.test.layerv.ai",
         fetch: fetch as typeof globalThis.fetch,
         maxRetries: 1,
@@ -4172,7 +4172,7 @@ describe("QURLClient", () => {
         .mockResolvedValueOnce(successResponse);
 
       const client = new QURLClient({
-        apiKey: "lv_live_test",
+        apiKey: "test-api-key",
         baseUrl: "https://api.test.layerv.ai",
         fetch: fetch as typeof globalThis.fetch,
         maxRetries: 1,
@@ -4213,7 +4213,7 @@ describe("QURLClient", () => {
 
       const debugMessages: string[] = [];
       const client = new QURLClient({
-        apiKey: "lv_live_test",
+        apiKey: "test-api-key",
         baseUrl: "https://api.test.layerv.ai",
         fetch: retryAfterHuge,
         maxRetries: 1,
@@ -4252,7 +4252,7 @@ describe("QURLClient", () => {
     });
     let lastDebug: string | undefined;
     const client = new QURLClient({
-      apiKey: "lv_live_test",
+      apiKey: "test-api-key",
       baseUrl: "https://api.test.layerv.ai",
       fetch,
       maxRetries: 0,
@@ -4269,7 +4269,7 @@ describe("QURLClient", () => {
       headers: { "Retry-After": "60abc" },
     });
     const client429 = new QURLClient({
-      apiKey: "lv_live_test",
+      apiKey: "test-api-key",
       baseUrl: "https://api.test.layerv.ai",
       fetch: fetch429,
       maxRetries: 0,
@@ -4324,7 +4324,7 @@ describe("QURLClient", () => {
         .mockResolvedValueOnce(successResponse);
 
       const client = new QURLClient({
-        apiKey: "lv_live_test",
+        apiKey: "test-api-key",
         baseUrl: "https://api.test.layerv.ai",
         fetch: fetch as typeof globalThis.fetch,
         maxRetries: 1,
@@ -4361,7 +4361,7 @@ describe("QURLClient", () => {
       },
     });
     const client = new QURLClient({
-      apiKey: "lv_live_test",
+      apiKey: "test-api-key",
       baseUrl: "https://api.test.layerv.ai",
       fetch,
       maxRetries: -5, // would-be footgun
@@ -4386,7 +4386,7 @@ describe("QURLClient", () => {
 
     for (const badRetries of [NaN, Infinity, -Infinity]) {
       const client = new QURLClient({
-        apiKey: "lv_live_test",
+        apiKey: "test-api-key",
         baseUrl: "https://api.test.layerv.ai",
         fetch,
         maxRetries: badRetries,
@@ -4410,7 +4410,7 @@ describe("QURLClient", () => {
       },
     });
     const client = new QURLClient({
-      apiKey: "lv_live_test",
+      apiKey: "test-api-key",
       baseUrl: "https://api.test.layerv.ai",
       fetch,
       maxRetries: 2.7,
@@ -4426,7 +4426,7 @@ describe("QURLClient", () => {
     });
     for (const badTimeout of [NaN, Infinity, -Infinity, -1, 0]) {
       const client = new QURLClient({
-        apiKey: "lv_live_test",
+        apiKey: "test-api-key",
         baseUrl: "https://api.test.layerv.ai",
         fetch,
         maxRetries: 0,
@@ -4466,7 +4466,7 @@ describe("QURLClient", () => {
     });
 
     const client = new QURLClient({
-      apiKey: "lv_live_test",
+      apiKey: "test-api-key",
       baseUrl: "https://api.test.layerv.ai/",
       fetch,
       maxRetries: 0,
@@ -4488,7 +4488,7 @@ describe("QURLClient", () => {
     expect(
       () =>
         new QURLClient({
-          apiKey: "lv_live_test",
+          apiKey: "test-api-key",
           baseUrl: "http://api.example.com",
         }),
     ).toThrow(/baseUrl: must use https:\/\//);
@@ -4496,7 +4496,7 @@ describe("QURLClient", () => {
     expect(
       () =>
         new QURLClient({
-          apiKey: "lv_live_test",
+          apiKey: "test-api-key",
           baseUrl: "ftp://api.example.com",
         }),
     ).toThrow(/baseUrl: must use http:\/\/ or https:\/\//);
@@ -4518,7 +4518,7 @@ describe("QURLClient", () => {
     ];
     for (const bad of bypassAttempts) {
       expect(
-        () => new QURLClient({ apiKey: "lv_live_test", baseUrl: bad }),
+        () => new QURLClient({ apiKey: "test-api-key", baseUrl: bad }),
         `bypass attempt should be rejected: ${bad}`,
       ).toThrow(/baseUrl/);
     }
@@ -4530,7 +4530,7 @@ describe("QURLClient", () => {
     expect(
       () =>
         new QURLClient({
-          apiKey: "lv_live_test",
+          apiKey: "test-api-key",
           baseUrl: "not a url at all",
         }),
     ).toThrow(/baseUrl: must be a valid URL/);
@@ -4547,7 +4547,7 @@ describe("QURLClient", () => {
       "http://localhost",
     ]) {
       expect(
-        () => new QURLClient({ apiKey: "lv_live_test", baseUrl: allowed }),
+        () => new QURLClient({ apiKey: "test-api-key", baseUrl: allowed }),
         `loopback should be allowed: ${allowed}`,
       ).not.toThrow();
     }
@@ -4718,7 +4718,7 @@ describe("QURLClient", () => {
       },
     });
     const client = new QURLClient({
-      apiKey: "lv_live_test",
+      apiKey: "test-api-key",
       baseUrl: "https://api.test.layerv.ai",
       fetch,
       maxRetries: 2,
@@ -4737,7 +4737,7 @@ describe("QURLClient", () => {
       },
     });
     const client = new QURLClient({
-      apiKey: "lv_live_test",
+      apiKey: "test-api-key",
       baseUrl: "https://api.test.layerv.ai",
       fetch,
       maxRetries: 2,
@@ -4770,7 +4770,7 @@ describe("QURLClient", () => {
       .mockRejectedValueOnce(new TypeError("socket reset"))
       .mockResolvedValueOnce(successResponse);
     const client = new QURLClient({
-      apiKey: "lv_live_test",
+      apiKey: "test-api-key",
       baseUrl: "https://api.test.layerv.ai",
       fetch: fetch as typeof globalThis.fetch,
       maxRetries: 2,
@@ -4825,7 +4825,7 @@ describe("QURLClient", () => {
       .mockResolvedValueOnce(errorResponse)
       .mockResolvedValueOnce(successResponse);
     const client = new QURLClient({
-      apiKey: "lv_live_test",
+      apiKey: "test-api-key",
       baseUrl: "https://api.test.layerv.ai",
       fetch: fetch as typeof globalThis.fetch,
       maxRetries: 2,
@@ -4874,7 +4874,7 @@ describe("QURLClient", () => {
       .mockResolvedValueOnce(badGatewayResponse)
       .mockResolvedValueOnce(noContentResponse);
     const client = new QURLClient({
-      apiKey: "lv_live_test",
+      apiKey: "test-api-key",
       baseUrl: "https://api.test.layerv.ai",
       fetch: fetch as typeof globalThis.fetch,
       maxRetries: 2,
@@ -4916,7 +4916,7 @@ describe("QURLClient", () => {
       .mockResolvedValueOnce(rateLimitResponse)
       .mockResolvedValueOnce(successResponse);
     const client = new QURLClient({
-      apiKey: "lv_live_test",
+      apiKey: "test-api-key",
       baseUrl: "https://api.test.layerv.ai",
       fetch: fetch as typeof globalThis.fetch,
       maxRetries: 1,
@@ -4958,7 +4958,7 @@ describe("QURLClient", () => {
 
     const fetch = vi.fn().mockResolvedValueOnce(page1).mockResolvedValueOnce(page2);
     const client = new QURLClient({
-      apiKey: "lv_live_test",
+      apiKey: "test-api-key",
       baseUrl: "https://api.test.layerv.ai",
       fetch: fetch as typeof globalThis.fetch,
       maxRetries: 0,
@@ -4991,10 +4991,10 @@ describe("QURLClient", () => {
     });
     const client = createClient(fetch);
 
-    await client.resolve("at_token123");
+    await client.resolve("test-access-token");
 
     const calledBody = (fetch as ReturnType<typeof vi.fn>).mock.calls[0][1].body as string;
-    expect(JSON.parse(calledBody)).toEqual({ access_token: "at_token123" });
+    expect(JSON.parse(calledBody)).toEqual({ access_token: "test-access-token" });
   });
 
   it("accepts a ResolveInput object in resolve", async () => {
@@ -5031,7 +5031,7 @@ describe("QURLClient", () => {
     });
 
     const client = new QURLClient({
-      apiKey: "lv_live_test",
+      apiKey: "test-api-key",
       baseUrl: "https://api.test.layerv.ai",
       fetch,
       maxRetries: 0,
@@ -5062,7 +5062,7 @@ describe("QURLClient", () => {
     } satisfies Partial<Response> as Response);
 
     const client = new QURLClient({
-      apiKey: "lv_live_test",
+      apiKey: "test-api-key",
       baseUrl: "https://api.test.layerv.ai",
       fetch: fetch as typeof globalThis.fetch,
       maxRetries: 0,
@@ -5102,7 +5102,7 @@ describe("QURLClient", () => {
     } satisfies Partial<Response> as Response);
 
     const client = new QURLClient({
-      apiKey: "lv_live_test",
+      apiKey: "test-api-key",
       baseUrl: "https://api.test.layerv.ai",
       fetch: fetch as typeof globalThis.fetch,
       maxRetries: 0,
@@ -5236,7 +5236,7 @@ describe("QURLClient", () => {
       .mockResolvedValueOnce(page2)
       .mockResolvedValueOnce(page3);
     const client = new QURLClient({
-      apiKey: "lv_live_test",
+      apiKey: "test-api-key",
       baseUrl: "https://api.test.layerv.ai",
       fetch: fetch as typeof globalThis.fetch,
       maxRetries: 0,
@@ -5296,7 +5296,7 @@ describe("QURLClient", () => {
 
     const fetch = vi.fn().mockResolvedValueOnce(page1Response).mockResolvedValueOnce(page2Response);
     const client = new QURLClient({
-      apiKey: "lv_live_test",
+      apiKey: "test-api-key",
       baseUrl: "https://api.test.layerv.ai",
       fetch: fetch as typeof globalThis.fetch,
       maxRetries: 0,
@@ -5374,7 +5374,7 @@ describe("QURLClient", () => {
 
     const fetch = vi.fn().mockResolvedValueOnce(page1Response).mockResolvedValueOnce(page2Error);
     const client = new QURLClient({
-      apiKey: "lv_live_test",
+      apiKey: "test-api-key",
       baseUrl: "https://api.test.layerv.ai",
       fetch: fetch as typeof globalThis.fetch,
       maxRetries: 0,
@@ -5441,7 +5441,7 @@ describe("QURLClient", () => {
 
     const fetch = vi.fn().mockResolvedValueOnce(page1Response).mockResolvedValueOnce(page2Error);
     const client = new QURLClient({
-      apiKey: "lv_live_test",
+      apiKey: "test-api-key",
       baseUrl: "https://api.test.layerv.ai",
       fetch: fetch as typeof globalThis.fetch,
       maxRetries: 0,
@@ -6141,7 +6141,7 @@ describe("QURLClient", () => {
     });
     const debugMessages: string[] = [];
     const client = new QURLClient({
-      apiKey: "lv_live_test",
+      apiKey: "test-api-key",
       baseUrl: "https://api.test.layerv.ai",
       fetch: fetch as typeof globalThis.fetch,
       debug: (msg) => {
@@ -6254,7 +6254,7 @@ describe("QURLClient", () => {
     });
     const debugMessages: string[] = [];
     const client = new QURLClient({
-      apiKey: "lv_live_test",
+      apiKey: "test-api-key",
       baseUrl: "https://api.test.layerv.ai",
       fetch: fetch as typeof globalThis.fetch,
       debug: (msg) => {
@@ -7219,7 +7219,7 @@ describe("QURLClient", () => {
       .mockResolvedValueOnce(rateLimitResponse)
       .mockResolvedValueOnce(successResponse);
     const client = new QURLClient({
-      apiKey: "lv_live_test",
+      apiKey: "test-api-key",
       baseUrl: "https://api.test.layerv.ai",
       fetch: fetch as typeof globalThis.fetch,
       maxRetries: 1,
@@ -7265,7 +7265,7 @@ describe("QURLClient", () => {
       .mockRejectedValueOnce(new TypeError("socket reset"))
       .mockResolvedValueOnce(successResponse);
     const client = new QURLClient({
-      apiKey: "lv_live_test",
+      apiKey: "test-api-key",
       baseUrl: "https://api.test.layerv.ai",
       fetch: fetch as typeof globalThis.fetch,
       maxRetries: 1,
@@ -7350,7 +7350,7 @@ describe("QURLClient", () => {
       .mockResolvedValueOnce(rateLimitResponse)
       .mockResolvedValueOnce(passthroughResponse);
     const client = new QURLClient({
-      apiKey: "lv_live_test",
+      apiKey: "test-api-key",
       baseUrl: "https://api.test.layerv.ai",
       fetch: fetch as typeof globalThis.fetch,
       maxRetries: 1,
@@ -7401,7 +7401,7 @@ describe("QURLClient", () => {
 
       const fetch = vi.fn().mockResolvedValue(errorResponse);
       const client = new QURLClient({
-        apiKey: "lv_live_test",
+        apiKey: "test-api-key",
         baseUrl: "https://api.test.layerv.ai",
         fetch: fetch as typeof globalThis.fetch,
         maxRetries: 3,

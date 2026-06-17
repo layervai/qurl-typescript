@@ -61,7 +61,7 @@ export function mockFetches(responses: MockResponse[]): typeof globalThis.fetch 
 
 export function createClient(fetchFn: typeof globalThis.fetch): QURLClient {
   return new QURLClient({
-    apiKey: "lv_live_test",
+    apiKey: "test-api-key",
     baseUrl: "https://api.test.layerv.ai",
     fetch: fetchFn,
     maxRetries: 0,

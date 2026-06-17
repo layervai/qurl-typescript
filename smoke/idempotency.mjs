@@ -33,7 +33,7 @@ const fetch = async (_url, init) => {
 };
 
 const client = new QURLClient({
-  apiKey: "lv_live_smoke",
+  apiKey: "test-api-key",
   baseUrl: "https://api.test.layerv.ai",
   fetch,
 });

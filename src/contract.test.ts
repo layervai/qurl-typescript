@@ -607,7 +607,7 @@ const METHOD_CASES: MethodCase[] = [
     method: "createApiKey",
     verb: "POST",
     template: "/v1/api-keys",
-    mockBody: { data: { key_id: "key_x", api_key: "lv_live_x" } },
+    mockBody: { data: { key_id: "key_x", api_key: "test-created-api-key" } },
     invoke: (c) => c.createApiKey({ name: "test", scopes: ["qurl:read"] }),
   },
   {

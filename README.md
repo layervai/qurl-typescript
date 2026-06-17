@@ -25,7 +25,7 @@ Requires Node.js 18+. Both `import { QURLClient } from '@layervai/qurl'` (ESM) a
 ```typescript
 import { QURLClient } from '@layervai/qurl';
 
-const client = new QURLClient({ apiKey: 'lv_live_xxx' });
+const client = new QURLClient({ apiKey: 'YOUR_API_KEY' });
 
 // Create a protected link
 const result = await client.create({
@@ -179,11 +179,11 @@ Enable debug output to see all HTTP requests and retries:
 
 ```typescript
 // Log to console
-const client = new QURLClient({ apiKey: 'lv_live_xxx', debug: true });
+const client = new QURLClient({ apiKey: 'YOUR_API_KEY', debug: true });
 
 // Custom logger
-const client = new QURLClient({
-  apiKey: 'lv_live_xxx',
+const clientWithLogger = new QURLClient({
+  apiKey: 'YOUR_API_KEY',
   debug: (message, data) => myLogger.debug(message, data),
 });
 ```
