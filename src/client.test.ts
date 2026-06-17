@@ -1169,15 +1169,18 @@ describe("QURLClient", () => {
   it("createQurlForResource rejects an overlong target_path before making requests", async () => {
     const fetch = mockFetch({ status: 201, body: { data: {} } });
     const client = createClient(fetch);
-    // Leading "/" makes this 2049 chars, one over the 2048-char service cap.
-    const overlongTargetPath = `/${"x".repeat(2048)}`;
+    const targetPathMaxLength = 2048;
+    // Leading "/" makes this one character over the service cap.
+    const overlongTargetPath = `/${"x".repeat(targetPathMaxLength)}`;
 
     const error = await client
       .createQurlForResource("r_x", { target_path: overlongTargetPath })
       .catch((e: unknown) => e as ValidationError);
 
     expect(error).toBeInstanceOf(ValidationError);
-    expect(error.detail).toContain("target_path: must be 2048 characters or fewer");
+    expect(error.detail).toContain(
+      `target_path: must be ${targetPathMaxLength} characters or fewer`,
+    );
     expect(fetch).not.toHaveBeenCalled();
   });
 
