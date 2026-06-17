@@ -257,6 +257,7 @@ const CREATE_QURL_FOR_RESOURCE_FIELD_KEYS = [
   "session_duration",
   "label",
   "access_policy",
+  "target_path",
 ] as const satisfies readonly (keyof CreateQurlForResourceInput)[];
 
 assertExhaustive<
@@ -630,6 +631,7 @@ const MAX_MAX_SESSIONS = 1000;
 const MAX_API_KEY_NAME = 100;
 const MAX_ALIAS = 64;
 const MAX_SLUG = 64;
+const MAX_TARGET_PATH = 2048;
 const MAX_TAGS = 10;
 const MAX_TAG_LENGTH = 50;
 const MAX_AUTO_PAGINATION_PAGES = 10_000;
@@ -998,6 +1000,13 @@ function validateQurlTokenOptions(input: CreateQurlForResourceInput | undefined)
   requireNonEmptyIfPresent(input.label, "label");
   requireNonEmptyIfPresent(input.expires_in, "expires_in");
   requireNonEmptyIfPresent(input.session_duration, "session_duration");
+  // Mirror the service-documented size cap, but keep host-safety grammar
+  // (single leading slash, no scheme/host/backslash/etc.) and the tunnel-only
+  // gate server-authoritative (`invalid_target_path`); a client-side regex
+  // would create a drift surface. Keep max-before-empty consistent with label;
+  // empty strings pass the length check and are rejected by the next guard.
+  requireMaxLength(input.target_path, "target_path", MAX_TARGET_PATH);
+  requireNonEmptyIfPresent(input.target_path, "target_path");
   requireBooleanIfPresent(input.one_time_use, "one_time_use");
   requireMaxSessionsInRange(input.max_sessions);
   requireValidAccessPolicy(input.access_policy);

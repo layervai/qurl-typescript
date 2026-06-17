@@ -20,6 +20,7 @@ import type { BatchCreateInput, CreateInput, ExtendInput, MintInput } from "./ty
 import { mockFetch, mockFetches, createClient } from "./__tests__/test-helpers.js";
 
 const UUID_V7_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const TARGET_PATH_MAX_LENGTH = 2048;
 
 function callHeaders(
   fetch: typeof globalThis.fetch | ReturnType<typeof vi.fn>,
@@ -1133,6 +1134,83 @@ describe("QURLClient", () => {
 
     const body = JSON.parse(vi.mocked(fetch).mock.calls[0][1]?.body as string) as unknown;
     expect(body).toEqual({ expires_in: "1h" });
+  });
+
+  it("createQurlForResource forwards target_path in the request body", async () => {
+    // `target_path` is a server-validated resource-qURL field (sets the path a
+    // tunnel qURL resolves to, e.g. for the Discord bot's detect tunnel). It
+    // must survive the field allowlist + normalization and reach the wire.
+    const fetch = mockFetch({
+      status: 201,
+      body: { data: { qurl_link: "https://qurl.link/#at_x" } },
+    });
+    const client = createClient(fetch);
+
+    await client.createQurlForResource("r_x", { target_path: "/api/detect" });
+
+    const call = vi.mocked(fetch).mock.calls[0];
+    expect(new URL(call[0] as string).pathname).toBe("/v1/resources/r_x/qurls");
+    const body = JSON.parse(call[1]?.body as string) as unknown;
+    expect(body).toEqual({ target_path: "/api/detect" });
+  });
+
+  it("createQurlForResource rejects an empty target_path before making requests", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+    const client = createClient(fetch);
+
+    const error = await client
+      .createQurlForResource("r_x", { target_path: "" })
+      .catch((e: unknown) => e as ValidationError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error.detail).toContain("target_path: must not be an empty string");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("createQurlForResource accepts target_path at the service length boundary", async () => {
+    const fetch = mockFetch({
+      status: 201,
+      body: { data: { qurl_link: "https://qurl.link/#at_x" } },
+    });
+    const client = createClient(fetch);
+    // The service cap applies to the complete target_path string, including
+    // the leading slash.
+    const maxLengthTargetPath = `/${"x".repeat(TARGET_PATH_MAX_LENGTH - 1)}`;
+
+    await client.createQurlForResource("r_x", { target_path: maxLengthTargetPath });
+
+    const body = JSON.parse(vi.mocked(fetch).mock.calls[0][1]?.body as string) as unknown;
+    expect(body).toEqual({ target_path: maxLengthTargetPath });
+  });
+
+  it("createQurlForResource rejects an overlong target_path before making requests", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+    const client = createClient(fetch);
+    // Leading "/" makes this one character over the complete-string service cap.
+    const overlongTargetPath = `/${"x".repeat(TARGET_PATH_MAX_LENGTH)}`;
+
+    const error = await client
+      .createQurlForResource("r_x", { target_path: overlongTargetPath })
+      .catch((e: unknown) => e as ValidationError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error.detail).toContain(
+      `target_path: must be ${TARGET_PATH_MAX_LENGTH} characters or fewer`,
+    );
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("createQurlForResource rejects a non-string target_path before making requests", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+    const client = createClient(fetch);
+
+    const error = await client
+      .createQurlForResource("r_x", { target_path: 42 } as never)
+      .catch((e: unknown) => e as ValidationError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error.detail).toContain("target_path: must be a string");
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("updateResourceQurl validates shared qURL token options client-side", async () => {

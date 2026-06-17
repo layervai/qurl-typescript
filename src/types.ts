@@ -418,7 +418,19 @@ export interface ResourceListOutput extends PaginatedOutput {
 }
 
 /** Input for minting a qURL against an existing resource. */
-export type CreateQurlForResourceInput = Omit<CreateInput, "target_url" | "custom_domain" | "type">;
+export type CreateQurlForResourceInput = Omit<
+  CreateInput,
+  "target_url" | "custom_domain" | "type"
+> & {
+  /**
+   * Path this resource qURL resolves to (e.g. "/api/detect").
+   *
+   * Creation-only and valid only for tunnel resources. The SDK rejects empty
+   * or overlong values before sending a request; server validation rejects
+   * invalid path grammar, including paths missing a leading "/".
+   */
+  target_path?: string;
+};
 
 type UpdateResourceQurlBaseInput = {
   label?: string;
