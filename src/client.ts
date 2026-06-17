@@ -1002,9 +1002,10 @@ function validateQurlTokenOptions(input: CreateQurlForResourceInput | undefined)
   requireNonEmptyIfPresent(input.session_duration, "session_duration");
   requireNonEmptyIfPresent(input.target_path, "target_path");
   requireMaxLength(input.target_path, "target_path", MAX_TARGET_PATH);
-  // Host-safety grammar (single leading slash, no scheme/host/backslash/etc.)
-  // and the tunnel-only gate remain server-authoritative (`invalid_target_path`);
-  // a client-side regex would create a drift surface.
+  // Mirror the service-documented size cap, but keep host-safety grammar
+  // (single leading slash, no scheme/host/backslash/etc.) and the tunnel-only
+  // gate server-authoritative (`invalid_target_path`); a client-side regex
+  // would create a drift surface.
   requireBooleanIfPresent(input.one_time_use, "one_time_use");
   requireMaxSessionsInRange(input.max_sessions);
   requireValidAccessPolicy(input.access_policy);
