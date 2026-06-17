@@ -1902,8 +1902,8 @@ export class QURLClient {
     }
     if (!id.startsWith(RESOURCE_ID_PREFIX)) {
       // Wrong-prefix branch: the input is long enough to plausibly be
-      // an ID but has the wrong prefix (e.g. `q_3a7f2c8e91b`,
-      // `at_xyz…`). Echo only the 2-char prefix — never the raw ID
+      // an ID but has the wrong prefix (e.g. `q_3a7f2c8e91b`).
+      // Echo only the 2-char prefix — never the raw ID
       // — so observability pipelines don't end up with caller-supplied
       // identifiers in error logs.
       const observedPrefix = id.slice(0, RESOURCE_ID_PREFIX.length);
