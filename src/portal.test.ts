@@ -116,6 +116,21 @@ describe("protectUrl", () => {
     ).rejects.toMatchObject({ detail: expect.stringContaining("unknown field") });
   });
 
+  it.each([
+    [{ description: "x".repeat(501) }, "description: must be 500 characters or fewer"],
+    [{ alias: "" }, "alias: must not be an empty string"],
+    [{ tags: ["ok", "!bad"] }, "tags[1]"],
+  ])("rejects invalid resource metadata %j before any request", async (opts, message) => {
+    const fetch = mockFetch({ status: 201, body: { data: RESOURCE_DATA } });
+    await expect(
+      createClient(fetch).protectUrl("https://internal.example.com", opts),
+    ).rejects.toMatchObject({
+      code: "client_validation",
+      detail: expect.stringContaining(message),
+    });
+    expect(vi.mocked(fetch).mock.calls.length).toBe(0);
+  });
+
   it("keeps the caller target when the response redacts target_url", async () => {
     const redacted: Record<string, unknown> = { ...RESOURCE_DATA };
     delete redacted.target_url;
@@ -241,6 +256,58 @@ describe("createPortal", () => {
     await createClient(fetch).createPortal("r_abc123def45", { validFor });
     expect(callBody(fetch)).toEqual({ expires_in: expected });
   });
+
+  it("serializes sessionDuration onto the wire with the same grammar", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: PORTAL_DATA } });
+    await createClient(fetch).createPortal("r_abc123def45", { sessionDuration: 90_000 });
+    expect(callBody(fetch)).toEqual({ session_duration: "90s" });
+  });
+
+  it("rejects unknown option fields, catching REST-shaped spellings", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: PORTAL_DATA } });
+    await expect(
+      createClient(fetch).createPortal("r_abc123def45", { valid_for: "5m" } as never),
+    ).rejects.toMatchObject({
+      code: "client_validation",
+      detail: expect.stringContaining('unknown field "valid_for"'),
+    });
+    expect(vi.mocked(fetch).mock.calls.length).toBe(0);
+  });
+
+  it("fails closed when the mint response is missing qurl_link", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: { resource_id: "r_abc123def45" } } });
+    await expect(createClient(fetch).createPortal("r_abc123def45")).rejects.toMatchObject({
+      code: "unexpected_response",
+      detail: expect.stringContaining("missing qurl_link"),
+    });
+  });
+
+  it("leaves expiresAt unset when the API timestamp is unparseable", async () => {
+    const fetch = mockFetch({
+      status: 201,
+      body: { data: { ...PORTAL_DATA, expires_at: "soon-ish" } },
+    });
+    const portal = await createClient(fetch).createPortal("r_abc123def45");
+    expect(portal.expiresAt).toBeUndefined();
+    expect(portal.link).toBe("https://qurl.link/#at_portal1");
+  });
+});
+
+describe("resourceById", () => {
+  it("returns a handle without making a request", () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const resource = createClient(fetch).resourceById("r_abc123def45");
+    expect(resource).toBeInstanceOf(ProtectedResource);
+    expect(resource.id).toBe("r_abc123def45");
+    expect(resource.targetUrl).toBeUndefined();
+    expect(resource.details).toBeUndefined();
+    expect(vi.mocked(fetch).mock.calls.length).toBe(0);
+  });
+
+  it.each([[""], ["   "], [" r_abc123def45 "]])("rejects invalid id %j", (id) => {
+    const client = createClient(mockFetch({ status: 200, body: { data: {} } }));
+    expect(() => client.resourceById(id)).toThrow(ValidationError);
+  });
 });
 
 describe("connectorResource", () => {
@@ -331,6 +398,12 @@ describe("createPortalForUrl", () => {
       client.createPortalForUrl("https://bob:secret@internal.example.com"),
     ).rejects.toMatchObject({ detail: expect.stringContaining("embedded credentials") });
   });
+
+  it("sends only target_url when no options are given", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: PORTAL_DATA } });
+    await createClient(fetch).createPortalForUrl("https://internal.example.com/dashboard");
+    expect(callBody(fetch)).toEqual({ target_url: "https://internal.example.com/dashboard" });
+  });
 });
 
 describe("enterPortal", () => {
@@ -360,12 +433,23 @@ describe("enterPortal", () => {
     await expect(client.enterPortal("https://qurl.link/")).rejects.toMatchObject({
       detail: expect.stringContaining("no access token found"),
     });
+    await expect(client.enterPortal("https://qurl.link/#")).rejects.toMatchObject({
+      detail: expect.stringContaining("no access token found"),
+    });
 
     const err = await client
       .enterPortal("https://qurl.link/#at bad token")
       .catch((e: unknown) => e as ValidationError);
     expect((err as ValidationError).detail).toContain("no access token found");
     expect((err as ValidationError).message).not.toContain("bad token");
+  });
+
+  it("rejects non-string input from untyped callers", async () => {
+    const client = createClient(mockFetch({ status: 200, body: { data: RESOLVE_DATA } }));
+    await expect(client.enterPortal(42 as never)).rejects.toMatchObject({
+      code: "client_validation",
+      detail: "qurlLink: must be a non-empty string",
+    });
   });
 
   it("rejects qurl-go's offline signed-fragment links with a precise error, no echo", async () => {
@@ -398,6 +482,21 @@ describe("enterPortal", () => {
         data: {
           target_url: "https://internal.example.com/dashboard",
           resource_id: "r_abc123def45",
+        },
+      },
+    });
+    const handle = await createClient(fetch).enterPortal("at_k8xqp9h2sj9lx7r4a");
+    expect(handle.openSeconds).toBe(0);
+  });
+
+  it("reports zero open seconds when the grant omits expires_in", async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: {
+        data: {
+          target_url: "https://internal.example.com/dashboard",
+          resource_id: "r_abc123def45",
+          access_grant: { granted_at: "2026-03-10T15:30:00Z", src_ip: "203.0.113.42" },
         },
       },
     });
