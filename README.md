@@ -20,10 +20,13 @@ internal tools. The issue is visibility: every standing public endpoint becomes
 inventory for scanners, fingerprinting, credential attacks, and AI-assisted
 probing before a legitimate user or agent ever arrives.
 
-qURL flips that model. The private resource is not public inventory. A portal
-is **cryptographic, just-in-time permission for one actor to reach one private
-resource** — not another externally visible endpoint in front of the same
-service:
+Opening an inbound port, running a VPN, shipping a bastion, publishing a
+Cloudflare Tunnel or ngrok URL, or passing around a long-lived key all leave
+something durable to find, scan, or steal. qURL flips that model: it is an
+invisibility primitive for authenticated access, and the private resource is
+not public inventory. A portal is **cryptographic, just-in-time permission for
+one actor to reach one private resource** — not another externally visible
+endpoint in front of the same service:
 
 - **Time-limited** — portals expire after minutes, hours, or days
 - **IP-scoped** — access is granted only to the requesting IP via NHP
@@ -36,7 +39,7 @@ service:
 npm install @layervai/qurl
 ```
 
-Requires Node.js 20+. Both `import { QURLClient } from '@layervai/qurl'` (ESM) and `const { QURLClient } = require('@layervai/qurl')` (CJS) work.
+Requires Node.js 20+ and has **no runtime dependencies**. Both `import { QURLClient } from '@layervai/qurl'` (ESM) and `const { QURLClient } = require('@layervai/qurl')` (CJS) work.
 
 ## Quickstart
 
@@ -80,7 +83,9 @@ const portal = await resource.createPortal({ validFor: '1h' });
 ```
 
 For one-off scripts, `client.createPortalForUrl` combines the two API calls
-and returns both the portal and a reusable resource handle:
+and returns both the portal and a reusable resource handle. The handle carries
+the resource id and target URL; use `protectUrl` when you need the full
+server-populated resource metadata:
 
 ```typescript
 const { portal, resource } = await client.createPortalForUrl(
@@ -232,7 +237,7 @@ Non-400 errors (401, 403, 429, 5xx, and unexpected 400 body shapes) still throw 
 
 ## Error Handling
 
-All API errors throw typed error subclasses, so you can catch specific failure modes:
+Match errors by type, not message text — every failure throws a typed `QURLError` subclass, and message wording is not part of the API contract:
 
 ```typescript
 import {
@@ -340,7 +345,9 @@ SDK-generated keys require `globalThis.crypto.getRandomValues`, which is availab
   the link.
 - `protectUrl` and `createPortalForUrl` reject malformed target URLs and URLs
   with embedded credentials (`https://user:pass@...`) before any request,
-  matching qurl-go. `enterPortal` never echoes the link in error messages.
+  matching qurl-go.
+- The programmatic opener fails closed: `enterPortal` throws when access is
+  granted without a resource URL, and its error messages never echo the link.
 
 ## Versioning & breaking changes
 
