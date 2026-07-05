@@ -148,6 +148,49 @@ type MethodCase = {
 };
 
 const METHOD_CASES: MethodCase[] = [
+  // Portal verbs (mirror qurl-go). They reuse endpoints the REST-shaped
+  // surface already declares, so no snapshot additions — the entries pin
+  // each verb to its endpoint so a rewire can't slip past.
+  {
+    method: "protectUrl",
+    verb: "POST",
+    template: "/v1/resources",
+    mockBody: { data: { resource_id: "r_x", target_url: "https://example.com" } },
+    invoke: (c) => c.protectUrl("https://example.com"),
+  },
+  {
+    method: "connectorResource",
+    verb: "GET",
+    template: "/v1/resources",
+    // connectorResource requires exactly one result whose alias matches
+    // the connector id, so the mock must satisfy both.
+    mockBody: {
+      data: [{ resource_id: "r_x", alias: "conn-x", target_url: "https://example.com" }],
+      meta: { has_more: false },
+    },
+    invoke: (c) => c.connectorResource("conn-x"),
+  },
+  {
+    method: "createPortal",
+    verb: "POST",
+    template: "/v1/resources/{id}/qurls",
+    mockBody: { data: { resource_id: "r_x", qurl_link: "https://qurl.link/#at_y" } },
+    invoke: (c) => c.createPortal("r_x", { validFor: "5m" }),
+  },
+  {
+    method: "createPortalForUrl",
+    verb: "POST",
+    template: "/v1/qurls",
+    mockBody: { data: { resource_id: "r_x", qurl_link: "https://qurl.link/#at_y" } },
+    invoke: (c) => c.createPortalForUrl("https://example.com"),
+  },
+  {
+    method: "enterPortal",
+    verb: "POST",
+    template: "/v1/resolve",
+    mockBody: { data: { target_url: "https://example.com", resource_id: "r_x" } },
+    invoke: (c) => c.enterPortal("https://qurl.link/#at_y"),
+  },
   {
     method: "create",
     verb: "POST",
@@ -676,12 +719,18 @@ const METHOD_CASES: MethodCase[] = [
 ];
 
 // `toJSON` is a diagnostic helper (used by console.log/JSON.stringify),
-// not an API call — intentionally outside the contract set. This set
-// only covers string-keyed prototype members; symbol-keyed methods
+// not an API call — intentionally outside the contract set. `resourceById`
+// constructs a portal-minting handle locally and never issues a request
+// (the request happens later, via createPortal, which has its own entry).
+// This set only covers string-keyed prototype members; symbol-keyed methods
 // (like `[Symbol.for("nodejs.util.inspect.custom")]` on QURLClient)
 // are invisible to `Object.getOwnPropertyNames` and are thus
 // implicitly unclassified by design.
-const NON_API_PROTOTYPE_METHODS: ReadonlySet<string> = new Set(["constructor", "toJSON"]);
+const NON_API_PROTOTYPE_METHODS: ReadonlySet<string> = new Set([
+  "constructor",
+  "toJSON",
+  "resourceById",
+]);
 
 // Internal helpers on the prototype. TypeScript's `private`/`protected`
 // keywords erase at runtime, so visibility isn't introspectable —

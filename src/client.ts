@@ -1,9 +1,12 @@
 import {
   createError,
+  ERROR_CODE_AMBIGUOUS_RESOURCE,
   ERROR_CODE_CLIENT_VALIDATION,
+  ERROR_CODE_RESOURCE_NOT_FOUND,
   ERROR_CODE_UNEXPECTED_RESPONSE,
   ERROR_CODE_UNKNOWN,
   NetworkError,
+  NotFoundError,
   QURLError,
   RuntimeError,
   TimeoutError,
@@ -32,6 +35,7 @@ import type {
   CreateBillingCheckoutInput,
   CreateInput,
   CreateOutput,
+  CreatePortalOptions,
   CreateQurlForResourceInput,
   CreateResourceInput,
   CreateWebhookInput,
@@ -52,7 +56,9 @@ import type {
   ListWebhooksInput,
   MintInput,
   MintOutput,
+  Portal,
   PortalSession,
+  ProtectUrlOptions,
   QURL,
   QURLErrorData,
   QurlSummary,
@@ -62,6 +68,7 @@ import type {
   RegisterDomainInput,
   Resource,
   ResourceDetail,
+  ResourceHandle,
   ResourceListInput,
   ResourceListOutput,
   RequestOptions,
@@ -265,6 +272,39 @@ assertExhaustive<
     keyof CreateQurlForResourceInput,
     (typeof CREATE_QURL_FOR_RESOURCE_FIELD_KEYS)[number]
   > extends never
+    ? true
+    : never
+>(true);
+
+/**
+ * Options accepted by the portal-verb `protectUrl` / `createPortal`
+ * surface. These are camelCase caller-facing options (the portal verbs are
+ * the idiomatic layer); the build helpers map them onto the same wire
+ * fields the REST-shaped methods send.
+ */
+const PROTECT_URL_OPTION_KEYS = [
+  "description",
+  "tags",
+  "customDomain",
+  "alias",
+] as const satisfies readonly (keyof ProtectUrlOptions)[];
+
+assertExhaustive<
+  Exclude<keyof ProtectUrlOptions, (typeof PROTECT_URL_OPTION_KEYS)[number]> extends never
+    ? true
+    : never
+>(true);
+
+const CREATE_PORTAL_OPTION_KEYS = [
+  "validFor",
+  "label",
+  "oneTimeUse",
+  "maxSessions",
+  "sessionDuration",
+] as const satisfies readonly (keyof CreatePortalOptions)[];
+
+assertExhaustive<
+  Exclude<keyof CreatePortalOptions, (typeof CREATE_PORTAL_OPTION_KEYS)[number]> extends never
     ? true
     : never
 >(true);
@@ -665,11 +705,11 @@ function requireNonEmptyIfPresent(value: unknown, field: string): void {
   }
 }
 
-function requireMaxSessionsInRange(value: number | undefined): void {
+function requireMaxSessionsInRange(value: number | undefined, field = "max_sessions"): void {
   if (value === undefined) return;
   if (!Number.isInteger(value) || value < 0 || value > MAX_MAX_SESSIONS) {
     throw clientValidationError(
-      `max_sessions: must be an integer between 0 and ${MAX_MAX_SESSIONS} (got ${value})`,
+      `${field}: must be an integer between 0 and ${MAX_MAX_SESSIONS} (got ${value})`,
     );
   }
 }
@@ -1297,6 +1337,223 @@ function batchItemResultValidationReason(entry: unknown): string | null {
   return "missing/invalid 'success' discriminant (expected boolean)";
 }
 
+// ---- Portal-verb helpers (mirrors qurl-go) -------------------------------
+// Client-side guardrails for the portal flow (protectUrl → createPortal →
+// enterPortal), kept in lockstep with qurl-go's option validation and
+// qurl-python's port of it.
+
+/**
+ * Client-side floor for portal lifetimes, mirroring qurl-go's `ValidFor`.
+ * The LayerV API remains the source of truth for account limits; there is
+ * intentionally no SDK-side maximum because an account may allow
+ * longer-lived portals.
+ */
+const MIN_PORTAL_VALID_FOR_SECONDS = 60;
+/**
+ * Client-side floor for session durations, mirroring qurl-go's
+ * `WithSessionDuration` (at least one second; zero is rejected rather than
+ * treated as the server default).
+ */
+const MIN_SESSION_DURATION_SECONDS = 1;
+
+// Shape of qurl-go's offline signed-fragment links: three or more
+// dot-separated base64url parts (<version>.<claims>.<secret>.<sig>).
+// Detected only to give those links a precise error in extractAccessToken.
+const SIGNED_FRAGMENT_RE = /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+){2,}$/;
+// Access-token grammar accepted by enterPortal (base64url charset).
+const ACCESS_TOKEN_RE = /^[A-Za-z0-9_-]+$/;
+
+/**
+ * Serialize a duration option to the API's h/m/s duration grammar.
+ *
+ * Strings pass through unvalidated — the server is authoritative, same as
+ * the REST-shaped `expires_in` fields. Numbers are milliseconds and get
+ * qurl-go's client-side guardrails: whole seconds only and at least
+ * `minimumSeconds` (checked in that order so e.g. 30.5s reports "at least
+ * 60s" in every SDK). Serialized with hours as the largest unit so all API
+ * duration fields use the same grammar across SDKs.
+ */
+function serializeApiDuration(
+  value: string | number | undefined,
+  field: string,
+  minimumSeconds: number,
+): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === "string") {
+    if (value.trim() === "") {
+      throw clientValidationError(`${field}: must be a non-empty duration string`);
+    }
+    return value;
+  }
+  if (typeof value === "number") {
+    // NaN fails no comparison, so an explicit finite check keeps the
+    // error actionable instead of a misleading "whole seconds" report.
+    if (!Number.isFinite(value)) {
+      throw clientValidationError(`${field}: must be a finite number of milliseconds`);
+    }
+    if (value < minimumSeconds * 1000) {
+      throw clientValidationError(`${field}: must be at least ${minimumSeconds}s`);
+    }
+    if (value % 1000 !== 0) {
+      throw clientValidationError(`${field}: must be whole seconds`);
+    }
+    const seconds = value / 1000;
+    if (seconds % 3600 === 0) return `${seconds / 3600}h`;
+    if (seconds % 60 === 0) return `${seconds / 60}m`;
+    return `${seconds}s`;
+  }
+  throw clientValidationError(
+    `${field}: must be a duration string (e.g. "5m") or a number of milliseconds`,
+  );
+}
+
+/**
+ * Portal-verb target URL validation (qurl-go `ProtectURL` parity). On top of
+ * the shared scheme/length check, the URL must carry a host and must parse,
+ * and embedded credentials (userinfo) are rejected. The added checks never
+ * echo the URL — a userinfo URL contains credentials that must stay out of
+ * logs and error messages. The REST-shaped compatibility layer keeps its
+ * original prefix-only check so its accepted inputs don't change.
+ */
+function requirePortalTargetUrl(targetUrl: unknown): void {
+  requireValidTargetUrl(targetUrl);
+  // WHATWG URL normalizes away an empty authority ("https:///x" parses
+  // with host "x"), so the host-presence check runs on the raw string,
+  // mirroring qurl-go's url.Parse which rejects authority-less URLs.
+  const afterScheme = (targetUrl as string).slice((targetUrl as string).indexOf("://") + 3);
+  if (afterScheme === "" || "/?#".includes(afterScheme[0])) {
+    throw clientValidationError("target_url: must include a host");
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(targetUrl as string);
+  } catch {
+    throw clientValidationError("target_url: malformed URL");
+  }
+  if (parsed.username !== "" || parsed.password !== "") {
+    throw clientValidationError("target_url: must not include embedded credentials (userinfo)");
+  }
+}
+
+/**
+ * Extract the access token from a qURL link, or pass a bare token through.
+ *
+ * Platform-issued links carry the access token in the URL fragment
+ * (`https://qurl.link/#at_...`). Error messages deliberately never echo the
+ * input — qURL links are credentials and must stay out of logs.
+ */
+function extractAccessToken(qurlLink: unknown): string {
+  if (typeof qurlLink !== "string" || qurlLink.trim() === "") {
+    throw clientValidationError("enterPortal: qurlLink must be a non-empty string");
+  }
+  const hashIndex = qurlLink.indexOf("#");
+  const token = hashIndex >= 0 ? qurlLink.slice(hashIndex + 1) : qurlLink;
+  if (SIGNED_FRAGMENT_RE.test(token)) {
+    throw clientValidationError(
+      "qurlLink: this is a signed qURL link (offline fragment format), which cannot be " +
+        "opened through the API resolver — enterPortal only accepts platform links " +
+        "(https://qurl.link/#at_...) or bare access tokens",
+    );
+  }
+  if (token === "" || !ACCESS_TOKEN_RE.test(token)) {
+    throw clientValidationError(
+      "qurlLink: no access token found — pass a platform qURL link " +
+        "(https://qurl.link/#at_...) or a bare access token",
+    );
+  }
+  return token;
+}
+
+/**
+ * Parse an RFC 3339 timestamp from the API into a `Date`, or `undefined`
+ * when absent or unparseable. The portal surface exposes `Date` (matching
+ * qurl-go's `time.Time` and qurl-python's `datetime`); the REST-shaped
+ * layer keeps raw wire strings.
+ */
+function parseApiDate(value: string | undefined): Date | undefined {
+  if (typeof value !== "string" || value === "") return undefined;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+}
+
+/** Wire shape shared by the two portal-minting endpoints. */
+type PortalWireResponse = {
+  resource_id?: string;
+  qurl_link?: string;
+  qurl_site?: string;
+  expires_at?: string;
+  qurl_id?: string;
+  label?: string;
+};
+
+/**
+ * Parse a {@link Portal} from a create-portal API response. `resource_id`
+ * and `qurl_link` are required, mirroring qurl-go's fail-closed response
+ * check; everything else is optional because the two mint endpoints differ
+ * in which ancillary fields they return.
+ */
+function parsePortal(data: PortalWireResponse | undefined, method: string): Portal {
+  if (typeof data?.resource_id !== "string" || data.resource_id.trim() === "") {
+    throw unexpectedResponseError(`${method}: response is missing resource_id`);
+  }
+  if (typeof data.qurl_link !== "string" || data.qurl_link.trim() === "") {
+    throw unexpectedResponseError(`${method}: response is missing qurl_link`);
+  }
+  return {
+    resourceId: data.resource_id,
+    link: data.qurl_link,
+    site: data.qurl_site,
+    expiresAt: parseApiDate(data.expires_at),
+    // Same empty-string → absent normalization the REST-shaped layer's
+    // consumers apply to qurl_id.
+    qurlId: data.qurl_id || undefined,
+    label: data.label,
+  };
+}
+
+/**
+ * Validate portal options and build the create-portal wire body, or
+ * `undefined` when every option is omitted so no request body is sent and
+ * the server applies its default lifetime (matching mintLink /
+ * createQurlForResource).
+ */
+function buildCreatePortalBody(
+  opts: CreatePortalOptions,
+  method: string,
+): Record<string, unknown> | undefined {
+  requireObjectInput(opts, method);
+  requireNoUnknownFields(opts, CREATE_PORTAL_OPTION_KEYS, method);
+  // null → omitted, via the SDK-wide normalizePatchFields convention.
+  const { validFor, label, oneTimeUse, maxSessions, sessionDuration } = normalizePatchFields(
+    opts,
+    CREATE_PORTAL_OPTION_KEYS,
+  ) as CreatePortalOptions;
+  if (label !== undefined) {
+    requireMaxLength(label, "label", MAX_LABEL);
+    // qurl-go's WithLabel rejects blank labels; the REST-shaped mintLink
+    // keeps its permissive whitespace behavior, so the check lives here.
+    if (label.trim() === "") {
+      throw clientValidationError("label: must not be empty");
+    }
+  }
+  requireBooleanIfPresent(oneTimeUse, "oneTimeUse");
+  requireMaxSessionsInRange(maxSessions, "maxSessions");
+  const body: Record<string, unknown> = {};
+  const expiresIn = serializeApiDuration(validFor, "validFor", MIN_PORTAL_VALID_FOR_SECONDS);
+  if (expiresIn !== undefined) body.expires_in = expiresIn;
+  if (label !== undefined) body.label = label;
+  if (oneTimeUse !== undefined) body.one_time_use = oneTimeUse;
+  // Explicit 0 means unlimited and must survive body construction.
+  if (maxSessions !== undefined) body.max_sessions = maxSessions;
+  const wireSessionDuration = serializeApiDuration(
+    sessionDuration,
+    "sessionDuration",
+    MIN_SESSION_DURATION_SECONDS,
+  );
+  if (wireSessionDuration !== undefined) body.session_duration = wireSessionDuration;
+  return Object.keys(body).length > 0 ? body : undefined;
+}
+
 interface ApiResponse<T> {
   data: T;
   meta?: {
@@ -1656,9 +1913,243 @@ export class QURLClient {
     } while (cursor);
   }
 
+  // --- Portal API (mirrors qurl-go: ProtectURL → CreatePortal → EnterPortal) ---
+
+  /**
+   * Protect a private URL — create or reuse its LayerV resource.
+   *
+   * The first step of the portal flow (qurl-go: `Client.ProtectURL`).
+   * Protect the URL once, then mint short-lived links for it with
+   * {@link ProtectedResource.createPortal}:
+   *
+   * ```ts
+   * const resource = await client.protectUrl("https://internal.example.com/dashboard");
+   * const portal = await resource.createPortal({ validFor: "5m" });
+   * share(portal.link);
+   * ```
+   *
+   * Protecting the same target URL again returns the existing resource.
+   * Malformed URLs and URLs with embedded credentials (userinfo) are
+   * rejected before any request, mirroring qurl-go. REST-shaped equivalent:
+   * {@link createResource}.
+   */
+  async protectUrl(
+    targetUrl: string,
+    opts: ProtectUrlOptions = {},
+    options?: RequestOptions,
+  ): Promise<ProtectedResource> {
+    requirePortalTargetUrl(targetUrl);
+    requireObjectInput(opts, "protectUrl");
+    requireNoUnknownFields(opts, PROTECT_URL_OPTION_KEYS, "protectUrl");
+    // camelCase options → wire fields; null is treated as omitted, via the
+    // SDK-wide normalizePatchFields convention.
+    const normalized = normalizePatchFields(opts, PROTECT_URL_OPTION_KEYS) as ProtectUrlOptions;
+    const body: Record<string, unknown> = { target_url: targetUrl };
+    if (normalized.description !== undefined) body.description = normalized.description;
+    if (normalized.tags !== undefined) body.tags = normalized.tags;
+    if (normalized.customDomain !== undefined) body.custom_domain = normalized.customDomain;
+    if (normalized.alias !== undefined) body.alias = normalized.alias;
+    validateResourceWriteFields(body);
+    const resource = await this.request<Resource>("POST", "/v1/resources", body, options);
+    if (typeof resource?.resource_id !== "string" || resource.resource_id.trim() === "") {
+      throw unexpectedResponseError("protectUrl: response is missing resource_id");
+    }
+    return new ProtectedResource(
+      this,
+      resource.resource_id,
+      // Some resource types redact target_url in responses; fall back to
+      // the caller-supplied URL so the handle stays useful.
+      resource.target_url || targetUrl,
+      resource,
+    );
+  }
+
+  /**
+   * Return a portal-minting handle for a stored resource id, without an API
+   * call.
+   *
+   * Use when you persisted a LayerV resource id and want to mint more
+   * portals for it (qurl-go: `Client.ResourceByID`):
+   *
+   * ```ts
+   * const resource = client.resourceById("r_demo1234567");
+   * const portal = await resource.createPortal({ validFor: "1h" });
+   * ```
+   *
+   * The handle carries no server metadata; use {@link getResource} when you
+   * need the full resource details.
+   */
+  resourceById(id: string): ProtectedResource {
+    requireNonEmptyId(id, "resourceById");
+    return new ProtectedResource(this, id);
+  }
+
+  /**
+   * Return the resource qURL Connector created for `connectorId`.
+   *
+   * Use when qURL Connector already protects the service — do not call
+   * {@link protectUrl} again for the same service. The connector id is the
+   * resource slug LayerV stores for that connector; the LayerV API performs
+   * the slug lookup, and the SDK confirms the returned alias matches
+   * `connectorId` before binding the handle (qurl-go:
+   * `Client.ConnectorResource`).
+   *
+   * Throws {@link NotFoundError} (`status: 0`, `code: "resource_not_found"`)
+   * when no resource exists for the connector id, {@link QURLError}
+   * (`code: "ambiguous_resource"`) when the lookup returns more than one
+   * resource, and {@link ValidationError} (`code: "unexpected_response"`)
+   * when the returned resource's alias is missing or does not match.
+   */
+  async connectorResource(connectorId: string): Promise<ProtectedResource> {
+    requireNonEmptyId(connectorId, "connectorResource", "connector id");
+    const { resources } = await this.listResources({ slug: connectorId });
+    if (resources.length === 0) {
+      throw new NotFoundError({
+        status: 0,
+        code: ERROR_CODE_RESOURCE_NOT_FOUND,
+        title: "Resource Not Found",
+        detail: `connectorResource: no resource found for connector "${connectorId}"`,
+      });
+    }
+    if (resources.length > 1) {
+      throw new QURLError({
+        status: 0,
+        code: ERROR_CODE_AMBIGUOUS_RESOURCE,
+        title: "Ambiguous Resource",
+        detail: `connectorResource: connector "${connectorId}" returned ${resources.length} resources`,
+      });
+    }
+    const resource = resources[0];
+    if (resource.alias !== connectorId) {
+      throw unexpectedResponseError(
+        `connectorResource: connector "${connectorId}" returned a resource with a missing or different alias`,
+      );
+    }
+    if (typeof resource.resource_id !== "string" || resource.resource_id.trim() === "") {
+      throw unexpectedResponseError("connectorResource: response is missing resource_id");
+    }
+    return new ProtectedResource(this, resource.resource_id, resource.target_url, resource);
+  }
+
+  /**
+   * Mint a short-lived qURL link (a portal) for a protected resource.
+   *
+   * A portal is cryptographic, just-in-time permission for one actor to
+   * reach one private resource. Recipients open `portal.link` directly and
+   * need no LayerV credentials. Prefer short lifetimes such as
+   * `{ validFor: "5m" }`. Accepts a {@link ProtectedResource} handle or a
+   * resource id (`r_` prefix). REST-shaped equivalents: {@link mintLink} /
+   * {@link createQurlForResource}.
+   *
+   * Duration options take a string (`"5m"`, `"24h"`; server-validated) or a
+   * number of milliseconds with qurl-go's client-side guardrails: whole
+   * seconds only, at least one minute for `validFor` and one second for
+   * `sessionDuration`. `maxSessions: 0` is sent explicitly and means
+   * unlimited; blank labels are rejected.
+   */
+  async createPortal(
+    resource: ProtectedResource | string,
+    opts: CreatePortalOptions = {},
+    options?: RequestOptions,
+  ): Promise<Portal> {
+    let resourceId: string;
+    if (typeof resource === "string") {
+      resourceId = resource;
+    } else if (resource instanceof ProtectedResource) {
+      if (!ProtectedResource.isBoundTo(resource, this)) {
+        throw clientValidationError("createPortal: resource is bound to a different client");
+      }
+      resourceId = resource.id;
+    } else {
+      throw clientValidationError(
+        `createPortal: resource must be a ProtectedResource handle or a resource id string (got ${describeShape(resource)})`,
+      );
+    }
+    requireNonEmptyId(resourceId, "createPortal", "resource id");
+    const body = buildCreatePortalBody(opts, "createPortal");
+    const data = await this.request<PortalWireResponse>(
+      "POST",
+      `/v1/resources/${encodeURIComponent(resourceId)}/qurls`,
+      body,
+      options,
+    );
+    return parsePortal(data, "createPortal");
+  }
+
+  /**
+   * Protect `targetUrl` and mint a portal in one API call.
+   *
+   * Convenience for one-off scripts (qurl-go: `Client.CreatePortalForURL`).
+   * The returned resource handle is reusable for minting more portals but
+   * carries only the resource id and the caller-supplied target URL; use
+   * {@link protectUrl} when you need the full server-populated resource
+   * metadata. Portal options match {@link createPortal}; `targetUrl` gets
+   * the same malformed-URL and embedded-credentials rejection as
+   * {@link protectUrl}. REST-shaped equivalent: {@link create}.
+   */
+  async createPortalForUrl(
+    targetUrl: string,
+    opts: CreatePortalOptions = {},
+    options?: RequestOptions,
+  ): Promise<{ portal: Portal; resource: ProtectedResource }> {
+    requirePortalTargetUrl(targetUrl);
+    const body: Record<string, unknown> = {
+      target_url: targetUrl,
+      ...buildCreatePortalBody(opts, "createPortalForUrl"),
+    };
+    const data = await this.request<PortalWireResponse>("POST", "/v1/qurls", body, options);
+    const portal = parsePortal(data, "createPortalForUrl");
+    return {
+      portal,
+      resource: new ProtectedResource(this, portal.resourceId, targetUrl),
+    };
+  }
+
+  /**
+   * Open a qURL link programmatically and return the reachable resource.
+   *
+   * For services and agents that open received qURL links in code — human
+   * recipients just open the link. Accepts a full platform link
+   * (`https://qurl.link/#at_...`) or a bare access token. Triggers an NHP
+   * knock that grants network access for the caller's IP and returns a
+   * {@link ResourceHandle} with the reachable resource URL and access
+   * lifetime.
+   *
+   * Unlike qurl-go's `EnterPortal` (which verifies links locally and needs
+   * no LayerV credentials), this SDK opens links through the LayerV API:
+   * the client needs an API key with the `qurl:resolve` scope. REST-shaped
+   * equivalent: {@link resolve}.
+   *
+   * Throws {@link ValidationError} (`code: "client_validation"`) when no
+   * access token can be extracted from `qurlLink`, and
+   * (`code: "unexpected_response"`) when access is granted but the API
+   * reports no resource URL — it fails closed rather than returning an
+   * empty handle. Error messages never echo the link; qURL links are
+   * credentials.
+   */
+  async enterPortal(qurlLink: string, options?: RequestOptions): Promise<ResourceHandle> {
+    const token = extractAccessToken(qurlLink);
+    const resolved = await this.resolve(token, options);
+    if (typeof resolved?.target_url !== "string" || resolved.target_url === "") {
+      throw unexpectedResponseError(
+        "enterPortal: access was granted but the API returned no resource URL",
+      );
+    }
+    return {
+      resourceUrl: resolved.target_url,
+      openSeconds: resolved.access_grant?.expires_in ?? 0,
+      resourceId: resolved.resource_id,
+    };
+  }
+
   // --- Public API ---
 
-  /** Create a new qURL. */
+  /**
+   * Create a new qURL.
+   *
+   * Portal-flow equivalent: {@link createPortalForUrl} (same endpoint,
+   * returns a {@link Portal} plus a reusable resource handle).
+   */
   async create(input: CreateInput, options?: RequestOptions): Promise<CreateOutput> {
     validateCreateInput(input);
     return this.request<CreateOutput>("POST", "/v1/qurls", input, options);
@@ -2000,6 +2491,8 @@ export class QURLClient {
   /**
    * Mint a new access link for a qURL.
    *
+   * Portal-flow equivalent: {@link createPortal}.
+   *
    * Accepts either a resource ID (`r_` prefix) or a qURL display ID (`q_`
    * prefix); the API resolves `q_` IDs to the parent resource automatically.
    *
@@ -2063,6 +2556,9 @@ export class QURLClient {
 
   /**
    * Resolve a qURL access token (headless).
+   *
+   * Portal-flow equivalent: {@link enterPortal} (also accepts full qURL
+   * links and fails closed when no resource URL is returned).
    *
    * Triggers an NHP knock to grant network access for the caller's IP.
    * Requires `qurl:resolve` scope on the API key.
@@ -2148,7 +2644,12 @@ export class QURLClient {
     );
   }
 
-  /** Create a resource directly. */
+  /**
+   * Create a resource directly.
+   *
+   * Portal-flow equivalent for URL resources: {@link protectUrl} (returns
+   * a portal-minting handle).
+   */
   async createResource(input: CreateResourceInput, options?: RequestOptions): Promise<Resource> {
     requireObjectInput(input, "createResource");
     requireNoUnknownFields(input, CREATE_RESOURCE_FIELD_KEYS, "createResource");
@@ -2207,7 +2708,11 @@ export class QURLClient {
     await this.rawRequest("DELETE", `/v1/resources/${encodeURIComponent(id)}`);
   }
 
-  /** Mint a qURL against an existing resource. */
+  /**
+   * Mint a qURL against an existing resource.
+   *
+   * Portal-flow equivalent: {@link createPortal} (same endpoint).
+   */
   async createQurlForResource(
     id: string,
     input?: CreateQurlForResourceInput,
@@ -3157,5 +3662,55 @@ export class QURLClient {
     }
     const cause = err instanceof Error ? err : undefined;
     return new NetworkError(cause?.message ?? String(err), { cause });
+  }
+}
+
+/**
+ * A LayerV-protected resource, bound to the client that produced it.
+ *
+ * Obtained from {@link QURLClient.protectUrl},
+ * {@link QURLClient.connectorResource}, or {@link QURLClient.resourceById} —
+ * not constructed directly. Mint short-lived access links for the resource
+ * with {@link createPortal} (qurl-go: `qurl.Resource`).
+ */
+export class ProtectedResource {
+  // A true private field (not a module-scope WeakMap registry, which
+  // CONTRIBUTING.md's dual-build rule bars) so the binding stays on the
+  // instance and out of Object.keys/JSON.stringify output.
+  readonly #client: QURLClient;
+  /** The LayerV resource id (`r_` prefix). */
+  readonly id: string;
+  /** The private URL protected by this resource, when known. */
+  readonly targetUrl?: string;
+  /**
+   * Full server-populated {@link Resource} metadata when the handle came
+   * from an API response; `undefined` for {@link QURLClient.resourceById}
+   * handles and for the one-call {@link QURLClient.createPortalForUrl} path.
+   */
+  readonly details?: Resource;
+
+  constructor(client: QURLClient, id: string, targetUrl?: string, details?: Resource) {
+    this.#client = client;
+    this.id = id;
+    this.targetUrl = targetUrl;
+    this.details = details;
+  }
+
+  /**
+   * Whether `resource` was produced by `client`. A static because the
+   * binding lives in a private field that only this class can read; used
+   * by {@link QURLClient.createPortal} to refuse handles bound to a
+   * different client.
+   */
+  static isBoundTo(resource: ProtectedResource, client: QURLClient): boolean {
+    return resource.#client === client;
+  }
+
+  /**
+   * Mint a short-lived qURL link (a portal) for this resource. See
+   * {@link QURLClient.createPortal} for the option reference.
+   */
+  async createPortal(opts: CreatePortalOptions = {}, options?: RequestOptions): Promise<Portal> {
+    return this.#client.createPortal(this, opts, options);
   }
 }

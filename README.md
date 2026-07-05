@@ -4,13 +4,31 @@
 [![CI](https://github.com/layervai/qurl-typescript/actions/workflows/ci.yml/badge.svg)](https://github.com/layervai/qurl-typescript/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/layervai/qurl-typescript)](LICENSE)
 
-TypeScript SDK for the [qURL™ API](https://docs.layerv.ai) — secure, time-limited access links for AI agents.
+**Use the LayerV [qURL™ Platform](https://docs.layerv.ai) from TypeScript: protect a
+private URL once, then mint short-lived portal links for it.**
 
 > **Quantum URL (qURL)** · The internet has a hidden layer. This is how you enter.
 
+Portal recipients do not need LayerV credentials, API keys, or SDK state. They
+open the qURL link. Credentials are only for software that protects URLs or
+creates portals.
+
 ## Why qURL?
 
-AI agents need to access protected resources — APIs, databases, internal tools — but giving them permanent credentials is a security risk. qURL creates time-limited, auditable access links that expire automatically. The SDK handles authentication, retries, pagination, and error handling so you can focus on your agent logic.
+Agents and services increasingly need to reach private MCP servers, APIs, and
+internal tools. The issue is visibility: every standing public endpoint becomes
+inventory for scanners, fingerprinting, credential attacks, and AI-assisted
+probing before a legitimate user or agent ever arrives.
+
+qURL flips that model. The private resource is not public inventory. A portal
+is **cryptographic, just-in-time permission for one actor to reach one private
+resource** — not another externally visible endpoint in front of the same
+service:
+
+- **Time-limited** — portals expire after minutes, hours, or days
+- **IP-scoped** — access is granted only to the requesting IP via NHP
+- **Auditable** — every access is logged with who, when, and from where
+- **Revocable** — kill access instantly if something goes wrong
 
 ## Installation
 
@@ -18,16 +36,97 @@ AI agents need to access protected resources — APIs, databases, internal tools
 npm install @layervai/qurl
 ```
 
-Requires Node.js 18+. Both `import { QURLClient } from '@layervai/qurl'` (ESM) and `const { QURLClient } = require('@layervai/qurl')` (CJS) work.
+Requires Node.js 20+. Both `import { QURLClient } from '@layervai/qurl'` (ESM) and `const { QURLClient } = require('@layervai/qurl')` (CJS) work.
 
-## Quick Start
+## Quickstart
 
 ```typescript
 import { QURLClient } from '@layervai/qurl';
 
 const client = new QURLClient({ apiKey: 'YOUR_API_KEY' });
 
-// Create a protected link
+const resource = await client.protectUrl('https://internal.example.com/dashboard');
+const portal = await resource.createPortal({ validFor: '5m' });
+
+console.log(portal.link); // Share this link — recipients need no credentials
+```
+
+That is the core flow:
+
+| Step | Call | What you provide |
+| --- | --- | --- |
+| Protect a private URL | `client.protectUrl` | The target URL you already know |
+| Mint a short-lived access link | `resource.createPortal` | The returned resource handle |
+
+`protectUrl` is idempotent for the same account and target URL: protecting the
+same URL again returns the existing resource. `validFor` accepts a duration
+string (`'5m'`, `'24h'`) or a number of milliseconds (whole seconds, at least
+one minute); prefer short portal lifetimes.
+
+If qURL Connector already protects the service, use the connector id instead
+of calling `protectUrl`:
+
+```typescript
+const resource = await client.connectorResource('prod-dashboard');
+const portal = await resource.createPortal({ validFor: '5m' });
+```
+
+If you persist the resource id, future calls do not need to recreate the
+handle (no API call is made until you mint):
+
+```typescript
+const resource = client.resourceById('r_demo1234567');
+const portal = await resource.createPortal({ validFor: '1h' });
+```
+
+For one-off scripts, `client.createPortalForUrl` combines the two API calls
+and returns both the portal and a reusable resource handle:
+
+```typescript
+const { portal, resource } = await client.createPortalForUrl(
+  'https://internal.example.com/dashboard',
+  { validFor: '5m' },
+);
+```
+
+Portal options mirror qurl-go:
+
+```typescript
+const portal = await resource.createPortal({
+  validFor: 5 * 60 * 1000, // milliseconds work too
+  label: 'Alice from Acme',
+  oneTimeUse: true,
+  maxSessions: 1,
+});
+```
+
+## Opening Portals
+
+Most recipients open qURL links directly and do not use this SDK at all. If
+you are building a service or agent that opens received qURL links
+programmatically, `enterPortal` accepts a full link or a bare access token,
+grants network access for the caller's IP, and returns the reachable resource:
+
+```typescript
+const handle = await client.enterPortal(link);
+console.log(handle.resourceUrl); // The reachable resource location
+console.log(handle.openSeconds); // How long access stays open
+```
+
+Unlike qurl-go's offline `EnterPortal`, this SDK opens links through the
+LayerV API: the client needs an API key with the `qurl:resolve` scope.
+`enterPortal` fails closed — if access is granted but no resource URL comes
+back, it throws instead of returning an empty handle.
+
+## REST-Shaped API (Compatibility)
+
+The original REST-shaped methods remain fully supported and share the same
+client. Use them for the qURL/resource/token management surface that has no
+portal-verb equivalent (listing, updating, revoking, quotas, webhooks, ...) or
+if you already build on them:
+
+```typescript
+// Create a protected link (portal equivalent: createPortalForUrl)
 const result = await client.create({
   target_url: 'https://api.example.com/data',
   expires_in: '24h',
@@ -35,8 +134,8 @@ const result = await client.create({
 });
 console.log(result.qurl_link);
 
-// Resolve a token (grants network access for your IP)
-const access = await client.resolve('at_...');
+// Resolve a token headlessly (portal equivalent: enterPortal)
+const access = await client.resolve('at_k8xqp9h2sj9lx7r4a');
 console.log(`Access granted to ${access.target_url} for ${access.access_grant?.expires_in}s`);
 ```
 
@@ -54,7 +153,18 @@ console.log(`Access granted to ${access.target_url} for ${access.access_grant?.e
 | `userAgent` | No | `qurl-typescript/<version>` |
 | `debug` | No | `false` |
 
-### Methods
+### Portal methods
+
+| Method | Description |
+|--------|-------------|
+| `protectUrl(targetUrl, opts?)` | Protect a private URL → portal-minting `ProtectedResource` handle |
+| `resource.createPortal(opts?)` / `createPortal(resourceOrId, opts?)` | Mint a short-lived portal link (`Portal`) |
+| `createPortalForUrl(targetUrl, opts?)` | Protect + mint in one API call → `{ portal, resource }` |
+| `connectorResource(connectorId)` | Handle for a service qURL Connector already protects |
+| `resourceById(id)` | Handle from a stored resource id (no API call) |
+| `enterPortal(linkOrToken)` | Open a qURL link programmatically → `ResourceHandle` |
+
+### REST-shaped methods
 
 | Method | Description |
 |--------|-------------|
@@ -134,16 +244,16 @@ import {
 } from '@layervai/qurl';
 
 try {
-  await client.create({ target_url: '' });
+  await client.enterPortal('https://qurl.link/#at_k8xqp9h2sj9lx7r4a');
 } catch (err) {
-  if (err instanceof ValidationError) {
-    console.error('Invalid input:', err.invalidFields);
-  } else if (err instanceof RateLimitError) {
-    console.error(`Rate limited — retry after ${err.retryAfter}s`);
-  } else if (err instanceof AuthenticationError) {
+  if (err instanceof AuthenticationError) {
     console.error('Bad API key');
   } else if (err instanceof NotFoundError) {
-    console.error('Resource not found');
+    console.error('Portal doesn\'t exist or already expired');
+  } else if (err instanceof RateLimitError) {
+    console.error(`Rate limited — retry after ${err.retryAfter}s`);
+  } else if (err instanceof ValidationError) {
+    console.error('Invalid input:', err.detail, err.invalidFields);
   } else if (err instanceof QURLError) {
     console.error(`API error [${err.code}]: ${err.detail}`);
   }
@@ -160,6 +270,13 @@ try {
 | `ServerError` | 5xx | Server-side failure |
 | `NetworkError` | — | Connection failure |
 | `TimeoutError` | — | Request exceeded timeout |
+
+Client-detected failures use `status: 0` with a discriminating `code`:
+`"client_validation"` for bad input caught before a request, and — on the
+portal surface — `"resource_not_found"` / `"ambiguous_resource"` when
+`connectorResource` cannot resolve a connector id to exactly one resource,
+and `"unexpected_response"` when a response is missing required fields (e.g.
+`enterPortal` failing closed on a grant with no resource URL).
 
 ## Pagination
 
@@ -210,7 +327,20 @@ await client.create(
 );
 ```
 
+The portal verbs take the same per-call options as their final argument, e.g.
+`resource.createPortal({ validFor: '5m' }, { idempotencyKey: 'mint-alice-1' })`.
+
 SDK-generated keys require `globalThis.crypto.getRandomValues`, which is available in supported Node 20+ runtimes and modern edge/browser runtimes. In constrained runtimes without Web Crypto, pass a caller-provided key with `idempotencyKey`; otherwise POST/PATCH calls throw `RuntimeError` before sending a request.
+
+## Security Notes
+
+- Treat API keys and qURL links like credentials. Do not log them.
+- Prefer short portal lifetimes such as `validFor: '5m'`.
+- Do not ask portal recipients to handle credentials. Recipients only need
+  the link.
+- `protectUrl` and `createPortalForUrl` reject malformed target URLs and URLs
+  with embedded credentials (`https://user:pass@...`) before any request,
+  matching qurl-go. `enterPortal` never echoes the link in error messages.
 
 ## Versioning & breaking changes
 

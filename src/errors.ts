@@ -15,6 +15,10 @@ export const ERROR_CODE_UNEXPECTED_RESPONSE = "unexpected_response";
 export const ERROR_CODE_NETWORK = "network_error";
 export const ERROR_CODE_TIMEOUT = "timeout";
 export const ERROR_CODE_RUNTIME = "runtime_error";
+/** `connectorResource` found no resource for the connector id (client-detected, `status: 0`). */
+export const ERROR_CODE_RESOURCE_NOT_FOUND = "resource_not_found";
+/** `connectorResource` matched more than one resource where exactly one is required (client-detected, `status: 0`). */
+export const ERROR_CODE_AMBIGUOUS_RESOURCE = "ambiguous_resource";
 /** Fallback `.code` when the server returns a non-RFC-7807 response (HTML proxy page, plaintext gateway error, JSON without `error` envelope). */
 export const ERROR_CODE_UNKNOWN = "unknown";
 
