@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/layervai/qurl-typescript/compare/qurl-v0.3.0...qurl-v0.3.1) (2026-07-05)
+
+
+### Features
+
+* add portal-verb API surface (protectUrl → createPortal → enterPortal) ([#162](https://github.com/layervai/qurl-typescript/issues/162)) ([00b19d2](https://github.com/layervai/qurl-typescript/commit/00b19d21c64670fc40a00b47d298ea773f8f1cba))
+
 ## [0.3.0](https://github.com/layervai/qurl-typescript/compare/qurl-v0.2.0...qurl-v0.3.0) (2026-06-17)
 
 
