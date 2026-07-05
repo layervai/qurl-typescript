@@ -264,6 +264,95 @@ export interface MintOutput {
   type?: ResourceType;
 }
 
+// ---- Portal verbs (mirrors qurl-go) --------------------------------------
+
+/** Options for `QURLClient.protectUrl`. */
+export interface ProtectUrlOptions {
+  /** Optional resource-level metadata. Max 500 chars. */
+  description?: string;
+  /** Optional resource-level tags. Max 10 items. */
+  tags?: string[];
+  /** Custom domain already verified in LayerV. */
+  customDomain?: string;
+  /** Owner-scoped handle for the resource. */
+  alias?: string;
+}
+
+/**
+ * Options for minting a portal (mirrors qurl-go's `PortalOption` set).
+ *
+ * Duration options accept either a duration string (`"5m"`, `"24h"`) that is
+ * passed through for the server to validate, or a number of milliseconds that
+ * gets qurl-go's client-side guardrails: whole seconds only, at least one
+ * minute for `validFor` and at least one second for `sessionDuration`.
+ * Millisecond values are serialized to the API's h/m/s duration grammar with
+ * hours as the largest unit.
+ */
+export interface CreatePortalOptions {
+  /**
+   * How long the qURL link stays valid. Omit to use the API default
+   * lifetime; prefer short lifetimes such as `"5m"`. The LayerV API remains
+   * the source of truth for account limits — there is intentionally no
+   * SDK-side maximum.
+   */
+  validFor?: string | number;
+  /** Human-readable label for the link. Max 500 chars, must not be blank. */
+  label?: string;
+  /** If `true`, the link expires after its first successful use. */
+  oneTimeUse?: boolean;
+  /**
+   * Concurrent-session limit. `0` is sent explicitly and means unlimited;
+   * omit to keep the server default.
+   */
+  maxSessions?: number;
+  /**
+   * How long access lasts after someone opens the link. Omit to use the
+   * server default; zero is rejected rather than treated as default.
+   */
+  sessionDuration?: string | number;
+}
+
+/**
+ * A qURL link minted for a protected resource.
+ *
+ * A portal is cryptographic, just-in-time permission for one actor to reach
+ * one private resource. `link` is the shareable qURL link; recipients open it
+ * directly and need no LayerV credentials.
+ *
+ * Mirrors `qurl.Portal` in qurl-go.
+ */
+export interface Portal {
+  /** Identifies the protected resource this link opens. */
+  resourceId: string;
+  /** The shareable qURL link. */
+  link: string;
+  /** The qURL-hosted site for this resource, when returned by the API. */
+  site?: string;
+  /** Link expiration time, when returned by the API. */
+  expiresAt?: Date;
+  /** Identifies the specific access token, when returned by the API. */
+  qurlId?: string;
+  /** Token label, when returned by the API. */
+  label?: string;
+}
+
+/**
+ * Result of a successful `enterPortal`: the reachable resource.
+ *
+ * Carries the reachable resource URL and the access lifetime reported by
+ * qURL (`openSeconds` is `0` when the API does not report one). `resourceId`
+ * is populated by this SDK's API-backed opener; the field does not exist on
+ * qurl-go's offline `ResourceHandle`.
+ */
+export interface ResourceHandle {
+  /** The reachable resource location. */
+  resourceUrl: string;
+  /** How long access stays open in seconds, as reported by qURL. */
+  openSeconds: number;
+  /** The LayerV resource id behind the portal, when reported. */
+  resourceId?: string;
+}
+
 /** Input for headless qURL resolution. */
 export interface ResolveInput {
   access_token: string;
