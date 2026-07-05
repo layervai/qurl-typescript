@@ -1417,16 +1417,17 @@ function serializeApiDuration(
  */
 function requirePortalTargetUrl(targetUrl: unknown): void {
   requireValidTargetUrl(targetUrl);
+  const url = targetUrl as string; // requireValidTargetUrl only returns for http(s) strings
   // WHATWG URL normalizes away an empty authority ("https:///x" parses
   // with host "x"), so the host-presence check runs on the raw string,
   // mirroring qurl-go's url.Parse which rejects authority-less URLs.
-  const afterScheme = (targetUrl as string).slice((targetUrl as string).indexOf("://") + 3);
+  const afterScheme = url.slice(url.indexOf("://") + 3);
   if (afterScheme === "" || "/?#".includes(afterScheme[0])) {
     throw clientValidationError("target_url: must include a host");
   }
   let parsed: URL;
   try {
-    parsed = new URL(targetUrl as string);
+    parsed = new URL(url);
   } catch {
     throw clientValidationError("target_url: malformed URL");
   }
@@ -1444,7 +1445,7 @@ function requirePortalTargetUrl(targetUrl: unknown): void {
  */
 function extractAccessToken(qurlLink: unknown): string {
   if (typeof qurlLink !== "string" || qurlLink.trim() === "") {
-    throw clientValidationError("enterPortal: qurlLink must be a non-empty string");
+    throw clientValidationError("qurlLink: must be a non-empty string");
   }
   const hashIndex = qurlLink.indexOf("#");
   const token = hashIndex >= 0 ? qurlLink.slice(hashIndex + 1) : qurlLink;
@@ -1936,7 +1937,7 @@ export class QURLClient {
   async protectUrl(
     targetUrl: string,
     opts: ProtectUrlOptions = {},
-    options?: RequestOptions,
+    requestOptions?: RequestOptions,
   ): Promise<ProtectedResource> {
     requirePortalTargetUrl(targetUrl);
     requireObjectInput(opts, "protectUrl");
@@ -1950,7 +1951,7 @@ export class QURLClient {
     if (normalized.customDomain !== undefined) body.custom_domain = normalized.customDomain;
     if (normalized.alias !== undefined) body.alias = normalized.alias;
     validateResourceWriteFields(body);
-    const resource = await this.request<Resource>("POST", "/v1/resources", body, options);
+    const resource = await this.request<Resource>("POST", "/v1/resources", body, requestOptions);
     if (typeof resource?.resource_id !== "string" || resource.resource_id.trim() === "") {
       throw unexpectedResponseError("protectUrl: response is missing resource_id");
     }
@@ -2050,7 +2051,7 @@ export class QURLClient {
   async createPortal(
     resource: ProtectedResource | string,
     opts: CreatePortalOptions = {},
-    options?: RequestOptions,
+    requestOptions?: RequestOptions,
   ): Promise<Portal> {
     let resourceId: string;
     if (typeof resource === "string") {
@@ -2071,7 +2072,7 @@ export class QURLClient {
       "POST",
       `/v1/resources/${encodeURIComponent(resourceId)}/qurls`,
       body,
-      options,
+      requestOptions,
     );
     return parsePortal(data, "createPortal");
   }
@@ -2090,14 +2091,14 @@ export class QURLClient {
   async createPortalForUrl(
     targetUrl: string,
     opts: CreatePortalOptions = {},
-    options?: RequestOptions,
+    requestOptions?: RequestOptions,
   ): Promise<{ portal: Portal; resource: ProtectedResource }> {
     requirePortalTargetUrl(targetUrl);
     const body: Record<string, unknown> = {
       target_url: targetUrl,
       ...buildCreatePortalBody(opts, "createPortalForUrl"),
     };
-    const data = await this.request<PortalWireResponse>("POST", "/v1/qurls", body, options);
+    const data = await this.request<PortalWireResponse>("POST", "/v1/qurls", body, requestOptions);
     const portal = parsePortal(data, "createPortalForUrl");
     return {
       portal,
@@ -2127,9 +2128,9 @@ export class QURLClient {
    * empty handle. Error messages never echo the link; qURL links are
    * credentials.
    */
-  async enterPortal(qurlLink: string, options?: RequestOptions): Promise<ResourceHandle> {
+  async enterPortal(qurlLink: string, requestOptions?: RequestOptions): Promise<ResourceHandle> {
     const token = extractAccessToken(qurlLink);
-    const resolved = await this.resolve(token, options);
+    const resolved = await this.resolve(token, requestOptions);
     if (typeof resolved?.target_url !== "string" || resolved.target_url === "") {
       throw unexpectedResponseError(
         "enterPortal: access was granted but the API returned no resource URL",
@@ -3710,7 +3711,10 @@ export class ProtectedResource {
    * Mint a short-lived qURL link (a portal) for this resource. See
    * {@link QURLClient.createPortal} for the option reference.
    */
-  async createPortal(opts: CreatePortalOptions = {}, options?: RequestOptions): Promise<Portal> {
-    return this.#client.createPortal(this, opts, options);
+  async createPortal(
+    opts: CreatePortalOptions = {},
+    requestOptions?: RequestOptions,
+  ): Promise<Portal> {
+    return this.#client.createPortal(this, opts, requestOptions);
   }
 }
