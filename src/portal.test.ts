@@ -1,10 +1,27 @@
 import { describe, it, expect, vi } from "vitest";
-import { ProtectedResource } from "./client.js";
+import conformancePackage from "@layervai/qurl-conformance";
+import { ProtectedResource, SIGNED_FRAGMENT_RE } from "./client.js";
 import { NotFoundError, QURLError, ValidationError } from "./errors.js";
 import { createClient, mockFetch, mockFetches } from "./__tests__/test-helpers.js";
 
 // Tests for the portal-verb surface (mirrors qurl-go's portal API and
 // qurl-python's port of it): protectUrl → createPortal → enterPortal.
+
+type Qv2ConformanceVector = {
+  name: string;
+  expect: "accept" | "reject";
+  fragment?: string;
+};
+
+type Qv2ConformanceFile = {
+  classes: Record<string, { vectors: Qv2ConformanceVector[] } | undefined>;
+};
+
+// Native ESM sees this CommonJS package on the default export. The package's
+// own types keep qv2Vectors() unknown, so narrow only the artifact fields read
+// by this test and keep runtime guards below.
+const conformance = conformancePackage as typeof import("@layervai/qurl-conformance");
+const MIN_CREDENTIAL_SEGMENT_LENGTH = 8;
 
 const RESOURCE_DATA = {
   resource_id: "r_abc123def45",
@@ -48,6 +65,18 @@ function callBody(fetch: typeof globalThis.fetch, index = 0): unknown {
 
 function callHeaders(fetch: typeof globalThis.fetch, index = 0): Record<string, string> {
   return callRequest(fetch, index).init.headers as Record<string, string>;
+}
+
+function conformanceFragment(name: string): string {
+  const artifact = conformance.qv2Vectors() as Qv2ConformanceFile;
+  const vector = (artifact.classes.fragment?.vectors ?? []).find((v) => v.name === name);
+  if (!vector || vector.expect !== "accept" || typeof vector.fragment !== "string") {
+    throw new Error(`qurl-conformance fragment vector ${name} is missing or not accept`);
+  }
+  if (!SIGNED_FRAGMENT_RE.test(vector.fragment)) {
+    throw new Error(`qurl-conformance fragment vector ${name} is not signed-fragment shaped`);
+  }
+  return vector.fragment;
 }
 
 describe("protectUrl", () => {
@@ -454,15 +483,26 @@ describe("enterPortal", () => {
 
   it("rejects qurl-go's offline signed-fragment links with a precise error, no echo", async () => {
     const client = createClient(mockFetch({ status: 200, body: { data: RESOLVE_DATA } }));
+    // This vector is `accept` for qurl-go's local verifier; this SDK's
+    // API-backed resolver rejects offline signed fragments before any request.
+    const signedFragment = conformanceFragment("accept_valid_fragment");
 
     const err = await client
-      .enterPortal("https://qurl.link/#v2.claimspart.secretpart.sigpart")
+      .enterPortal(`https://qurl.link/#${signedFragment}`)
       .catch((e: unknown) => e as ValidationError);
     expect((err as ValidationError).detail).toContain("signed qURL link");
-    expect((err as ValidationError).message).not.toContain("secretpart");
+    expect((err as ValidationError).message).not.toContain(signedFragment);
+    // Skip short framing/version pieces; these checks target credential-bearing segments.
+    const credentialSegments = signedFragment
+      .split(".")
+      .filter((segment) => segment.length >= MIN_CREDENTIAL_SEGMENT_LENGTH);
+    expect(credentialSegments.length).toBeGreaterThan(0);
+    for (const segment of credentialSegments) {
+      expect((err as ValidationError).message).not.toContain(segment);
+    }
 
     // A bare signed fragment (no link wrapper) is caught the same way.
-    await expect(client.enterPortal("v2.claimspart.secretpart.sigpart")).rejects.toMatchObject({
+    await expect(client.enterPortal(signedFragment)).rejects.toMatchObject({
       detail: expect.stringContaining("signed qURL link"),
     });
   });

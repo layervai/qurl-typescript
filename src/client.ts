@@ -1356,10 +1356,14 @@ const MIN_PORTAL_VALID_FOR_SECONDS = 60;
  */
 const MIN_SESSION_DURATION_SECONDS = 1;
 
-// Shape of qurl-go's offline signed-fragment links: three or more
-// dot-separated base64url parts (<version>.<claims>.<secret>.<sig>).
-// Detected only to give those links a precise error in extractAccessToken.
-const SIGNED_FRAGMENT_RE = /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+){2,}$/;
+/**
+ * Shape of qurl-go's offline signed-fragment links: three or more
+ * dot-separated base64url parts (<version>.<claims>.<secret>.<sig>).
+ * Detected only to give those links a precise error in extractAccessToken.
+ *
+ * @internal Exported for in-package tests; not re-exported from index.ts.
+ */
+export const SIGNED_FRAGMENT_RE = /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+){2,}$/;
 // Access-token grammar accepted by enterPortal (base64url charset).
 const ACCESS_TOKEN_RE = /^[A-Za-z0-9_-]+$/;
 
