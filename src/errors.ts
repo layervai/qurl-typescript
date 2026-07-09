@@ -304,10 +304,10 @@ export class RegistrationTransportError extends RegistrationError {
 /**
  * Thrown when account-key registration has requested an email one-time code and
  * is waiting for the caller to supply it. This is NOT a hard failure: it is the
- * pause point of the two-phase email-OTP flow. Re-run `registerAgent` with
- * `withOTP(code)` once the code arrives. Mirrors Go `*OTPPendingError`
- * (unwrapping to `ErrOTPPending`); {@link maskedEmail} / {@link requestedAt} are
- * the analogue of the Go struct fields.
+ * pause point of the two-phase email-OTP flow. Re-run `registerAgent` with the
+ * `otp` option (`registerAgent(apiKey, store, { otp })`) once the code arrives.
+ * Mirrors Go `*OTPPendingError` (whose option is `WithOTP`); {@link maskedEmail}
+ * / {@link requestedAt} are the analogue of the Go struct fields.
  */
 export class OTPPendingError extends RegistrationError {
   /** The masked destination the code was sent to, e.g. `"j***@x.com"`. Empty if
@@ -322,7 +322,7 @@ export class OTPPendingError extends RegistrationError {
     super(
       ERROR_CODE_OTP_PENDING,
       "Registration awaiting one-time code",
-      `A one-time code was requested for ${dest} — check that inbox and re-run registerAgent with withOTP("<code>") to finish enrollment. Codes expire after a short window; if none arrives, re-running without withOTP re-sends a fresh code after a short cooldown.`,
+      `A one-time code was requested for ${dest} — check that inbox and re-run registerAgent with the code in the otp option (registerAgent(apiKey, store, { otp: "<code>" })) to finish enrollment. Codes expire after a short window; if none arrives, re-running without the otp option re-sends a fresh code after a short cooldown.`,
     );
     this.name = "OTPPendingError";
     this.maskedEmail = args.maskedEmail ?? "";
@@ -367,8 +367,9 @@ export class RegisterKeyRejectedError extends RegistrationError {
 }
 
 /** The device identity is already enrolled to a different key or agent. Re-run
- * with `withTakeover()` to re-bind it, or choose a different device id with
- * `withDeviceID()`. Mirrors Go `ErrAgentIdentityConflict`. */
+ * with the `takeover` option to re-bind it, or choose a different device id with
+ * the `deviceId` option. Mirrors Go `ErrAgentIdentityConflict` (whose options
+ * are `WithTakeover` / `WithDeviceID`). */
 export class AgentIdentityConflictError extends RegistrationError {
   constructor(detail: string, options?: { cause?: unknown }) {
     super(ERROR_CODE_AGENT_IDENTITY_CONFLICT, "Agent identity conflict", detail, options);

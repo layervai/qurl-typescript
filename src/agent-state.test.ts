@@ -113,4 +113,25 @@ describe("MemoryAgentStateStore", () => {
     const loaded = await store.loadAgentState();
     expect(loaded?.device_api_key).toBe("lv_device_secret");
   });
+
+  it("deep-clones the nested nhp_server_peer on save (not just a shallow copy)", async () => {
+    const store = new MemoryAgentStateStore();
+    const mutable: AgentState = structuredClone(sampleState);
+    await store.saveAgentState(mutable);
+    // Mutate a NESTED field after save — a shallow clone would leak this in.
+    mutable.nhp_server_peer!.host = "attacker.example.test";
+    const loaded = await store.loadAgentState();
+    expect(loaded?.nhp_server_peer?.host).toBe("h");
+  });
+
+  it("clones on load so mutating the returned state does not change persisted state", async () => {
+    const store = new MemoryAgentStateStore(structuredClone(sampleState));
+    const first = await store.loadAgentState();
+    // The engine mutates loaded state in place; that must not reach the store.
+    first!.device_api_key = "mutated-in-place";
+    first!.nhp_server_peer!.host = "mutated-host";
+    const second = await store.loadAgentState();
+    expect(second?.device_api_key).toBe("lv_device_secret");
+    expect(second?.nhp_server_peer?.host).toBe("h");
+  });
 });

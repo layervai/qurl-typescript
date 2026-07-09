@@ -38,6 +38,7 @@ export default [
         DecompressionStream: "readonly",
         btoa: "readonly",
         atob: "readonly",
+        structuredClone: "readonly",
       },
     },
     plugins: {

@@ -281,7 +281,7 @@ describe("registerAgent — RAK error mapping over the wire", () => {
         rakErrCode: c.code,
         rakErrMsg: "scripted denial",
       });
-      // Prime otp_pending so the WithOTP resume actually sends REG.
+      // Prime otp_pending so the resume (with the otp option) actually sends REG.
       await expect(registerAgent("lv_account_key", h.store, baseOpts(h))).rejects.toBeInstanceOf(
         OTPPendingError,
       );
@@ -566,9 +566,12 @@ describe("registerAgent — validation + OTPPendingError message", () => {
 
   it("OTPPendingError message is actionable and carries the masked email", () => {
     const e = new OTPPendingError({ requestedAt: new Date(), maskedEmail: "j***@x.com" });
-    for (const want of ["j***@x.com", "withOTP", "registerAgent", "expire"]) {
+    // The guidance must name the actual TS resume path (the `otp` option), NOT the
+    // Go `withOTP()` method — an operator/LLM reads this to recover.
+    for (const want of ["j***@x.com", "otp", "registerAgent", "expire"]) {
       expect(e.message).toContain(want);
     }
+    expect(e.message).not.toContain("withOTP");
     const generic = new OTPPendingError({ requestedAt: new Date() });
     expect(generic.message).toContain("your account email");
   });

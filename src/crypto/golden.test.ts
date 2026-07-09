@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { buildMessage, decryptReply } from "./message.js";
 import { NHP_OTP, NHP_REG, NHP_RAK } from "./packet.js";
@@ -48,12 +49,18 @@ interface GoldenFile {
   rak_error: ReplyVector;
 }
 
-const golden = JSON.parse(
-  readFileSync(
-    fileURLToPath(new URL("./__testdata__/agent_registration_golden.json", import.meta.url)),
-    "utf8",
-  ),
-) as GoldenFile;
+const FIXTURE_PATH = fileURLToPath(
+  new URL("./__testdata__/agent_registration_golden.json", import.meta.url),
+);
+const fixtureBytes = readFileSync(FIXTURE_PATH);
+const golden = JSON.parse(fixtureBytes.toString("utf8")) as GoldenFile;
+
+// The fixture is a temporary byte-identical vendor of the qurl-conformance
+// artifact (see __testdata__/README.md). Pin its SHA-256 so a silent local edit
+// is caught in CI — otherwise a well-meaning tweak could quietly turn this
+// cross-language fence back into a self-consistency check. If the upstream
+// artifact legitimately changes, re-vendor and update this digest deliberately.
+const FIXTURE_SHA256 = "77dc8634eb15e8a986df1093923b70b341386ba3c15421814ffed1a668f2d2bc";
 
 function hexToBytes(hex: string): Uint8Array {
   if (hex.length % 2 !== 0) {
@@ -85,6 +92,13 @@ function buildFromVector(v: InitiatorVector, headerType: number): Uint8Array {
     body: hexToBytes(v.body_hex),
   });
 }
+
+describe("NHP wire golden fence — vendored fixture integrity", () => {
+  it("the vendored golden vectors match the pinned SHA-256 (guards against a silent edit)", () => {
+    const digest = createHash("sha256").update(fixtureBytes).digest("hex");
+    expect(digest).toBe(FIXTURE_SHA256);
+  });
+});
 
 describe("NHP wire golden fence — deterministic initiator packets (buildMessage)", () => {
   it("otp reproduces packet_hex byte-for-byte (NHP_OTP)", () => {

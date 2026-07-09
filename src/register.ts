@@ -185,8 +185,8 @@ export interface RegisterAgentResult {
  *   - A pre-issued (bootstrap) key IS the enrollment credential: registration
  *     completes in one call.
  *   - An account key uses email one-time codes. The first call asks LayerV to
- *     email a code and throws {@link OTPPendingError}; re-run with `withOTP`
- *     (the `otp` option) once the code arrives to finish. See {@link
+ *     email a code and throws {@link OTPPendingError}; re-run with the code in
+ *     the `otp` option once it arrives to finish. See {@link
  *     RegisterOptions.otpProvider} for the single-call variant.
  *
  * `store` persists {@link AgentState}, which becomes a credential once enrollment
@@ -1418,7 +1418,8 @@ function newStoreBackedClient(state: AgentState, cfg: RegisterConfig): QURLClien
 // --- small helpers ---
 
 /** Validates an https:// (or http://localhost loopback) URL, mirroring the Go
- * `validateHTTPSOrLoopbackURL`. Returns the trimmed URL. */
+ * `validateHTTPSOrLoopbackURL`. Returns the URL with any trailing slashes
+ * stripped (it does not trim surrounding whitespace). */
 function validatedHttpsOrLoopback(
   rawUrl: string,
   label: string,

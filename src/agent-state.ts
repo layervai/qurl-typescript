@@ -180,15 +180,30 @@ export class MemoryAgentStateStore implements AgentStateStore {
   }
 
   async loadAgentState(): Promise<AgentState | null> {
-    return this.state;
+    // Deep-clone on the way out too: the registration engine mutates the loaded
+    // state in place, and returning the stored object by reference would let
+    // those mutations reach persisted state before any save. FileAgentStateStore
+    // returns a fresh object per load (it re-parses the file), so cloning here
+    // keeps the two stores' isolation semantics aligned.
+    return this.state === null ? null : deepCloneState(this.state);
   }
 
   async saveAgentState(state: AgentState): Promise<void> {
-    // Store a shallow clone so a later in-place mutation by the caller does not
-    // retroactively change persisted state (the file store serializes, so this
-    // keeps the two stores' semantics aligned).
-    this.state = { ...state };
+    // Deep-clone so a later in-place mutation by the caller (including of the
+    // nested nhp_server_peer) does not retroactively change persisted state. The
+    // file store serializes, so this keeps the two stores' semantics aligned.
+    this.state = deepCloneState(state);
   }
+}
+
+/** Deep-clones an AgentState. Uses structuredClone (Node >= 17) with a JSON
+ * round-trip fallback for older/limited runtimes; AgentState is plain JSON, so
+ * both are faithful. */
+function deepCloneState(state: AgentState): AgentState {
+  if (typeof structuredClone === "function") {
+    return structuredClone(state);
+  }
+  return JSON.parse(JSON.stringify(state)) as AgentState;
 }
 
 function isNotFound(err: unknown): boolean {
