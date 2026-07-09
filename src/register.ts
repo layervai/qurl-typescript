@@ -13,6 +13,7 @@ import {
   QURLError,
   RegisterConfigError,
   BootstrapConfigError,
+  RegistrationTransportError,
   OTPPendingError,
   OTPIncorrectError,
   OTPExpiredError,
@@ -383,6 +384,13 @@ async function runEngine(
   // 1. Fast path: a registered state short-circuits with no network.
   const state = await loadOrCreateAgentState(store, cfg);
   if (state.registered_at !== undefined && state.registered_at !== null) {
+    // This validates the persisted NHP peer, including its expiry — so a
+    // registered agent whose persisted peer has expired is rejected here rather
+    // than served. That is inherited verbatim from the Go contract
+    // (qurl-go validateRegisteredAgentState): LayerV peers are normally durable
+    // (expire_time 0), the peer is re-fetched on a fresh registration, and an
+    // expired persisted peer means the routing state is stale, so the agent must
+    // re-register. Kept Go-aligned deliberately (do not diverge the two SDKs).
     validateRegisteredAgentState(state, cfg.now(), cfg.invalidConfig);
     if (cfg.requireDeviceKey && (state.device_api_key ?? "").trim() === "") {
       // The device credential is issued once and cannot be recovered from this
@@ -785,9 +793,15 @@ async function doAuthorizedJSON<T>(
       signal: cfg.timeoutMs > 0 ? AbortSignal.timeout(cfg.timeoutMs) : undefined,
     });
   } catch (err) {
-    // Transport fault (DNS, connection refused, timeout). Surface as a config
-    // error carrying the cause — the registration front-door class.
-    throw cfg.invalidConfig(`${method} ${path} failed: ${errText(err)}`, { cause: err });
+    // Transport fault (DNS, connection refused, per-request timeout) — a
+    // transient outage, distinct from a permanent misconfig. Surface it under
+    // the retryable RegistrationTransportError code so a caller branching on
+    // `.code` re-runs (registerAgent is idempotent) rather than treating a blip
+    // as a config error. This intentionally does NOT use the front-door config
+    // class (which stays for input/response-shape faults).
+    throw new RegistrationTransportError(`${method} ${path} failed: ${errText(err)}`, {
+      cause: err,
+    });
   }
   if (response.ok) {
     let json: { data?: T };
@@ -1413,9 +1427,16 @@ function encodeBase64Std(bytes: Uint8Array): string {
 }
 
 function decodeBase64Std(b64: string): Uint8Array {
+  // An empty string decodes to zero bytes, but every field this decodes (a device
+  // key, a peer public key) is a fixed-width credential — an empty value is
+  // malformed input, so reject it explicitly rather than returning an empty array
+  // a downstream length check would trip on with a vaguer error.
+  if (b64 === "") {
+    throw new Error("empty base64 (a key/packet field must not be empty)");
+  }
   // Reject non-standard-base64 input the way Go's base64.StdEncoding.Strict does:
   // atob is lenient about some inputs, so validate the alphabet + padding first.
-  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(b64) || b64.length % 4 !== 0) {
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(b64) || b64.length % 4 !== 0) {
     throw new Error("not standard base64");
   }
   const bin = atob(b64);

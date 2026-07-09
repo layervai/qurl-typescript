@@ -1,0 +1,66 @@
+{
+  "artifact": "qurl-agent-registration-golden-vectors",
+  "schema_version": 1,
+  "description": "NHP agent-registration Noise-handshake golden packets (X25519 / AES-256-GCM / BLAKE2s): the OTP request, the emailed-code and pre-issued-key REG requests, and the server register-ack (RAK) success and error replies.",
+  "source_of_truth": "github.com/layervai/qurl-conformance",
+  "notes": [
+    "otp / reg_emailed / reg_preissued: DETERMINISTIC. A conformant initiator MUST reproduce packet_hex byte-for-byte from the listed inputs (fixed ephemeral_priv, counter, timestamp_nanos, preamble). These packets are decrypt-fenced by the NHP Go server responder, which independently recovers the initiator static key, timestamp, and body.",
+    "reg_emailed vs reg_preissued: the two REG packets differ ONLY in the body `otp` value (an emailed 8-digit code vs a pre-issued key secret). They are identical on the wire; a verifier distinguishes them by the matched key record, not by the packet bytes. Documented so a consumer sees both paths use the same NHP_REG packet framing.",
+    "rak_success / rak_error: FROZEN decrypt-only. The server sealed these with a RANDOM server ephemeral, so they are NOT reproducible by a client; a consumer can only DECRYPT them and MUST recover type=NHP_RAK (14), the counter, the timestamp_nanos, and the body (ServerRegisterAckMsg: errCode/errMsg/aspId). Re-hosted here verbatim as frozen golden values, mirroring the relay-knock `ack` precedent.",
+    "conformance#19 matched-counter pair: rak_success AND rak_error carry counter_hex = 0xb, which ECHOES reg_emailed.counter (11). The reg_emailed -> rak pair is therefore counter-matched, so a consumer validating the counter-echo enforcement (a RAK must echo its REG's transaction counter) has a positive fixture.",
+    "Origin: OTP/REG built by a type-parameterized NHP initiator with a fixed ephemeral/counter/timestamp (a conformant initiator reproduces packet_hex byte-for-byte); RAK sealed by the OpenNHP reference server with a fixed transaction counter and a random ephemeral, so it is frozen decrypt-only. Keys/ids/secrets are SYNTHETIC (fixed fill patterns, distinct from the relay-knock set) — no real keys, emails, or hostnames.",
+    "Fence status: the authoritative independent fence for these packets today is the OpenNHP reference server decrypt suite, which recovers the initiator static key / timestamp / type / body from every case. An in-repo BEHAVIORAL fence that rebuilds the deterministic OTP/REG packet_hex and re-decrypts it (as relay_knock's does) is deferred until a type-parameterized single-message builder is exposed to this repo's verify SDK; tracked in layervai/qurl-conformance#21."
+  ],
+  "otp": {
+    "server_static_priv_hex": "1112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f30",
+    "server_static_pub_hex": "4d27bcee3135c4944b28d27dd809b07be10c35160d20131caa7e85575498d07c",
+    "device_static_priv_hex": "5152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f70",
+    "device_static_pub_hex": "0233f006ef4bed144ea0a5bb46c7067c7c2acec5f8cc811f3df59fdcd5ac7614",
+    "ephemeral_priv_hex": "9192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0",
+    "timestamp_nanos": "1700000000000000000",
+    "counter": "10",
+    "preamble_hex": "a1b2c3d4",
+    "body_hex": "7b226173704964223a226167656e74222c226465764964223a226167656e742d636f6e666f726d222c2270617373223a22636f6e666f726d616e63652d6f74702d7365637265742d30303031222c227573724964223a226b65795f636f6e666f726d227d",
+    "packet_hex": "a1b2c3d4a1bec3a00100000000000000000000000000000a9cced751b301bbd16c4fb8deddd82f18925d71ed90c844fa0158f845b0fa7f4b000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000024a430a812e1daf0f41c21f1c88f7a510b3902fdbca9dbe32d83e3adcb82c8cf9b32b904762c7031902490c44dc9bbde15f9da0d6d17db34810d7468f5c08d0ecd90a972f1a2ba17f9ec9692f014dd6e161939e40d80c7d8238780cb0f8d7dd4a98b761046217469b29c44499dda04ea0235a1a3a63b4cf7cda3f116c235a410fa2c48a60ea7081c53fe104bd0167be22a6da8fd26c1cc63c7225646085cc4e42f53fa96c94d24ad86d3d3af7923a00814da8ebdae14ec88e1bc99665e0eb9410659563fcb659d02f419ac7e1fc27fd3c453384457d373d885409e1c"
+  },
+  "reg_emailed": {
+    "server_static_priv_hex": "1112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f30",
+    "server_static_pub_hex": "4d27bcee3135c4944b28d27dd809b07be10c35160d20131caa7e85575498d07c",
+    "device_static_priv_hex": "5152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f70",
+    "device_static_pub_hex": "0233f006ef4bed144ea0a5bb46c7067c7c2acec5f8cc811f3df59fdcd5ac7614",
+    "ephemeral_priv_hex": "95969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4",
+    "timestamp_nanos": "1700000000000000000",
+    "counter": "11",
+    "preamble_hex": "a1b2c3d4",
+    "body_hex": "7b226173704964223a226167656e74222c226465764964223a226167656e742d636f6e666f726d222c226f7470223a223132333435363738222c2275737244617461223a7b226167656e74566572223a22302e302e302d636f6e666f726d222c22706c6174666f726d223a22636f6e666f726d616e6365227d2c227573724964223a226b65795f636f6e666f726d227d",
+    "packet_hex": "a1b2c3d4a1bfc3740100000000000000000000000000000b0e8e7a1585273df2cb2f5db3e57f3d4adfd51b4a737e25e836a85b36ffe8d4190000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000addbe67476b981a3b91e9c285ea22284ff9523fa4772c453a46db05975b907d23b93974ea6fd87ae9a69bac4f1de287336888e0f6fc1824786eb533ffe6e84ac43bb3d363de89b0226758a2ef48107984d9d59ce795fb010f4ef442c153b9fa4b0d166d2295fc0ea88e1a4110d1cd1227d99ff1a7abaca10ae23951efc76d78ebe92c5bea214f646bbc7fb4caef2a2a06afc77f1b5f541089a5021aac615b6b9e4791648dac6102785a31d6dcb457f70696bd17fedb6ef57e7528aa057c4c42088adf2c599edfe1459450bca108a83cea553fcd50731b32f93f726230d33d5b57756bd0dde5f5800c5001fe36e94c3e41d05313ac329b700cc467497c801f6272a567247f89b9e8d"
+  },
+  "reg_preissued": {
+    "server_static_priv_hex": "1112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f30",
+    "server_static_pub_hex": "4d27bcee3135c4944b28d27dd809b07be10c35160d20131caa7e85575498d07c",
+    "device_static_priv_hex": "5152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f70",
+    "device_static_pub_hex": "0233f006ef4bed144ea0a5bb46c7067c7c2acec5f8cc811f3df59fdcd5ac7614",
+    "ephemeral_priv_hex": "999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8",
+    "timestamp_nanos": "1700000000000000000",
+    "counter": "12",
+    "preamble_hex": "a1b2c3d4",
+    "body_hex": "7b226173704964223a226167656e74222c226465764964223a226167656e742d636f6e666f726d222c226f7470223a227072656973737565642d6b65792d7365637265742d303030303030303030303031222c2275737244617461223a7b226167656e74566572223a22302e302e302d636f6e666f726d222c22706c6174666f726d223a22636f6e666f726d616e6365227d2c227573724964223a226b65795f636f6e666f726d227d",
+    "packet_hex": "a1b2c3d4a1bfc36d0100000000000000000000000000000c36c879f7650d292dd695f6ccbdecf69ebfcda937e0e4efdb6ce867db81695f030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000e317e2d56d4c1c83f8356221dfb1168275fb03eb2ab601e84d1ec08bbcde3160a242e72c8e58052a24bc7e376c28efb5e43f1f7f924fe495456422e73014f0574821176ad9366862e2ed2fa01278833ca4c7b02db83bf42a3f7052d6850c79fcb14db1372c271fad7f13ef56e34ad5430b9862221600c6643d7306c6c6acfa9c46f23b74413508f52f809a55cf3c26d2a81cb98b53d5482e03a48913e33c398768836b4a57d393e3fc71693a759cfb8558633d4a281d4d71af7d7a8fb37ce4b1138084d18f641202bd553b1f615b6e256f99512207d44672a8b326fc32801b5c7107f38d3197e12c3bb4455077935963d50218bc3b92510f512c57e3b7dffac6eb5ecb7ed0a6b105ecb76ad4d2a333a5b31e64132a4bf5334bcaba01e95ef65695"
+  },
+  "rak_success": {
+    "server_static_pub_hex": "4d27bcee3135c4944b28d27dd809b07be10c35160d20131caa7e85575498d07c",
+    "agent_static_priv_hex": "5152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f70",
+    "timestamp_nanos": "1783559107727894000",
+    "counter_hex": "b",
+    "body_hex": "7b226173704964223a226167656e74222c22657272436f6465223a2230227d",
+    "packet_hex": "a9afc446a9a1c4690100000000000000000000000000000bae8bff6d5179fdd3e4b7f852ebdc5aa810390619a4b0bb7b7fdb5e1cfa0cb84500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000d3439b0aba334412d534844474774af7cfc50b60be868aa5d29dcc290d02622271c4d8e0aa2d94171afa677a9536ad75bd5a3742b2c1562eb311e9f758cb655d1c31a5643d714481343f7a5e2d24405755170dacb1467102ef76f38fd7172925069093454845e4c3c464831c23fe5baf8b3791c1271768e1ed312f89078ee015574a604b897d95d3d884f6bb778216d7d8b0130ea3e52"
+  },
+  "rak_error": {
+    "server_static_pub_hex": "4d27bcee3135c4944b28d27dd809b07be10c35160d20131caa7e85575498d07c",
+    "agent_static_priv_hex": "5152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f70",
+    "timestamp_nanos": "1783559107728402000",
+    "counter_hex": "b",
+    "body_hex": "7b226173704964223a226167656e74222c22657272436f6465223a223532313030222c226572724d7367223a22726567697374726174696f6e2072656a65637465643a206f747020696e76616c6964206f722065787069726564227d",
+    "packet_hex": "4bd908154bd708790100000000000000000000000000000bf572da476abca8f435a8afb223a12da5b8835a2cb6becd28004241080eff6f7700000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000ccf8f507cb2a0727a65f53227482f55129fc3abf2a80c9032e04476865b9d4249bb07f7c23602d6486ba014a30af47fdea2d5e4444b18804097491e5147c219527dc61a4ed52e0a4d13b573c36e35193d3d0e32f60e39b4f8ca675a5141645e1d67e665deb153c256cfa850ebd2a864170781e68ebcbafb453690661a5b496f7199217c731965bbc536716d133e589a87617bfae9d09ce0175426a709ba64db7ea1d0d7e47358b4c02c4c9f35ea975d2c6dd58a557a8ad995e15ba0814e7146fa7ede5b10d238aa43d4f0c03fa5aedaa84a7146"
+  }
+}

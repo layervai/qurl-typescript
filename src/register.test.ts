@@ -17,6 +17,8 @@ import {
   DeviceCredentialMissingError,
   NoAccountEmailError,
   RegistrationDenyError,
+  RegistrationTransportError,
+  ERROR_CODE_REGISTER_TRANSPORT,
   QURLError,
 } from "./errors.js";
 import { RegisterHarness, seededRandomBytes } from "./__tests__/register-harness.js";
@@ -459,6 +461,26 @@ describe("registerAgent — server_id integrity + overrides", () => {
     // The cause chains the underlying API error.
     expect((err as RegisterKeyRejectedError).cause).toBeInstanceOf(QURLError);
   });
+
+  it("a transport fault on the HTTPS pre-flight surfaces the retryable transport code, not a config error", async () => {
+    const h = new RegisterHarness({ keyKind: "bootstrap" });
+    const netErr = new TypeError("fetch failed: ECONNREFUSED");
+    h.fetch = (async (input) => {
+      const url = typeof input === "string" ? input : (input as URL).toString();
+      if (url === `${h.apiBase()}/v1/agent/registration-info`) {
+        throw netErr; // DNS/connection/timeout-style transport fault
+      }
+      throw new Error("unexpected");
+    }) as typeof globalThis.fetch;
+    const err = await registerAgent("lv_key", h.store, baseOpts(h, { fetch: h.fetch })).catch(
+      (e) => e,
+    );
+    expect(err).toBeInstanceOf(RegistrationTransportError);
+    // Distinct retryable discriminant — NOT the permanent-misconfig config class.
+    expect(err).not.toBeInstanceOf(RegisterConfigError);
+    expect((err as RegistrationTransportError).code).toBe(ERROR_CODE_REGISTER_TRANSPORT);
+    expect((err as RegistrationTransportError).cause).toBe(netErr);
+  });
 });
 
 describe("registerAgent — REG body metadata + takeover", () => {
@@ -505,11 +527,13 @@ describe("registerAgent — validation + OTPPendingError message", () => {
 
   it("a corrupt loaded keypair surfaces the register front-door class", async () => {
     // Mirrors Go TestLoadPath_CorruptKeypairMatchesFrontDoorClass for the register
-    // side: bad base64, non-x25519, and pub-mismatch all map to RegisterConfigError.
+    // side: bad base64, non-x25519, pub-mismatch, and an EMPTY private key all map
+    // to RegisterConfigError (the empty key exercises the strict-decode reject).
     for (const bad of [
       { private_key_b64: "not-base64", public_key_b64: "also-bad" },
       { private_key_b64: btoa("too short"), public_key_b64: "" },
       { private_key_b64: btoa("\0".repeat(32)), public_key_b64: btoa("\x01".repeat(32)) },
+      { private_key_b64: "", public_key_b64: "" }, // empty key: malformed, must not decode to []
     ]) {
       const store = new MemoryAgentStateStore({ ...bad });
       await expect(

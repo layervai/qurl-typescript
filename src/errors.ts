@@ -246,6 +246,7 @@ export const ERROR_CODE_REGISTRATION_RETRY_LATER = "registration_retry_later";
 export const ERROR_CODE_BOOTSTRAP_SETUP_KEY_CONSUMED = "bootstrap_setup_key_consumed";
 export const ERROR_CODE_REGISTRATION_DENIED = "registration_denied";
 export const ERROR_CODE_INVALID_AGENT_STATE = "invalid_agent_state";
+export const ERROR_CODE_REGISTER_TRANSPORT = "register_transport_error";
 
 /**
  * Base class for every error `registerAgent` throws. Extends {@link QURLError}
@@ -281,6 +282,22 @@ export class BootstrapConfigError extends RegistrationError {
   constructor(detail: string, options?: { cause?: unknown }) {
     super(ERROR_CODE_BOOTSTRAP_INVALID_CONFIG, "Invalid bootstrap config", detail, options);
     this.name = "BootstrapConfigError";
+  }
+}
+
+/**
+ * A transient transport/network fault while reaching the registration HTTPS
+ * endpoints — DNS failure, connection refused, or a per-request timeout — as
+ * opposed to a permanent misconfiguration ({@link RegisterConfigError}). Its
+ * distinct `.code` (`"register_transport_error"`) lets a caller branching on
+ * `.code` treat a transient outage as retryable and re-run `registerAgent`
+ * (which is idempotent), instead of surfacing it as a permanent config error.
+ * The underlying fetch failure is on `.cause`.
+ */
+export class RegistrationTransportError extends RegistrationError {
+  constructor(detail: string, options?: { cause?: unknown }) {
+    super(ERROR_CODE_REGISTER_TRANSPORT, "Registration transport error", detail, options);
+    this.name = "RegistrationTransportError";
   }
 }
 

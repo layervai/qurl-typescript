@@ -22,7 +22,9 @@ const TAG3 = Uint8Array.of(0x03);
  * CRITICAL — this is HMAC *over the unkeyed hash* (`hmac(blake2s, key, msg)`),
  * NOT noble's keyed BLAKE2s (`blake2s(msg, { key })`). The two produce
  * different bytes; using the keyed form would silently break interop with the
- * Go server. The `kdf.test.ts` golden vectors are the guard against that.
+ * Go server. The `golden.test.ts` byte-exact packet vectors are the guard
+ * against that: the KDF feeds every AEAD key, so a wrong HMAC form changes the
+ * sealed packet bytes and fails the `packet_hex` reproduction.
  */
 function mac(type: HashType, key: Uint8Array, ...inputs: Uint8Array[]): Uint8Array {
   const m = hmac.create(nobleHash(type), key);

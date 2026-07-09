@@ -24,7 +24,12 @@
   the vendored NHP wire crypto (`src/crypto/`, ported byte-for-byte from the NHP
   js-agent — X25519 / AES-256-GCM / BLAKE2s Noise handshake), and the registration
   error taxonomy (`OTPPendingError`, `RegisterKeyRejectedError`,
-  `AgentIdentityConflictError`, `RegistrationDenyError`, …).
+  `AgentIdentityConflictError`, `RegistrationDenyError`,
+  `RegistrationTransportError`, …). The vendored wire is byte-fenced against the
+  qurl-conformance agent-registration golden vectors (`crypto/golden.test.ts`) —
+  `buildMessage` reproduces the OTP/REG `packet_hex` exactly and `decryptReply`
+  opens the frozen RAK replies; the vectors are a temporary vendor pending the
+  published `@layervai/qurl-conformance` accessor (layervai/qurl-typescript#176).
 - **client:** add NHP-native `bootstrapAgent(setupKey, store, opts?)` free function
   (deprecated in favor of `registerAgent`) that runs the same NHP enrollment engine
   on the pre-issued-key path and returns the registered `AgentState`.
