@@ -1,5 +1,34 @@
 # Changelog
 
+## Unreleased
+
+### ⚠ BREAKING CHANGES
+
+- **client:** The NHP-native `bootstrapAgent` free function (and `registerAgent`)
+  enroll over NHP against the qURL API origin (`api.layerv.ai`) rather than the
+  pre-NHP `POST /v1/agent/bootstrap` endpoint. The legacy `QURLClient.bootstrapAgent`
+  method is unchanged in behavior but is now deprecated in favor of `registerAgent`;
+  its endpoint/origin and single-purpose (identity-only, no device credential)
+  return value are superseded by the NHP enrollment engine, which mints a device
+  REST credential and returns a ready-to-use client. New crypto dependencies
+  (`@noble/curves`, `@noble/ciphers`, `@noble/hashes`) are added.
+
+### Features
+
+- **client:** add NHP-native `registerAgent(apiKey, store, opts?)` — the idempotent
+  front door for enrolling an agent and getting a ready-to-use `QURLClient`. Covers
+  both the pre-issued (bootstrap) key path (one-call enrollment) and the account
+  email-OTP path (two-phase: `OTPPendingError` then resume with `withOTP`), with a
+  fast path that serves the client from persisted state with no network. Adds
+  `AgentState` / `AgentStateStore` / `FileAgentStateStore` / `MemoryAgentStateStore`,
+  the vendored NHP wire crypto (`src/crypto/`, ported byte-for-byte from the NHP
+  js-agent — X25519 / AES-256-GCM / BLAKE2s Noise handshake), and the registration
+  error taxonomy (`OTPPendingError`, `RegisterKeyRejectedError`,
+  `AgentIdentityConflictError`, `RegistrationDenyError`, …).
+- **client:** add NHP-native `bootstrapAgent(setupKey, store, opts?)` free function
+  (deprecated in favor of `registerAgent`) that runs the same NHP enrollment engine
+  on the pre-issued-key path and returns the registered `AgentState`.
+
 ## [0.3.1](https://github.com/layervai/qurl-typescript/compare/qurl-v0.3.0...qurl-v0.3.1) (2026-07-05)
 
 

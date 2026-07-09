@@ -2597,7 +2597,18 @@ export class QURLClient {
     return this.request<Quota>("GET", "/v1/quota");
   }
 
-  /** Bootstrap a LayerV qURL Connector agent. */
+  /**
+   * Bootstrap a LayerV qURL Connector agent via the legacy
+   * `POST /v1/agent/bootstrap` endpoint.
+   *
+   * @deprecated Prefer the top-level {@link registerAgent} (or the NHP-native
+   * {@link bootstrapAgent} free function). This method calls the pre-NHP HTTPS
+   * bootstrap endpoint and only returns the durable agent identity — it neither
+   * enrolls the device key over the NHP Noise handshake nor mints a device REST
+   * credential, so it cannot return a ready-to-use client. `registerAgent`
+   * persists an {@link AgentState} credential and returns an authorized client
+   * covering both the pre-issued-key and email-OTP paths.
+   */
   async bootstrapAgent(
     input: AgentBootstrapInput,
     options?: RequestOptions,
