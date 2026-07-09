@@ -23,7 +23,7 @@
 - **client:** add NHP-native `registerAgent(apiKey, store, opts?)` — the idempotent
   front door for enrolling an agent and getting a ready-to-use `QURLClient`. Covers
   both the pre-issued (bootstrap) key path (one-call enrollment) and the account
-  email-OTP path (two-phase: `OTPPendingError` then resume with `withOTP`), with a
+  email-OTP path (two-phase: `OTPPendingError` then resume with the `otp` option), with a
   fast path that serves the client from persisted state with no network. Adds
   `AgentState` / `AgentStateStore` / `FileAgentStateStore` / `MemoryAgentStateStore`,
   the vendored NHP wire crypto (`src/crypto/`, ported byte-for-byte from the NHP
