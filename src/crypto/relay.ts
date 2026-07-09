@@ -126,7 +126,7 @@ async function relayDo(
   packet: Uint8Array,
   opts: RelayOptions,
 ): Promise<{ status: number; body: Uint8Array; url: string }> {
-  const base = relayBaseURL.replace(/\/+$/, "");
+  const base = stripTrailingSlashes(relayBaseURL);
   const url = `${base}/relay/${serverID}`;
   const fetchFn = opts.fetchFn ?? globalThis.fetch;
 
@@ -259,4 +259,15 @@ function errText(err: unknown): string {
     return err.message;
   }
   return String(err);
+}
+
+/** Strips trailing "/" characters. A manual scan rather than `replace(/\/+$/, "")`
+ * so it is linear on any input (the regex form is polynomial-ReDoS on a long run
+ * of slashes). */
+function stripTrailingSlashes(url: string): string {
+  let end = url.length;
+  while (end > 0 && url.charCodeAt(end - 1) === 47 /* "/" */) {
+    end--;
+  }
+  return end === url.length ? url : url.slice(0, end);
 }

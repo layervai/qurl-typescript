@@ -1075,7 +1075,7 @@ function resolveRelayURL(cfg: RegisterConfig, info: RegistrationInfoResponse): s
   if (cfg.relayUrlOverride !== "") {
     return cfg.relayUrlOverride;
   }
-  return info.relay.base_url.replace(/\/+$/, "");
+  return stripTrailingSlashes(info.relay.base_url);
 }
 
 /**
@@ -1434,14 +1434,14 @@ function validatedHttpsOrLoopback(
     throw invalidConfig(`${label} must not contain userinfo`);
   }
   if (parsed.protocol === "https:") {
-    return rawUrl.replace(/\/+$/, "");
+    return stripTrailingSlashes(rawUrl);
   }
   if (parsed.protocol === "http:") {
     const host = parsed.hostname.toLowerCase();
     const isLoopback =
       host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]";
     if (isLoopback) {
-      return rawUrl.replace(/\/+$/, "");
+      return stripTrailingSlashes(rawUrl);
     }
   }
   throw invalidConfig(`${label} must use https:// scheme`);
@@ -1453,6 +1453,17 @@ function parseTimeOr(iso: string | undefined | null, fallbackMs: number): Date {
   }
   const t = Date.parse(iso);
   return Number.isNaN(t) ? new Date(fallbackMs) : new Date(t);
+}
+
+/** Strips trailing "/" characters. A manual scan rather than `replace(/\/+$/, "")`
+ * so it is linear on any input (the regex form is polynomial-ReDoS on a long run
+ * of slashes over library-supplied input, e.g. a registration-info base_url). */
+function stripTrailingSlashes(url: string): string {
+  let end = url.length;
+  while (end > 0 && url.charCodeAt(end - 1) === 47 /* "/" */) {
+    end--;
+  }
+  return end === url.length ? url : url.slice(0, end);
 }
 
 function defaultRandomBytes(n: number): Uint8Array {
