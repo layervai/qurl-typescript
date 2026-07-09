@@ -11,7 +11,12 @@
   its endpoint/origin and single-purpose (identity-only, no device credential)
   return value are superseded by the NHP enrollment engine, which mints a device
   REST credential and returns a ready-to-use client. New crypto dependencies
-  (`@noble/curves`, `@noble/ciphers`, `@noble/hashes`) are added.
+  (`@noble/curves`, `@noble/ciphers`, `@noble/hashes`) are added. These are
+  ESM-only and are imported lazily, so importing the package and using the rest
+  of the client is unaffected on any supported Node; but `registerAgent` /
+  `bootstrapAgent` called through the **CommonJS** build (`require("@layervai/qurl")`)
+  need Node ≥ 20.19 (which added `require()` of ES modules). CJS consumers on an
+  older Node 20.x should call these via the ESM entry.
 
 ### Features
 

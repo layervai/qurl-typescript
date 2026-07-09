@@ -11,6 +11,7 @@
 // here only to build/decrypt raw NHP messages outside that flow.
 
 export { HashType, HASH_SIZE } from "./hash.js";
+export { x25519PublicKey, x25519SharedSecret, X25519_KEY_SIZE } from "./dh.js";
 export {
   NHP_KNK,
   NHP_ACK,

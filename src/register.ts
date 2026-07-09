@@ -30,15 +30,34 @@ import {
   RegistrationDenyError,
   RegistrationError,
 } from "./errors.js";
-import {
-  exchangeRegister,
-  sendOTP,
-  pubKeyFingerprint,
-  NHP_COK,
-  NHP_RAK,
-  RelayError,
-} from "./crypto/index.js";
-import { x25519PublicKey as x25519PublicKeyFromPriv } from "./crypto/dh.js";
+// The vendored NHP wire crypto (src/crypto/) is loaded LAZILY via a memoized
+// dynamic import (see loadCrypto), NOT statically. Rationale: @noble/curves,
+// @noble/ciphers, and @noble/hashes are ESM-only ("type":"module", no CJS
+// build). A static import pulls them into this module's load graph, which — in
+// the package's CommonJS build — becomes `require("@noble/...")` and throws
+// ERR_REQUIRE_ESM on Node < 20.19 (the package floor is Node 20.0.0). Deferring
+// the load keeps `require("@layervai/qurl")` crypto-free, so a CJS consumer that
+// never calls registerAgent/bootstrapAgent loads cleanly on any supported Node;
+// the crypto is imported only when a registration run actually begins, and the
+// loaded module is threaded through `cfg.crypto`. The ESM build is unaffected
+// (noble is ESM). See tsconfig.cjs.json's TODO — a future `module:node16` CJS
+// migration could statically import instead. Type-only imports below carry no
+// runtime require.
+import type * as CryptoWire from "./crypto/index.js";
+
+/** The lazily-loaded vendored crypto module, resolved once per process. */
+type CryptoModule = typeof CryptoWire;
+let cryptoModulePromise: Promise<CryptoModule> | undefined;
+
+/** Loads the vendored NHP wire crypto via a memoized dynamic import. Kept out of
+ * the static graph so the package's CJS entry does not `require` the ESM-only
+ * noble deps at load time (see the import-block note above). */
+async function loadCrypto(): Promise<CryptoModule> {
+  if (cryptoModulePromise === undefined) {
+    cryptoModulePromise = import("./crypto/index.js");
+  }
+  return cryptoModulePromise;
+}
 
 const DEFAULT_BASE_URL = "https://api.layerv.ai";
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -179,6 +198,14 @@ export interface RegisterAgentResult {
  * file — on the account path each concurrent fresh run dispatches its own code,
  * so concurrent setup multiplies OTP emails. Serialize enrollment per store.
  *
+ * Runtime note: the NHP wire crypto depends on ESM-only packages (`@noble/*`)
+ * and is imported lazily on the first call. Under the ESM build this works on
+ * every supported Node. Under the CommonJS build (`require("@layervai/qurl")`),
+ * that lazy import resolves via `require()`, which needs Node ≥ 20.19 (the
+ * version that added `require()` of ES modules); a CJS consumer on an older
+ * Node 20.x should use the ESM entry to call this. Importing the package and
+ * using the rest of the client is unaffected on any supported Node.
+ *
  * @example
  * ```ts
  * const { client } = await registerAgent(apiKey, new FileAgentStateStore("./agent.json"));
@@ -304,6 +331,10 @@ interface RegisterConfig {
    * front door keeps its documented class on device-id mismatch, key decode,
    * server_id mismatch, and loaded-state validation. Mirrors `invalidConfigErr`. */
   invalidConfig: (detail: string, options?: { cause?: unknown }) => RegistrationError;
+  /** The lazily-loaded vendored NHP wire crypto, resolved once at the start of a
+   * run (see loadCrypto) and read synchronously by the crypto-using helpers. It
+   * is populated by {@link runEngine} before any crypto call. */
+  crypto: CryptoModule;
   run(apiKey: string, store: AgentStateStore): Promise<AgentState>;
 }
 
@@ -364,11 +395,32 @@ function newRegisterConfig(
     randomBytes: opts.randomBytes ?? defaultRandomBytes,
     requireDeviceKey: true,
     invalidConfig: (detail, options) => new RegisterConfigError(detail, options),
+    // Populated by runEngine via loadCrypto before any crypto helper runs; the
+    // lazy-load throwing guard makes a premature read fail loudly rather than
+    // silently using an unloaded module.
+    crypto: cryptoNotLoadedGuard(),
     run(apiKey: string, store: AgentStateStore) {
       return runEngine(this, apiKey, store);
     },
   };
   return cfg;
+}
+
+/** A stand-in {@link CryptoModule} for `cfg.crypto` before {@link runEngine}
+ * loads the real one. Every property access throws, so a code path that uses
+ * crypto without going through runEngine's load fails loudly instead of reading
+ * `undefined`. runEngine overwrites `cfg.crypto` with the real module first. */
+function cryptoNotLoadedGuard(): CryptoModule {
+  return new Proxy(
+    {},
+    {
+      get() {
+        throw new Error(
+          "qurl: internal error — NHP crypto used before it was loaded (runEngine must call loadCrypto first)",
+        );
+      },
+    },
+  ) as CryptoModule;
 }
 
 /**
@@ -381,6 +433,11 @@ async function runEngine(
   apiKey: string,
   store: AgentStateStore,
 ): Promise<AgentState> {
+  // Load the vendored NHP wire crypto once, before any helper touches it
+  // (loadOrCreateAgentState derives the device public key). Lazy so the package's
+  // CJS entry does not eagerly `require` the ESM-only noble deps — see loadCrypto.
+  cfg.crypto = await loadCrypto();
+
   // 1. Fast path: a registered state short-circuits with no network.
   const state = await loadOrCreateAgentState(store, cfg);
   if (state.registered_at !== undefined && state.registered_at !== null) {
@@ -622,7 +679,7 @@ async function registerExchange(
   );
   let reply;
   try {
-    reply = await exchangeRegister(relayUrl, serverPub, body, {
+    reply = await cfg.crypto.exchangeRegister(relayUrl, serverPub, body, {
       deviceStaticPriv: devicePriv,
       fetchFn: cfg.fetchFn,
       timeoutMs: cfg.timeoutMs,
@@ -632,7 +689,7 @@ async function registerExchange(
   } catch (err) {
     throw normalizeRelayError(cfg, err);
   }
-  if (reply.headerType === NHP_COK) {
+  if (reply.headerType === cfg.crypto.NHP_COK) {
     // The relay is under load and returned an overload cookie-challenge instead
     // of a registration reply — a "retry later" signal, distinct from a protocol
     // violation.
@@ -640,7 +697,7 @@ async function registerExchange(
       "the registration relay returned an overload cookie-challenge; back off briefly and re-run",
     );
   }
-  if (reply.headerType !== NHP_RAK) {
+  if (reply.headerType !== cfg.crypto.NHP_RAK) {
     throw cfg.invalidConfig(`unexpected NHP reply type ${reply.headerType} to a registration`);
   }
   return parseRegisterAck(reply.body);
@@ -669,7 +726,7 @@ async function dispatchOTP(
     }),
   );
   try {
-    await sendOTP(relayUrl, serverPub, body, {
+    await cfg.crypto.sendOTP(relayUrl, serverPub, body, {
       deviceStaticPriv: devicePriv,
       fetchFn: cfg.fetchFn,
       timeoutMs: cfg.timeoutMs,
@@ -1039,7 +1096,7 @@ function assertServerIDMatches(
   } catch (err) {
     throw cfg.invalidConfig(`NHP peer public key is not standard base64: ${errText(err)}`);
   }
-  const computed = pubKeyFingerprint(peerKey);
+  const computed = cfg.crypto.pubKeyFingerprint(peerKey);
   if (serverID !== computed) {
     throw cfg.invalidConfig(
       `registration-info relay server_id ${JSON.stringify(serverID)} does not match the NHP peer key fingerprint ${JSON.stringify(computed)}`,
@@ -1070,10 +1127,10 @@ function decodeNHPKeys(
 }
 
 /** Adapts a relay/transport error to the registration error taxonomy. A
- * {@link RelayError} is already actionable; other errors are wrapped in the
- * front-door config class. Mirrors Go `normalizeRelayError`. */
+ * `RelayError` (from the vendored crypto) is already actionable; other errors are
+ * wrapped in the front-door config class. Mirrors Go `normalizeRelayError`. */
 function normalizeRelayError(cfg: RegisterConfig, err: unknown): unknown {
-  if (err instanceof RelayError) {
+  if (err instanceof cfg.crypto.RelayError) {
     return err;
   }
   if (err instanceof RegistrationError) {
@@ -1110,7 +1167,7 @@ async function loadOrCreateAgentState(
 /** Generates a fresh X25519 keypair-backed AgentState. Mirrors Go `newAgentState`. */
 function newAgentState(cfg: RegisterConfig): AgentState {
   const priv = cfg.randomBytes(32);
-  const pub = x25519PublicKeyFromPriv(priv);
+  const pub = cfg.crypto.x25519PublicKey(priv);
   return {
     private_key_b64: encodeBase64Std(priv),
     public_key_b64: encodeBase64Std(pub),
@@ -1131,7 +1188,7 @@ function ensureKeypair(cfg: RegisterConfig, state: AgentState): void {
   }
   let pub: Uint8Array;
   try {
-    pub = x25519PublicKeyFromPriv(raw);
+    pub = cfg.crypto.x25519PublicKey(raw);
   } catch (err) {
     throw cfg.invalidConfig(`agent private key must be X25519: ${errText(err)}`);
   }
