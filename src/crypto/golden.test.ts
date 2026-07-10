@@ -15,10 +15,28 @@ import { NHP_OTP, NHP_REG, NHP_RAK } from "./packet.js";
 // decryptReply opens the frozen RAK replies, the wire is interoperable by
 // construction.
 //
-// The vectors are a temporary byte-identical vendor of the qurl-conformance
-// artifact (see __testdata__/README.md); migrate to the published
-// `@layervai/qurl-conformance` `agentRegistrationVectors()` accessor once it is
-// released — tracked in layervai/qurl-typescript#176.
+// SOURCE OF THE VECTORS — live now vs. at-publish re-point (tracked in #176):
+//
+//   NOW: the vectors are a byte-identical *temporary vendor* of the
+//   qurl-conformance artifact, read from __testdata__/agent_registration_golden.json
+//   (see __testdata__/README.md). Two fences guard it: (a) FIXTURE_SHA256 below
+//   pins the vendored bytes so a LOCAL edit is caught here; (b) the `golden-drift`
+//   CI job (scripts/check-golden-drift.mjs) fetches the CANONICAL upstream copy
+//   and fails if the vendored file has diverged from it. So the vendored copy
+//   cannot silently drift in either direction.
+//
+//   AT PUBLISH (one-line swap): once `@layervai/qurl-conformance` ships an
+//   `agentRegistrationVectors()` accessor (it does not yet — the installed 0.1.2
+//   exposes only qv2/issuer/relay-knock; the vectors are in qurl-conformance#20),
+//   replace the fixture read with the accessor — the same pattern portal.test.ts
+//   uses via `qv2Vectors()` — and delete the vendored fixture + the drift CI job:
+//
+//     import conformancePackage from "@layervai/qurl-conformance";
+//     const golden = (conformancePackage as typeof import("@layervai/qurl-conformance"))
+//       .agentRegistrationVectors() as GoldenFile;   // <-- the one-line re-point
+//
+//   That deletes the `readFileSync` + FIXTURE_SHA256 pin below (the accessor is
+//   the source of truth once published). Until then, the vendored read stays.
 
 interface InitiatorVector {
   server_static_pub_hex: string;

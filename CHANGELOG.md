@@ -39,6 +39,29 @@
   (deprecated in favor of `registerAgent`) that runs the same NHP enrollment engine
   on the pre-issued-key path and returns the registered `AgentState`.
 
+### Bug Fixes
+
+- **client:** `registerAgent`/`bootstrapAgent` now wrap the CommonJS + Node < 20.19
+  dynamic-import failure of the ESM-only `@noble/*` wire deps: instead of a raw
+  `ERR_REQUIRE_ESM` escaping from the lazy crypto load, callers get a
+  `RegisterConfigError` whose message names the fix (call via the ESM entry, or
+  upgrade to Node ≥ 20.19). The memoized crypto import is also reset on failure, so
+  a caller who corrects the condition mid-process can retry instead of being wedged
+  on the rejected promise. The public `registerAgent` JSDoc now also notes that
+  concurrent callers on a shared store race the final completion write
+  (last-writer-wins). (layervai/qurl-typescript#178)
+
+### Continuous Integration
+
+- **golden vectors:** add a cross-repo drift fence (`golden-drift` CI job +
+  `scripts/check-golden-drift.mjs`) that verifies the vendored
+  `agent_registration_golden.json` is byte-for-byte identical to the canonical
+  `layervai/qurl-conformance` copy, so the temporary vendor cannot silently diverge
+  from upstream. Complements the existing local-edit SHA-256 pin in
+  `crypto/golden.test.ts`. Retired at the one-line accessor re-point once
+  `@layervai/qurl-conformance` publishes `agentRegistrationVectors()`.
+  (layervai/qurl-typescript#176)
+
 ## [0.3.1](https://github.com/layervai/qurl-typescript/compare/qurl-v0.3.0...qurl-v0.3.1) (2026-07-05)
 
 
