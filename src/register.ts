@@ -49,14 +49,103 @@ import type * as CryptoWire from "./crypto/index.js";
 type CryptoModule = typeof CryptoWire;
 let cryptoModulePromise: Promise<CryptoModule> | undefined;
 
+/** The dynamic-import thunk `loadCrypto` memoizes. A module-internal seam (not a
+ * public option): tests override it via {@link setCryptoImporterForTest} to
+ * simulate the CJS + Node < 20.19 `ERR_REQUIRE_ESM` failure of the ESM-only
+ * `@noble/*` deps and to assert the memo resets on failure. Defaults to the real
+ * dynamic import of the vendored wire. */
+let cryptoImporter: () => Promise<CryptoModule> = () => import("./crypto/index.js");
+
 /** Loads the vendored NHP wire crypto via a memoized dynamic import. Kept out of
  * the static graph so the package's CJS entry does not `require` the ESM-only
- * noble deps at load time (see the import-block note above). */
+ * noble deps at load time (see the import-block note above).
+ *
+ * On failure the memo is CLEARED before the rejection propagates, so a caller who
+ * corrects the condition mid-process (e.g. re-enters through the ESM build, or on
+ * a runtime that later satisfies the import) can retry instead of being wedged on
+ * a permanently-rejected promise. A resolved module stays memoized for the process
+ * lifetime. */
 async function loadCrypto(): Promise<CryptoModule> {
   if (cryptoModulePromise === undefined) {
-    cryptoModulePromise = import("./crypto/index.js");
+    // Assign the in-flight promise so concurrent callers share one import, but
+    // drop it on rejection so the failure is not cached forever. Attaching the
+    // reset via `.catch` (rethrowing) rather than a try/catch keeps the shared
+    // in-flight promise identity for concurrent awaiters while still clearing the
+    // slot once it settles as rejected.
+    cryptoModulePromise = cryptoImporter().catch((err: unknown) => {
+      cryptoModulePromise = undefined;
+      throw err;
+    });
   }
   return cryptoModulePromise;
+}
+
+/**
+ * Test-only seam: override the crypto-import thunk and reset the memo. Returns a
+ * restore function. NOT part of the public contract — it exists so a test can
+ * simulate the CJS/Node-version dynamic-import failure and the memo-reset-on-retry
+ * behavior without shipping a CJS build to an old Node. Passing `undefined`
+ * restores the real dynamic import.
+ */
+export function setCryptoImporterForTest(
+  importer: (() => Promise<CryptoModule>) | undefined,
+): () => void {
+  const previous = cryptoImporter;
+  cryptoImporter = importer ?? (() => import("./crypto/index.js"));
+  cryptoModulePromise = undefined;
+  return () => {
+    cryptoImporter = previous;
+    cryptoModulePromise = undefined;
+  };
+}
+
+/**
+ * Recognizes the CommonJS + Node < 20.19 failure to dynamic-import the ESM-only
+ * `@noble/*` wire deps (Node raises `ERR_REQUIRE_ESM` when `require()` — which a
+ * CJS build's dynamic `import()` lowers to on older Node 20.x — hits an
+ * ES-module-only package). Node < 20.19 predates `require()` of ES modules, so the
+ * import cannot resolve. Returns true for that signature and its close variants so
+ * the raw error can be re-thrown as an actionable {@link RegisterConfigError}.
+ */
+function isESMRequireError(err: unknown): boolean {
+  if (typeof err !== "object" || err === null) {
+    return false;
+  }
+  const code = (err as { code?: unknown }).code;
+  if (code === "ERR_REQUIRE_ESM") {
+    return true;
+  }
+  const message = (err as { message?: unknown }).message;
+  if (typeof message !== "string") {
+    return false;
+  }
+  // Fallback for runtimes/bundlers that surface the same condition without the
+  // canonical `.code` (e.g. a transpiled `require()` of an ESM package, or the
+  // "Cannot use import statement outside a module" phrasing).
+  return (
+    message.includes("ERR_REQUIRE_ESM") ||
+    message.includes("require() of ES Module") ||
+    message.includes("Cannot use import statement outside a module")
+  );
+}
+
+/** Loads the vendored crypto for a run, mapping the CJS/Node-version ESM-import
+ * failure to an actionable {@link RegisterConfigError} whose message names the two
+ * fixes (call via the ESM entry, or upgrade to Node ≥ 20.19). Any other load
+ * failure propagates unchanged. See {@link isESMRequireError} and the import-block
+ * note above. */
+async function loadCryptoForRun(): Promise<CryptoModule> {
+  try {
+    return await loadCrypto();
+  } catch (err) {
+    if (isESMRequireError(err)) {
+      throw new RegisterConfigError(
+        "the NHP registration wire depends on ESM-only packages (@noble/curves, @noble/ciphers, @noble/hashes) that could not be loaded under the CommonJS build: Node raised ERR_REQUIRE_ESM. Fix by calling registerAgent/bootstrapAgent via the ESM entry (import, not require), or upgrade to Node >= 20.19 (which added require() of ES modules). Importing the package and using the rest of the client is unaffected.",
+        { cause: err },
+      );
+    }
+    throw err;
+  }
 }
 
 const DEFAULT_BASE_URL = "https://api.layerv.ai";
@@ -196,7 +285,10 @@ export interface RegisterAgentResult {
  * Call from one setup path at a time for a given store. Each state write is
  * atomic, but the SDK does not lock across concurrent callers sharing a state
  * file — on the account path each concurrent fresh run dispatches its own code,
- * so concurrent setup multiplies OTP emails. Serialize enrollment per store.
+ * so concurrent setup multiplies OTP emails. Concurrent callers also race the
+ * final completion write: each persists its own registered {@link AgentState}
+ * (device credential included) last-writer-wins, so the credential left on disk is
+ * whichever run finished last. Serialize enrollment per store.
  *
  * Runtime note: the NHP wire crypto depends on ESM-only packages (`@noble/*`)
  * and is imported lazily on the first call. Under the ESM build this works on
@@ -436,7 +528,9 @@ async function runEngine(
   // Load the vendored NHP wire crypto once, before any helper touches it
   // (loadOrCreateAgentState derives the device public key). Lazy so the package's
   // CJS entry does not eagerly `require` the ESM-only noble deps — see loadCrypto.
-  cfg.crypto = await loadCrypto();
+  // loadCryptoForRun maps the CJS + Node < 20.19 ERR_REQUIRE_ESM failure to an
+  // actionable RegisterConfigError instead of letting the raw import error escape.
+  cfg.crypto = await loadCryptoForRun();
 
   // 1. Fast path: a registered state short-circuits with no network.
   const state = await loadOrCreateAgentState(store, cfg);

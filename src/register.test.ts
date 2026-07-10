@@ -1,5 +1,5 @@
-import { describe, it, expect } from "vitest";
-import { registerAgent, bootstrapAgent } from "./register.js";
+import { describe, it, expect, afterEach } from "vitest";
+import { registerAgent, bootstrapAgent, setCryptoImporterForTest } from "./register.js";
 import { MemoryAgentStateStore } from "./agent-state.js";
 import type { AgentState } from "./agent-state.js";
 import {
@@ -637,5 +637,107 @@ describe("registerAgent — returned client is usable", () => {
     // client's masked toJSON reflects a non-empty configured key.
     expect(h.store.state?.device_api_key).toBe("lv_device_xyz");
     expect(client.toJSON().apiKey).not.toBe("***"); // a real (masked) key, not the empty placeholder
+  });
+});
+
+// The vendored NHP wire depends on ESM-only @noble/* packages, loaded via a
+// memoized dynamic import (loadCrypto). Under the CommonJS build on Node < 20.19
+// (before require() of ES modules), that import fails with ERR_REQUIRE_ESM. These
+// tests drive that path via the module-internal importer seam
+// (setCryptoImporterForTest) — the real CJS-on-old-Node failure can't be
+// reproduced from the ESM test runner, so the seam injects the same rejection.
+describe("registerAgent — CJS/Node-version crypto-load failure (#178)", () => {
+  afterEach(() => {
+    // Always restore the real dynamic import + clear the memo, even if a test
+    // throws, so later tests load the genuine crypto.
+    setCryptoImporterForTest(undefined);
+  });
+
+  function esmRequireError(): Error & { code: string } {
+    // Mirrors what Node throws when require() (which a CJS build's dynamic import
+    // lowers to on old Node 20.x) hits an ESM-only package.
+    const err = new Error(
+      "require() of ES Module /node_modules/@noble/curves/index.js not supported",
+    ) as Error & { code: string };
+    err.code = "ERR_REQUIRE_ESM";
+    return err;
+  }
+
+  it("wraps ERR_REQUIRE_ESM in a RegisterConfigError naming the fix (ESM entry / Node >= 20.19)", async () => {
+    setCryptoImporterForTest(() => Promise.reject(esmRequireError()));
+    const store = new MemoryAgentStateStore();
+
+    const err = await registerAgent("lv_key", store, {
+      now: () => 1_700_000_000_000,
+    }).catch((e: unknown) => e as RegisterConfigError);
+
+    expect(err).toBeInstanceOf(RegisterConfigError);
+    expect(err).toBeInstanceOf(QURLError);
+    expect((err as RegisterConfigError).code).toBe("register_invalid_config");
+    // The message must name BOTH remedies so an operator/agent can act.
+    expect((err as RegisterConfigError).detail).toContain("ESM entry");
+    expect((err as RegisterConfigError).detail).toMatch(/20\.19/);
+    expect((err as RegisterConfigError).detail).toContain("ERR_REQUIRE_ESM");
+    // The raw import failure is preserved as the cause for diagnostics.
+    expect((err as RegisterConfigError).cause).toMatchObject({ code: "ERR_REQUIRE_ESM" });
+  });
+
+  it("also wraps the ESM signature when it arrives without the canonical .code", async () => {
+    const bare = new Error("Cannot use import statement outside a module");
+    setCryptoImporterForTest(() => Promise.reject(bare));
+    const store = new MemoryAgentStateStore();
+
+    await expect(registerAgent("lv_key", store, { now: () => 1 })).rejects.toBeInstanceOf(
+      RegisterConfigError,
+    );
+  });
+
+  it("resets the memoized crypto import on failure so a fixed condition recovers mid-process", async () => {
+    // First call fails as it would under CJS-on-old-Node. A memo that cached the
+    // rejected promise would wedge every later call; the reset must let a
+    // subsequent (now-working) call succeed against a real registration.
+    let attempts = 0;
+    const real = () => import("./crypto/index.js");
+    setCryptoImporterForTest(() => {
+      attempts += 1;
+      return attempts === 1 ? Promise.reject(esmRequireError()) : real();
+    });
+
+    const h1 = new RegisterHarness({ keyKind: "bootstrap" });
+    await expect(registerAgent("lv_key", h1.store, baseOpts(h1))).rejects.toBeInstanceOf(
+      RegisterConfigError,
+    );
+
+    // The condition is "fixed": the memo must have been cleared so the second run
+    // re-invokes the importer (now resolving) and enrolls end to end.
+    const h2 = new RegisterHarness({ keyKind: "bootstrap" });
+    const { client, state } = await registerAgent("lv_key", h2.store, baseOpts(h2));
+    expect(client).toBeDefined();
+    expect(state.registered_at).toBeTruthy();
+    expect(attempts).toBe(2); // re-invoked, proving the rejected promise was not cached
+  });
+
+  it("does not wrap an unrelated crypto-load failure (only the ESM-require signature)", async () => {
+    const other = new Error("boom: unrelated import failure");
+    setCryptoImporterForTest(() => Promise.reject(other));
+    const store = new MemoryAgentStateStore();
+
+    const err = await registerAgent("lv_key", store, { now: () => 1 }).catch(
+      (e: unknown) => e as Error,
+    );
+    // Propagated verbatim — not masked as a config error.
+    expect(err).not.toBeInstanceOf(RegisterConfigError);
+    expect((err as Error).message).toContain("unrelated import failure");
+  });
+
+  it("bootstrapAgent surfaces the same wrapped ESM-require failure", async () => {
+    setCryptoImporterForTest(() => Promise.reject(esmRequireError()));
+    const store = new MemoryAgentStateStore();
+
+    const err = await bootstrapAgent("lv_setup_key", store, { now: () => 1 }).catch(
+      (e: unknown) => e as RegisterConfigError,
+    );
+    expect(err).toBeInstanceOf(RegisterConfigError);
+    expect((err as RegisterConfigError).detail).toMatch(/20\.19/);
   });
 });
