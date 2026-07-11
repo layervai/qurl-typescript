@@ -12,6 +12,7 @@ import {
   TimeoutError,
   ValidationError,
 } from "./errors.js";
+import { stripTrailingSlashes } from "./internal.js";
 import type {
   AccessPolicy,
   AccessToken,
@@ -530,17 +531,6 @@ assertExhaustive<
  * `code: "client_validation"` so catch-by-class still works and callers can
  * tell the error originated inside the SDK rather than from the API.
  */
-/** Strips trailing "/" characters. A manual scan rather than `replace(/\/+$/, "")`
- * so it is linear on any input (the regex form is polynomial-ReDoS on a long run
- * of slashes over caller-supplied input, e.g. a `baseUrl` option). */
-function stripTrailingSlashes(url: string): string {
-  let end = url.length;
-  while (end > 0 && url.charCodeAt(end - 1) === 47 /* "/" */) {
-    end--;
-  }
-  return end === url.length ? url : url.slice(0, end);
-}
-
 function clientValidationError(detail: string): ValidationError {
   return new ValidationError({
     status: 0,

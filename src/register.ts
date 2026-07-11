@@ -30,6 +30,7 @@ import {
   RegistrationDenyError,
   RegistrationError,
 } from "./errors.js";
+import { errText, stripTrailingSlashes } from "./internal.js";
 // The vendored NHP wire crypto (src/crypto/) is loaded LAZILY via a memoized
 // dynamic import (see loadCrypto), NOT statically. Rationale: @noble/curves,
 // @noble/ciphers, and @noble/hashes are ESM-only ("type":"module", no CJS
@@ -1550,17 +1551,6 @@ function parseTimeOr(iso: string | undefined | null, fallbackMs: number): Date {
   return Number.isNaN(t) ? new Date(fallbackMs) : new Date(t);
 }
 
-/** Strips trailing "/" characters. A manual scan rather than `replace(/\/+$/, "")`
- * so it is linear on any input (the regex form is polynomial-ReDoS on a long run
- * of slashes over library-supplied input, e.g. a registration-info base_url). */
-function stripTrailingSlashes(url: string): string {
-  let end = url.length;
-  while (end > 0 && url.charCodeAt(end - 1) === 47 /* "/" */) {
-    end--;
-  }
-  return end === url.length ? url : url.slice(0, end);
-}
-
 function defaultRandomBytes(n: number): Uint8Array {
   const bytes = new Uint8Array(n);
   const cryptoObj = globalThis.crypto;
@@ -1608,13 +1598,6 @@ function decodeBase64Std(b64: string): Uint8Array {
     out[i] = bin.charCodeAt(i);
   }
   return out;
-}
-
-function errText(err: unknown): string {
-  if (err instanceof Error) {
-    return err.message;
-  }
-  return String(err);
 }
 
 // --- HTTPS response envelope shapes ---

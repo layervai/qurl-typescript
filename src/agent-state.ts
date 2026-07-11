@@ -9,6 +9,7 @@ import { promises as fs } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { NHPServerPeerInfo } from "./types.js";
+import { errText } from "./internal.js";
 
 /** Current AgentState schema version, stamped into {@link AgentState.schemaVersion}
  * when registration writes state. Informational only — readiness is derived from
@@ -208,11 +209,4 @@ function deepCloneState(state: AgentState): AgentState {
 
 function isNotFound(err: unknown): boolean {
   return typeof err === "object" && err !== null && (err as { code?: unknown }).code === "ENOENT";
-}
-
-function errText(err: unknown): string {
-  if (err instanceof Error) {
-    return err.message;
-  }
-  return String(err);
 }
