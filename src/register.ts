@@ -269,7 +269,11 @@ export interface RegisterAgentResult {
  *
  * `apiKey` is used only during first enrollment. Once `store` holds a completed
  * registration the fast path serves the client entirely from it and does not
- * re-validate the key.
+ * re-validate the key. One exception: the fast path re-checks the persisted NHP
+ * peer's expiry, so an "already registered" state whose peer has expired throws
+ * {@link RegisterConfigError} (forcing re-registration) instead of returning the
+ * cached client. LayerV peers do not expire (`expire_time` 0), so this rarely
+ * fires — but a caller branching on error class should expect it.
  *
  * Two enrollment paths are selected by the key, transparently:
  *   - A pre-issued (bootstrap) key IS the enrollment credential: registration
@@ -981,7 +985,7 @@ async function parseAPIError(response: Response): Promise<QURLError> {
   let detail = "";
   try {
     const json = (await response.json()) as {
-      error?: { code?: string; detail?: string; message?: string; title?: string; status?: number };
+      error?: { code?: string; detail?: string; message?: string; title?: string };
     };
     if (json.error) {
       code = json.error.code ?? "";

@@ -3,7 +3,7 @@
 // (`qurl-go/qurl/bootstrap.go`).
 //
 // SECURITY: once registration completes, an AgentState is a CREDENTIAL — it
-// holds `deviceApiKey`, the bearer token the returned client authorizes with.
+// holds `device_api_key`, the bearer token the returned client authorizes with.
 // See the {@link AgentState} doc.
 import { promises as fs } from "node:fs";
 import * as os from "node:os";
@@ -11,16 +11,16 @@ import * as path from "node:path";
 import type { NHPServerPeerInfo } from "./types.js";
 import { errText } from "./internal.js";
 
-/** Current AgentState schema version, stamped into {@link AgentState.schemaVersion}
+/** Current AgentState schema version, stamped into {@link AgentState.schema_version}
  * when registration writes state. Informational only — readiness is derived from
- * the fields (`registeredAt` + `deviceApiKey`), never from this number. */
+ * the fields (`registered_at` + `device_api_key`), never from this number. */
 export const AGENT_STATE_SCHEMA_VERSION = 2;
 
 /**
  * The protected local agent identity created during NHP-native registration.
  *
  * SECURITY: once registration completes, AgentState is a CREDENTIAL. It holds
- * {@link deviceApiKey}, the bearer token the client returned by `registerAgent`
+ * {@link device_api_key}, the bearer token the client returned by `registerAgent`
  * authorizes with. Treat it as secret: keep it out of logs, crash dumps, and
  * support bundles, and keep the {@link FileAgentStateStore} 0600 / 0700-dir
  * posture. On a shared host, back it with a secret manager (via a custom
@@ -28,7 +28,7 @@ export const AGENT_STATE_SCHEMA_VERSION = 2;
  *
  * Field naming mirrors the Go JSON tags (snake_case) so a state file written by
  * one SDK is readable by the other — the persisted shape is a cross-language
- * contract. The presence of {@link deviceApiKey} alongside {@link registeredAt}
+ * contract. The presence of {@link device_api_key} alongside {@link registered_at}
  * marks a state ready to back a client with zero network.
  */
 export interface AgentState {
@@ -88,7 +88,7 @@ export interface AgentStateStore {
  * created 0700. Mirrors the Go `FileAgentState`.
  *
  * SECURITY: the file becomes a credential once registration completes (it holds
- * `deviceApiKey`). The 0600/0700 posture keeps it owner-only; do not relax it,
+ * `device_api_key`). The 0600/0700 posture keeps it owner-only; do not relax it,
  * and prefer a secret manager on a shared host.
  */
 export class FileAgentStateStore implements AgentStateStore {
