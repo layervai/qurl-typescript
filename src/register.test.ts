@@ -12,6 +12,7 @@ import {
   RegistrationRateLimitedError,
   RegistrationInvalidInputError,
   RegistrationRetryLaterError,
+  RegistrationDisabledError,
   BootstrapSetupKeyConsumedError,
   BootstrapConfigError,
   DeviceCredentialMissingError,
@@ -272,6 +273,10 @@ describe("registerAgent — RAK error mapping over the wire", () => {
     { name: "identity conflict", code: "52103", ctor: AgentIdentityConflictError },
     { name: "rate limited", code: "52104", ctor: RegistrationRateLimitedError },
     { name: "invalid input", code: "52109", ctor: RegistrationInvalidInputError },
+    { name: "attempts exceeded", code: "52102", ctor: RegistrationRateLimitedError },
+    { name: "email unavailable", code: "52105", ctor: NoAccountEmailError },
+    { name: "invalid api key", code: "52106", ctor: RegisterKeyRejectedError },
+    { name: "registration off", code: "52107", ctor: RegistrationDisabledError },
   ];
   for (const c of cases) {
     it(`account path errCode ${c.code} -> ${c.ctor.name}`, async () => {
@@ -681,6 +686,69 @@ describe("registerAgent — returned client is usable", () => {
     // client's masked toJSON reflects a non-empty configured key.
     expect(h.store.state?.device_api_key).toBe("lv_device_xyz");
     expect(client.toJSON().apiKey).not.toBe("***"); // a real (masked) key, not the empty placeholder
+  });
+});
+
+describe("registerAgent — concurrency & malformed responses", () => {
+  it("concurrent enrollment on one store settles on a consistent credential (no lock)", async () => {
+    // registerAgent does not lock across callers (documented last-writer-wins). Two
+    // concurrent fresh runs on the SAME store both proceed; the store must still
+    // settle on ONE complete credential (never a torn/partial write), and both
+    // callers get a usable client. Both runs share the seeded key so the harness's
+    // responder-role open (which reads the persisted device pubkey) is stable across
+    // the race.
+    const h = new RegisterHarness({ keyKind: "bootstrap" });
+    const [r1, r2] = await Promise.all([
+      registerAgent("lv_key", h.store, baseOpts(h)),
+      registerAgent("lv_key", h.store, baseOpts(h)),
+    ]);
+    expect(r1.client).toBeDefined();
+    expect(r2.client).toBeDefined();
+    // Last write wins, and it is a whole credential — not a half-written state.
+    expect(h.store.state?.registered_at).toBeTruthy();
+    expect(h.store.state?.device_api_key).toBe("lv_device_secret");
+    expect(h.store.state?.schema_version).toBe(2);
+  });
+
+  it("a malformed 2xx registration-info body is rejected, not just bad statuses", async () => {
+    // validateRegistrationInfo guards the response SHAPE, not only the status: a 200
+    // whose body drops a required field must be rejected so a broken/incompatible
+    // service can't drive enrollment down a half-configured path.
+    const bodies = [
+      { label: "missing relay", data: { key_kind: "bootstrap", key_id: "key_x" } },
+      {
+        label: "missing nhp_server_peer",
+        data: {
+          key_kind: "bootstrap",
+          key_id: "key_x",
+          relay: { base_url: "https://relay.test.layerv.ai", server_id: "srv" },
+        },
+      },
+    ];
+    for (const b of bodies) {
+      const fetchMalformed: typeof globalThis.fetch = async (input) => {
+        const url = typeof input === "string" ? input : (input as URL).toString();
+        if (url.endsWith("/v1/agent/registration-info")) {
+          return {
+            ok: true,
+            status: 200,
+            statusText: "OK",
+            headers: new Headers({ "content-type": "application/json" }),
+            json: () => Promise.resolve({ data: b.data }),
+            text: () => Promise.resolve(JSON.stringify({ data: b.data })),
+          } as Response;
+        }
+        throw new Error(`unexpected request to ${url}`);
+      };
+      await expect(
+        registerAgent("lv_key", new MemoryAgentStateStore(), {
+          baseUrl: "https://api.test.layerv.ai",
+          fetch: fetchMalformed,
+          randomBytes: seededRandomBytes(1),
+          now: () => 1_700_000_000_000,
+        }),
+      ).rejects.toBeInstanceOf(RegisterConfigError);
+    }
   });
 });
 

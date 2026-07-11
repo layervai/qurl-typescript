@@ -290,6 +290,15 @@ async function openTranscript(
   let aeadKey: Uint8Array;
   [chainKey, aeadKey] = keyGen2(T, chainKey, x25519SharedSecret(ownPriv, peerEph));
   const peerStaticPub = aeadOpen(aeadKey, nonce, staticField, chainHash.sum());
+  // Defense-in-depth: the sealed static field is fixed-size (STATIC_FIELD_SIZE =
+  // PUBLIC_KEY_SIZE + tag), so a successful open is always PUBLIC_KEY_SIZE bytes.
+  // Assert it before the DH below, so a future field-size change fails loudly here
+  // instead of as an opaque error inside x25519.
+  if (peerStaticPub.length !== PUBLIC_KEY_SIZE) {
+    throw new Error(
+      `decrypted peer static key is ${peerStaticPub.length} bytes, want ${PUBLIC_KEY_SIZE}`,
+    );
+  }
   // Pins the peer identity — necessary but not the authenticator (see doc): the
   // ss-keyed open below is what proves possession of the peer's static key. Both
   // operands are public static keys, so equalBytes being non-constant-time leaks
@@ -303,6 +312,11 @@ async function openTranscript(
   // open here authenticates the sender. Opens the timestamp (AAD = ChainHash2).
   [chainKey, aeadKey] = keyGen2(T, chainKey, x25519SharedSecret(ownPriv, peerStaticPub));
   const tsBytes = aeadOpen(aeadKey, nonce, tsField, chainHash.sum());
+  // Fixed-size by construction (TIMESTAMP_FIELD_SIZE = TIMESTAMP_SIZE + tag); assert
+  // before getBigUint64 so a short read is a clear protocol error, not a RangeError.
+  if (tsBytes.length !== TIMESTAMP_SIZE) {
+    throw new Error(`decrypted timestamp is ${tsBytes.length} bytes, want ${TIMESTAMP_SIZE}`);
+  }
   const timestampNanos = new DataView(
     tsBytes.buffer,
     tsBytes.byteOffset,
