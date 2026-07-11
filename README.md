@@ -188,7 +188,10 @@ two-method `AgentStateStore` interface (`loadAgentState` / `saveAgentState`):
 | Tests, or a process meant to re-enroll each run | `new MemoryAgentStateStore()` |
 | Serverless / a secret manager or KV | implement `AgentStateStore` (return `null` from `loadAgentState` when empty) |
 
-Run enrollment from one process at a time per store.
+Run enrollment from one process at a time per store: the SDK does not lock
+across concurrent callers, so two fresh runs against the same store each dispatch
+their own OTP email, and their completions race last-writer-wins on the stored
+credential.
 
 ### Registration errors
 

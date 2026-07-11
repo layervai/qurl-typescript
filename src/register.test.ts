@@ -542,6 +542,50 @@ describe("registerAgent — validation + OTPPendingError message", () => {
     }
   });
 
+  it("strict base64 decode rejects a non-canonical key that would otherwise load", async () => {
+    // #2: decodeBase64Std must reject non-canonical base64 like Go's
+    // base64.StdEncoding.Strict. Same 32-byte key in two encodings — the canonical
+    // one is a complete, valid fast-path credential that returns a client; the
+    // non-canonical one differs ONLY in the final quantum's overflow bits (lenient
+    // atob drops them, so it decodes to the same key), so the strict-decode gate is
+    // the only thing that can reject it (isolated from the length / keypair checks).
+    const priv = seededRandomBytes(11)(32);
+    const { x25519 } = await import("@noble/curves/ed25519.js");
+    const canonicalPriv = btoa(String.fromCharCode(...priv));
+    // A 32-byte value leaves the final data char's low 2 bits zero, so bumping it to
+    // the next base64 symbol sets an overflow bit without changing any decoded byte.
+    const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const i = canonicalPriv.length - 2;
+    const nonCanonicalPriv =
+      canonicalPriv.slice(0, i) + B64[B64.indexOf(canonicalPriv[i]) + 1] + "=";
+    const baseState: AgentState = {
+      private_key_b64: canonicalPriv,
+      public_key_b64: btoa(String.fromCharCode(...x25519.getPublicKey(priv))),
+      agent_id: "agent-nc",
+      registered_at: new Date().toISOString(),
+      device_api_key: "lv_device_secret",
+      nhp_server_peer: {
+        public_key_b64: btoa("\0".repeat(32)),
+        host: "h",
+        port: 1,
+        expire_time: 0,
+      },
+    };
+    const opts = { deviceId: "agent-nc", now: () => 1_700_000_000_000 };
+    // Canonical: complete valid credential → fast path resolves (no network).
+    await expect(
+      registerAgent("lv_key", new MemoryAgentStateStore(baseState), opts),
+    ).resolves.toBeDefined();
+    // Non-canonical: identical key, only the strict-decode gate rejects it.
+    await expect(
+      registerAgent(
+        "lv_key",
+        new MemoryAgentStateStore({ ...baseState, private_key_b64: nonCanonicalPriv }),
+        opts,
+      ),
+    ).rejects.toBeInstanceOf(RegisterConfigError);
+  });
+
   it("device-id mismatch on the fast path is a config error", async () => {
     const priv = seededRandomBytes(5)(32);
     const { x25519 } = await import("@noble/curves/ed25519.js");

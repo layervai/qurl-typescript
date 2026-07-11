@@ -262,6 +262,10 @@ async function openTranscript(
   // This side's own static pubkey is the responder static that the header digest
   // and ChainHash1 bind (the sender's RemotePubKey when it built the message).
   const ownPub = x25519PublicKey(ownPriv);
+  // equalBytes is not constant-time, which is fine here: this compares a digest of
+  // public key material (an integrity check, not a secret), and the AEAD opens
+  // below — not this check — are the real authenticator, so a timing leak reveals
+  // nothing.
   if (
     !equalBytes(headerDigest(ownPub, header), header.subarray(OFF_DIGEST, OFF_DIGEST + HASH_SIZE))
   ) {
@@ -287,7 +291,9 @@ async function openTranscript(
   [chainKey, aeadKey] = keyGen2(T, chainKey, x25519SharedSecret(ownPriv, peerEph));
   const peerStaticPub = aeadOpen(aeadKey, nonce, staticField, chainHash.sum());
   // Pins the peer identity — necessary but not the authenticator (see doc): the
-  // ss-keyed open below is what proves possession of the peer's static key.
+  // ss-keyed open below is what proves possession of the peer's static key. Both
+  // operands are public static keys, so equalBytes being non-constant-time leaks
+  // nothing secret.
   if (!equalBytes(peerStaticPub, expectedPeerStaticPub)) {
     throw new Error("message from an unexpected peer (static key mismatch)");
   }

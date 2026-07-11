@@ -1587,12 +1587,19 @@ function decodeBase64Std(b64: string): Uint8Array {
   if (b64 === "") {
     throw new Error("empty base64 (a key/packet field must not be empty)");
   }
-  // Reject non-standard-base64 input the way Go's base64.StdEncoding.Strict does:
-  // atob is lenient about some inputs, so validate the alphabet + padding first.
+  // Reject non-standard-base64 input the way Go's base64.StdEncoding.Strict does.
+  // First validate the alphabet + padding length (atob is lenient about both):
   if (!/^[A-Za-z0-9+/]+={0,2}$/.test(b64) || b64.length % 4 !== 0) {
     throw new Error("not standard base64");
   }
   const bin = atob(b64);
+  // atob also silently drops the "overflow" bits a short final quantum can't
+  // represent (the bits before the "=" padding), which Strict rejects. Re-encoding
+  // the decoded bytes must reproduce the input exactly; if it doesn't, those bits
+  // were non-zero — a non-canonical encoding.
+  if (btoa(bin) !== b64) {
+    throw new Error("not standard base64 (non-canonical padding bits)");
+  }
   const out = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) {
     out[i] = bin.charCodeAt(i);
