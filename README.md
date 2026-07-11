@@ -105,6 +105,118 @@ const portal = await resource.createPortal({
 });
 ```
 
+## Register an Agent
+
+For agents that enroll themselves at startup, `registerAgent` is the one-call
+front door: give it an API key and a place to persist state, and it returns a
+ready-to-use `QURLClient`.
+
+```typescript
+import { registerAgent, FileAgentStateStore } from '@layervai/qurl';
+
+const store = new FileAgentStateStore('/var/lib/layerv/qurl/agent-state.json');
+
+const { client } = await registerAgent(process.env.QURL_API_KEY!, store);
+
+const resource = await client.protectUrl('https://dashboard.internal.acme.com');
+const portal = await resource.createPortal({ validFor: '1h' });
+
+console.log(portal.link);
+```
+
+`registerAgent` is **idempotent**: the first call enrolls and persists a device
+credential into `store`; every later call loads it and returns a client with
+**no network I/O**, so call it unconditionally on startup. The API key is used
+only at first enrollment — after that the client runs entirely off the persisted
+state. It returns `{ client, state }`.
+
+### Which key do I use?
+
+The key is **enrollment-only material** — set it via a secret / env var for the
+first run. Pick it by how the agent is deployed:
+
+| Deployment | Key | Lifetime & blast radius |
+| --- | --- | --- |
+| **A fleet** of headless agents (containers, CI, autoscalers) | one **durable `qurl:agent`-scoped** key, shared by all | long-lived until revoked; revoking cuts off the whole fleet |
+| **One** headless agent, provisioned on its own | a **one-shot** enrollment key, minted per agent | single-use, ≤24h — consumed on first enrollment |
+| An agent acting **as a person's account** | that account's **API key** | long-lived; enrollment needs an emailed one-time code |
+
+**Fleets — one key, many agents.** Mint a single durable `qurl:agent` key, give
+every agent the same secret but its **own** store (its own file path). Each
+generates its own device keypair + id and enrolls idempotently; the durable key
+is hash-matched and never consumed. Don't share one store across agents — that
+is a single identity, not a fleet.
+
+### Account key: email one-time code
+
+A key tied to a person's account enrolls with an emailed code. The first call
+requests one and throws `OTPPendingError` — a pause point, not a failure; re-run
+with the code once it arrives:
+
+```typescript
+import { registerAgent, OTPPendingError } from '@layervai/qurl';
+
+try {
+  const { client } = await registerAgent(accountKey, store);
+  use(client);
+} catch (err) {
+  if (err instanceof OTPPendingError) {
+    // A code was emailed to err.maskedEmail (e.g. "j***@acme.com").
+    const otp = await readOneTimeCode(err.maskedEmail);
+    const { client } = await registerAgent(accountKey, store, { otp });
+    use(client);
+  } else {
+    throw err;
+  }
+}
+```
+
+The pause is durable across restarts — a crashed process resumes the **same**
+enrollment identity and keeps waiting on the already-emailed code rather than
+sending a new one. If the agent can fetch its own code, pass an `otpProvider`
+callback (which must **await delivery**) so one call both requests and consumes it.
+
+### Persisting state
+
+After enrollment `store` is a **credential file** — it holds the device token the
+client authorizes with, so treat it as secret. All stores satisfy the same
+two-method `AgentStateStore` interface (`loadAgentState` / `saveAgentState`):
+
+| Runtime | Store |
+| --- | --- |
+| Node with a durable disk | `new FileAgentStateStore(path)` — 0600 file, atomic write |
+| Tests, or a process meant to re-enroll each run | `new MemoryAgentStateStore()` |
+| Serverless / a secret manager or KV | implement `AgentStateStore` (return `null` from `loadAgentState` when empty) |
+
+Run enrollment from one process at a time per store: the SDK does not lock
+across concurrent callers, so two fresh runs against the same store each dispatch
+their own OTP email, and their completions race last-writer-wins on the stored
+credential.
+
+### Registration errors
+
+Every registration error is `instanceof RegistrationError` (which extends
+`QURLError`); match by class. The ones a human acts on:
+
+| Error | Handle it by |
+| --- | --- |
+| `OTPPendingError` | Not a failure — read `maskedEmail`, get the code, re-run with `{ otp }`. |
+| `OTPIncorrectError` / `OTPExpiredError` | Re-run with the right code; on expiry re-run with **no** code for a fresh one. |
+| `RegisterKeyRejectedError` | Key was rejected — reprovision. |
+| `AgentIdentityConflictError` | Device id is enrolled to a different key — re-run with `{ takeover: true }` or a distinct `deviceId`. |
+| `RegistrationRateLimitedError` / `RegistrationRetryLaterError` | Back off and retry. |
+| `NoAccountEmailError` | Account has no email for the code — add one, or use a pre-issued key. |
+| `RegisterConfigError` | Bad inputs/options before any network call — fix the call. |
+| `RegistrationDenyError` | An enrollment denial carrying `errCode` / `errMsg`. |
+
+### Node / CommonJS note
+
+The NHP wire crypto (`@noble/*`) is ESM-only and imported lazily, so importing
+the package is fine on any supported Node. But calling `registerAgent` through
+the **CommonJS** build (`require('@layervai/qurl')`) needs **Node ≥ 20.19**
+(which added `require()` of ES modules) — on older Node 20.x, call it via the ESM
+entry. A clear `RegisterConfigError` naming the fix is thrown otherwise.
+
 ## Opening Portals
 
 Most recipients open qURL links directly and do not use this SDK at all. If

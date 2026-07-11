@@ -27,6 +27,18 @@ export default [
         setInterval: "readonly",
         clearTimeout: "readonly",
         clearInterval: "readonly",
+        // Web/Node globals used by the vendored NHP crypto and registration wire.
+        crypto: "readonly",
+        TextEncoder: "readonly",
+        TextDecoder: "readonly",
+        DataView: "readonly",
+        Uint8Array: "readonly",
+        ArrayBuffer: "readonly",
+        Blob: "readonly",
+        DecompressionStream: "readonly",
+        btoa: "readonly",
+        atob: "readonly",
+        structuredClone: "readonly",
       },
     },
     plugins: {
