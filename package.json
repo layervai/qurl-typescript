@@ -47,7 +47,7 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@layervai/qurl-conformance": "0.1.2",
-    "@types/node": "^25.9.1",
+    "@types/node": "^26.0.1",
     "@typescript-eslint/eslint-plugin": "^8.60.0",
     "@typescript-eslint/parser": "^8.58.2",
     "eslint": "^10.4.1",
