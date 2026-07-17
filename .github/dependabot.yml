@@ -4,6 +4,20 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    groups:
+      # Keep all github/codeql-action/* sub-actions (init, analyze, autobuild,
+      # upload-sarif, ...) in one PR. They share one version/SHA and must be
+      # bumped together, or CodeQL Analyze fails with a version mismatch.
+      # A group defaults to applies-to: version-updates, so a second group
+      # covers security (CVE-driven) bumps too — otherwise a lone security
+      # bump of init/analyze could re-introduce the same mismatch.
+      codeql-action:
+        patterns:
+          - "github/codeql-action/*"
+      codeql-action-security:
+        applies-to: security-updates
+        patterns:
+          - "github/codeql-action/*"
   - package-ecosystem: npm
     directory: /
     schedule:
