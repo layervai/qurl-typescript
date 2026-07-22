@@ -24,11 +24,10 @@
     "build": "npm run clean && tsc -p tsconfig.json && tsc -p tsconfig.cjs.json && node scripts/postbuild.mjs",
     "dev": "tsc -p tsconfig.json --watch",
     "test": "vitest run",
-    "check:golden-drift": "node scripts/check-golden-drift.mjs",
     "lint": "eslint src/",
     "format": "prettier --write 'src/**/*.ts' 'smoke/**/*.{cjs,mjs}' 'scripts/**/*.mjs'",
     "format:check": "prettier --check 'src/**/*.ts' 'smoke/**/*.{cjs,mjs}' 'scripts/**/*.mjs'",
-    "smoke:dist": "node smoke/cjs.cjs && node smoke/esm.mjs && node smoke/parity.mjs && node smoke/idempotency.mjs",
+    "smoke:dist": "node smoke/cjs.cjs && node smoke/esm.mjs && node smoke/parity.mjs && node smoke/idempotency.mjs && node smoke/retired-agent-lifecycle.mjs",
     "prepublishOnly": "npm run build && npm run smoke:dist"
   },
   "keywords": [
@@ -64,10 +63,5 @@
   ],
   "publishConfig": {
     "access": "public"
-  },
-  "dependencies": {
-    "@noble/ciphers": "2.2.0",
-    "@noble/curves": "2.2.0",
-    "@noble/hashes": "2.2.0"
   }
 }
