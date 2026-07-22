@@ -1430,12 +1430,6 @@ describe("QURLClient", () => {
     const fetch = mockFetch({ status: 200, body: { data: {} } });
     const client = createClient(fetch);
 
-    await client.bootstrapAgent({
-      public_key: "pk_test",
-      agent_id: null as unknown as string,
-      hostname: null as unknown as string,
-      version: null as unknown as string,
-    });
     await client.createWebhook({
       url: "https://example.com/hook",
       events: ["qurl.created"],
@@ -1464,7 +1458,6 @@ describe("QURLClient", () => {
       return JSON.parse(call[1]?.body as string) as unknown;
     });
     expect(bodies).toEqual([
-      { public_key: "pk_test" },
       { url: "https://example.com/hook", events: ["qurl.created"] },
       { name: "dashboard", scopes: ["qurl:read"] },
       { code: "invite-code" },
@@ -1580,14 +1573,6 @@ describe("QURLClient", () => {
     const fetch = mockFetch({ status: 200, body: { data: {} } });
     const client = createClient(fetch);
     const cases: Array<[string, () => Promise<unknown>]> = [
-      [
-        "bootstrapAgent",
-        () =>
-          client.bootstrapAgent({
-            public_key: "pk_test",
-            ignored: true,
-          } as unknown as Parameters<QURLClient["bootstrapAgent"]>[0]),
-      ],
       [
         "createQurlForResource",
         () =>

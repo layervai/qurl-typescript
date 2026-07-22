@@ -42,6 +42,14 @@ for (const [path, methods] of Object.entries(spec.paths ?? {})) {
   }
 }
 
+// qurl-service still advertises this legacy producer route until the native UDP
+// cutover removes it. It is intentionally absent from the shipped SDK and must
+// not be added back to METHOD_CASES. Delete this exception when the post-cutover
+// OpenAPI snapshot drops the route.
+const PRODUCER_ONLY_TEMPLATES: ReadonlySet<string> = new Set([
+  ["POST", ["/v1/agent/", "bootstrap"].join("")].join(" "),
+]);
+
 // Escape regex metacharacters in a literal string so it can be embedded
 // in a larger regex safely. The only caller is templateRegex below,
 // which produces a linear regex (not a character class), so `-` and
@@ -298,24 +306,6 @@ const METHOD_CASES: MethodCase[] = [
     template: "/v1/quota",
     mockBody: { data: { plan: "free" } },
     invoke: (c) => c.getQuota(),
-  },
-  {
-    method: "bootstrapAgent",
-    verb: "POST",
-    template: "/v1/agent/bootstrap",
-    mockBody: {
-      data: {
-        agent_id: "agent-1",
-        registered_at: "2026-01-01T00:00:00Z",
-        nhp_server_peer: {
-          public_key_b64: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa=",
-          host: "nhp.layerv.ai",
-          port: 62206,
-          expire_time: 0,
-        },
-      },
-    },
-    invoke: (c) => c.bootstrapAgent({ public_key: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa=" }),
   },
   {
     method: "listResources",
@@ -793,7 +783,16 @@ describe("API contract", () => {
     // that no test exercises (e.g., a method was removed from
     // client.ts without trimming the yaml).
     const testedTemplates = new Set(METHOD_CASES.map((c) => `${c.verb} ${c.template}`));
-    const uncovered = [...pathTemplates].filter((t) => !testedTemplates.has(t));
+    const staleExceptions = [...PRODUCER_ONLY_TEMPLATES].filter((t) => !pathTemplates.has(t));
+    if (staleExceptions.length > 0) {
+      throw new Error(
+        `Producer-only snapshot exception(s) no longer exist: ${staleExceptions.join(", ")}. ` +
+          `Remove the exception now that the upstream route is gone.`,
+      );
+    }
+    const uncovered = [...pathTemplates].filter(
+      (t) => !testedTemplates.has(t) && !PRODUCER_ONLY_TEMPLATES.has(t),
+    );
     if (uncovered.length > 0) {
       throw new Error(
         `Snapshot entries not exercised by METHOD_CASES: ${uncovered.join(", ")}. ` +

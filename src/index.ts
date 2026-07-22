@@ -20,58 +20,6 @@ export {
   TimeoutError,
   ValidationError,
 } from "./errors.js";
-// Agent registration (registerAgent) — errors mirroring the Go taxonomy.
-export {
-  RegistrationError,
-  RegisterConfigError,
-  BootstrapConfigError,
-  RegistrationTransportError,
-  OTPPendingError,
-  OTPIncorrectError,
-  OTPExpiredError,
-  RegistrationRateLimitedError,
-  RegisterKeyRejectedError,
-  AgentIdentityConflictError,
-  NoAccountEmailError,
-  DeviceCredentialMissingError,
-  RegistrationInvalidInputError,
-  RegistrationDisabledError,
-  RegistrationRetryLaterError,
-  BootstrapSetupKeyConsumedError,
-  InvalidAgentStateError,
-  RegistrationDenyError,
-  ERROR_CODE_REGISTER_INVALID_CONFIG,
-  ERROR_CODE_BOOTSTRAP_INVALID_CONFIG,
-  ERROR_CODE_REGISTER_TRANSPORT,
-  ERROR_CODE_OTP_PENDING,
-  ERROR_CODE_OTP_INCORRECT,
-  ERROR_CODE_OTP_EXPIRED,
-  ERROR_CODE_REGISTRATION_RATE_LIMITED,
-  ERROR_CODE_REGISTER_KEY_REJECTED,
-  ERROR_CODE_AGENT_IDENTITY_CONFLICT,
-  ERROR_CODE_NO_ACCOUNT_EMAIL,
-  ERROR_CODE_DEVICE_CREDENTIAL_MISSING,
-  ERROR_CODE_REGISTRATION_INVALID_INPUT,
-  ERROR_CODE_REGISTRATION_DISABLED,
-  ERROR_CODE_REGISTRATION_RETRY_LATER,
-  ERROR_CODE_BOOTSTRAP_SETUP_KEY_CONSUMED,
-  ERROR_CODE_REGISTRATION_DENIED,
-  ERROR_CODE_INVALID_AGENT_STATE,
-} from "./errors.js";
-export { registerAgent, bootstrapAgent } from "./register.js";
-export type {
-  RegisterOptions,
-  RegisterAgentResult,
-  BootstrapAgentOptions,
-  OTPProvider,
-} from "./register.js";
-export {
-  FileAgentStateStore,
-  MemoryAgentStateStore,
-  fileAgentStateStore,
-  AGENT_STATE_SCHEMA_VERSION,
-} from "./agent-state.js";
-export type { AgentState, AgentStateStore } from "./agent-state.js";
 export { VERSION } from "./version.js";
 export type {
   AccessCode,
@@ -79,8 +27,6 @@ export type {
   AccessGrant,
   AccessPolicy,
   AccessToken,
-  AgentBootstrapInput,
-  AgentBootstrapOutput,
   AIAgentCategory,
   AIAgentPolicy,
   ApiKey,
@@ -128,7 +74,6 @@ export type {
   Meta,
   MintInput,
   MintOutput,
-  NHPServerPeerInfo,
   PaginatedOutput,
   Portal,
   PortalSession,

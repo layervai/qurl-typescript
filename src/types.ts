@@ -919,26 +919,6 @@ export interface AccessCodeListOutput extends UnpaginatedOutput {
   access_codes: AccessCode[];
 }
 
-export interface AgentBootstrapInput {
-  public_key: string;
-  agent_id?: string;
-  hostname?: string;
-  version?: string;
-}
-
-export interface NHPServerPeerInfo {
-  public_key_b64: string;
-  host: string;
-  port: number;
-  expire_time: number;
-}
-
-export interface AgentBootstrapOutput {
-  agent_id: string;
-  registered_at: string;
-  nhp_server_peer: NHPServerPeerInfo;
-}
-
 /** API error from the qURL service (RFC 7807). */
 export interface QURLErrorData {
   status: number;
