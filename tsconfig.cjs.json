@@ -2,11 +2,14 @@
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "module": "CommonJS",
-    // TODO: TS 7 will drop `Node10`. Migrate to `module: "Node16"` + a
-    // source-side CJS sidecar (or matching `.cts` entry) before then.
-    "moduleResolution": "Node10",
+    // `Bundler`, not the removed-in-TS-7 `Node10`. This CJS pass can't
+    // simply inherit the base config's `Node16` resolution — that would
+    // force `module: "Node16"` and emit ESM. `src/` imports already carry
+    // explicit `.js` extensions, so the resolution mode only affects
+    // type-checking here, not the CommonJS emit — the emitted `dist/cjs`
+    // is byte-identical to the prior `Node10` output.
+    "moduleResolution": "Bundler",
     "outDir": "./dist/cjs",
-    "ignoreDeprecations": "6.0",
     // The ESM tree already emits declaration + source maps from the same
     // `src/` tree; emitting them again into `dist/cjs/` doubles tarball
     // size for no additional signal. The ESM maps themselves ship but
