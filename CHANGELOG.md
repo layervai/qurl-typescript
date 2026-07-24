@@ -62,6 +62,17 @@
   `@layervai/qurl-conformance` publishes `agentRegistrationVectors()`.
   (layervai/qurl-typescript#176)
 
+## [0.4.0](https://github.com/layervai/qurl-typescript/compare/qurl-v0.3.1...qurl-v0.4.0) (2026-07-24)
+
+
+### ⚠ BREAKING CHANGES
+
+* **client:** add NHP-native registerAgent and deprecate bootstrapAgent ([#177](https://github.com/layervai/qurl-typescript/issues/177))
+
+### Features
+
+* **client:** add NHP-native registerAgent and deprecate bootstrapAgent ([#177](https://github.com/layervai/qurl-typescript/issues/177)) ([3d3612b](https://github.com/layervai/qurl-typescript/commit/3d3612bdc6fb0c7065208143a37a2a1618d6dd9a))
+
 ## [0.3.1](https://github.com/layervai/qurl-typescript/compare/qurl-v0.3.0...qurl-v0.3.1) (2026-07-05)
 
 
