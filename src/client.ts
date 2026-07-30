@@ -19,8 +19,6 @@ import type {
   AccessCode,
   AccessCodeListOutput,
   AIAgentPolicy,
-  AgentBootstrapInput,
-  AgentBootstrapOutput,
   ApiKey,
   ApiKeyListOutput,
   BillingInvoiceListOutput,
@@ -324,19 +322,6 @@ assertExhaustive<
     keyof UpdateResourceQurlInput,
     (typeof UPDATE_RESOURCE_QURL_FIELD_KEYS)[number]
   > extends never
-    ? true
-    : never
->(true);
-
-const AGENT_BOOTSTRAP_FIELD_KEYS = [
-  "public_key",
-  "agent_id",
-  "hostname",
-  "version",
-] as const satisfies readonly (keyof AgentBootstrapInput)[];
-
-assertExhaustive<
-  Exclude<keyof AgentBootstrapInput, (typeof AGENT_BOOTSTRAP_FIELD_KEYS)[number]> extends never
     ? true
     : never
 >(true);
@@ -2596,33 +2581,6 @@ export class QURLClient {
   /** Get quota and usage information. */
   async getQuota(): Promise<Quota> {
     return this.request<Quota>("GET", "/v1/quota");
-  }
-
-  /**
-   * Bootstrap a LayerV qURL Connector agent via the legacy
-   * `POST /v1/agent/bootstrap` endpoint.
-   *
-   * @deprecated Prefer the top-level {@link registerAgent} (or the NHP-native
-   * {@link bootstrapAgent} free function). This method calls the pre-NHP HTTPS
-   * bootstrap endpoint and only returns the durable agent identity — it neither
-   * enrolls the device key over the NHP Noise handshake nor mints a device REST
-   * credential, so it cannot return a ready-to-use client. `registerAgent`
-   * persists an {@link AgentState} credential and returns an authorized client
-   * covering both the pre-issued-key and email-OTP paths.
-   */
-  async bootstrapAgent(
-    input: AgentBootstrapInput,
-    options?: RequestOptions,
-  ): Promise<AgentBootstrapOutput> {
-    requireObjectInput(input, "bootstrapAgent");
-    requireNoUnknownFields(input, AGENT_BOOTSTRAP_FIELD_KEYS, "bootstrapAgent");
-    const normalizedRecord = normalizePatchFields(
-      input as Record<string, unknown>,
-      AGENT_BOOTSTRAP_FIELD_KEYS,
-    );
-    const normalized = normalizedRecord as unknown as AgentBootstrapInput;
-    requireNonEmptyStringField(normalizedRecord, "public_key", "bootstrapAgent");
-    return this.request<AgentBootstrapOutput>("POST", "/v1/agent/bootstrap", normalized, options);
   }
 
   /** List resources from the `/v1/resources` API. */
