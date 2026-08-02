@@ -46,9 +46,11 @@ for (const [path, methods] of Object.entries(spec.paths ?? {})) {
 // cutover removes it. It is intentionally absent from the shipped SDK and must
 // not be added back to METHOD_CASES. Delete this exception when the post-cutover
 // OpenAPI snapshot drops the route.
-const PRODUCER_ONLY_TEMPLATES: ReadonlySet<string> = new Set([
-  ["POST", ["/v1/agent/", "bootstrap"].join("")].join(" "),
-]);
+// Snapshot templates the SDK deliberately does not exercise. Empty since the
+// HTTP agent lifecycle was retired: the Connector enrolls over native UDP, so
+// the bootstrap route no longer exists upstream to except. The stale-exception
+// check below keeps this list from outliving the routes it covers.
+const PRODUCER_ONLY_TEMPLATES: ReadonlySet<string> = new Set([]);
 
 // Escape regex metacharacters in a literal string so it can be embedded
 // in a larger regex safely. The only caller is templateRegex below,
