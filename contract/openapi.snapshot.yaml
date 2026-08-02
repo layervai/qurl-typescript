@@ -16,8 +16,6 @@ info:
   title: QURL API — SDK contract surface
   version: "1"
 paths:
-  /v1/agent/bootstrap:
-    post: {}
   /v1/api-keys:
     get: {}
     post: {}
