@@ -3104,6 +3104,44 @@ describe("QURLClient", () => {
     },
   );
 
+  it("mapQurlsField logs when a direct input has own-property `qurls: undefined`", () => {
+    const debugFn = vi.fn();
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch,
+      maxRetries: 0,
+      debug: debugFn,
+    });
+    const raw = {
+      resource_id: "r_direct_undefined",
+      target_url: "https://example.com",
+      status: "active",
+      qurls: undefined,
+    };
+    expect(Object.prototype.hasOwnProperty.call(raw, "qurls")).toBe(true);
+
+    // TypeScript `private` is compile-time only, so the un-exported helper is
+    // reachable through the runtime prototype without a test-only export.
+    // Direct invocation is deliberate: wire JSON cannot express an
+    // own-property `undefined`, so this branch is untestable through fetch.
+    const descriptor = Object.getOwnPropertyDescriptor(QURLClient.prototype, "mapQurlsField");
+    expect(typeof descriptor?.value).toBe("function");
+    const mapQurlsField = descriptor?.value as (
+      this: QURLClient,
+      input: Record<string, unknown>,
+    ) => Record<string, unknown>;
+    const result = mapQurlsField.call(client, raw);
+
+    expect(Object.prototype.hasOwnProperty.call(result, "qurls")).toBe(false);
+    expect(result.access_tokens).toBeUndefined();
+    expect(debugFn).toHaveBeenCalledWith("mapQurlsField: 'qurls' was undefined; dropping", {
+      branch: "undefined",
+    });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("parseError synthesizes a title from HTTP status when statusText is empty (HTTP/2)", async () => {
     // HTTP/2 omits reason-phrases — fallback must keep Error.message legible.
     const fetch = mockFetch({

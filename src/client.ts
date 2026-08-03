@@ -103,6 +103,8 @@ const DEFAULT_TIMEOUT = 30_000;
 // again while consuming the response stream.
 const MAX_RESPONSE_BODY_BYTES = 1 << 20;
 const MAX_ERROR_SNIPPET_BYTES = 512;
+const TEXT_ENCODER = new TextEncoder();
+const TEXT_DECODER = new TextDecoder();
 const RETRY_BASE_DELAY_MS = 500;
 // Bounds local exponential backoff (NOT server-asserted Retry-After —
 // see `RETRY_AFTER_HARD_CAP_MS` for that).
@@ -676,13 +678,13 @@ function boundedErrorSnippet(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const normalized = value.trim().replace(/\s+/g, " ");
   if (normalized === "") return undefined;
-  const encoded = new TextEncoder().encode(normalized);
+  const encoded = TEXT_ENCODER.encode(normalized);
   if (encoded.byteLength <= MAX_ERROR_SNIPPET_BYTES) return normalized;
 
   let end = MAX_ERROR_SNIPPET_BYTES;
   // Do not split a multi-byte UTF-8 sequence at the cap.
   while (end > 0 && (encoded[end] & 0xc0) === 0x80) end--;
-  return `${new TextDecoder().decode(encoded.subarray(0, end))}...`;
+  return `${TEXT_DECODER.decode(encoded.subarray(0, end))}...`;
 }
 
 async function cancelResponseBody(body: Response["body"]): Promise<void> {
@@ -701,9 +703,13 @@ function contentLengthExceedsLimit(response: Response): boolean {
 }
 
 /**
- * Read a response body without ever retaining more than the documented cap.
- * Content-Length is an early-rejection optimization only; streaming byte
- * accounting remains authoritative because that header may be absent or false.
+ * Read a response body while retaining accepted chunks up to the documented
+ * cap. A fetch implementation can still hand us one arbitrarily large,
+ * already-materialized chunk before we can reject it. For a compliant body,
+ * final assembly transiently holds the chunks plus the combined output buffer
+ * (roughly twice the cap) before decoding. Content-Length is an early-rejection
+ * optimization only; streaming byte accounting remains authoritative because
+ * that header may be absent or false.
  */
 async function readBoundedResponseBody(response: Response): Promise<string> {
   if (contentLengthExceedsLimit(response)) {
@@ -720,7 +726,7 @@ async function readBoundedResponseBody(response: Response): Promise<string> {
   // this SDK parses it as JSON.
   if (body === undefined) {
     const text = typeof response.text === "function" ? await response.text() : "";
-    if (new TextEncoder().encode(text).byteLength > MAX_RESPONSE_BODY_BYTES) {
+    if (TEXT_ENCODER.encode(text).byteLength > MAX_RESPONSE_BODY_BYTES) {
       throw new ResponseBodyTooLargeError();
     }
     if (text !== "") return text;
@@ -729,7 +735,7 @@ async function readBoundedResponseBody(response: Response): Promise<string> {
     // empty placeholder from text(). This path is never used by native fetch.
     const serialized = JSON.stringify(await response.json());
     if (serialized === undefined) return "";
-    if (new TextEncoder().encode(serialized).byteLength > MAX_RESPONSE_BODY_BYTES) {
+    if (TEXT_ENCODER.encode(serialized).byteLength > MAX_RESPONSE_BODY_BYTES) {
       throw new ResponseBodyTooLargeError();
     }
     return serialized;
@@ -742,8 +748,8 @@ async function readBoundedResponseBody(response: Response): Promise<string> {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      total += value.byteLength;
-      if (total > MAX_RESPONSE_BODY_BYTES) {
+      const nextTotal = total + value.byteLength;
+      if (nextTotal > MAX_RESPONSE_BODY_BYTES) {
         try {
           await reader.cancel();
         } catch {
@@ -752,6 +758,7 @@ async function readBoundedResponseBody(response: Response): Promise<string> {
         throw new ResponseBodyTooLargeError();
       }
       chunks.push(value);
+      total = nextTotal;
     }
   } finally {
     reader.releaseLock();
@@ -763,7 +770,7 @@ async function readBoundedResponseBody(response: Response): Promise<string> {
     bytes.set(chunk, offset);
     offset += chunk.byteLength;
   }
-  return new TextDecoder().decode(bytes);
+  return TEXT_DECODER.decode(bytes);
 }
 
 // ---- Spec-derived validation helpers ------------------------------------
