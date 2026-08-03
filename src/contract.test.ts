@@ -643,18 +643,16 @@ const METHOD_CASES: MethodCase[] = [
     verb: "POST",
     template: "/v1/external-identity-bindings",
     mockBody: {
-      data: {
-        binding_id: "eib_x",
-        provider: "teams",
-        external_id: "tenant-obviously-fake",
-        api_key: {
-          key_id: "key_x",
-          key_prefix: "qurl_test",
-          plaintext: "qurl_test_obviously_fake_secret",
-        },
-        scopes: ["qurl:read"],
-        created_at: "2026-08-02T00:00:00Z",
+      binding_id: "eib_x",
+      provider: "teams",
+      external_id: "tenant-obviously-fake",
+      api_key: {
+        key_id: "key_x",
+        key_prefix: "qurl_test",
+        plaintext: "qurl_test_obviously_fake_secret",
       },
+      scopes: ["qurl:read"],
+      created_at: "2026-08-02T00:00:00Z",
     },
     mockStatus: 201,
     invoke: (c) =>

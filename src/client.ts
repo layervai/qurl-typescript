@@ -131,6 +131,8 @@ const IDEMPOTENCY_KEY_METHODS = new Set<HttpMethod>(["POST", "PATCH"]);
 const MUTATING_RETRY_METHODS = new Set<HttpMethod>(["POST", "PATCH"]);
 const MAX_IDEMPOTENCY_KEY = 256;
 const MIN_BINDING_IDEMPOTENCY_KEY = 32;
+const MAX_BINDING_EXTERNAL_ID = 256;
+const MAX_BINDING_DISPLAY_NAME = 100;
 const IDEMPOTENCY_KEY_VALUE_RE = /^[\x21-\x7e](?:[\x20-\x7e]*[\x21-\x7e])?$/;
 const UUID_HEX = Array.from({ length: 256 }, (_, i) => i.toString(16).padStart(2, "0"));
 
@@ -1521,11 +1523,24 @@ function buildExternalIdentityBindingInput(
     );
   }
   requireNonEmptyStringField(normalized, "external_id", "createExternalIdentityBinding");
+  requireMaxLength(
+    normalized.external_id as string,
+    "createExternalIdentityBinding: external_id",
+    MAX_BINDING_EXTERNAL_ID,
+  );
+  if ((normalized.external_id as string).includes("#")) {
+    throw clientValidationError("createExternalIdentityBinding: external_id must not contain #");
+  }
   if (normalized.display_name !== undefined && typeof normalized.display_name !== "string") {
     throw clientValidationError(
       "createExternalIdentityBinding: display_name must be a string when provided",
     );
   }
+  requireMaxLength(
+    normalized.display_name as string | undefined,
+    "createExternalIdentityBinding: display_name",
+    MAX_BINDING_DISPLAY_NAME,
+  );
   return normalized as unknown as CreateExternalIdentityBindingInput;
 }
 
@@ -1550,6 +1565,7 @@ function validateExternalIdentityBindingRequestOptions(
 function parseExternalIdentityBindingResponse(
   data: unknown,
   headers: Headers | undefined,
+  expected: Pick<CreateExternalIdentityBindingInput, "provider" | "external_id">,
   requestId?: string,
 ): CreateExternalIdentityBindingOutput {
   const fail = (reason: string): never => {
@@ -1568,8 +1584,14 @@ function parseExternalIdentityBindingResponse(
   if (typeof binding.provider !== "string" || !EXTERNAL_IDENTITY_PROVIDERS.has(binding.provider)) {
     return fail("response has missing or invalid field provider");
   }
+  if (binding.provider !== expected.provider) {
+    return fail("response field provider does not match the request");
+  }
   if (typeof binding.external_id !== "string" || binding.external_id.length === 0) {
     return fail("response is missing required field external_id");
+  }
+  if (binding.external_id !== expected.external_id) {
+    return fail("response field external_id does not match the request");
   }
   if (binding.display_name !== undefined && typeof binding.display_name !== "string") {
     return fail("response has invalid field display_name");
@@ -3559,13 +3581,20 @@ export class QURLClient {
     if (envelope.__http_status !== 201) {
       throw unexpectedResponseError(
         `createExternalIdentityBinding: expected HTTP 201 response (got HTTP ${envelope.__http_status ?? "unknown"})`,
-        envelope.meta?.request_id,
+        envelope.meta?.request_id ?? envelope.__response_headers?.get("X-Request-Id") ?? undefined,
       );
     }
+    const requestId =
+      envelope.meta?.request_id ?? envelope.__response_headers?.get("X-Request-Id") ?? undefined;
     return parseExternalIdentityBindingResponse(
-      envelope.data,
+      // Unlike the API's common `{ data, meta }` envelope, this endpoint's
+      // OpenAPI contract and qurl-service handler return the binding object at
+      // the top level. rawRequest still injects status/header metadata onto
+      // that parsed object, so validate the object itself here.
+      envelope,
       envelope.__response_headers,
-      envelope.meta?.request_id,
+      body,
+      requestId,
     );
   }
 

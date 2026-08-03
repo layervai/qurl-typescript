@@ -222,10 +222,10 @@ you: a random key would prevent recovery after a lost response.
 const binding = await client.createExternalIdentityBinding(
   {
     provider: 'teams',
-    external_id: 'tenant-obviously-fake',
+    external_id: '00000000-0000-4000-8000-000000000001',
     display_name: 'Obviously Fake Tenant',
   },
-  { idempotencyKey: 'tenant-obviously-fake-binding-0001' },
+  { idempotencyKey: '00000000-0000-4000-8000-000000000001-binding-v1' },
 );
 
 // Persist this secret in a secure store immediately, then remove it from memory.

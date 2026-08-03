@@ -33,18 +33,16 @@ async function smokeExternalIdentityBinding() {
       bindingRequest = init;
       return new Response(
         JSON.stringify({
-          data: {
-            binding_id: "eib_cjs_smoke",
-            provider: "slack",
-            external_id: "workspace-obviously-fake",
-            api_key: {
-              key_id: "key_cjs_smoke",
-              key_prefix: "qurl_test",
-              plaintext: "qurl_test_obviously_fake_cjs_secret",
-            },
-            scopes: ["qurl:read"],
-            created_at: "2026-08-02T00:00:00Z",
+          binding_id: "eib_cjs_smoke",
+          provider: "slack",
+          external_id: "workspace-obviously-fake",
+          api_key: {
+            key_id: "key_cjs_smoke",
+            key_prefix: "qurl_test",
+            plaintext: "qurl_test_obviously_fake_cjs_secret",
           },
+          scopes: ["qurl:read"],
+          created_at: "2026-08-02T00:00:00Z",
         }),
         {
           status: 201,

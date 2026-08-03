@@ -29,18 +29,16 @@ const bindingClient = new QURLClient({
     bindingRequest = init;
     return new Response(
       JSON.stringify({
-        data: {
-          binding_id: "eib_esm_smoke",
-          provider: "teams",
-          external_id: "tenant-obviously-fake",
-          api_key: {
-            key_id: "key_esm_smoke",
-            key_prefix: "qurl_test",
-            plaintext: "qurl_test_obviously_fake_esm_secret",
-          },
-          scopes: ["qurl:read"],
-          created_at: "2026-08-02T00:00:00Z",
+        binding_id: "eib_esm_smoke",
+        provider: "teams",
+        external_id: "tenant-obviously-fake",
+        api_key: {
+          key_id: "key_esm_smoke",
+          key_prefix: "qurl_test",
+          plaintext: "qurl_test_obviously_fake_esm_secret",
         },
+        scopes: ["qurl:read"],
+        created_at: "2026-08-02T00:00:00Z",
       }),
       {
         status: 201,

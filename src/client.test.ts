@@ -8594,8 +8594,11 @@ describe("createExternalIdentityBinding", () => {
   it("creates a binding with a caller-supplied deterministic key and surfaces Location", async () => {
     const fetch = mockFetch({
       status: 201,
-      headers: { Location: "/v1/external-identity-bindings/eib_obviously_fake" },
-      body: { data: externalIdentityBindingData(), meta: { request_id: "req_binding_1" } },
+      headers: {
+        Location: "/v1/external-identity-bindings/eib_obviously_fake",
+        "X-Request-Id": "req_binding_1",
+      },
+      body: externalIdentityBindingData(),
     });
 
     const result = await createClient(fetch).createExternalIdentityBinding(
@@ -8627,7 +8630,7 @@ describe("createExternalIdentityBinding", () => {
       const fetch = mockFetch({
         status: 201,
         headers: { [headerName]: "true" },
-        body: { data: externalIdentityBindingData() },
+        body: externalIdentityBindingData(),
       });
 
       const result = await createClient(fetch).createExternalIdentityBinding(
@@ -8643,7 +8646,7 @@ describe("createExternalIdentityBinding", () => {
     const fetch = mockFetch({
       status: 201,
       headers: { "Idempotency-Replayed": "false" },
-      body: { data: externalIdentityBindingData() },
+      body: externalIdentityBindingData(),
     });
 
     const result = await createClient(fetch).createExternalIdentityBinding(
@@ -8691,10 +8694,22 @@ describe("createExternalIdentityBinding", () => {
         data.scopes = ["qurl:read", 42];
       },
     },
+    {
+      name: "provider mismatches request",
+      mutate: (data: Record<string, unknown>) => {
+        data.provider = "slack";
+      },
+    },
+    {
+      name: "external ID mismatches request",
+      mutate: (data: Record<string, unknown>) => {
+        data.external_id = "another-tenant-obviously-fake";
+      },
+    },
   ])("fails closed on $name", async ({ mutate }) => {
     const data = externalIdentityBindingData();
     mutate(data);
-    const fetch = mockFetch({ status: 201, body: { data } });
+    const fetch = mockFetch({ status: 201, body: data });
 
     const promise = createClient(fetch).createExternalIdentityBinding(
       { provider: "teams", external_id: "tenant-obviously-fake" },
@@ -8793,7 +8808,7 @@ describe("createExternalIdentityBinding", () => {
       {
         status: 201,
         headers: { "X-Idempotency-Replayed": "true" },
-        body: { data: externalIdentityBindingData() },
+        body: externalIdentityBindingData(),
       },
     ]);
     const client = new QURLClient({
@@ -8824,7 +8839,7 @@ describe("createExternalIdentityBinding", () => {
     { name: "too short", options: { idempotencyKey: "x".repeat(31) } },
     { name: "too long", options: { idempotencyKey: "x".repeat(257) } },
   ])("rejects a $name idempotency key before sending", async ({ options }) => {
-    const fetch = mockFetch({ status: 201, body: { data: externalIdentityBindingData() } });
+    const fetch = mockFetch({ status: 201, body: externalIdentityBindingData() });
     const client = createClient(fetch);
 
     await expect(
@@ -8837,7 +8852,7 @@ describe("createExternalIdentityBinding", () => {
   });
 
   it("rejects caller-supplied scopes instead of sending them", async () => {
-    const fetch = mockFetch({ status: 201, body: { data: externalIdentityBindingData() } });
+    const fetch = mockFetch({ status: 201, body: externalIdentityBindingData() });
     const input = {
       provider: "teams" as const,
       external_id: "tenant-obviously-fake",
@@ -8852,11 +8867,58 @@ describe("createExternalIdentityBinding", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it.each([
+    {
+      name: "unknown provider",
+      input: { provider: "email", external_id: "tenant-obviously-fake" },
+    },
+    {
+      name: "external ID containing the storage separator",
+      input: { provider: "teams", external_id: "tenant#obviously-fake" },
+    },
+    {
+      name: "overlong external ID",
+      input: { provider: "teams", external_id: "x".repeat(257) },
+    },
+    {
+      name: "non-string display name",
+      input: { provider: "teams", external_id: "tenant-obviously-fake", display_name: 42 },
+    },
+    {
+      name: "overlong display name",
+      input: {
+        provider: "teams",
+        external_id: "tenant-obviously-fake",
+        display_name: "x".repeat(101),
+      },
+    },
+  ])("rejects $name before sending", async ({ input }) => {
+    const fetch = mockFetch({ status: 201, body: externalIdentityBindingData() });
+
+    await expect(
+      createClient(fetch).createExternalIdentityBinding(input as never, {
+        idempotencyKey: BINDING_IDEMPOTENCY_KEY,
+      }),
+    ).rejects.toMatchObject({ code: ERROR_CODE_CLIENT_VALIDATION });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("rejects a non-201 success status before parsing the top-level binding", async () => {
+    const fetch = mockFetch({ status: 200, body: externalIdentityBindingData() });
+
+    await expect(
+      createClient(fetch).createExternalIdentityBinding(
+        { provider: "teams", external_id: "tenant-obviously-fake" },
+        { idempotencyKey: BINDING_IDEMPOTENCY_KEY },
+      ),
+    ).rejects.toMatchObject({ code: ERROR_CODE_UNEXPECTED_RESPONSE, status: 0 });
+  });
+
   it("never includes one-time plaintext in validation errors or debug logs", async () => {
     const debugOutput: string[] = [];
     const data = externalIdentityBindingData();
     delete (data.api_key as Record<string, unknown>).key_id;
-    const fetch = mockFetch({ status: 201, body: { data } });
+    const fetch = mockFetch({ status: 201, body: data });
     const client = new QURLClient({
       apiKey: "test-api-key",
       baseUrl: "https://api.test.layerv.ai",
@@ -8882,7 +8944,7 @@ describe("createExternalIdentityBinding", () => {
 
   it("never includes one-time plaintext in debug logs on a successful create", async () => {
     const debugOutput: string[] = [];
-    const fetch = mockFetch({ status: 201, body: { data: externalIdentityBindingData() } });
+    const fetch = mockFetch({ status: 201, body: externalIdentityBindingData() });
     const client = new QURLClient({
       apiKey: "test-api-key",
       baseUrl: "https://api.test.layerv.ai",
