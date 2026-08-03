@@ -21,6 +21,18 @@ import { mockFetch, mockFetches, createClient } from "./__tests__/test-helpers.j
 
 const UUID_V7_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const TARGET_PATH_MAX_LENGTH = 2048;
+const RESPONSE_BODY_LIMIT = 1 << 20;
+
+function sizedJSON(prefix: string, suffix: string, size: number): string {
+  const paddingLength =
+    size -
+    new TextEncoder().encode(prefix).byteLength -
+    new TextEncoder().encode(suffix).byteLength;
+  if (paddingLength < 0) throw new Error("JSON framing exceeds requested test size");
+  const body = `${prefix}${"x".repeat(paddingLength)}${suffix}`;
+  expect(new TextEncoder().encode(body).byteLength).toBe(size);
+  return body;
+}
 
 function callHeaders(
   fetch: typeof globalThis.fetch | ReturnType<typeof vi.fn>,
@@ -3059,10 +3071,7 @@ describe("QURLClient", () => {
     expect(dropLog).toBeDefined();
   });
 
-  it.each([
-    { label: "null", qurls: null, needle: "was null", branch: "null" },
-    { label: "undefined", qurls: undefined, needle: "was undefined", branch: "undefined" },
-  ])(
+  it.each([{ label: "null", qurls: null, needle: "was null", branch: "null" }])(
     "mapQurlsField logs when own-property `qurls` is $label",
     async ({ qurls, needle, branch }) => {
       const fetch = mockFetch({
@@ -3454,6 +3463,82 @@ describe("QURLClient", () => {
     );
 
     expect(callHeaders(fetch)["Idempotency-Key"]).toBe("upstream-job-123");
+  });
+
+  it.each([
+    ["same-origin", "https://api.test.layerv.ai/redirect-target"],
+    ["cross-origin", "https://redirect-target.invalid/collect"],
+  ])("refuses %s redirects without forwarding credential headers", async (_kind, targetUrl) => {
+    const target = vi.fn(async () => new Response(null, { status: 204 }));
+    let originalHeaders: Record<string, string> | undefined;
+    const fetch = vi.fn(
+      async (
+        url: Parameters<typeof globalThis.fetch>[0],
+        init?: Parameters<typeof globalThis.fetch>[1],
+      ) => {
+        if (String(url) === targetUrl) return target(url, init);
+        originalHeaders = init?.headers as Record<string, string>;
+
+        // Model fetch's redirect behavior: a missing/manual-misconfigured mode
+        // would make a second request and expose the test to target().
+        if (init?.redirect !== "manual") return target(targetUrl, init);
+        return new Response("redirect response body", {
+          status: 302,
+          headers: { location: targetUrl },
+        });
+      },
+    );
+    const client = new QURLClient({
+      apiKey: "redirect-test-secret",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 2,
+    });
+
+    const error = await client
+      .create(
+        { target_url: "https://example.com" },
+        { idempotencyKey: "redirect-test-idempotency" },
+      )
+      .catch((caught: unknown) => caught as QURLError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error.status).toBe(302);
+    expect(error.code).toBe(ERROR_CODE_UNEXPECTED_RESPONSE);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(target).not.toHaveBeenCalled();
+    expect(originalHeaders?.Authorization).toBe("Bearer redirect-test-secret");
+    expect(originalHeaders?.["Idempotency-Key"]).toBe("redirect-test-idempotency");
+    expect(error.message).not.toContain(targetUrl);
+    expect(error.message).not.toContain("redirect-test-secret");
+    expect(error.message).not.toContain("redirect-test-idempotency");
+  });
+
+  it("refuses browser-filtered opaque redirects as unexpected responses", async () => {
+    const fetch = vi.fn(async () => {
+      return {
+        ok: false,
+        status: 0,
+        statusText: "",
+        type: "opaqueredirect",
+        headers: new Headers(),
+        body: null,
+      } satisfies Partial<Response> as Response;
+    });
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 2,
+    });
+
+    const error = await client.getQuota().catch((caught: unknown) => caught as QURLError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error.status).toBe(0);
+    expect(error.code).toBe(ERROR_CODE_UNEXPECTED_RESPONSE);
+    expect(error.detail).toContain("opaque browser redirect");
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   it("rejects invalid Idempotency-Key overrides before making a request", async () => {
@@ -3993,6 +4078,194 @@ describe("QURLClient", () => {
       expect(qErr.status).toBe(500);
       expect(qErr.code).toBe(ERROR_CODE_UNKNOWN);
       expect(qErr.message).toContain("Internal Server Error");
+    }
+  });
+
+  it.each([
+    {
+      name: "JSON success with declared length",
+      status: 200,
+      contentType: "application/json",
+      headers: "accurate" as const,
+      body: () =>
+        sizedJSON(
+          '{"data":{"secret":"response-credential-marker","padding":"',
+          '"}}',
+          RESPONSE_BODY_LIMIT + 1,
+        ),
+    },
+    {
+      name: "JSON error without declared length",
+      status: 503,
+      contentType: "application/problem+json",
+      headers: "absent" as const,
+      body: () =>
+        sizedJSON(
+          '{"error":{"title":"Unavailable","detail":"response-credential-marker',
+          '"}}',
+          RESPONSE_BODY_LIMIT + 1,
+        ),
+    },
+    {
+      name: "non-JSON success with inaccurate declared length",
+      status: 200,
+      contentType: "text/html",
+      headers: "inaccurate" as const,
+      body: () => `response-credential-marker${"x".repeat(RESPONSE_BODY_LIMIT)}`,
+    },
+    {
+      name: "non-JSON error without declared length",
+      status: 503,
+      contentType: "text/plain",
+      headers: "absent" as const,
+      body: () => `response-credential-marker${"x".repeat(RESPONSE_BODY_LIMIT)}`,
+    },
+  ])("rejects oversized $name bodies with a bounded typed error", async (testCase) => {
+    const body = testCase.body();
+    const headers: Record<string, string> = { "content-type": testCase.contentType };
+    if (testCase.headers === "accurate")
+      headers["content-length"] = String(new TextEncoder().encode(body).byteLength);
+    if (testCase.headers === "inaccurate") headers["content-length"] = "1";
+    const debug = vi.fn();
+    const fetch = vi.fn(async () => new Response(body, { status: testCase.status, headers }));
+    const client = new QURLClient({
+      apiKey: "request-credential-marker",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 2,
+      debug,
+    });
+
+    const error = await client.getQuota().catch((caught: unknown) => caught as QURLError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error.status).toBe(testCase.status);
+    expect(error.code).toBe(ERROR_CODE_UNEXPECTED_RESPONSE);
+    expect(error.detail).toContain(`${RESPONSE_BODY_LIMIT}-byte limit`);
+    expect(error.message.length).toBeLessThan(256);
+    expect(error.message).not.toContain("response-credential-marker");
+    expect(error.message).not.toContain("request-credential-marker");
+    expect(JSON.stringify(debug.mock.calls)).not.toContain("response-credential-marker");
+    expect(JSON.stringify(debug.mock.calls)).not.toContain("request-credential-marker");
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry an oversized body on a retryable status", async () => {
+    const fetch = vi.fn(
+      async () =>
+        new Response("x".repeat(RESPONSE_BODY_LIMIT + 1), {
+          status: 503,
+          headers: { "content-type": "text/plain" },
+        }),
+    );
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 2,
+    });
+
+    const error = await client.getQuota().catch((caught: unknown) => caught as QURLError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error.status).toBe(503);
+    expect(error.code).toBe(ERROR_CODE_UNEXPECTED_RESPONSE);
+    expect(error.detail).toContain(`${RESPONSE_BODY_LIMIT}-byte limit`);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("parses success and error JSON bodies exactly at the response limit", async () => {
+    const successBody = sizedJSON('{"data":{"padding":"', '"}}', RESPONSE_BODY_LIMIT);
+    const successFetch = vi.fn(
+      async () =>
+        new Response(successBody, {
+          status: 200,
+          headers: { "content-length": String(RESPONSE_BODY_LIMIT) },
+        }),
+    );
+    const success = await new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: successFetch as typeof globalThis.fetch,
+      maxRetries: 0,
+    }).getQuota();
+    expect((success as unknown as { padding: string }).padding.length).toBeGreaterThan(0);
+
+    const errorBody = sizedJSON(
+      '{"error":{"title":"Boundary","code":"boundary_error","detail":"',
+      '"}}',
+      RESPONSE_BODY_LIMIT,
+    );
+    const errorFetch = vi.fn(
+      async () =>
+        new Response(errorBody, {
+          status: 400,
+          headers: { "content-length": String(RESPONSE_BODY_LIMIT) },
+        }),
+    );
+    const error = await new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: errorFetch as typeof globalThis.fetch,
+      maxRetries: 0,
+    })
+      .getQuota()
+      .catch((caught: unknown) => caught as QURLError);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error.code).toBe("boundary_error");
+    expect(error.detail.endsWith("...")).toBe(true);
+    expect(new TextEncoder().encode(error.detail.slice(0, -3)).byteLength).toBeLessThanOrEqual(512);
+    expect(error.detail).not.toContain("byte limit");
+  });
+
+  it("keeps structured API error snippets single-line, UTF-8-safe, and bounded", async () => {
+    const detail = `  ${"€".repeat(300)}\nresponse tail  `;
+    const fetch = mockFetch({
+      status: 400,
+      body: { error: { title: "Bad Request", code: "bad_request", detail } },
+    });
+    const error = await createClient(fetch)
+      .getQuota()
+      .catch((caught: unknown) => caught as QURLError);
+
+    expect(error.detail.endsWith("...")).toBe(true);
+    expect(error.detail).not.toContain("\n");
+    expect(new TextEncoder().encode(error.detail.slice(0, -3)).byteLength).toBeLessThanOrEqual(512);
+    expect(() =>
+      new TextDecoder("utf-8", { fatal: true }).decode(new TextEncoder().encode(error.detail)),
+    ).not.toThrow();
+  });
+
+  it("retries a retryable status even when its error body is non-JSON", async () => {
+    vi.useFakeTimers();
+    try {
+      const responseBody = "<html>transient proxy response</html>";
+      const fetch = vi.fn(
+        async () =>
+          new Response(responseBody, {
+            status: 503,
+            headers: { "content-type": "text/html" },
+          }),
+      );
+      const client = new QURLClient({
+        apiKey: "test-api-key",
+        baseUrl: "https://api.test.layerv.ai",
+        fetch: fetch as typeof globalThis.fetch,
+        maxRetries: 2,
+      });
+
+      const errorPromise = client.getQuota().catch((caught: unknown) => caught as QURLError);
+      await vi.runAllTimersAsync();
+      const error = await errorPromise;
+
+      expect(error).toBeInstanceOf(ServerError);
+      expect(error.status).toBe(503);
+      expect(error.code).toBe(ERROR_CODE_UNKNOWN);
+      expect(error.message.length).toBeLessThan(256);
+      expect(error.message).not.toContain(responseBody);
+      expect(fetch).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
     }
   });
 

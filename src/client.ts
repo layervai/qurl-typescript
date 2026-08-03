@@ -96,6 +96,13 @@ import { VERSION } from "./version.js";
 const DEFAULT_BASE_URL = "https://api.layerv.ai";
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_TIMEOUT = 30_000;
+// Match qurl-go's API-client posture: one MiB is ample for the API's
+// bounded JSON envelopes (including 100-item batch responses), while
+// preventing a broken or hostile upstream from making the SDK buffer an
+// unbounded body. The limit is enforced from Content-Length when usable and
+// again while consuming the response stream.
+const MAX_RESPONSE_BODY_BYTES = 1 << 20;
+const MAX_ERROR_SNIPPET_BYTES = 512;
 const RETRY_BASE_DELAY_MS = 500;
 // Bounds local exponential backoff (NOT server-asserted Retry-After —
 // see `RETRY_AFTER_HARD_CAP_MS` for that).
@@ -121,6 +128,13 @@ type RawRequestOptions = {
   passthroughStatuses?: readonly number[];
   requestOptions?: RequestOptions;
 };
+
+class ResponseBodyTooLargeError extends Error {
+  constructor() {
+    super(`Response body exceeds ${MAX_RESPONSE_BODY_BYTES}-byte limit`);
+    this.name = "ResponseBodyTooLargeError";
+  }
+}
 
 const NO_PASSTHROUGH_STATUSES: readonly number[] = [];
 const BATCH_PASSTHROUGH_STATUSES: readonly number[] = [400];
@@ -641,6 +655,115 @@ function unexpectedResponseError(detail: string, request_id?: string): Validatio
     detail,
     request_id,
   });
+}
+
+/** Construct an unexpected-response error while preserving the observed HTTP status. */
+function httpResponseContractError(response: Response, detail: string): ValidationError {
+  return new ValidationError({
+    status: response.status,
+    code: ERROR_CODE_UNEXPECTED_RESPONSE,
+    title: "Unexpected Response",
+    detail,
+  });
+}
+
+/**
+ * Normalize a server-provided problem title/detail into a single-line,
+ * UTF-8-safe snippet. Error messages must stay bounded even when a proxy or
+ * compromised upstream returns very large structured problem fields.
+ */
+function boundedErrorSnippet(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim().replace(/\s+/g, " ");
+  if (normalized === "") return undefined;
+  const encoded = new TextEncoder().encode(normalized);
+  if (encoded.byteLength <= MAX_ERROR_SNIPPET_BYTES) return normalized;
+
+  let end = MAX_ERROR_SNIPPET_BYTES;
+  // Do not split a multi-byte UTF-8 sequence at the cap.
+  while (end > 0 && (encoded[end] & 0xc0) === 0x80) end--;
+  return `${new TextDecoder().decode(encoded.subarray(0, end))}...`;
+}
+
+async function cancelResponseBody(body: Response["body"]): Promise<void> {
+  if (!body) return;
+  try {
+    await body.cancel();
+  } catch {
+    // Best-effort resource cleanup must not replace the deterministic SDK error.
+  }
+}
+
+function contentLengthExceedsLimit(response: Response): boolean {
+  const value = response.headers.get("content-length");
+  if (value === null || !/^\d+$/.test(value.trim())) return false;
+  return Number(value) > MAX_RESPONSE_BODY_BYTES;
+}
+
+/**
+ * Read a response body without ever retaining more than the documented cap.
+ * Content-Length is an early-rejection optimization only; streaming byte
+ * accounting remains authoritative because that header may be absent or false.
+ */
+async function readBoundedResponseBody(response: Response): Promise<string> {
+  if (contentLengthExceedsLimit(response)) {
+    await cancelResponseBody(response.body);
+    throw new ResponseBodyTooLargeError();
+  }
+
+  const body = response.body;
+  if (body === null) return "";
+
+  // Standards-compliant fetch implementations always expose a ReadableStream
+  // for a non-empty body. Retain compatibility with Response-like test/custom
+  // fetch implementations while still checking their materialized text before
+  // this SDK parses it as JSON.
+  if (body === undefined) {
+    const text = typeof response.text === "function" ? await response.text() : "";
+    if (new TextEncoder().encode(text).byteLength > MAX_RESPONSE_BODY_BYTES) {
+      throw new ResponseBodyTooLargeError();
+    }
+    if (text !== "") return text;
+
+    // Older injected Response-like objects may implement json() but return an
+    // empty placeholder from text(). This path is never used by native fetch.
+    const serialized = JSON.stringify(await response.json());
+    if (serialized === undefined) return "";
+    if (new TextEncoder().encode(serialized).byteLength > MAX_RESPONSE_BODY_BYTES) {
+      throw new ResponseBodyTooLargeError();
+    }
+    return serialized;
+  }
+
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > MAX_RESPONSE_BODY_BYTES) {
+        try {
+          await reader.cancel();
+        } catch {
+          // Preserve the body-limit failure even if stream cancellation fails.
+        }
+        throw new ResponseBodyTooLargeError();
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
 }
 
 // ---- Spec-derived validation helpers ------------------------------------
@@ -3430,6 +3553,7 @@ export class QURLClient {
           method,
           headers,
           body: serializedBody,
+          redirect: "manual",
           signal: AbortSignal.timeout(this.timeout),
         });
       } catch (err) {
@@ -3447,6 +3571,40 @@ export class QURLClient {
       }
 
       this.log(`${method} ${url} → ${response.status}`);
+
+      // Redirects are deterministic protocol violations for SDK API calls.
+      // Refuse them before reading Location or entering retry handling so
+      // Authorization and Idempotency-Key can never reach a follow-up target.
+      if ((response.status >= 300 && response.status < 400) || response.type === "opaqueredirect") {
+        await cancelResponseBody(response.body);
+        const redirectKind =
+          response.status >= 300 && response.status < 400
+            ? `HTTP ${response.status}`
+            : "opaque browser";
+        throw httpResponseContractError(
+          response,
+          `Refused ${redirectKind} redirect response for ${method} ${path}`,
+        );
+      }
+
+      let responseBody: string;
+      try {
+        responseBody = await readBoundedResponseBody(response);
+      } catch (err) {
+        if (err instanceof ResponseBodyTooLargeError) {
+          throw httpResponseContractError(
+            response,
+            `Response body exceeds ${MAX_RESPONSE_BODY_BYTES}-byte limit on HTTP ${response.status}`,
+          );
+        }
+        this.log(`failed to read response body from ${response.status}`, {
+          status: response.status,
+        });
+        throw httpResponseContractError(
+          response,
+          `Failed to read response body on HTTP ${response.status}`,
+        );
+      }
 
       // `response.ok` is true for the entire 200-299 range, so partial-
       // success responses like 207 flow through this path naturally —
@@ -3473,15 +3631,14 @@ export class QURLClient {
           return { data: undefined as unknown as T, __http_status: response.status };
         }
         try {
-          const json = (await response.json()) as ApiResponse<T>;
+          const json = JSON.parse(responseBody) as ApiResponse<T>;
           return { ...json, __http_status: response.status };
         } catch {
           // Non-JSON body on a 2xx response (server contract violation)
           // or on a passthrough status (e.g. proxy HTML on 400). The
-          // body stream is already consumed by the failed `.json()`,
-          // so we can't delegate to parseError — synthesize a typed
-          // QURLError directly so consumers catching by-class don't
-          // miss it.
+          // body was read through the cap before JSON decoding.
+          // Synthesize a typed QURLError directly so consumers catching
+          // by-class don't miss the contract failure.
           this.log(
             `non-JSON body on ${isPassthrough ? "passthrough" : "success"} response ${response.status}`,
             {
@@ -3498,9 +3655,14 @@ export class QURLClient {
         }
       }
 
-      const errorData = await this.parseError(response);
+      const errorData = this.parseError(response, responseBody);
       const err = createError(errorData);
 
+      // Retryability is determined by status even when an intermediary
+      // returned HTML, an empty body, or another non-envelope error. Those
+      // shapes are common for transient 429/502/503/504 responses and do not
+      // prove that a retry cannot succeed. Redirects and oversized bodies
+      // already throw before reaching this check.
       if (retryable.has(response.status) && attempt < this.maxRetries) {
         lastError = err;
         continue;
@@ -3512,9 +3674,9 @@ export class QURLClient {
     throw lastError ?? new Error("Request failed after retries");
   }
 
-  private async parseError(response: Response): Promise<QURLErrorData> {
+  private parseError(response: Response, responseBody: string): QURLErrorData {
     try {
-      const json = (await response.json()) as ApiErrorEnvelope;
+      const json = JSON.parse(responseBody) as ApiErrorEnvelope;
       if (json.error) {
         const err = json.error;
         // Detail fallback chain:
@@ -3523,9 +3685,16 @@ export class QURLClient {
         //   3. err.title    (RFC 7807 required field)
         //   4. HTTP status  (final safety net)
         // This prevents `"Title (403): undefined"` when the API omits detail.
-        const detail = err.detail ?? err.message ?? err.title ?? `HTTP ${response.status}`;
+        const detail =
+          boundedErrorSnippet(err.detail) ??
+          boundedErrorSnippet(err.message) ??
+          boundedErrorSnippet(err.title) ??
+          `HTTP ${response.status}`;
         // HTTP/2 omits reason-phrases — `statusText` may be "".
-        const title = err.title ?? (response.statusText || `HTTP ${response.status}`);
+        const title =
+          boundedErrorSnippet(err.title) ??
+          boundedErrorSnippet(response.statusText) ??
+          `HTTP ${response.status}`;
         return {
           status: err.status ?? response.status,
           code: err.code ?? ERROR_CODE_UNKNOWN,
@@ -3544,30 +3713,31 @@ export class QURLClient {
       // status-only safety net below.
       this.log(`unexpected error response shape from ${response.status}`, {
         status: response.status,
-        body_keys: Object.keys(json as object),
+        body_keys:
+          typeof json === "object" && json !== null ? Object.keys(json as object) : undefined,
       });
     } catch {
-      // Body wasn't valid JSON (or the network stream errored during
-      // read). Log so operators can distinguish this from a malformed
-      // envelope, and fall through to the status-only safety net.
+      // Body wasn't valid JSON. Log so operators can distinguish this from a
+      // malformed envelope, and fall through to the status-only safety net.
       this.log(`non-JSON error response from ${response.status}`, {
         status: response.status,
         content_type: response.headers.get("content-type") ?? undefined,
       });
     }
 
+    const statusText = boundedErrorSnippet(response.statusText) || `HTTP ${response.status}`;
     return {
       status: response.status,
       code: ERROR_CODE_UNKNOWN,
-      title: response.statusText || `HTTP ${response.status}`,
-      detail: response.statusText || `HTTP ${response.status}`,
+      title: statusText,
+      detail: statusText,
     };
   }
 
   private parseRetryAfter(response: Response): number | undefined {
-    // RFC 7231 §7.1.3: Retry-After honored on 429 + 503. (RFC 7231
-    // also allows Retry-After on 3xx redirects; the SDK doesn't follow
-    // redirects, so 429/503 cover the relevant cases.)
+    // RFC 7231 §7.1.3: Retry-After honored on 429 + 503. Although the RFC
+    // also permits it on 3xx responses, rawRequest now refuses redirects
+    // as deterministic errors before retry parsing, so only 429/503 apply.
     if (response.status !== 429 && response.status !== 503) return undefined;
     const header = response.headers.get("Retry-After");
     if (!header) return undefined;

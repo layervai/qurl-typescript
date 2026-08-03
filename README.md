@@ -321,6 +321,7 @@ The client automatically retries failed requests with exponential backoff:
 - **POST/PATCH**: Retries status responses only on 429
 - **Network errors**: Always retried; POST/PATCH requests send an `Idempotency-Key` on the first attempt and reuse it on retries
 - **`Retry-After` header**: Honored on 429 and 503 responses (RFC 7231 §7.1.3). Currently the SDK only parses **delta-seconds** values (e.g. `Retry-After: 30`); HTTP-date values (`Retry-After: Wed, 21 Oct 2026 07:28:00 GMT`) silently fall back to exponential backoff. Tracked in [#61](https://github.com/layervai/qurl-typescript/issues/61).
+- **Response failures**: Redirects and oversized bodies are not retried. Retryable status codes remain retryable when an intermediary returns HTML, an empty body, or another non-envelope error response.
 
 Configure with `maxRetries` (default: 3). Set to `0` to disable.
 
@@ -343,6 +344,18 @@ SDK-generated keys require `globalThis.crypto.getRandomValues`, which is availab
 ## Security Notes
 
 - Treat API keys and qURL links like credentials. Do not log them.
+- SDK API requests use manual redirect handling. Any 3xx response is rejected as
+  a typed `QURLError` (`code: "unexpected_response"`) without requesting the
+  `Location` target, so `Authorization` and `Idempotency-Key` headers are never
+  forwarded through redirects.
+- API success and error bodies are limited to **1 MiB (1,048,576 bytes)**,
+  matching qurl-go's security posture. The SDK checks `Content-Length` when
+  present and independently counts streamed bytes, so missing or inaccurate
+  headers cannot bypass the limit. Bodies exactly at the limit are accepted.
+  Oversized bodies fail with a typed, non-retryable error before JSON decoding.
+  Server-provided error title/detail snippets are normalized and capped at 512
+  UTF-8 bytes. Redirect/body-limit errors do not include `Location` values,
+  response-body snippets, or request credentials in SDK errors or debug logs.
 - Prefer short portal lifetimes such as `validFor: '5m'`.
 - Do not ask portal recipients to handle credentials. Recipients only need
   the link.
