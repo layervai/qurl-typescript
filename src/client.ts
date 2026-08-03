@@ -1615,6 +1615,7 @@ function parseExternalIdentityBindingResponse(
   }
   if (
     !Array.isArray(binding.scopes) ||
+    binding.scopes.length === 0 ||
     binding.scopes.some((scope) => typeof scope !== "string" || scope.length === 0)
   ) {
     return fail("response has missing or invalid field scopes");

@@ -8695,6 +8695,12 @@ describe("createExternalIdentityBinding", () => {
       },
     },
     {
+      name: "empty scopes",
+      mutate: (data: Record<string, unknown>) => {
+        data.scopes = [];
+      },
+    },
+    {
       name: "provider mismatches request",
       mutate: (data: Record<string, unknown>) => {
         data.provider = "slack";
@@ -8721,6 +8727,24 @@ describe("createExternalIdentityBinding", () => {
       status: 0,
     });
     await expect(promise).rejects.toBeInstanceOf(ValidationError);
+  });
+
+  it("accepts a response without the optional display name", async () => {
+    const data = externalIdentityBindingData();
+    delete data.display_name;
+    const fetch = mockFetch({ status: 201, body: data });
+
+    await expect(
+      createClient(fetch).createExternalIdentityBinding(
+        { provider: "teams", external_id: "tenant-obviously-fake" },
+        { idempotencyKey: BINDING_IDEMPOTENCY_KEY },
+      ),
+    ).resolves.toEqual({
+      ...data,
+      display_name: undefined,
+      location: undefined,
+      replayed: false,
+    });
   });
 
   it.each(["already_exists", "idempotency_conflict"])(
