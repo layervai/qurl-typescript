@@ -833,6 +833,42 @@ export interface WebhookPayload {
   data?: Record<string, unknown>;
 }
 
+/** External collaboration provider supported by identity bindings. */
+export type ExternalIdentityProvider = "slack" | "discord" | "teams";
+
+/** Input for binding an external collaboration identity to the current owner. */
+export interface CreateExternalIdentityBindingInput {
+  provider: ExternalIdentityProvider;
+  external_id: string;
+  display_name?: string;
+}
+
+/** One-time API key material returned when an external identity is bound. */
+export interface ExternalIdentityBindingApiKey {
+  key_id: string;
+  key_prefix: string;
+  /**
+   * Full API key secret. This is returned only during create or a same-key,
+   * same-body replay within 24 hours. Persist it securely immediately.
+   */
+  plaintext: string;
+}
+
+/** Response from creating an external identity binding. */
+export interface CreateExternalIdentityBindingOutput {
+  binding_id: string;
+  provider: ExternalIdentityProvider;
+  external_id: string;
+  display_name?: string;
+  api_key: ExternalIdentityBindingApiKey;
+  scopes: string[];
+  created_at: string;
+  /** Resource location returned by the API, when the response header is available. */
+  location?: string;
+  /** Whether either service-supported idempotency replay header was present. */
+  replayed: boolean;
+}
+
 export type ApiKeyScope = OpenString<"qurl:read" | "qurl:write" | "qurl:resolve" | "qurl:agent">;
 
 export interface CreateApiKeyInput {
@@ -947,6 +983,15 @@ export interface RequestOptions {
    * spaces. Use a unique key for each logical operation.
    */
   idempotencyKey?: string;
+}
+
+/** Per-call options for `createExternalIdentityBinding`. */
+export interface CreateExternalIdentityBindingRequestOptions extends RequestOptions {
+  /**
+   * Stable caller-derived replay key. Required and 32-256 printable ASCII
+   * characters; reuse it only with the exact same request body.
+   */
+  idempotencyKey: string;
 }
 
 /** Client configuration options. */

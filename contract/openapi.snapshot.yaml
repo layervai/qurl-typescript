@@ -50,6 +50,8 @@ paths:
     post: {}
   /v1/domains/{domain}/verify:
     post: {}
+  /v1/external-identity-bindings:
+    post: {}
   /v1/qurls:
     get: {}
     post: {}

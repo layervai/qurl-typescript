@@ -32,6 +32,9 @@ import type {
   CreateApiKeyInput,
   CreateApiKeyOutput,
   CreateBillingCheckoutInput,
+  CreateExternalIdentityBindingInput,
+  CreateExternalIdentityBindingOutput,
+  CreateExternalIdentityBindingRequestOptions,
   CreateInput,
   CreateOutput,
   CreatePortalOptions,
@@ -127,6 +130,7 @@ type HttpMethod = "GET" | "POST" | "PATCH" | "DELETE";
 const IDEMPOTENCY_KEY_METHODS = new Set<HttpMethod>(["POST", "PATCH"]);
 const MUTATING_RETRY_METHODS = new Set<HttpMethod>(["POST", "PATCH"]);
 const MAX_IDEMPOTENCY_KEY = 256;
+const MIN_BINDING_IDEMPOTENCY_KEY = 32;
 const IDEMPOTENCY_KEY_VALUE_RE = /^[\x21-\x7e](?:[\x20-\x7e]*[\x21-\x7e])?$/;
 const UUID_HEX = Array.from({ length: 256 }, (_, i) => i.toString(16).padStart(2, "0"));
 
@@ -414,6 +418,21 @@ const CREATE_API_KEY_FIELD_KEYS = [
 
 assertExhaustive<
   Exclude<keyof CreateApiKeyInput, (typeof CREATE_API_KEY_FIELD_KEYS)[number]> extends never
+    ? true
+    : never
+>(true);
+
+const CREATE_EXTERNAL_IDENTITY_BINDING_FIELD_KEYS = [
+  "provider",
+  "external_id",
+  "display_name",
+] as const satisfies readonly (keyof CreateExternalIdentityBindingInput)[];
+
+assertExhaustive<
+  Exclude<
+    keyof CreateExternalIdentityBindingInput,
+    (typeof CREATE_EXTERNAL_IDENTITY_BINDING_FIELD_KEYS)[number]
+  > extends never
     ? true
     : never
 >(true);
@@ -1483,6 +1502,123 @@ function validateApiKeyWriteFields(
   }
 }
 
+const EXTERNAL_IDENTITY_PROVIDERS = new Set(["slack", "discord", "teams"]);
+
+function buildExternalIdentityBindingInput(
+  input: CreateExternalIdentityBindingInput,
+): CreateExternalIdentityBindingInput {
+  requireObjectInput(input, "createExternalIdentityBinding");
+  requireNoUnknownFields(
+    input,
+    CREATE_EXTERNAL_IDENTITY_BINDING_FIELD_KEYS,
+    "createExternalIdentityBinding",
+  );
+  const normalized = normalizePatchFields(input, CREATE_EXTERNAL_IDENTITY_BINDING_FIELD_KEYS);
+  requireNonEmptyStringField(normalized, "provider", "createExternalIdentityBinding");
+  if (!EXTERNAL_IDENTITY_PROVIDERS.has(normalized.provider as string)) {
+    throw clientValidationError(
+      "createExternalIdentityBinding: provider must be one of slack, discord, or teams",
+    );
+  }
+  requireNonEmptyStringField(normalized, "external_id", "createExternalIdentityBinding");
+  if (normalized.display_name !== undefined && typeof normalized.display_name !== "string") {
+    throw clientValidationError(
+      "createExternalIdentityBinding: display_name must be a string when provided",
+    );
+  }
+  return normalized as unknown as CreateExternalIdentityBindingInput;
+}
+
+function validateExternalIdentityBindingRequestOptions(
+  options: CreateExternalIdentityBindingRequestOptions,
+): void {
+  validateRequestOptions(options);
+  const key = options?.idempotencyKey;
+  if (key === undefined) {
+    throw clientValidationError(
+      "createExternalIdentityBinding: idempotencyKey is required and must be caller supplied",
+    );
+  }
+  if (key.length < MIN_BINDING_IDEMPOTENCY_KEY) {
+    throw clientValidationError(
+      `createExternalIdentityBinding: idempotencyKey must be ${MIN_BINDING_IDEMPOTENCY_KEY}-${MAX_IDEMPOTENCY_KEY} characters (got ${key.length})`,
+    );
+  }
+}
+
+function parseExternalIdentityBindingResponse(
+  data: unknown,
+  headers: Headers | undefined,
+  requestId?: string,
+): CreateExternalIdentityBindingOutput {
+  const fail = (reason: string): never => {
+    // Deliberately include field names and expected shapes only. The response
+    // contains one-time plaintext API key material that must never enter an
+    // exception string or observability pipeline.
+    throw unexpectedResponseError(`createExternalIdentityBinding: ${reason}`, requestId);
+  };
+  if (typeof data !== "object" || data === null || Array.isArray(data)) {
+    return fail("response data must be an object");
+  }
+  const binding = data as Record<string, unknown>;
+  if (typeof binding.binding_id !== "string" || binding.binding_id.length === 0) {
+    return fail("response is missing required field binding_id");
+  }
+  if (typeof binding.provider !== "string" || !EXTERNAL_IDENTITY_PROVIDERS.has(binding.provider)) {
+    return fail("response has missing or invalid field provider");
+  }
+  if (typeof binding.external_id !== "string" || binding.external_id.length === 0) {
+    return fail("response is missing required field external_id");
+  }
+  if (binding.display_name !== undefined && typeof binding.display_name !== "string") {
+    return fail("response has invalid field display_name");
+  }
+  if (
+    typeof binding.api_key !== "object" ||
+    binding.api_key === null ||
+    Array.isArray(binding.api_key)
+  ) {
+    return fail("response is missing required object api_key");
+  }
+  const apiKey = binding.api_key as Record<string, unknown>;
+  if (typeof apiKey.key_id !== "string" || apiKey.key_id.length === 0) {
+    return fail("response is missing required field api_key.key_id");
+  }
+  if (typeof apiKey.key_prefix !== "string" || apiKey.key_prefix.length === 0) {
+    return fail("response is missing required field api_key.key_prefix");
+  }
+  if (typeof apiKey.plaintext !== "string" || apiKey.plaintext.length === 0) {
+    return fail("response is missing required field api_key.plaintext");
+  }
+  if (
+    !Array.isArray(binding.scopes) ||
+    binding.scopes.some((scope) => typeof scope !== "string" || scope.length === 0)
+  ) {
+    return fail("response has missing or invalid field scopes");
+  }
+  if (typeof binding.created_at !== "string" || binding.created_at.length === 0) {
+    return fail("response is missing required field created_at");
+  }
+
+  return {
+    binding_id: binding.binding_id,
+    provider: binding.provider as CreateExternalIdentityBindingOutput["provider"],
+    external_id: binding.external_id,
+    display_name: binding.display_name as string | undefined,
+    api_key: {
+      key_id: apiKey.key_id,
+      key_prefix: apiKey.key_prefix,
+      plaintext: apiKey.plaintext,
+    },
+    scopes: binding.scopes as string[],
+    created_at: binding.created_at,
+    location: headers?.get("Location") || undefined,
+    replayed:
+      headers?.has("Idempotency-Replayed") === true ||
+      headers?.has("X-Idempotency-Replayed") === true,
+  };
+}
+
 /**
  * Per-entry shape guard for {@link BatchItemResult}. Verifies every
  * non-optional field on the branch of the discriminated union selected
@@ -1784,6 +1920,8 @@ interface ApiResponse<T> {
   __http_status?: number;
   /** SDK-injected exact-body signal used by no-content endpoint contracts. */
   __http_body_empty?: boolean;
+  /** SDK-injected response headers used by methods with typed header output. */
+  __response_headers?: Headers;
 }
 
 interface ApiErrorEnvelope {
@@ -3402,6 +3540,32 @@ export class QURLClient {
     );
   }
 
+  /** Create an external identity binding and its one-time API key. */
+  async createExternalIdentityBinding(
+    input: CreateExternalIdentityBindingInput,
+    options: CreateExternalIdentityBindingRequestOptions,
+  ): Promise<CreateExternalIdentityBindingOutput> {
+    const body = buildExternalIdentityBindingInput(input);
+    validateExternalIdentityBindingRequestOptions(options);
+    const envelope = await this.rawRequest<unknown>(
+      "POST",
+      "/v1/external-identity-bindings",
+      body,
+      { requestOptions: options },
+    );
+    if (envelope.__http_status !== 201) {
+      throw unexpectedResponseError(
+        `createExternalIdentityBinding: expected HTTP 201 response (got HTTP ${envelope.__http_status ?? "unknown"})`,
+        envelope.meta?.request_id,
+      );
+    }
+    return parseExternalIdentityBindingResponse(
+      envelope.data,
+      envelope.__response_headers,
+      envelope.meta?.request_id,
+    );
+  }
+
   /** Create a new API key. */
   async createApiKey(
     input: CreateApiKeyInput,
@@ -3784,6 +3948,7 @@ export class QURLClient {
             data: undefined as unknown as T,
             __http_status: response.status,
             __http_body_empty: responseBody.length === 0,
+            __response_headers: response.headers,
           };
         }
         try {
@@ -3793,6 +3958,7 @@ export class QURLClient {
             __http_status: response.status,
             // JSON.parse("") throws, so parsed JSON is necessarily non-empty.
             __http_body_empty: false,
+            __response_headers: response.headers,
           };
         } catch {
           // Non-JSON body on a 2xx response (server contract violation)
