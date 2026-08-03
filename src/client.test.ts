@@ -8639,6 +8639,21 @@ describe("createExternalIdentityBinding", () => {
     },
   );
 
+  it("treats a present replay header with value false as a fresh create", async () => {
+    const fetch = mockFetch({
+      status: 201,
+      headers: { "Idempotency-Replayed": "false" },
+      body: { data: externalIdentityBindingData() },
+    });
+
+    const result = await createClient(fetch).createExternalIdentityBinding(
+      { provider: "teams", external_id: "tenant-obviously-fake" },
+      { idempotencyKey: BINDING_IDEMPOTENCY_KEY },
+    );
+
+    expect(result.replayed).toBe(false);
+  });
+
   it.each([
     {
       name: "missing plaintext",
@@ -8862,6 +8877,26 @@ describe("createExternalIdentityBinding", () => {
 
     expect(caught).toBeInstanceOf(ValidationError);
     expect(String(caught)).not.toContain(BINDING_PLAINTEXT);
+    expect(debugOutput.join("\n")).not.toContain(BINDING_PLAINTEXT);
+  });
+
+  it("never includes one-time plaintext in debug logs on a successful create", async () => {
+    const debugOutput: string[] = [];
+    const fetch = mockFetch({ status: 201, body: { data: externalIdentityBindingData() } });
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch,
+      maxRetries: 0,
+      debug: (message, details) => debugOutput.push(`${message} ${JSON.stringify(details ?? {})}`),
+    });
+
+    const result = await client.createExternalIdentityBinding(
+      { provider: "teams", external_id: "tenant-obviously-fake" },
+      { idempotencyKey: BINDING_IDEMPOTENCY_KEY },
+    );
+
+    expect(result.api_key.plaintext).toBe(BINDING_PLAINTEXT);
     expect(debugOutput.join("\n")).not.toContain(BINDING_PLAINTEXT);
   });
 });

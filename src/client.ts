@@ -1539,6 +1539,7 @@ function validateExternalIdentityBindingRequestOptions(
       "createExternalIdentityBinding: idempotencyKey is required and must be caller supplied",
     );
   }
+  // validateRequestOptions owns the shared 256-character ceiling; this endpoint adds the floor.
   if (key.length < MIN_BINDING_IDEMPOTENCY_KEY) {
     throw clientValidationError(
       `createExternalIdentityBinding: idempotencyKey must be ${MIN_BINDING_IDEMPOTENCY_KEY}-${MAX_IDEMPOTENCY_KEY} characters (got ${key.length})`,
@@ -1613,9 +1614,11 @@ function parseExternalIdentityBindingResponse(
     scopes: binding.scopes as string[],
     created_at: binding.created_at,
     location: headers?.get("Location") || undefined,
+    // qurl-service currently emits the X- spelling; the spec spelling is
+    // unpopulated until qurl-service#1340 is resolved, so accept either.
     replayed:
-      headers?.has("Idempotency-Replayed") === true ||
-      headers?.has("X-Idempotency-Replayed") === true,
+      headers?.get("Idempotency-Replayed")?.trim().toLowerCase() === "true" ||
+      headers?.get("X-Idempotency-Replayed")?.trim().toLowerCase() === "true",
   };
 }
 
