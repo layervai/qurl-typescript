@@ -385,11 +385,12 @@ assertExhaustive<
 >(true);
 
 const CREATE_API_KEY_FIELD_KEYS = [
+  "kind",
   "name",
   "scopes",
+  "target",
+  "claims",
   "expires_in",
-  "purpose",
-  "tunnel_slug",
 ] as const satisfies readonly (keyof CreateApiKeyInput)[];
 
 assertExhaustive<
@@ -3204,10 +3205,20 @@ export class QURLClient {
       input as Record<string, unknown>,
       CREATE_API_KEY_FIELD_KEYS,
     );
+    // `kind` is required by the server and has no default there. Filling it
+    // in keeps the common durable-key call site unchanged.
+    normalizedRecord.kind ??= "api_key";
+    const isEnrollmentToken = normalizedRecord.kind === "enrollment_token";
+    if (isEnrollmentToken && normalizedRecord.scopes !== undefined) {
+      throw clientValidationError(
+        "createApiKey: scopes is not accepted for kind 'enrollment_token'; " +
+          "the server assigns them from target",
+      );
+    }
     const normalized = normalizedRecord as unknown as CreateApiKeyInput;
     validateApiKeyWriteFields(normalizedRecord, "createApiKey", {
       name: true,
-      scopes: true,
+      scopes: !isEnrollmentToken,
     });
     return this.request<CreateApiKeyOutput>("POST", "/v1/api-keys", normalized, options);
   }

@@ -16,7 +16,13 @@ import {
   TimeoutError,
   ValidationError,
 } from "./errors.js";
-import type { BatchCreateInput, CreateInput, ExtendInput, MintInput } from "./types.js";
+import type {
+  BatchCreateInput,
+  CreateInput,
+  CredentialClaim,
+  ExtendInput,
+  MintInput,
+} from "./types.js";
 import { mockFetch, mockFetches, createClient } from "./__tests__/test-helpers.js";
 
 const UUID_V7_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -1422,7 +1428,11 @@ describe("QURLClient", () => {
       events: ["qurl.created"],
       description: "primary",
     });
-    expect(apiKeyBody).toEqual({ name: "dashboard", scopes: ["qurl:read"] });
+    expect(apiKeyBody).toEqual({
+      kind: "api_key",
+      name: "dashboard",
+      scopes: ["qurl:read"],
+    });
     expect(customerBody).toEqual({ spending_cap_cents: 5000 });
   });
 
@@ -1439,8 +1449,8 @@ describe("QURLClient", () => {
       name: "dashboard",
       scopes: ["qurl:read"],
       expires_in: null as unknown as string,
-      purpose: null as unknown as "tunnel_bootstrap",
-      tunnel_slug: null as unknown as string,
+      target: null as unknown as string,
+      claims: null as unknown as CredentialClaim[],
     });
     await client.redeemAccessCode({
       code: "invite-code",
@@ -1459,7 +1469,7 @@ describe("QURLClient", () => {
     });
     expect(bodies).toEqual([
       { url: "https://example.com/hook", events: ["qurl.created"] },
-      { name: "dashboard", scopes: ["qurl:read"] },
+      { kind: "api_key", name: "dashboard", scopes: ["qurl:read"] },
       { code: "invite-code" },
       { resource_id: "r_x" },
     ]);
@@ -1760,6 +1770,67 @@ describe("QURLClient", () => {
     await expect(
       client.createApiKey({ name: "dashboard" } as Parameters<QURLClient["createApiKey"]>[0]),
     ).rejects.toBeInstanceOf(ValidationError);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("createApiKey mints a bound Connector enrollment token", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+    const client = createClient(fetch);
+
+    await client.createApiKey({
+      kind: "enrollment_token",
+      name: "prod-dashboard enrollment",
+      target: "connector",
+      claims: [{ type: "connector", id: "prod-dashboard" }],
+      expires_in: "2h",
+    });
+
+    const body = JSON.parse(vi.mocked(fetch).mock.calls[0][1]?.body as string) as Record<
+      string,
+      unknown
+    >;
+    expect(body).toEqual({
+      kind: "enrollment_token",
+      name: "prod-dashboard enrollment",
+      target: "connector",
+      claims: [{ type: "connector", id: "prod-dashboard" }],
+      expires_in: "2h",
+    });
+    // Enrollment-token scopes are server-assigned; sending them is a 400.
+    expect(body).not.toHaveProperty("scopes");
+  });
+
+  it("createApiKey rejects scopes on an enrollment token client-side", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+    const client = createClient(fetch);
+
+    const error = await client
+      .createApiKey({
+        kind: "enrollment_token",
+        name: "bound enrollment",
+        target: "agent",
+        scopes: ["qurl:agent"],
+      })
+      .catch((e: unknown) => e as ValidationError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error.detail).toContain("not accepted for kind 'enrollment_token'");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("createApiKey rejects the retired key_type/tunnel_slug fields", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+    const client = createClient(fetch);
+
+    for (const retired of ["key_type", "tunnel_slug", "purpose"]) {
+      await expect(
+        client.createApiKey({
+          name: "dashboard",
+          scopes: ["qurl:read"],
+          [retired]: "x",
+        } as Parameters<QURLClient["createApiKey"]>[0]),
+      ).rejects.toBeInstanceOf(ValidationError);
+    }
     expect(fetch).not.toHaveBeenCalled();
   });
 

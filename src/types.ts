@@ -835,12 +835,36 @@ export interface WebhookPayload {
 
 export type ApiKeyScope = OpenString<"qurl:read" | "qurl:write" | "qurl:resolve" | "qurl:agent">;
 
+/** Which credential `createApiKey` mints. `device` is system-minted only. */
+export type CredentialKind = OpenString<"api_key" | "enrollment_token" | "device">;
+
+/** What a `kind: "enrollment_token"` credential enrolls. */
+export type CredentialTarget = OpenString<"agent" | "connector">;
+
+/** A resource claim binding an enrollment token to one resource. */
+export interface CredentialClaim {
+  /** `connector` is the only claim type today. */
+  type: OpenString<"connector">;
+  /** The claimed resource id. For `type: "connector"`, the connector id. */
+  id: string;
+}
+
 export interface CreateApiKeyInput {
+  /** Defaults to `api_key`. `device` credentials can never be created here. */
+  kind?: OpenString<"api_key" | "enrollment_token">;
   name: string;
-  scopes: ApiKeyScope[];
+  /**
+   * Required for `kind: "api_key"`. Must be omitted for
+   * `kind: "enrollment_token"` — the server assigns those scopes from
+   * `target`, and sending this field returns 400 `invalid_input`.
+   */
+  scopes?: ApiKeyScope[];
+  /** Enrollment tokens only. Derived from `claims` when omitted. */
+  target?: CredentialTarget;
+  /** Enrollment tokens only. At most one entry is supported today. */
+  claims?: CredentialClaim[];
+  /** Enrollment tokens only. Defaults to 24h and cannot exceed 24h. */
   expires_in?: string;
-  purpose?: "tunnel_bootstrap";
-  tunnel_slug?: string;
 }
 
 export interface UpdateApiKeyInput {
@@ -851,15 +875,20 @@ export interface UpdateApiKeyInput {
 export interface ApiKey {
   key_id?: string;
   key_prefix?: string;
+  /** Unknown future kinds may appear; clients must tolerate them. */
+  kind?: CredentialKind;
   name?: string;
+  /** Server-assigned for enrollment tokens and device credentials. */
   scopes?: ApiKeyScope[];
   status?: "active" | "revoked" | (string & {});
   created_at?: string;
   updated_at?: string;
   last_used_at?: string;
   expires_at?: string;
-  purpose?: "tunnel_bootstrap" | (string & {});
-  tunnel_slug?: string;
+  /** Present only on enrollment tokens. */
+  target?: CredentialTarget;
+  /** Present only on bound enrollment tokens. */
+  claims?: CredentialClaim[];
 }
 
 export interface CreateApiKeyOutput extends ApiKey {
