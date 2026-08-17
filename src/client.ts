@@ -3208,12 +3208,25 @@ export class QURLClient {
     // `kind` is required by the server and has no default there. Filling it
     // in keeps the common durable-key call site unchanged.
     normalizedRecord.kind ??= "api_key";
+    // `scopes` and `target`/`claims` are mutually exclusive by kind, and the
+    // server rejects either mismatch with 400 invalid_input. Fail both
+    // directions locally rather than paying a round trip.
     const isEnrollmentToken = normalizedRecord.kind === "enrollment_token";
-    if (isEnrollmentToken && normalizedRecord.scopes !== undefined) {
-      throw clientValidationError(
-        "createApiKey: scopes is not accepted for kind 'enrollment_token'; " +
-          "the server assigns them from target",
-      );
+    if (isEnrollmentToken) {
+      if (normalizedRecord.scopes !== undefined) {
+        throw clientValidationError(
+          "createApiKey: scopes is not accepted for kind 'enrollment_token'; " +
+            "the server assigns them from target",
+        );
+      }
+    } else {
+      for (const field of ["target", "claims"] as const) {
+        if (normalizedRecord[field] !== undefined) {
+          throw clientValidationError(
+            `createApiKey: ${field} is only accepted for kind 'enrollment_token'`,
+          );
+        }
+      }
     }
     const normalized = normalizedRecord as unknown as CreateApiKeyInput;
     validateApiKeyWriteFields(normalizedRecord, "createApiKey", {

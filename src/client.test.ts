@@ -1800,6 +1800,48 @@ describe("QURLClient", () => {
     expect(body).not.toHaveProperty("scopes");
   });
 
+  it("createApiKey lets the server derive target from claims", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+    const client = createClient(fetch);
+
+    await client.createApiKey({
+      kind: "enrollment_token",
+      name: "prod-dashboard enrollment",
+      claims: [{ type: "connector", id: "prod-dashboard" }],
+    });
+
+    const body = JSON.parse(vi.mocked(fetch).mock.calls[0][1]?.body as string) as Record<
+      string,
+      unknown
+    >;
+    expect(body).toEqual({
+      kind: "enrollment_token",
+      name: "prod-dashboard enrollment",
+      claims: [{ type: "connector", id: "prod-dashboard" }],
+    });
+    expect(body).not.toHaveProperty("scopes");
+    expect(body).not.toHaveProperty("target");
+  });
+
+  it("createApiKey rejects target/claims on a durable api_key client-side", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+    const client = createClient(fetch);
+
+    for (const field of ["target", "claims"] as const) {
+      const error = await client
+        .createApiKey({
+          name: "dashboard",
+          scopes: ["qurl:read"],
+          [field]: field === "target" ? "connector" : [{ type: "connector", id: "prod-dashboard" }],
+        })
+        .catch((e: unknown) => e as ValidationError);
+
+      expect(error).toBeInstanceOf(ValidationError);
+      expect(error.detail).toContain(`${field} is only accepted for kind 'enrollment_token'`);
+    }
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("createApiKey rejects scopes on an enrollment token client-side", async () => {
     const fetch = mockFetch({ status: 201, body: { data: {} } });
     const client = createClient(fetch);
