@@ -55,6 +55,46 @@ checks across the boundary would fail and any shared state would
 diverge. Classes and plain constants are safe; only flag state added
 at module scope is the hazard.
 
+## TypeScript Toolchain (TS 7 + TS 6 side-by-side)
+
+Two TypeScript versions are installed, both under npm aliases:
+
+- `@typescript/native` → `npm:typescript@^7.0.2` — TypeScript 7, the
+  native compiler. Provides the `tsc` binary that `npm run build` and
+  `npm run dev` invoke.
+- `typescript` → `npm:@typescript/typescript6@^6.0.2` — the TypeScript 6
+  API that `require("typescript")` resolves to.
+
+The split exists because typescript-eslint does not support TS 7. The
+plugin hard-throws `typescript-eslint does not support TS 7.0` at load
+time whenever `require("typescript").versionMajorMinor` is `>= 7`, and
+`@typescript-eslint/parser` declares `typescript: ">=4.8.4 <6.1.0"` as a
+peer dependency. Pointing the bare `typescript` specifier at the TS 6
+API is the arrangement upstream recommends until typescript-eslint
+supports TS >= 7.1 ([typescript-eslint#10940][tse-10940]). Note that our
+lint config is not type-aware — no `project`/`projectService` in
+`parserOptions` — so TS 6 here only parses; it never type-checks.
+
+Both packages ship a `tsc` binary. npm resolves that collision in favor
+of `@typescript/native`, so bare `tsc` is TS 7 — `npx tsc --version`
+confirms it. The TS 6 compiler stays reachable at
+`./node_modules/typescript/bin/tsc` if you need to compare emit.
+
+For this source tree the two compilers emit byte-identical `.js` and
+`.d.ts`. They differ only in the `mappings` field of the ESM
+`.js.map`/`.d.ts.map` (constructor positions); `sources`, `names`, and
+`file` are unchanged. The CJS config sets `sourceMap` and
+`declarationMap` to `false`, so that tree is unaffected either way.
+
+**Bumping either version is a manual edit.** Dependabot handles aliased
+specifiers poorly ([dependabot-core#1693][db-1693]), so it will not
+reliably open TS bump PRs against these two entries. When
+typescript-eslint gains TS 7 support, collapse this back to a single
+plain `typescript` dependency.
+
+[tse-10940]: https://github.com/typescript-eslint/typescript-eslint/issues/10940
+[db-1693]: https://github.com/dependabot/dependabot-core/issues/1693
+
 ## API Contract Snapshot
 
 `contract/openapi.snapshot.yaml` is a hand-maintained minimal OpenAPI
