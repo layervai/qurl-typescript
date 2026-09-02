@@ -9,6 +9,30 @@
   assignment and registration are UDP-only and belong in the Go runtime; the
   TypeScript package remains focused on browser and management-plane qURL APIs.
 
+## [0.4.0](https://github.com/layervai/qurl-typescript/compare/qurl-v0.3.1...qurl-v0.4.0) (2026-09-02)
+
+
+### ⚠ BREAKING CHANGES
+
+* **api:** drop the retired agent bootstrap route ([#209](https://github.com/layervai/qurl-typescript/issues/209))
+* **client:** remove HTTP-era Connector enrollment ([#206](https://github.com/layervai/qurl-typescript/issues/206))
+* **client:** add NHP-native registerAgent and deprecate bootstrapAgent ([#177](https://github.com/layervai/qurl-typescript/issues/177))
+
+### Features
+
+* **client:** add NHP-native registerAgent and deprecate bootstrapAgent ([#177](https://github.com/layervai/qurl-typescript/issues/177)) ([3d3612b](https://github.com/layervai/qurl-typescript/commit/3d3612bdc6fb0c7065208143a37a2a1618d6dd9a))
+
+
+### Bug Fixes
+
+* **ci:** assert the review origin's destination, not an exact URL ([#234](https://github.com/layervai/qurl-typescript/issues/234)) ([37aad2e](https://github.com/layervai/qurl-typescript/commit/37aad2e8ddd44538efd11269f8a8a49a10304240))
+
+
+### Code Refactoring
+
+* **api:** drop the retired agent bootstrap route ([#209](https://github.com/layervai/qurl-typescript/issues/209)) ([b9341b7](https://github.com/layervai/qurl-typescript/commit/b9341b78ba9d79ccf75b11b38e25d78e445f4732))
+* **client:** remove HTTP-era Connector enrollment ([#206](https://github.com/layervai/qurl-typescript/issues/206)) ([f064a45](https://github.com/layervai/qurl-typescript/commit/f064a4516084b411b662d8455b603b75fb51f2a7))
+
 ## [0.3.1](https://github.com/layervai/qurl-typescript/compare/qurl-v0.3.0...qurl-v0.3.1) (2026-07-05)
 
 
