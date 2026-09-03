@@ -21,6 +21,9 @@ import { mockFetch, mockFetches, createClient } from "./__tests__/test-helpers.j
 
 const UUID_V7_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const TARGET_PATH_MAX_LENGTH = 2048;
+const PUBLIC_RESOURCE_ID =
+  "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE2cTVv5_3eeYCcLLq5ROYCqcmY50HiKZ9ATglIkPnCji1E_S63UMtXba1moR8-Q6EV7oM6zwwh9_j2CDujzXvLA";
+const RESOURCE_CRID = "ahpviqz46qwcvx56glfatm3p3ooccwfcf2it4sdgjervwdkapykw3o3qdq2a";
 
 function callHeaders(
   fetch: typeof globalThis.fetch | ReturnType<typeof vi.fn>,
@@ -1970,43 +1973,29 @@ describe("QURLClient", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
-  it("deletes a qURL", async () => {
+  it.each([PUBLIC_RESOURCE_ID, RESOURCE_CRID])(
+    "deletes a qURL by its public resource identifier (%s)",
+    async (resourceId) => {
+      const fetch = mockFetch({ status: 204 });
+      const client = createClient(fetch);
+
+      await expect(client.delete(resourceId)).resolves.toBeUndefined();
+      expect(fetch).toHaveBeenCalledWith(
+        `https://api.test.layerv.ai/v1/qurls/${encodeURIComponent(resourceId)}`,
+        expect.objectContaining({ method: "DELETE" }),
+      );
+    },
+  );
+
+  it("treats resource IDs as opaque and leaves endpoint grammar to the service", async () => {
     const fetch = mockFetch({ status: 204 });
     const client = createClient(fetch);
 
-    await expect(client.delete("r_abc123def45")).resolves.toBeUndefined();
-  });
-
-  it("delete rejects q_ (display) IDs client-side", async () => {
-    // Spec: DELETE /v1/qurls/:id requires a resource ID (r_ prefix).
-    // To revoke a single token, the resources-scoped endpoint must be used.
-    const fetch = mockFetch({ status: 204 });
-    const client = createClient(fetch);
-
-    const error = await client.delete("q_3a7f2c8e91b").catch((e: unknown) => e as ValidationError);
-    expect(error).toBeInstanceOf(ValidationError);
-    expect((error as ValidationError).code).toBe(ERROR_CODE_CLIENT_VALIDATION);
-    expect((error as ValidationError).detail).toContain("r_ prefix");
-    expect(fetch).not.toHaveBeenCalled();
-  });
-
-  it("delete error message reports only the 2-char prefix (no raw ID leak)", async () => {
-    // Info-leak hardening: the error message should not echo the raw
-    // caller-supplied ID (even truncated). Echoing just the prefix
-    // ("q_", "at_", etc.) gives the caller enough context to fix their
-    // code without leaking identifiers into observability pipelines.
-    const fetch = mockFetch({ status: 204 });
-    const client = createClient(fetch);
-
-    const error = await client
-      .delete("q_3a7f2c8e91b_sensitive_suffix")
-      .catch((e: unknown) => e as ValidationError);
-    expect(error).toBeInstanceOf(ValidationError);
-    const detail = (error as ValidationError).detail;
-    expect(detail).toContain('starting with "q_"');
-    // Must not echo the full ID or any sensitive suffix.
-    expect(detail).not.toContain("3a7f2c8e91b");
-    expect(detail).not.toContain("sensitive_suffix");
+    await expect(client.delete("future-resource-id-format")).resolves.toBeUndefined();
+    expect(fetch).toHaveBeenCalledWith(
+      "https://api.test.layerv.ai/v1/qurls/future-resource-id-format",
+      expect.objectContaining({ method: "DELETE" }),
+    );
   });
 
   it("delete rejects non-string ids with a structured ValidationError (untyped-JS safety)", async () => {
@@ -2025,35 +2014,19 @@ describe("QURLClient", () => {
         .catch((e: unknown) => e as ValidationError);
       expect(error).toBeInstanceOf(ValidationError);
       expect((error as ValidationError).code).toBe(ERROR_CODE_CLIENT_VALIDATION);
-      // Must mention the type — operators need to know what came in.
-      const detail = (error as ValidationError).detail;
-      expect(detail).toMatch(/undefined|null|number|object/);
+      expect((error as ValidationError).detail).toContain("delete: id is required");
     }
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("delete gives a distinct error for too-short / empty IDs", async () => {
-    // An empty string or 1-2 char input isn't a plausible ID — the
-    // "starting with X" wording would just echo noise (or nothing) and
-    // confuse callers. Assert the short-input branch reports the
-    // observed length so the caller sees what they actually sent.
-    //
-    // Also covers the edge case where the input is EXACTLY the prefix
-    // with no suffix (`"r_"` or `"q_"`): these pass/fail `startsWith`
-    // differently, but the length check runs first and catches both
-    // uniformly. Without this ordering, bare `"r_"` would slip through
-    // the prefix check and hit `DELETE /v1/qurls/r_` on the wire.
+  it("delete rejects empty and whitespace-only IDs", async () => {
     const fetch = mockFetch({ status: 204 });
     const client = createClient(fetch);
 
-    for (const badId of ["", "x", "ab", "r_", "q_", "at"]) {
+    for (const badId of ["", " ", "\t"]) {
       const error = await client.delete(badId).catch((e: unknown) => e as ValidationError);
       expect(error).toBeInstanceOf(ValidationError);
-      const detail = (error as ValidationError).detail;
-      expect(detail).toContain(`got ${badId.length} character`);
-      // Short-input branch must NOT fall through to the "starting with"
-      // wording that's meant for plausible-but-wrong-prefix IDs.
-      expect(detail).not.toContain("starting with");
+      expect((error as ValidationError).detail).toContain("delete: id is required");
     }
     expect(fetch).not.toHaveBeenCalled();
   });

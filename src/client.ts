@@ -664,7 +664,6 @@ const MAX_AUTO_PAGINATION_PAGES = 10_000;
 // CreateQurlRequest.target_url pattern is loose (just a URI) but
 // UpdateQurlRequest.tags pattern is specific — enforce it here.
 const TAG_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9 _-]*$/;
-const RESOURCE_ID_PREFIX = "r_";
 
 function requireMaxLength(value: string | undefined, field: string, max: number): void {
   if (value === undefined) return;
@@ -2362,48 +2361,12 @@ export class QURLClient {
   /**
    * Delete (revoke) a qURL resource and all its access tokens.
    *
-   * Only accepts a resource ID (`r_` prefix), not a qURL display ID (`q_`
-   * prefix). Per the OpenAPI spec: *"Requires a resource ID (r_ prefix).
-   * To revoke a single token, use DELETE /v1/resources/:id/qurls/:qurl_id"*.
-   * A client-side prefix check catches the mistake before the API round-trip.
+   * Accepts the opaque public resource ID or CRID returned by the API. The
+   * service owns identifier grammar so the SDK remains compatible when public
+   * resource identifiers evolve.
    */
   async delete(id: string): Promise<void> {
-    // Type guard for untyped-JS callers — without it, `(undefined).length`
-    // is a raw TypeError instead of the structured ValidationError the
-    // rest of the surface produces.
-    if (typeof id !== "string") {
-      throw clientValidationError(
-        `delete: requires a resource ID (${RESOURCE_ID_PREFIX} prefix + suffix) — got ${id === null ? "null" : typeof id}`,
-      );
-    }
-    if (id.trim() !== id) {
-      throw clientValidationError("delete: id must not include leading or trailing whitespace");
-    }
-    // Too-short check runs BEFORE the prefix check so it catches
-    // bare-prefix inputs like `"r_"` (right prefix, no suffix) in
-    // addition to `""` / `"x"` / `"ab"` / `"q_"`. Without this
-    // ordering, an exact `"r_"` would pass the startsWith check and
-    // the SDK would send `DELETE /v1/qurls/r_` to the server —
-    // rejected server-side, but this catches it client-side without
-    // a round-trip.
-    if (id.length <= RESOURCE_ID_PREFIX.length) {
-      throw clientValidationError(
-        `delete: requires a resource ID (${RESOURCE_ID_PREFIX} prefix + suffix) — got ${id.length} character${id.length === 1 ? "" : "s"}`,
-      );
-    }
-    if (!id.startsWith(RESOURCE_ID_PREFIX)) {
-      // Wrong-prefix branch: the input is long enough to plausibly be
-      // an ID but has the wrong prefix (e.g. `q_3a7f2c8e91b`).
-      // Echo only the 2-char prefix — never the raw ID
-      // — so observability pipelines don't end up with caller-supplied
-      // identifiers in error logs.
-      const observedPrefix = id.slice(0, RESOURCE_ID_PREFIX.length);
-      throw clientValidationError(
-        `delete: only resource IDs (${RESOURCE_ID_PREFIX} prefix) are accepted — ` +
-          `got an ID starting with "${observedPrefix}". ` +
-          "To revoke a single access token, use the resource-scoped token endpoint.",
-      );
-    }
+    requireNonEmptyId(id, "delete");
     await this.rawRequest("DELETE", `/v1/qurls/${encodeURIComponent(id)}`);
   }
 
