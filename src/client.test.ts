@@ -1114,6 +1114,10 @@ describe("QURLClient", () => {
     ["whitespace-only resource ID", "   ", "q_0123456789a"],
     ["empty qURL ID", PUBLIC_RESOURCE_ID, ""],
     ["whitespace-only qURL ID", PUBLIC_RESOURCE_ID, "   "],
+    ["dot-segment resource ID", ".", "q_0123456789a"],
+    ["dot-segment qURL ID", PUBLIC_RESOURCE_ID, ".."],
+    ["access-token resource ID", "at_sensitive-token-value", "q_0123456789a"],
+    ["access-token qURL ID", PUBLIC_RESOURCE_ID, "at_sensitive-token-value"],
   ])("revokeResourceQurl rejects a %s before fetch", async (_label, resourceId, qurlId) => {
     const fetch = mockFetch({ status: 204 });
     const client = createClient(fetch);
@@ -2080,6 +2084,20 @@ describe("QURLClient", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("delete rejects a full qURL link before its token can enter a request URL", async () => {
+    const fetch = mockFetch({ status: 204 });
+    const client = createClient(fetch);
+    const qurlLink = "https://qurl.link/#at_sensitive-token-value";
+
+    const error = await client.delete(qurlLink).catch((e: unknown) => e as ValidationError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).detail).toContain("access token");
+    expect((error as ValidationError).detail).not.toContain(qurlLink);
+    expect((error as ValidationError).detail).not.toContain("at_sensitive-token-value");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it.each([".", ".."])("delete rejects the URL dot-segment identifier %s", async (resourceId) => {
     const fetch = mockFetch({ status: 204 });
     const client = createClient(fetch);
@@ -2174,6 +2192,23 @@ describe("QURLClient", () => {
     expect((error as ValidationError).detail).toContain("invalid URL path segment");
     expect(fetch).not.toHaveBeenCalled();
   });
+
+  it.each(["at_sensitive-token-value", "https://qurl.link/#at_sensitive-token-value"])(
+    "shared path id validation rejects credential input %s",
+    async (credential) => {
+      const fetch = mockFetch({ status: 200, body: { data: {} } });
+      const client = createClient(fetch);
+
+      const error = await client
+        .getResource(credential)
+        .catch((e: unknown) => e as ValidationError);
+
+      expect(error).toBeInstanceOf(ValidationError);
+      expect((error as ValidationError).detail).toContain("access token");
+      expect((error as ValidationError).detail).not.toContain(credential);
+      expect(fetch).not.toHaveBeenCalled();
+    },
+  );
 
   it("update rejects empty id", async () => {
     const fetch = mockFetch({ status: 200, body: { data: {} } });

@@ -786,9 +786,15 @@ function pageFromMeta<T extends Record<string, unknown>>(
  * Validates that a path-parameter argument is a non-empty string. Some callers
  * pass resource/qURL display IDs, while newer endpoints also pass domains,
  * session IDs, webhook IDs, and API-key IDs, so this intentionally enforces
- * only basic shape and leaves endpoint-specific grammar to the service.
+ * only basic shape plus transport-safety rules and leaves endpoint-specific
+ * identifier grammar to the service.
  */
-function requireNonEmptyId(id: string, method: string, field = "id"): void {
+function requireNonEmptyId(
+  id: string,
+  method: string,
+  field = "id",
+  accessTokenRecovery?: string,
+): void {
   // `.trim()` catches whitespace-only and padded IDs before they round-trip as
   // `%20...%20` paths that the server can only reject with a less useful 404.
   // The pre-flight error is more actionable than the 404.
@@ -804,6 +810,14 @@ function requireNonEmptyId(id: string, method: string, field = "id"): void {
   // retarget an item request to its collection endpoint.
   if (id === "." || id === "..") {
     throw clientValidationError(`${method}: ${field} is an invalid URL path segment`);
+  }
+  // qURL access tokens are credentials. Reject both a bare token and the
+  // platform link form before either can enter proxy/access logs as a path.
+  // Do not echo the caller-supplied value in the error.
+  if (id.startsWith("at_") || id.includes("#at_")) {
+    throw clientValidationError(
+      `${method}: ${field} must not contain an access token${accessTokenRecovery ? `; ${accessTokenRecovery}` : ""}`,
+    );
   }
 }
 
@@ -2366,18 +2380,20 @@ export class QURLClient {
   /**
    * Delete (revoke) a qURL resource and all its access tokens.
    *
-   * Accepts the opaque public resource ID or CRID returned by the API. The
-   * service owns identifier grammar so the SDK remains compatible when public
-   * resource identifiers evolve.
+   * Accepts the opaque public resource ID, CRID, or legacy `r_...` ID returned
+   * by the API. The service owns identifier grammar so the SDK remains
+   * compatible when public resource identifiers evolve.
+   *
+   * @throws {ValidationError} If `id` is blank, padded with whitespace, a URL
+   * dot segment, or contains a qURL access-token credential.
    */
   async delete(id: string): Promise<void> {
-    requireNonEmptyId(id, "delete");
-    if (id.startsWith("at_")) {
-      throw clientValidationError(
-        "delete: got an access token, not a resource identifier; " +
-          "revoke individual tokens with revokeResourceQurl(resourceId, qurlId)",
-      );
-    }
+    requireNonEmptyId(
+      id,
+      "delete",
+      "id",
+      "revoke individual tokens with revokeResourceQurl(resourceId, qurlId)",
+    );
     await this.rawRequest("DELETE", `/v1/qurls/${encodeURIComponent(id)}`);
   }
 
