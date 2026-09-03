@@ -1082,6 +1082,72 @@ describe("QURLClient", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  // TODO(upstream-contract): Keep these path and error assertions aligned with
+  // qurl-go Client.RevokePortal, the authoritative portal-revoke contract.
+  it.each([
+    ["public resource ID", PUBLIC_RESOURCE_ID],
+    ["CRID", RESOURCE_CRID],
+  ])("revokeResourceQurl accepts the Go SDK's %s identifier form", async (_label, resourceId) => {
+    const fetch = mockFetch({ status: 204 });
+    const client = createClient(fetch);
+
+    await expect(client.revokeResourceQurl(resourceId, "q_0123456789a")).resolves.toBeUndefined();
+    expect(fetch).toHaveBeenCalledWith(
+      `https://api.test.layerv.ai/v1/resources/${resourceId}/qurls/q_0123456789a`,
+      expect.objectContaining({ method: "DELETE" }),
+    );
+  });
+
+  it("revokeResourceQurl keeps both IDs inside one encoded path segment", async () => {
+    const fetch = mockFetch({ status: 204 });
+    const client = createClient(fetch);
+
+    await expect(client.revokeResourceQurl("r?/#1", "q?/#2")).resolves.toBeUndefined();
+    expect(fetch).toHaveBeenCalledWith(
+      "https://api.test.layerv.ai/v1/resources/r%3F%2F%231/qurls/q%3F%2F%232",
+      expect.objectContaining({ method: "DELETE" }),
+    );
+  });
+
+  it.each([
+    ["empty resource ID", "", "q_0123456789a"],
+    ["whitespace-only resource ID", "   ", "q_0123456789a"],
+    ["empty qURL ID", PUBLIC_RESOURCE_ID, ""],
+    ["whitespace-only qURL ID", PUBLIC_RESOURCE_ID, "   "],
+  ])("revokeResourceQurl rejects a %s before fetch", async (_label, resourceId, qurlId) => {
+    const fetch = mockFetch({ status: 204 });
+    const client = createClient(fetch);
+
+    await expect(client.revokeResourceQurl(resourceId, qurlId)).rejects.toBeInstanceOf(
+      ValidationError,
+    );
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("revokeResourceQurl preserves the service's revoked error for typed branching", async () => {
+    const fetch = mockFetch({
+      status: 409,
+      body: {
+        error: {
+          title: "Conflict",
+          status: 409,
+          detail: "qURL is not active",
+          code: "revoked",
+        },
+      },
+    });
+    const client = createClient(fetch);
+
+    const error = await client
+      .revokeResourceQurl(PUBLIC_RESOURCE_ID, "q_0123456789a")
+      .catch((e: unknown) => e as QURLError);
+
+    expect(error).toBeInstanceOf(QURLError);
+    expect((error as QURLError).status).toBe(409);
+    expect((error as QURLError).code).toBe("revoked");
+    expect((error as QURLError).detail).toBe("qURL is not active");
+  });
+
   it("createQurlForResource validates shared qURL token options client-side", async () => {
     const fetch = mockFetch({ status: 201, body: { data: {} } });
     const client = createClient(fetch);
@@ -1973,19 +2039,20 @@ describe("QURLClient", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
-  it.each([PUBLIC_RESOURCE_ID, RESOURCE_CRID])(
-    "deletes a qURL by its public resource identifier (%s)",
-    async (resourceId) => {
-      const fetch = mockFetch({ status: 204 });
-      const client = createClient(fetch);
+  it.each([
+    ["public resource ID", PUBLIC_RESOURCE_ID],
+    ["CRID", RESOURCE_CRID],
+    ["legacy resource ID", "r_abc123def45"],
+  ])("deletes a qURL by its %s", async (_label, resourceId) => {
+    const fetch = mockFetch({ status: 204 });
+    const client = createClient(fetch);
 
-      await expect(client.delete(resourceId)).resolves.toBeUndefined();
-      expect(fetch).toHaveBeenCalledWith(
-        `https://api.test.layerv.ai/v1/qurls/${encodeURIComponent(resourceId)}`,
-        expect.objectContaining({ method: "DELETE" }),
-      );
-    },
-  );
+    await expect(client.delete(resourceId)).resolves.toBeUndefined();
+    expect(fetch).toHaveBeenCalledWith(
+      `https://api.test.layerv.ai/v1/qurls/${encodeURIComponent(resourceId)}`,
+      expect.objectContaining({ method: "DELETE" }),
+    );
+  });
 
   it("treats resource IDs as opaque and leaves endpoint grammar to the service", async () => {
     const fetch = mockFetch({ status: 204 });
@@ -1994,6 +2061,44 @@ describe("QURLClient", () => {
     await expect(client.delete("future-resource-id-format")).resolves.toBeUndefined();
     expect(fetch).toHaveBeenCalledWith(
       "https://api.test.layerv.ai/v1/qurls/future-resource-id-format",
+      expect.objectContaining({ method: "DELETE" }),
+    );
+  });
+
+  it("delete rejects access tokens before they can enter a request URL", async () => {
+    const fetch = mockFetch({ status: 204 });
+    const client = createClient(fetch);
+    const accessToken = "at_sensitive-token-value";
+
+    const error = await client.delete(accessToken).catch((e: unknown) => e as ValidationError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).code).toBe(ERROR_CODE_CLIENT_VALIDATION);
+    expect((error as ValidationError).detail).toContain("access token");
+    expect((error as ValidationError).detail).toContain("revokeResourceQurl(resourceId, qurlId)");
+    expect((error as ValidationError).detail).not.toContain(accessToken);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([".", ".."])("delete rejects the URL dot-segment identifier %s", async (resourceId) => {
+    const fetch = mockFetch({ status: 204 });
+    const client = createClient(fetch);
+
+    const error = await client.delete(resourceId).catch((e: unknown) => e as ValidationError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).code).toBe(ERROR_CODE_CLIENT_VALIDATION);
+    expect((error as ValidationError).detail).toContain("invalid URL path segment");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("keeps opaque resource IDs inside one encoded URL segment", async () => {
+    const fetch = mockFetch({ status: 204 });
+    const client = createClient(fetch);
+
+    await expect(client.delete("a/../b?force=true")).resolves.toBeUndefined();
+    expect(fetch).toHaveBeenCalledWith(
+      "https://api.test.layerv.ai/v1/qurls/a%2F..%2Fb%3Fforce%3Dtrue",
       expect.objectContaining({ method: "DELETE" }),
     );
   });
@@ -2055,6 +2160,18 @@ describe("QURLClient", () => {
     expect(deleteError).toBeInstanceOf(ValidationError);
     expect(deleteError.detail).toContain("leading or trailing whitespace");
 
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("shared path id validation rejects URL dot segments before encoding", async () => {
+    const fetch = mockFetch({ status: 204 });
+    const client = createClient(fetch);
+
+    const error = await client.deleteResource("..").catch((e: unknown) => e as ValidationError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).code).toBe(ERROR_CODE_CLIENT_VALIDATION);
+    expect((error as ValidationError).detail).toContain("invalid URL path segment");
     expect(fetch).not.toHaveBeenCalled();
   });
 

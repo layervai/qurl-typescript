@@ -800,6 +800,11 @@ function requireNonEmptyId(id: string, method: string, field = "id"): void {
       `${method}: ${field} must not include leading or trailing whitespace`,
     );
   }
+  // URL resolves bare dot segments before fetch; leaving these through can
+  // retarget an item request to its collection endpoint.
+  if (id === "." || id === "..") {
+    throw clientValidationError(`${method}: ${field} is an invalid URL path segment`);
+  }
 }
 
 function requireValidTags(tags: string[] | null | undefined): void {
@@ -2367,6 +2372,12 @@ export class QURLClient {
    */
   async delete(id: string): Promise<void> {
     requireNonEmptyId(id, "delete");
+    if (id.startsWith("at_")) {
+      throw clientValidationError(
+        "delete: got an access token, not a resource identifier; " +
+          "revoke individual tokens with revokeResourceQurl(resourceId, qurlId)",
+      );
+    }
     await this.rawRequest("DELETE", `/v1/qurls/${encodeURIComponent(id)}`);
   }
 
