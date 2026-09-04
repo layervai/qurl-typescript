@@ -8614,7 +8614,7 @@ describe("createExternalIdentityBinding", () => {
     expect(result).toEqual({
       ...externalIdentityBindingData(),
       location: "/v1/external-identity-bindings/eib_obviously_fake",
-      replayed: false,
+      replayed: undefined,
     });
     const init = vi.mocked(fetch).mock.calls[0][1] as RequestInit;
     expect(init.headers).toMatchObject({ "Idempotency-Key": BINDING_IDEMPOTENCY_KEY });
@@ -8673,7 +8673,88 @@ describe("createExternalIdentityBinding", () => {
     expect(result.replayed).toBe(false);
   });
 
+  it("does not classify an unrecognized replay header value as fresh", async () => {
+    const debug = vi.fn();
+    const fetch = mockFetch({
+      status: 201,
+      headers: {
+        "X-Idempotency-Replayed": "maybe",
+        "X-Request-Id": "req_binding_bad_replay_header",
+      },
+      body: externalIdentityBindingData(),
+    });
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch,
+      maxRetries: 0,
+      debug,
+    });
+
+    const result = await client.createExternalIdentityBinding(
+      { provider: "teams", external_id: "tenant-obviously-fake" },
+      { idempotencyKey: BINDING_IDEMPOTENCY_KEY },
+    );
+
+    expect(result.replayed).toBeUndefined();
+    expect(debug).toHaveBeenCalledWith(
+      "createExternalIdentityBinding: response has unrecognized replay header",
+      expect.objectContaining({ request_id: expect.any(String) }),
+    );
+    expect(inspect(debug.mock.calls, { depth: null })).not.toContain("maybe");
+  });
+
+  it("bounds the server-provided Location metadata", async () => {
+    const marker = "must-not-survive";
+    const fetch = mockFetch({
+      status: 201,
+      headers: { Location: `https://api.layerv.ai/${"x".repeat(600)}${marker}` },
+      body: externalIdentityBindingData(),
+    });
+
+    const result = await createClient(fetch).createExternalIdentityBinding(
+      { provider: "teams", external_id: "tenant-obviously-fake" },
+      { idempotencyKey: BINDING_IDEMPOTENCY_KEY },
+    );
+
+    expect(result.location).toBeDefined();
+    expect(new TextEncoder().encode(result.location).byteLength).toBeLessThanOrEqual(515);
+    expect(result.location).not.toContain(marker);
+  });
+
+  it.each([null, [], "not-an-object"])(
+    "fails closed when the response body is not a binding object (%j)",
+    async (body) => {
+      const fetch = mockFetch({ status: 201, body });
+
+      await expect(
+        createClient(fetch).createExternalIdentityBinding(
+          { provider: "teams", external_id: "tenant-obviously-fake" },
+          { idempotencyKey: BINDING_IDEMPOTENCY_KEY },
+        ),
+      ).rejects.toMatchObject({ code: ERROR_CODE_UNEXPECTED_RESPONSE });
+    },
+  );
+
   it.each([
+    {
+      name: "missing binding_id",
+      mutate: (data: Record<string, unknown>) => {
+        delete data.binding_id;
+      },
+    },
+    {
+      name: "empty binding_id",
+      mutate: (data: Record<string, unknown>) => {
+        data.binding_id = "";
+      },
+    },
+    {
+      name: "non-object api_key",
+      mutate: (data: Record<string, unknown>) => {
+        data.api_key = [];
+      },
+    },
     {
       name: "missing plaintext",
       mutate: (data: Record<string, unknown>) => {
@@ -8714,6 +8795,24 @@ describe("createExternalIdentityBinding", () => {
       name: "empty scopes",
       mutate: (data: Record<string, unknown>) => {
         data.scopes = [];
+      },
+    },
+    {
+      name: "malformed display_name",
+      mutate: (data: Record<string, unknown>) => {
+        data.display_name = 42;
+      },
+    },
+    {
+      name: "missing created_at",
+      mutate: (data: Record<string, unknown>) => {
+        delete data.created_at;
+      },
+    },
+    {
+      name: "malformed created_at",
+      mutate: (data: Record<string, unknown>) => {
+        data.created_at = 42;
       },
     },
     {
@@ -8759,7 +8858,7 @@ describe("createExternalIdentityBinding", () => {
       ...data,
       display_name: undefined,
       location: undefined,
-      replayed: false,
+      replayed: undefined,
     });
     expect(JSON.parse(vi.mocked(fetch).mock.calls[0][1]?.body as string)).toEqual({
       provider: "teams",

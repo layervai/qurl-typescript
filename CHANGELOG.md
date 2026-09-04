@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Features
+
+- **client:** add `createExternalIdentityBinding()` for atomic Slack, Discord,
+  and Teams identity binding with one-time API-key recovery.
+
 ### ⚠ BREAKING CHANGES
 
 - **client:** DELETE operations are no longer retried after transport, 429, or 5xx

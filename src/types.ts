@@ -863,10 +863,14 @@ export interface CreateExternalIdentityBindingOutput {
   api_key: ExternalIdentityBindingApiKey;
   scopes: ApiKeyScope[];
   created_at: string;
-  /** Resource location returned by the API, when the response header is available. */
+  /** Bounded resource location returned by the API, when the response header is available. */
   location?: string;
-  /** Whether either service-supported idempotency replay header was present. */
-  replayed: boolean;
+  /**
+   * Replay state reported by a service-supported idempotency header. Undefined
+   * when the header is absent or unrecognized; current qurl-service emits only
+   * `true` on a replay and omits the header for a fresh response.
+   */
+  replayed?: boolean;
 }
 
 export type ApiKeyScope = OpenString<"qurl:read" | "qurl:write" | "qurl:resolve" | "qurl:agent">;

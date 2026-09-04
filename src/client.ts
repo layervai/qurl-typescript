@@ -1578,6 +1578,7 @@ function parseExternalIdentityBindingResponse(
   data: unknown,
   headers: Headers | undefined,
   expected: Pick<CreateExternalIdentityBindingInput, "provider" | "external_id">,
+  replayed: boolean | undefined,
   requestId?: string,
 ): CreateExternalIdentityBindingOutput {
   const fail = (reason: string): never => {
@@ -1653,13 +1654,34 @@ function parseExternalIdentityBindingResponse(
     },
     scopes: binding.scopes as CreateExternalIdentityBindingOutput["scopes"],
     created_at: binding.created_at,
-    location: headers?.get("Location") || undefined,
-    // qurl-service currently emits the X- spelling; the spec spelling is
-    // unpopulated until qurl-service#1340 is resolved, so accept either.
-    replayed:
-      headers?.get("Idempotency-Replayed")?.trim().toLowerCase() === "true" ||
-      headers?.get("X-Idempotency-Replayed")?.trim().toLowerCase() === "true",
+    // Response metadata is untrusted too: keep it bounded before exposing it
+    // to callers that may include the result in logs or telemetry.
+    location: boundedErrorSnippet(headers?.get("Location")),
+    replayed,
   };
+}
+
+function parseExternalIdentityReplayHeader(headers: Headers | undefined): {
+  replayed: boolean | undefined;
+  state: "missing" | "recognized" | "unrecognized";
+} {
+  // qurl-service currently emits the X- spelling only on replay; the OpenAPI
+  // spelling is accepted for forward compatibility. Absence therefore means
+  // "not reported", rather than proving this was a fresh create.
+  const rawValues = [
+    headers?.get("Idempotency-Replayed"),
+    headers?.get("X-Idempotency-Replayed"),
+  ].filter((value): value is string => value !== null && value !== undefined);
+  if (rawValues.length === 0) return { replayed: undefined, state: "missing" };
+
+  const values = rawValues.map((value) => value.trim().toLowerCase());
+  if (values.every((value) => value === "true")) {
+    return { replayed: true, state: "recognized" };
+  }
+  if (values.every((value) => value === "false")) {
+    return { replayed: false, state: "recognized" };
+  }
+  return { replayed: undefined, state: "unrecognized" };
 }
 
 /**
@@ -3607,11 +3629,14 @@ export class QURLClient {
       );
     }
     const responseHeaders = envelope.__response_headers;
-    if (
-      !responseHeaders?.has("Idempotency-Replayed") &&
-      !responseHeaders?.has("X-Idempotency-Replayed")
-    ) {
+    const replay = parseExternalIdentityReplayHeader(responseHeaders);
+    if (replay.state === "missing") {
       this.log("createExternalIdentityBinding: response omitted optional replay header", {
+        request_id: requestId,
+      });
+    } else if (replay.state === "unrecognized") {
+      // Deliberately omit the raw header value from diagnostics.
+      this.log("createExternalIdentityBinding: response has unrecognized replay header", {
         request_id: requestId,
       });
     }
@@ -3623,6 +3648,7 @@ export class QURLClient {
       envelope,
       responseHeaders,
       body,
+      replay.replayed,
       requestId,
     );
   }

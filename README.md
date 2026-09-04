@@ -216,7 +216,9 @@ Create an owner binding for a Slack, Discord, or Teams identity. The API key
 must have `qurl:write` scope. The per-call `idempotencyKey` is mandatory for
 this operation, must be 32-256 printable ASCII characters, and must be derived
 from stable inputs such as the tenant ID. The SDK never generates this key for
-you: a random key would prevent recovery after a lost response.
+you: a random key would prevent recovery after a lost response. `external_id`
+is opaque but cannot be empty, exceed 256 UTF-8 bytes, or contain `#`;
+`display_name`, when present, cannot exceed 100 UTF-8 bytes.
 
 ```typescript
 const binding = await client.createExternalIdentityBinding(
@@ -237,8 +239,11 @@ error. A retry with the same idempotency key and exact same body can recover the
 same key for up to 24 hours; after that window the plaintext is unrecoverable.
 `binding.replayed` is `true` when the service signals a replay using either its
 current `X-Idempotency-Replayed` header or the spec-declared
-`Idempotency-Replayed` header. `binding.location` contains the response
-`Location` header when available. The service returns exact HTTP 201 with a
+`Idempotency-Replayed` header. It is `undefined` when replay state is absent or
+unrecognized; current qurl-service omits the header for a fresh response.
+`binding.location` contains a bounded, normalized copy of the response
+`Location` header when available and must not be followed without validation.
+The service returns exact HTTP 201 with a
 top-level binding object for both fresh creates and replays. If the SDK rejects
 a successful response because that status or shape drifted, retry with the same
 key and byte-identical body within the 24-hour window to recover the one-time
