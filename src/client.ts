@@ -1490,13 +1490,13 @@ type PortalWireResponse = {
 };
 
 type ShareResourceWireResponse = {
-  qurl_id?: string;
-  qurl?: string;
-  crid?: string;
-  type?: string;
-  expires_at?: string;
-  expires_in_seconds?: number;
-  single_use?: boolean;
+  qurl_id?: unknown;
+  qurl?: unknown;
+  crid?: unknown;
+  type?: unknown;
+  expires_at?: unknown;
+  expires_in_seconds?: unknown;
+  single_use?: unknown;
 };
 
 /**
@@ -2754,13 +2754,11 @@ export class QURLClient {
       if (
         typeof input.ttlSeconds !== "number" ||
         !Number.isInteger(input.ttlSeconds) ||
-        input.ttlSeconds < 0
+        input.ttlSeconds <= 0
       ) {
-        throw clientValidationError(
-          "shareResource: ttlSeconds must be a non-negative whole number",
-        );
+        throw clientValidationError("shareResource: ttlSeconds must be a positive whole number");
       }
-      if (input.ttlSeconds > 0) body.ttl_seconds = input.ttlSeconds;
+      body.ttl_seconds = input.ttlSeconds;
     }
     const data = await this.request<ShareResourceWireResponse>(
       "POST",

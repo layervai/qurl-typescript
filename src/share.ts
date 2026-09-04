@@ -22,6 +22,8 @@ export type CRIDVerificationErrorCode =
 
 /** A local, fail-closed CRID verification failure. */
 export class CRIDVerificationError extends QURLError {
+  declare readonly code: CRIDVerificationErrorCode;
+
   constructor(code: CRIDVerificationErrorCode, message: string) {
     super({ status: 0, code, title: "CRID Verification Error", detail: message });
     this.name = "CRIDVerificationError";

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, expectTypeOf, it, vi } from "vitest";
 import conformancePackage from "@layervai/qurl-conformance";
 import { Buffer } from "node:buffer";
 import { inspect } from "node:util";
@@ -11,6 +11,7 @@ import {
   ERROR_CODE_MISSING_CRID,
   ShareLink,
 } from "./index.js";
+import type { CRIDVerificationErrorCode } from "./index.js";
 import { QURLError, RuntimeError, ServerError, ValidationError } from "./errors.js";
 import { createClient, mockFetch } from "./__tests__/test-helpers.js";
 
@@ -42,6 +43,9 @@ const acceptedTruncated = vectors.consumer_value_cases.find(
   ({ value, outcome }) => outcome === "accept" && value.length === 47,
 );
 if (!acceptedTruncated) throw new Error("CRID conformance vectors are missing a truncated CRID");
+// qurl-go@a528d1f confirms this version-0x02 truncated CRID matches
+// matching.der_spki_b64url through crid.KeyMatches.
+const matchingTruncated = "ai4jqpd7eaoslq7jinmjv4yikgzmcxgpjfsuobinv2mxyhi";
 
 function b64url(value: string): Uint8Array<ArrayBuffer> {
   return Uint8Array.from(Buffer.from(value, "base64url"));
@@ -145,12 +149,17 @@ describe("shareResource", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("treats zero TTL as omitted, matching qurl-go's zero-value options", async () => {
+  it("rejects an explicit zero TTL instead of silently requesting the platform default", async () => {
     const fetch = mockFetch({ status: 200, body: shareResponse() });
 
-    await createClient(fetch).shareResource("resource-id", { ttlSeconds: 0 });
+    await expect(
+      createClient(fetch).shareResource("resource-id", { ttlSeconds: 0 }),
+    ).rejects.toMatchObject({
+      code: "client_validation",
+      detail: "shareResource: ttlSeconds must be a positive whole number",
+    });
 
-    expect((vi.mocked(fetch).mock.calls[0][1] as RequestInit).body).toBe("{}");
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("rejects unknown option fields", async () => {
@@ -340,6 +349,12 @@ describe("shareResource", () => {
 });
 
 describe("ShareLink.verifyCrid", () => {
+  it("exposes a closed error-code union on CRIDVerificationError", () => {
+    const error = new CRIDVerificationError(ERROR_CODE_INVALID_CRID, "invalid");
+
+    expectTypeOf(error.code).toEqualTypeOf<CRIDVerificationErrorCode>();
+  });
+
   it("accepts the committed DER SPKI", async () => {
     const share = new ShareLink({
       link: "https://qurl.link/#qv2t1.example",
@@ -385,6 +400,15 @@ describe("ShareLink.verifyCrid", () => {
     await expect(share.verifyCrid(new Uint8Array())).rejects.toMatchObject({
       code: ERROR_CODE_CRID_MISMATCH,
     });
+  });
+
+  it("accepts a truncated CRID derived from its committed DER SPKI", async () => {
+    const share = new ShareLink({
+      link: "https://qurl.link/#qv2t1.example",
+      crid: matchingTruncated,
+    });
+
+    await expect(share.verifyCrid(b64url(matching.der_spki_b64url))).resolves.toBeUndefined();
   });
 
   it("accepts a cross-realm ArrayBuffer as binary key material", async () => {

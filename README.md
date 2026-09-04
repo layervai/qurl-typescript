@@ -136,11 +136,13 @@ verification. Binary inputs of any length are hashed;
 that does not match reports `crid_mismatch`.
 `qurlId` and `singleUse` are undefined when omitted by older service responses.
 `ShareLink` keeps `.link` directly readable but redacts it from JSON, Node
-inspection, and object spread to reduce accidental credential logging.
+inspection, and object spread to reduce accidental credential logging. Read
+`.link` directly before delivery; do not spread or clone a `ShareLink`, because
+those operations deliberately omit the credential.
 
-`ttlSeconds: 0` is the explicit qurl-go-compatible zero value: it omits
-`ttl_seconds` and requests the platform default. Reject a computed zero at the
-call site if default lifetime is not acceptable for your security policy.
+Omitting `ttlSeconds` matches qurl-go's zero-value behavior and requests the
+platform default. TypeScript additionally rejects an explicit zero so a
+computed countdown cannot silently become a longer-lived default credential.
 
 ## Opening Portals
 

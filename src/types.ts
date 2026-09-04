@@ -508,7 +508,11 @@ export interface ResourceListOutput extends PaginatedOutput {
 
 /** Options for minting a fresh share link from an existing resource ID or CRID. */
 export interface ShareResourceOptions {
-  /** Requested lifetime in whole seconds. Zero or omitted uses the platform default. */
+  /**
+   * Requested lifetime in positive whole seconds. Omit to use the platform
+   * default; an explicit zero is rejected to avoid silently lengthening a
+   * computed lifetime.
+   */
   ttlSeconds?: number;
 }
 

@@ -37,10 +37,12 @@ export const ERROR_CODE_UNKNOWN = "unknown";
  * (`code: "client_validation"`), unexpected response shapes
  * (`code: "unexpected_response"`), runtime capability errors
  * (`code: "runtime_error"`), network errors (`code: "network_error"`), and
- * timeouts (`code: "timeout"`) — all use `status: 0` because no real HTTP
- * status code applies. To distinguish between these cases, branch on `.code`
- * rather than `.status`. Non-zero `.status` always reflects a real HTTP
- * status from the API (e.g. 400, 401, 429, 500).
+ * timeouts (`code: "timeout"`) — plus local CRID verification codes
+ * (`missing_crid`, `invalid_crid`, `invalid_crid_key`, `crid_mismatch`) — all
+ * use `status: 0` because no real HTTP status code applies. To distinguish
+ * between these cases, branch on `.code` rather than `.status`. Non-zero
+ * `.status` always reflects a real HTTP status from the API (e.g. 400, 401,
+ * 429, 500).
  *
  * **`.code === "unknown"`** is a possible value when the server returns a
  * non-RFC-7807 response (e.g. a Cloudflare HTML error page, a gateway
