@@ -379,8 +379,10 @@ SDK-generated keys require `globalThis.crypto.getRandomValues`, which is availab
   `invalidFields` keys/values have controls and bidirectional formatting
   characters removed, are normalized to one line, and are capped at 512 UTF-8
   bytes. At most 100 `invalidFields` entries are retained.
-  Redirect/body-limit errors do not include `Location` values,
-  response-body snippets, or request credentials in SDK errors or debug logs.
+  Redirect/body-limit contract-error details do not include `Location` values
+  or response-body snippets. Standard request debug logging includes the request
+  URL, so do not place credentials in identifiers or enable debug output in a
+  sensitive logging environment.
 - Prefer short portal lifetimes such as `validFor: '5m'`.
 - Do not ask portal recipients to handle credentials. Recipients only need
   the link.

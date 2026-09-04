@@ -18,7 +18,8 @@
 - **client:** API response bodies larger than 1 MiB are rejected before JSON
   parsing, including streamed bodies without a trustworthy Content-Length.
 - **client:** GET requests now retry transport failures that occur while reading
-  a successful response body, not only failures carrying a retryable status.
+  a response body regardless of the observed HTTP status; GET replay remains
+  safe while mutations retain status- and idempotency-specific retry rules.
 - **client:** remove the released legacy HTTP bootstrap method and the
   not-yet-released relay registration implementation. Native qURL Connector
   assignment and registration are UDP-only and belong in the Go runtime; the

@@ -741,6 +741,9 @@ function boundedInvalidFields(value: unknown): Record<string, string> | undefine
 
 /** Bound server-controlled object keys before forwarding them to a debug sink. */
 function boundedObjectKeys(value: object): string[] {
+  // Slice before normalization so a hostile envelope cannot force work over
+  // every own key. Some early keys may normalize away; bounded diagnostics are
+  // more important here than filling every available debug slot.
   return Object.keys(value)
     .slice(0, MAX_INVALID_FIELD_ENTRIES)
     .map((key) => boundedErrorSnippet(key))
@@ -3582,7 +3585,7 @@ export class QURLClient {
       const bodyShape = response.__http_body_empty ? "with an empty body" : "with response bytes";
       throw httpStatusContractError(
         status,
-        `Unexpected response from DELETE ${path}; expected empty HTTP 204, received HTTP ${status} ${bodyShape}`,
+        `Unexpected response from DELETE; expected empty HTTP 204, received HTTP ${status} ${bodyShape}`,
       );
     }
   }
@@ -3692,7 +3695,7 @@ export class QURLClient {
             : "opaque browser";
         throw httpResponseContractError(
           response,
-          `Refused ${redirectKind} redirect response for ${method} ${path}`,
+          `Refused ${redirectKind} redirect response for ${method}`,
         );
       }
 
@@ -3853,8 +3856,12 @@ export class QURLClient {
           boundedErrorSnippet(err.title) ??
           boundedErrorSnippet(response.statusText) ??
           `HTTP ${response.status}`;
+        // The transport status is authoritative for error classification. A
+        // conflicting or malformed RFC 7807 body must not turn a real 5xx into
+        // a NotFoundError (or vice versa) in caller reconciliation logic.
+        const status = err.status === response.status ? err.status : response.status;
         return {
-          status: err.status ?? response.status,
+          status,
           code: boundedErrorCode(err.code) ?? ERROR_CODE_UNKNOWN,
           title,
           detail,

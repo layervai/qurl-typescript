@@ -2015,6 +2015,17 @@ describe("QURLClient", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
+  it("rejects HTTP 202 for a no-content DELETE contract", async () => {
+    const fetch = mockFetch({ status: 202, body: { data: {} } });
+
+    await expect(createClient(fetch).delete("r_abc123def45")).rejects.toMatchObject({
+      status: 202,
+      code: ERROR_CODE_UNEXPECTED_RESPONSE,
+      detail: expect.stringContaining("received HTTP 202"),
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
   it("rejects a non-empty body on a nominal 204 mutation response", async () => {
     const response = {
       ok: true,
@@ -3599,6 +3610,25 @@ describe("QURLClient", () => {
     expect(error.message).not.toContain("redirect-test-idempotency");
   });
 
+  it.each([300, 301, 302, 303, 305, 307, 308])(
+    "refuses HTTP %i redirect responses without retrying",
+    async (status) => {
+      const fetch = vi.fn(async () => new Response(null, { status }));
+      const client = new QURLClient({
+        apiKey: "test-api-key",
+        baseUrl: "https://api.test.layerv.ai",
+        fetch: fetch as typeof globalThis.fetch,
+        maxRetries: 2,
+      });
+
+      await expect(client.getQuota()).rejects.toMatchObject({
+        status,
+        code: ERROR_CODE_UNEXPECTED_RESPONSE,
+      });
+      expect(fetch).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it("refuses browser-filtered opaque redirects as unexpected responses", async () => {
     const fetch = vi.fn(async () => {
       return {
@@ -4264,6 +4294,31 @@ describe("QURLClient", () => {
     }
   });
 
+  it("uses the observed HTTP status when a problem body reports a conflicting status", async () => {
+    const fetch = mockFetch({
+      status: 503,
+      body: {
+        error: {
+          status: 404,
+          title: "Not Found",
+          detail: "stale intermediary body",
+          code: "not_found",
+        },
+      },
+    });
+    const error = await new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch,
+      maxRetries: 0,
+    })
+      .getQuota()
+      .catch((caught: unknown) => caught as QURLError);
+
+    expect(error).toBeInstanceOf(ServerError);
+    expect(error).toMatchObject({ status: 503, code: "not_found" });
+  });
+
   it.each([
     {
       name: "JSON success with declared length",
@@ -4422,24 +4477,27 @@ describe("QURLClient", () => {
     ).rejects.toMatchObject({ status: 200, code: ERROR_CODE_UNEXPECTED_RESPONSE });
   });
 
-  it("does not replay DELETE after an oversized retryable-status response", async () => {
-    const fetch = vi.fn(
-      async () =>
-        new Response("x".repeat(RESPONSE_BODY_LIMIT + 1), {
-          status: 503,
-          headers: { "content-type": "text/plain" },
-        }),
-    );
-    const client = new QURLClient({
-      apiKey: "test-api-key",
-      baseUrl: "https://api.test.layerv.ai",
-      fetch: fetch as typeof globalThis.fetch,
-      maxRetries: 3,
-    });
+  it.each([429, 503])(
+    "does not replay DELETE after an oversized HTTP %i response",
+    async (status) => {
+      const fetch = vi.fn(
+        async () =>
+          new Response("x".repeat(RESPONSE_BODY_LIMIT + 1), {
+            status,
+            headers: { "content-type": "text/plain", "Retry-After": "0" },
+          }),
+      );
+      const client = new QURLClient({
+        apiKey: "test-api-key",
+        baseUrl: "https://api.test.layerv.ai",
+        fetch: fetch as typeof globalThis.fetch,
+        maxRetries: 3,
+      });
 
-    await expect(client.delete("r_abc123def45")).rejects.toBeInstanceOf(ServerError);
-    expect(fetch).toHaveBeenCalledTimes(1);
-  });
+      await expect(client.delete("r_abc123def45")).rejects.toBeInstanceOf(QURLError);
+      expect(fetch).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it("bounds materialized text from a Response-like fetch without a body stream", async () => {
     const secret = `response-secret-${"x".repeat(RESPONSE_BODY_LIMIT)}`;
@@ -5676,6 +5734,31 @@ describe("QURLClient", () => {
       },
     });
     const failure = new Response(brokenBody, { status: 200, statusText: "OK" });
+    const success = new Response(
+      JSON.stringify({
+        data: { plan: "growth", period_start: "2026-03-01", period_end: "2026-04-01" },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+    const fetch = vi.fn().mockResolvedValueOnce(failure).mockResolvedValueOnce(success);
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 1,
+    });
+
+    await expect(client.getQuota()).resolves.toMatchObject({ plan: "growth" });
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries GET when a hard-4xx response body fails mid-stream", async () => {
+    const brokenBody = new globalThis.ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.error(new TypeError("not-found response reset mid-body"));
+      },
+    });
+    const failure = new Response(brokenBody, { status: 404, statusText: "Not Found" });
     const success = new Response(
       JSON.stringify({
         data: { plan: "growth", period_start: "2026-03-01", period_end: "2026-04-01" },
