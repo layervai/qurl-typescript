@@ -2751,7 +2751,6 @@ export class QURLClient {
     if (input.ttlSeconds !== undefined) {
       if (
         typeof input.ttlSeconds !== "number" ||
-        !Number.isFinite(input.ttlSeconds) ||
         !Number.isInteger(input.ttlSeconds) ||
         input.ttlSeconds < 0
       ) {
@@ -2770,14 +2769,41 @@ export class QURLClient {
     if (typeof data?.qurl !== "string" || data.qurl.trim() === "") {
       throw unexpectedResponseError("shareResource: response is missing qurl");
     }
+    const wire = data as Record<string, unknown>;
+    for (const field of ["qurl_id", "crid", "type", "expires_at"] as const) {
+      if (wire[field] !== undefined && wire[field] !== null && typeof wire[field] !== "string") {
+        throw unexpectedResponseError(`shareResource: response has invalid ${field}`);
+      }
+    }
+    if (
+      wire.expires_in_seconds !== undefined &&
+      wire.expires_in_seconds !== null &&
+      (typeof wire.expires_in_seconds !== "number" || !Number.isInteger(wire.expires_in_seconds))
+    ) {
+      throw unexpectedResponseError("shareResource: response has invalid expires_in_seconds");
+    }
+    if (
+      wire.single_use !== undefined &&
+      wire.single_use !== null &&
+      typeof wire.single_use !== "boolean"
+    ) {
+      throw unexpectedResponseError("shareResource: response has invalid single_use");
+    }
+    const expiresAt = parseApiDate(
+      typeof wire.expires_at === "string" ? wire.expires_at : undefined,
+    );
+    if (typeof wire.expires_at === "string" && expiresAt === undefined) {
+      throw unexpectedResponseError("shareResource: response has invalid expires_at");
+    }
     return new ShareLink({
       link: data.qurl,
-      qurlId: data.qurl_id || undefined,
-      crid: data.crid || undefined,
-      type: data.type,
-      expiresAt: parseApiDate(data.expires_at),
-      expiresInSeconds: data.expires_in_seconds,
-      singleUse: data.single_use,
+      qurlId: typeof wire.qurl_id === "string" && wire.qurl_id !== "" ? wire.qurl_id : undefined,
+      crid: typeof wire.crid === "string" && wire.crid !== "" ? wire.crid : undefined,
+      type: typeof wire.type === "string" && wire.type !== "" ? wire.type : undefined,
+      expiresAt,
+      expiresInSeconds:
+        typeof wire.expires_in_seconds === "number" ? wire.expires_in_seconds : undefined,
+      singleUse: typeof wire.single_use === "boolean" ? wire.single_use : undefined,
     });
   }
 

@@ -1,8 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
 import conformancePackage from "@layervai/qurl-conformance";
 import { Buffer } from "node:buffer";
-import { CRIDVerificationError, ShareLink } from "./index.js";
-import { RuntimeError, ServerError, ValidationError } from "./errors.js";
+import {
+  CRIDVerificationError,
+  ERROR_CODE_CRID_MISMATCH,
+  ERROR_CODE_INVALID_CRID,
+  ERROR_CODE_INVALID_CRID_KEY,
+  ERROR_CODE_MISSING_CRID,
+  ShareLink,
+} from "./index.js";
+import { QURLError, RuntimeError, ServerError, ValidationError } from "./errors.js";
 import { createClient, mockFetch } from "./__tests__/test-helpers.js";
 
 type CRIDVectors = {
@@ -23,7 +30,12 @@ type CRIDVectors = {
 const vectors = (
   conformancePackage as typeof import("@layervai/qurl-conformance")
 ).cridV1Vectors() as CRIDVectors;
-const [matching, , foreign] = vectors.producer_cases;
+const matching = vectors.producer_cases.find(({ name }) => name === "resource_key_qv2_v01");
+if (!matching) throw new Error("CRID conformance vectors are missing resource_key_qv2_v01");
+const foreign = vectors.producer_cases.find(
+  ({ der_spki_b64url }) => der_spki_b64url !== matching.der_spki_b64url,
+);
+if (!foreign) throw new Error("CRID conformance vectors are missing a foreign resource key");
 
 function b64url(value: string): Uint8Array<ArrayBuffer> {
   return Uint8Array.from(Buffer.from(value, "base64url"));
@@ -125,6 +137,41 @@ describe("shareResource", () => {
     });
   });
 
+  it("preserves single-use and an omitted expiry from an older server", async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: shareResponse({ single_use: true, expires_at: undefined }),
+    });
+
+    await expect(createClient(fetch).shareResource("resource-id")).resolves.toMatchObject({
+      expiresAt: undefined,
+      singleUse: true,
+    });
+  });
+
+  it.each([
+    ["qurl_id", 42],
+    ["crid", 42],
+    ["type", 42],
+    ["expires_at", 42],
+    ["expires_in_seconds", "300"],
+    ["single_use", "false"],
+  ])("fails closed when response field %s has the wrong type", async (field, value) => {
+    const fetch = mockFetch({ status: 200, body: shareResponse({ [field]: value }) });
+
+    await expect(createClient(fetch).shareResource("resource-id")).rejects.toMatchObject({
+      code: "unexpected_response",
+    });
+  });
+
+  it("fails closed when expires_at is not an RFC 3339 timestamp", async () => {
+    const fetch = mockFetch({ status: 200, body: shareResponse({ expires_at: "not-a-date" }) });
+
+    await expect(createClient(fetch).shareResource("resource-id")).rejects.toMatchObject({
+      code: "unexpected_response",
+    });
+  });
+
   it("preserves distinct 503 codes as typed server errors", async () => {
     for (const code of ["service_unavailable", "connector_stopped"]) {
       const fetch = mockFetch({
@@ -151,6 +198,17 @@ describe("ShareLink.verifyCrid", () => {
     await expect(share.verifyCrid(b64url(matching.der_spki_b64url))).resolves.toBeUndefined();
   });
 
+  it("accepts an ArrayBuffer DER SPKI", async () => {
+    const share = new ShareLink({
+      link: "https://qurl.link/#qv2t1.example",
+      crid: matching.expected_crid,
+    });
+    const bytes = b64url(matching.der_spki_b64url);
+    const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+
+    await expect(share.verifyCrid(buffer)).resolves.toBeUndefined();
+  });
+
   it("rejects a foreign DER SPKI with a typed mismatch", async () => {
     const share = new ShareLink({
       link: "https://qurl.link/#qv2t1.example",
@@ -159,7 +217,29 @@ describe("ShareLink.verifyCrid", () => {
 
     await expect(share.verifyCrid(b64url(foreign.der_spki_b64url))).rejects.toMatchObject({
       constructor: CRIDVerificationError,
-      code: "crid_mismatch",
+      code: ERROR_CODE_CRID_MISMATCH,
+    });
+  });
+
+  it("keeps CRID failures inside the documented QURLError hierarchy", async () => {
+    const share = new ShareLink({
+      link: "https://qurl.link/#qv2t1.example",
+      crid: matching.expected_crid,
+    });
+
+    await expect(share.verifyCrid(b64url(foreign.der_spki_b64url))).rejects.toBeInstanceOf(
+      QURLError,
+    );
+  });
+
+  it("distinguishes an invalid caller key from an invalid server CRID", async () => {
+    const share = new ShareLink({
+      link: "https://qurl.link/#qv2t1.example",
+      crid: matching.expected_crid,
+    });
+
+    await expect(share.verifyCrid("not binary" as never)).rejects.toMatchObject({
+      code: ERROR_CODE_INVALID_CRID_KEY,
     });
   });
 
@@ -167,7 +247,7 @@ describe("ShareLink.verifyCrid", () => {
     const share = new ShareLink({ link: "https://qurl.link/#qv2t1.example" });
 
     await expect(share.verifyCrid(new Uint8Array())).rejects.toMatchObject({
-      code: "missing_crid",
+      code: ERROR_CODE_MISSING_CRID,
     });
   });
 
@@ -175,13 +255,12 @@ describe("ShareLink.verifyCrid", () => {
     const share = new ShareLink({ link: "https://qurl.link/#qv2t1.example", crid: "NOT-A-CRID" });
 
     await expect(share.verifyCrid(new Uint8Array())).rejects.toMatchObject({
-      code: "invalid_crid",
+      code: ERROR_CODE_INVALID_CRID,
     });
   });
 
   it("reports missing Web Crypto as a runtime capability error", async () => {
-    const originalCrypto = globalThis.crypto;
-    Object.defineProperty(globalThis, "crypto", { configurable: true, value: undefined });
+    vi.stubGlobal("crypto", undefined);
     try {
       const share = new ShareLink({
         link: "https://qurl.link/#qv2t1.example",
@@ -191,7 +270,7 @@ describe("ShareLink.verifyCrid", () => {
         RuntimeError,
       );
     } finally {
-      Object.defineProperty(globalThis, "crypto", { configurable: true, value: originalCrypto });
+      vi.unstubAllGlobals();
     }
   });
 
@@ -205,9 +284,11 @@ describe("ShareLink.verifyCrid", () => {
         .catch((caught: unknown) => caught);
 
       if (outcome === "reject") {
-        expect(error).toMatchObject({ code: value === "" ? "missing_crid" : "invalid_crid" });
+        expect(error).toMatchObject({
+          code: value === "" ? ERROR_CODE_MISSING_CRID : ERROR_CODE_INVALID_CRID,
+        });
       } else if (error instanceof CRIDVerificationError) {
-        expect(error.code).not.toBe("invalid_crid");
+        expect(error.code).not.toBe(ERROR_CODE_INVALID_CRID);
       } else {
         expect(error).toBeUndefined();
       }

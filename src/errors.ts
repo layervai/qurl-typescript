@@ -15,6 +15,14 @@ export const ERROR_CODE_UNEXPECTED_RESPONSE = "unexpected_response";
 export const ERROR_CODE_NETWORK = "network_error";
 export const ERROR_CODE_TIMEOUT = "timeout";
 export const ERROR_CODE_RUNTIME = "runtime_error";
+/** A share response omitted the CRID required for delivered-key verification. */
+export const ERROR_CODE_MISSING_CRID = "missing_crid";
+/** A held CRID failed the local CRID v1 validation gate. */
+export const ERROR_CODE_INVALID_CRID = "invalid_crid";
+/** A caller supplied something other than binary DER SPKI key data. */
+export const ERROR_CODE_INVALID_CRID_KEY = "invalid_crid_key";
+/** A delivered key does not derive the held CRID. */
+export const ERROR_CODE_CRID_MISMATCH = "crid_mismatch";
 /** `connectorResource` found no resource for the connector id (client-detected, `status: 0`). */
 export const ERROR_CODE_RESOURCE_NOT_FOUND = "resource_not_found";
 /** `connectorResource` matched more than one resource where exactly one is required (client-detected, `status: 0`). */

@@ -1,4 +1,11 @@
-import { RuntimeError } from "./errors.js";
+import {
+  ERROR_CODE_CRID_MISMATCH,
+  ERROR_CODE_INVALID_CRID,
+  ERROR_CODE_INVALID_CRID_KEY,
+  ERROR_CODE_MISSING_CRID,
+  QURLError,
+  RuntimeError,
+} from "./errors.js";
 
 const CRID_ALPHABET = "abcdefghijklmnopqrstuvwxyz234567";
 const CRID_FULL_LENGTH = 60;
@@ -7,16 +14,17 @@ const CRID_CHECKSUM_LENGTH = 4;
 const CRID_DOMAIN = new TextEncoder().encode("NHP-QURL-CRID-V1\0");
 const CRC32C_REVERSED_POLYNOMIAL = 0x82f63b78;
 
-export type CRIDVerificationErrorCode = "missing_crid" | "invalid_crid" | "crid_mismatch";
+export type CRIDVerificationErrorCode =
+  | typeof ERROR_CODE_MISSING_CRID
+  | typeof ERROR_CODE_INVALID_CRID
+  | typeof ERROR_CODE_INVALID_CRID_KEY
+  | typeof ERROR_CODE_CRID_MISMATCH;
 
 /** A local, fail-closed CRID verification failure. */
-export class CRIDVerificationError extends Error {
-  readonly code: CRIDVerificationErrorCode;
-
+export class CRIDVerificationError extends QURLError {
   constructor(code: CRIDVerificationErrorCode, message: string) {
-    super(message);
+    super({ status: 0, code, title: "CRID Verification Error", detail: message });
     this.name = "CRIDVerificationError";
-    this.code = code;
   }
 }
 
@@ -57,7 +65,7 @@ export class ShareLink {
   async verifyCrid(derSpki: ArrayBuffer | ArrayBufferView): Promise<void> {
     if (!this.crid) {
       throw new CRIDVerificationError(
-        "missing_crid",
+        ERROR_CODE_MISSING_CRID,
         "Share response carried no CRID; the resource key cannot be verified",
       );
     }
@@ -77,7 +85,7 @@ export class ShareLink {
     }
     if (difference !== 0) {
       throw new CRIDVerificationError(
-        "crid_mismatch",
+        ERROR_CODE_CRID_MISMATCH,
         "Resource key does not derive the held CRID",
       );
     }
@@ -89,7 +97,10 @@ function copyBytes(value: ArrayBuffer | ArrayBufferView): Uint8Array<ArrayBuffer
   if (ArrayBuffer.isView(value)) {
     return Uint8Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength));
   }
-  throw new CRIDVerificationError("invalid_crid", "Resource key must be binary DER SPKI data");
+  throw new CRIDVerificationError(
+    ERROR_CODE_INVALID_CRID_KEY,
+    "Resource key must be binary DER SPKI data",
+  );
 }
 
 function parseCrid(value: string): { digest: Uint8Array } {
@@ -112,7 +123,11 @@ function parseCrid(value: string): { digest: Uint8Array } {
   }
   if (accumulator !== 0) throw invalidCrid();
   const bytes = Uint8Array.from(decoded);
-  if (bytes[0] === 0 || bytes.length <= 1 + CRID_CHECKSUM_LENGTH) throw invalidCrid();
+  // Version zero is reserved. Other version/environment bytes are deliberately
+  // accepted for forward compatibility, as required by the CRID conformance
+  // vectors; verification still fails closed unless the key-derived digest
+  // matches.
+  if (bytes[0] === 0) throw invalidCrid();
   const payload = bytes.subarray(0, bytes.length - CRID_CHECKSUM_LENGTH);
   const checksum = bytes.subarray(bytes.length - CRID_CHECKSUM_LENGTH);
   const expected = crc32c(payload);
@@ -134,5 +149,8 @@ function crc32c(bytes: Uint8Array): number {
 }
 
 function invalidCrid(): CRIDVerificationError {
-  return new CRIDVerificationError("invalid_crid", "Share response carried an invalid CRID");
+  return new CRIDVerificationError(
+    ERROR_CODE_INVALID_CRID,
+    "Share response carried an invalid CRID",
+  );
 }
