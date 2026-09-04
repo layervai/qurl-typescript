@@ -95,6 +95,12 @@ describe("shareResource", () => {
     expect(inspect(share)).not.toContain(share.link);
     expect({ ...share }).not.toHaveProperty("link");
     expect(share.link).toBe("https://qurl.link/#qv2t1.example");
+    expect(Reflect.set(share, "link", "https://evil.example/#stolen")).toBe(false);
+    expect(() => Object.defineProperty(share, "link", { enumerable: true })).toThrow(TypeError);
+    expect(share.toJSON()).toMatchObject({
+      link: "[redacted]",
+      expiresAt: "2026-03-09T15:35:00.000Z",
+    });
   });
 
   it("sends a positive whole-second TTL and preserves a caller idempotency key", async () => {
@@ -127,6 +133,8 @@ describe("shareResource", () => {
     ["negative", -1],
     ["fractional", 1.5],
     ["non-finite", Number.POSITIVE_INFINITY],
+    ["not-a-number", Number.NaN],
+    ["non-numeric", "300" as never],
   ])("rejects a %s TTL before the request", async (_name, ttlSeconds) => {
     const fetch = mockFetch({ status: 200, body: shareResponse() });
 
@@ -149,6 +157,15 @@ describe("shareResource", () => {
 
     await expect(
       createClient(fetch).shareResource("resource-id", { ttl_seconds: 90 } as never),
+    ).rejects.toBeInstanceOf(ValidationError);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([null, "not-an-object"])("rejects the non-object options value %j", async (input) => {
+    const fetch = mockFetch({ status: 200, body: shareResponse() });
+
+    await expect(
+      createClient(fetch).shareResource("resource-id", input as never),
     ).rejects.toBeInstanceOf(ValidationError);
     expect(fetch).not.toHaveBeenCalled();
   });
@@ -221,6 +238,24 @@ describe("shareResource", () => {
     await expect(createClient(fetch).shareResource("resource-id")).rejects.toMatchObject({
       code: "unexpected_response",
     });
+  });
+
+  it("preserves an explicit zero expires_in_seconds from the service", async () => {
+    const fetch = mockFetch({ status: 200, body: shareResponse({ expires_in_seconds: 0 }) });
+
+    await expect(createClient(fetch).shareResource("resource-id")).resolves.toMatchObject({
+      expiresInSeconds: 0,
+    });
+  });
+
+  it("sends an SDK-generated idempotency key when minting a share", async () => {
+    const fetch = mockFetch({ status: 200, body: shareResponse() });
+
+    await createClient(fetch).shareResource("resource-id");
+
+    expect(
+      (vi.mocked(fetch).mock.calls[0][1]?.headers as Record<string, string>)["Idempotency-Key"],
+    ).toMatch(/^[0-9a-f-]{36}$/);
   });
 
   it.each([1.5, Number.POSITIVE_INFINITY])(

@@ -38,6 +38,17 @@ export interface ShareLinkInit {
   singleUse?: boolean;
 }
 
+/** Credential-redacted, JSON-safe representation returned by {@link ShareLink.toJSON}. */
+export interface ShareLinkJSON {
+  link: "[redacted]";
+  qurlId?: string;
+  crid?: string;
+  type?: string;
+  expiresAt?: string;
+  expiresInSeconds?: number;
+  singleUse?: boolean;
+}
+
 /** A freshly minted, one-time-returned access link for an existing resource. */
 export class ShareLink {
   readonly link: string;
@@ -54,7 +65,11 @@ export class ShareLink {
     this.link = init.link;
     // Keep accidental object spread/structured logging from copying the
     // one-time-returned credential. Callers can still read `.link` explicitly.
-    Object.defineProperty(this, "link", { enumerable: false });
+    Object.defineProperty(this, "link", {
+      enumerable: false,
+      writable: false,
+      configurable: false,
+    });
     this.qurlId = init.qurlId;
     this.crid = init.crid;
     this.type = init.type;
@@ -64,20 +79,20 @@ export class ShareLink {
   }
 
   /** Serialize safe metadata while redacting the one-time-returned credential. */
-  toJSON(): ShareLinkInit {
+  toJSON(): ShareLinkJSON {
     return {
       link: "[redacted]",
       qurlId: this.qurlId,
       crid: this.crid,
       type: this.type,
-      expiresAt: this.expiresAt,
+      expiresAt: this.expiresAt?.toISOString(),
       expiresInSeconds: this.expiresInSeconds,
       singleUse: this.singleUse,
     };
   }
 
   /** Prevent Node's default object inspector from printing the credential. */
-  [Symbol.for("nodejs.util.inspect.custom")](): ShareLinkInit {
+  [Symbol.for("nodejs.util.inspect.custom")](): ShareLinkJSON {
     return this.toJSON();
   }
 
