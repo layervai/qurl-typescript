@@ -2202,7 +2202,7 @@ describe("QURLClient", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it.each(["%2e", "%2e%2e", "%252e", "%252e%252e"])(
+  it.each(["%2e", "%2E", "%2e%2e", "%252e", "%252e%252e"])(
     "delete rejects the encoded URL dot-segment identifier %s",
     async (resourceId) => {
       const fetch = mockFetch({ status: 204 });
@@ -2215,6 +2215,27 @@ describe("QURLClient", () => {
       expect(fetch).not.toHaveBeenCalled();
     },
   );
+
+  it("leaves input beyond the three-pass decode inspection bound to the service", async () => {
+    const resourceId = "%2525252e";
+    const fetch = mockFetch({ status: 204 });
+
+    await expect(createClient(fetch).delete(resourceId)).resolves.toBeUndefined();
+    expect(fetch).toHaveBeenCalledWith(
+      `https://api.test.layerv.ai/v1/qurls/${encodeURIComponent(resourceId)}`,
+      expect.objectContaining({ method: "DELETE" }),
+    );
+  });
+
+  it("rejects a pre-encoded qURL display ID before whole-resource deletion", async () => {
+    const fetch = mockFetch({ status: 204 });
+
+    await expect(createClient(fetch).delete("%71_0123456789a")).rejects.toMatchObject({
+      code: ERROR_CODE_CLIENT_VALIDATION,
+      detail: expect.stringContaining("qURL display ID"),
+    });
+    expect(fetch).not.toHaveBeenCalled();
+  });
 
   it.each([".", ".."])("delete rejects the URL dot-segment identifier %s", async (resourceId) => {
     const fetch = mockFetch({ status: 204 });

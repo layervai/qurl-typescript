@@ -846,25 +846,7 @@ function requireNonEmptyId(
       `${method}: ${field} must not include leading or trailing whitespace`,
     );
   }
-  // Probe repeatedly encoded input too. Callers sometimes pre-encode a copied
-  // link before passing it through a URL builder that encodes it again. Three
-  // passes cover the common accidental cases without allowing hostile input
-  // to create unbounded work. More deeply encoded or malformed-percent input
-  // deliberately fails open to the authoritative service after safe segment
-  // encoding; this heuristic is not an identifier parser.
-  const decodedIds = [id];
-  let decodedId = id;
-  for (let pass = 0; pass < MAX_PATH_ID_DECODE_PASSES; pass += 1) {
-    try {
-      const next = decodeURIComponent(decodedId);
-      if (next === decodedId) break;
-      decodedIds.push(next);
-      decodedId = next;
-    } catch {
-      // Malformed percent escapes remain opaque and are left to the service.
-      break;
-    }
-  }
+  const decodedIds = decodedPathIdForms(id);
   // URL resolvers and intermediaries can normalize raw or pre-encoded dot
   // segments before routing. Reject every decoded form we inspected so an
   // item operation cannot be retargeted to a collection endpoint.
@@ -891,6 +873,29 @@ function requireNonEmptyId(
   if (decodedIds.some((value) => /^https?:\/\//i.test(value))) {
     throw clientValidationError(`${method}: ${field} must be an identifier, not a URL`);
   }
+}
+
+function decodedPathIdForms(id: string): string[] {
+  // Probe repeatedly encoded input too. Callers sometimes pre-encode a copied
+  // link before passing it through a URL builder that encodes it again. Three
+  // passes cover the common accidental cases without allowing hostile input
+  // to create unbounded work. More deeply encoded or malformed-percent input
+  // deliberately fails open to the authoritative service after safe segment
+  // encoding; this heuristic is not an identifier parser.
+  const decodedIds = [id];
+  let decodedId = id;
+  for (let pass = 0; pass < MAX_PATH_ID_DECODE_PASSES; pass += 1) {
+    try {
+      const next = decodeURIComponent(decodedId);
+      if (next === decodedId) break;
+      decodedIds.push(next);
+      decodedId = next;
+    } catch {
+      // Malformed percent escapes remain opaque and are left to the service.
+      break;
+    }
+  }
+  return decodedIds;
 }
 
 function requireValidTags(tags: string[] | null | undefined): void {
@@ -2465,7 +2470,7 @@ export class QURLClient {
    */
   async delete(id: string): Promise<void> {
     requireNonEmptyId(id, "delete", "id", DELETE_QURL_RESOURCE_ID_PATH_OPTIONS);
-    if (id.startsWith("q_")) {
+    if (decodedPathIdForms(id).some((value) => value.startsWith("q_"))) {
       throw clientValidationError(
         "delete: id must not be a qURL display ID; revoke individual tokens with revokeResourceQurl(resourceId, qurlId)",
       );
