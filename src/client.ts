@@ -789,8 +789,10 @@ function pageFromMeta<T extends Record<string, unknown>>(
  * only basic shape plus transport-safety rules and leaves endpoint-specific
  * identifier grammar to the service.
  */
+const PATH_ACCESS_TOKEN_RE = /(^|[/?&#=])at_/;
+
 function requireNonEmptyId(
-  id: string,
+  id: unknown,
   method: string,
   field = "id",
   accessTokenRecovery?: string,
@@ -798,7 +800,11 @@ function requireNonEmptyId(
   // `.trim()` catches whitespace-only and padded IDs before they round-trip as
   // `%20...%20` paths that the server can only reject with a less useful 404.
   // The pre-flight error is more actionable than the 404.
-  if (typeof id !== "string" || id.trim() === "") {
+  if (typeof id !== "string") {
+    const observedType = id === null ? "null" : typeof id;
+    throw clientValidationError(`${method}: ${field} is required (got ${observedType})`);
+  }
+  if (id.trim() === "") {
     throw clientValidationError(`${method}: ${field} is required`);
   }
   if (id.trim() !== id) {
@@ -811,11 +817,20 @@ function requireNonEmptyId(
   if (id === "." || id === "..") {
     throw clientValidationError(`${method}: ${field} is an invalid URL path segment`);
   }
+  // Probe a once-encoded input too. Callers sometimes pre-encode a copied
+  // link; encodeURIComponent leaves the token itself readable but hides the
+  // delimiter as `%23`, which would otherwise evade the raw delimiter check.
+  let decodedId = id;
+  try {
+    decodedId = decodeURIComponent(id);
+  } catch {
+    // Malformed percent escapes remain opaque and are left to the service.
+  }
   // qURL access tokens are credentials. Reject bare tokens plus tokens after
   // URL/query delimiters before a credential can enter proxy/access logs as a
   // path. The delimiter check preserves opaque IDs that merely contain "at_".
   // Do not echo the caller-supplied value.
-  if (/(^|[/?&#=])at_/.test(id)) {
+  if (PATH_ACCESS_TOKEN_RE.test(id) || PATH_ACCESS_TOKEN_RE.test(decodedId)) {
     throw clientValidationError(
       `${method}: ${field} must not contain an access token${accessTokenRecovery ? `; ${accessTokenRecovery}` : ""}`,
     );
@@ -823,7 +838,7 @@ function requireNonEmptyId(
   // A full target/qURL is a common argument mix-up, but it is distinct from
   // passing an access-token credential. Diagnose it accurately without
   // echoing the URL, which may itself contain sensitive query parameters.
-  if (/^https?:\/\//i.test(id)) {
+  if (/^https?:\/\//i.test(id) || /^https?:\/\//i.test(decodedId)) {
     throw clientValidationError(`${method}: ${field} must be an identifier, not a URL`);
   }
 }
