@@ -2766,7 +2766,10 @@ export class QURLClient {
       }
     }
     for (const field of ["qurl_id", "type"] as const) {
-      if (typeof wire[field] === "string" && wire[field].trim() === "") {
+      if (
+        typeof wire[field] === "string" &&
+        (wire[field].trim() === "" || wire[field].trim() !== wire[field])
+      ) {
         throw unexpectedResponseError(`shareResource: response has invalid ${field}`);
       }
     }

@@ -157,6 +157,15 @@ describe("shareResource", () => {
     });
   });
 
+  it("snapshots a caller-owned expiry date at construction", () => {
+    const expiresAt = new Date("2026-03-09T15:35:00Z");
+    const share = new ShareLink({ link: "https://qurl.link/#qv2t1.example", expiresAt });
+
+    expiresAt.setUTCFullYear(1970);
+
+    expect(share.expiresAt?.toISOString()).toBe("2026-03-09T15:35:00.000Z");
+  });
+
   it("sends a positive whole-second TTL and preserves a caller idempotency key", async () => {
     const fetch = mockFetch({ status: 200, body: shareResponse() });
 
@@ -289,6 +298,17 @@ describe("shareResource", () => {
         code: "unexpected_response",
       });
     }
+  });
+
+  it.each([
+    ["qurl_id", " q_a1b2c3d4e5f "],
+    ["type", " url "],
+  ])("fails closed when response field %s is padded", async (field, value) => {
+    const fetch = mockFetch({ status: 200, body: shareResponse({ [field]: value }) });
+
+    await expect(createClient(fetch).shareResource("resource-id")).rejects.toMatchObject({
+      code: "unexpected_response",
+    });
   });
 
   it("fails closed when expires_at is not an RFC 3339 timestamp", async () => {

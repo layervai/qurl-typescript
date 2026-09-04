@@ -95,7 +95,7 @@ export class ShareLink {
     this.qurlId = init.qurlId;
     this.crid = init.crid;
     this.type = init.type;
-    this.expiresAt = init.expiresAt;
+    this.expiresAt = init.expiresAt && new Date(init.expiresAt.getTime());
     this.expiresInSeconds = init.expiresInSeconds;
     this.singleUse = init.singleUse;
     Object.freeze(this);

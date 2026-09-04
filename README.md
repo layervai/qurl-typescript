@@ -134,13 +134,17 @@ version is accepted and environment classification is not part of key-to-digest
 verification. Binary inputs of any length are hashed;
 `invalid_crid_key` is reserved for non-binary or unreadable (detached) runtime
 values, and a readable binary key that does not match reports `crid_mismatch`.
+Use `error instanceof CRIDVerificationError` (or `error.status === 0`) to
+distinguish these local verification failures from a server error that happens
+to use the same problem code.
 `qurlId` and `singleUse` are undefined when omitted by older service responses.
 `ShareLink` keeps `.link` directly readable but redacts it from JSON, Node
 inspection, and object spread to reduce accidental credential logging. Read
 `.link` directly before delivery; do not spread or clone a `ShareLink`, because
 those operations deliberately omit the credential. Browser developer consoles
 can still display non-enumerable properties, so do not log the object there.
-The `ShareLink` properties are frozen, but its `expiresAt` value is a normal
+The constructor snapshots a caller-provided expiry, and the `ShareLink`
+properties are frozen, but its returned `expiresAt` value remains a normal
 mutable `Date`; copy it before applying in-place `Date` setters.
 
 Omitting `ttlSeconds` matches qurl-go's zero-value behavior and requests the
