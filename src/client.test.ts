@@ -2160,6 +2160,33 @@ describe("QURLClient", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("does not misdiagnose a benign at_-prefixed query value as a credential", async () => {
+    const fetch = mockFetch({ status: 204 });
+    const targetUrl = "https://docs.example.com/guide?tab=at_a_glance";
+
+    const error = await createClient(fetch)
+      .delete(targetUrl)
+      .catch((caught: unknown) => caught as ValidationError);
+
+    expect(error.detail).toContain("must be an identifier, not a URL");
+    expect(error.detail).not.toContain("access token");
+    expect(error.detail).not.toContain(targetUrl);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("diagnoses a canonical access token pasted from a custom-domain URL", async () => {
+    const fetch = mockFetch({ status: 204 });
+    const qurlLink = "https://links.example.com/at_abcdefghijklmnopqrstuv";
+
+    const error = await createClient(fetch)
+      .delete(qurlLink)
+      .catch((caught: unknown) => caught as ValidationError);
+
+    expect(error.detail).toContain("access token");
+    expect(error.detail).not.toContain(qurlLink);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("delete rejects a scheme-less link carrying an access token in its query", async () => {
     const fetch = mockFetch({ status: 204 });
     const client = createClient(fetch);

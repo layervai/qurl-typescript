@@ -788,7 +788,8 @@ function pageFromMeta<T extends Record<string, unknown>>(
 // delimiter requirement cannot collide with current base64url public keys,
 // standard-base64 keys, or base32 CRIDs.
 const PATH_EMBEDDED_ACCESS_TOKEN_RE = /[?&#=:\s]at_/i;
-const QURL_TOKEN_PATH_RE = /^(?:https?:\/\/)?(?:[a-z0-9-]+\.)*qurl\.link(?::\d{1,5})?\/at_/i;
+const QURL_LINK_URL_RE = /^(?:https?:\/\/)?(?:[a-z0-9-]+\.)*qurl\.link(?::\d{1,5})?(?:\/|[?#])/i;
+const URL_EMBEDDED_ACCESS_TOKEN_RE = /[?&#=:/]at_[a-z0-9_-]{22}(?:$|[?&#:/])/i;
 // A host without a slash can be a legitimate domain identifier. Require the
 // path boundary so shared validation does not break the domain namespace.
 const PATH_SCHEMELESS_URL_RE = /^[a-z0-9-]+(?:\.[a-z0-9-]+)+(?::\d{1,5})?\//i;
@@ -896,9 +897,11 @@ function requireNonEmptyId(
   );
   const containsAccessToken = decodedIds.some(
     (value) =>
-      PATH_EMBEDDED_ACCESS_TOKEN_RE.test(value) ||
-      QURL_TOKEN_PATH_RE.test(value) ||
-      (!containsUrl && /\/at_/i.test(value)) ||
+      (QURL_LINK_URL_RE.test(value) &&
+        (PATH_EMBEDDED_ACCESS_TOKEN_RE.test(value) || /\/at_/i.test(value))) ||
+      (containsUrl
+        ? URL_EMBEDDED_ACCESS_TOKEN_RE.test(value)
+        : PATH_EMBEDDED_ACCESS_TOKEN_RE.test(value) || /\/at_/i.test(value)) ||
       (options.rejectBareAccessToken === true && value.slice(0, 3).toLowerCase() === "at_"),
   );
   if (containsAccessToken) {
