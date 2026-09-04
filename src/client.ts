@@ -878,19 +878,19 @@ function requireNonEmptyId(
   if (decodedIds.some((value) => value === "." || value === "..")) {
     throw clientValidationError(`${method}: ${field} is an invalid URL path segment`);
   }
-  // `/` is deliberately outside the credential delimiter class so ordinary
-  // paths such as `/at_a_glance` are not misread as credentials. Fragment,
-  // query, header, and pasted `Bearer at_...` / `token:at_...` forms are strong
-  // credential signals. When a URL trips both heuristics, report the
-  // credential first because it is the more urgent mistake. Bare `at_...`
-  // values are rejected only for resource/qURL identifiers so unrelated
-  // identifier namespaces stay opaque.
+  // `/` is deliberately outside the general delimiter class so a URL path
+  // such as `/at_a_glance` is not misread as a credential. For non-URL input,
+  // `/at_` remains a strong pasted-path signal. Fragment, query, header, and
+  // pasted `Bearer at_...` / `token:at_...` forms are also strong signals.
+  // Bare `at_...` values are rejected only for resource/qURL identifiers so
+  // unrelated identifier namespaces stay opaque.
   const containsUrl = decodedIds.some(
     (value) => /^https?:\/\//i.test(value) || PATH_SCHEMELESS_URL_RE.test(value),
   );
   const containsAccessToken = decodedIds.some(
     (value) =>
       PATH_EMBEDDED_ACCESS_TOKEN_RE.test(value) ||
+      (!containsUrl && /\/at_/i.test(value)) ||
       (options.rejectBareAccessToken === true && value.slice(0, 3).toLowerCase() === "at_"),
   );
   if (containsAccessToken) {
@@ -2505,8 +2505,10 @@ export class QURLClient {
    * whole parent resource; use {@link revokeResourceQurl} for one qURL.
    *
    * @throws {ValidationError} If `id` is blank, padded with whitespace, too
-   * long, a URL dot segment, URL-shaped, contains a qURL access-token
-   * credential, or is a qURL display ID.
+   * long, URL-shaped, contains a qURL access-token credential, or is a qURL
+   * display ID. URL dot-segment and credential checks inspect at most three
+   * rounds of percent decoding; more deeply encoded input is left to the
+   * authoritative service after safe single-segment encoding.
    */
   async delete(id: string): Promise<void> {
     requireNonEmptyId(id, "delete", "id", DELETE_QURL_RESOURCE_ID_PATH_OPTIONS);

@@ -2252,6 +2252,19 @@ describe("QURLClient", () => {
     },
   );
 
+  it("delete rejects an access token pasted after a non-URL path fragment", async () => {
+    const fetch = mockFetch({ status: 204 });
+    const credential = `open/${SENSITIVE_ACCESS_TOKEN}`;
+
+    const error = await createClient(fetch)
+      .delete(credential)
+      .catch((caught: unknown) => caught as ValidationError);
+
+    expect(error.detail).toContain("access token");
+    expect(error.detail).not.toContain(SENSITIVE_ACCESS_TOKEN);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("delete rejects a percent-encoded qURL link before its token can reach request logs", async () => {
     const fetch = mockFetch({ status: 204 });
     const client = createClient(fetch);
@@ -2331,6 +2344,16 @@ describe("QURLClient", () => {
       detail: expect.stringContaining("qURL display ID"),
     });
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("deleteResource leaves qURL display-ID resolution to the service", async () => {
+    const fetch = mockFetch({ status: 204 });
+
+    await expect(createClient(fetch).deleteResource("q_0123456789a")).resolves.toBeUndefined();
+    expect(fetch).toHaveBeenCalledWith(
+      "https://api.test.layerv.ai/v1/resources/q_0123456789a",
+      expect.objectContaining({ method: "DELETE" }),
+    );
   });
 
   it.each(["Q_0123456789a", "%51_0123456789a"])(
