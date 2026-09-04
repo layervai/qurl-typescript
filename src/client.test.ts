@@ -5,6 +5,7 @@ import {
   AuthorizationError,
   ConnectorResourceOutcomeUnknownError,
   ERROR_CODE_CLIENT_VALIDATION,
+  ERROR_CODE_CONNECTOR_RESOURCE_REVOKED,
   ERROR_CODE_RUNTIME,
   ERROR_CODE_UNEXPECTED_RESPONSE,
   ERROR_CODE_UNKNOWN,
@@ -2022,6 +2023,9 @@ describe("QURLClient", () => {
     expect(result.resource.knockResourceId).toBe("asp-resource-1");
     expect(result.resource.slug).toBe("prod-dashboard");
     expect(result.resource.alias).toBe("dashboard-display-name");
+    expect(result.resource.crid).toBe(connectorResourceData().crid);
+    expect(result.resource.desiredState).toBe("on");
+    expect(result.resource.servingEpoch).toBe(7);
     expect(fetch).toHaveBeenCalledWith(
       "https://api.test.layerv.ai/v1/resources",
       expect.objectContaining({
@@ -2029,6 +2033,32 @@ describe("QURLClient", () => {
         body: JSON.stringify({ type: "tunnel", slug: "prod-dashboard", find_or_create: true }),
       }),
     );
+  });
+
+  it("preflights SubtleCrypto before connector ensure can dispatch", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: connectorResourceData() } });
+    vi.stubGlobal("crypto", undefined);
+    try {
+      await expect(
+        createClient(fetch).ensureConnectorResource("prod-dashboard"),
+      ).rejects.toBeInstanceOf(RuntimeError);
+      expect(fetch).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("forwards a caller idempotency key on connector ensure", async () => {
+    const fetch = mockFetch({
+      status: 201,
+      body: { data: connectorResourceData(), meta: { found_existing: false } },
+    });
+
+    await createClient(fetch).ensureConnectorResource("prod-dashboard", {
+      idempotencyKey: "connector-ensure-job-1",
+    });
+
+    expect(callHeaders(fetch)["Idempotency-Key"]).toBe("connector-ensure-job-1");
   });
 
   it.each([
@@ -2067,6 +2097,20 @@ describe("QURLClient", () => {
       constructor: ConnectorResourceOutcomeUnknownError,
       cause: { constructor: ServerError, code: "service_unavailable", status: 503 },
     });
+  });
+
+  it("preserves an authoritative connector ensure 4xx as a known rejection", async () => {
+    const fetch = mockFetch({
+      status: 409,
+      body: { error: { status: 409, code: "slug_conflict", title: "Conflict" } },
+    });
+
+    const error = await createClient(fetch)
+      .ensureConnectorResource("prod-dashboard")
+      .catch((caught: unknown) => caught as QURLError);
+
+    expect(error).not.toBeInstanceOf(ConnectorResourceOutcomeUnknownError);
+    expect(error).toMatchObject({ status: 409, code: "slug_conflict" });
   });
 
   it("gets a connector resource by immutable resource ID from the detail envelope", async () => {
@@ -2162,6 +2206,11 @@ describe("QURLClient", () => {
     ["cross-wired admission ID", { knock_resource_id: CONNECTOR_ROUTING_ID }],
     ["wrong type", { type: "url" }],
     ["wrong slug", { slug: "other-dashboard" }],
+    ["invalid alias", { alias: "Prod Dashboard" }],
+    ["invalid CRID type", { crid: 42 }],
+    ["invalid desired state", { desired_state: "paused" }],
+    ["negative serving epoch", { serving_epoch: -1 }],
+    ["fractional serving epoch", { serving_epoch: 1.5 }],
   ])("fails closed when a connector resource response has %s", async (_name, overrides) => {
     const fetch = mockFetch({
       status: 200,
@@ -2196,7 +2245,15 @@ describe("QURLClient", () => {
 
     await expect(
       createClient(fetch).getConnectorResource(CONNECTOR_RESOURCE_ID),
-    ).rejects.toMatchObject({ code: "connector_resource_revoked" });
+    ).rejects.toMatchObject({ code: ERROR_CODE_CONNECTOR_RESOURCE_REVOKED });
+  });
+
+  it("rejects direct ConnectorResource construction outside validated client responses", () => {
+    const client = createClient(mockFetch({ status: 200 }));
+
+    expect(() => Reflect.construct(ConnectorResource, [client, connectorResourceData()])).toThrow(
+      ValidationError,
+    );
   });
 
   it.each(["", "ab", "UPPER", "-bad", "bad-"])(

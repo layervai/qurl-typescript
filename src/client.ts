@@ -4,6 +4,7 @@ import {
   ERROR_CODE_AMBIGUOUS_RESOURCE,
   ERROR_CODE_CLIENT_VALIDATION,
   ERROR_CODE_RESOURCE_NOT_FOUND,
+  ERROR_CODE_CONNECTOR_RESOURCE_REVOKED,
   ERROR_CODE_UNEXPECTED_RESPONSE,
   ERROR_CODE_UNKNOWN,
   NetworkError,
@@ -1034,8 +1035,11 @@ function classifyConnectorMutationFailure(error: unknown): never {
   if (!(error instanceof QURLError)) throw error;
   // An authoritative 4xx proves the mutation was rejected. Runtime failures
   // such as missing Web Crypto happen before fetch. Every other surfaced
-  // failure follows dispatch or a nominal success whose contract could not be
-  // consumed, so callers must reconcile before retrying.
+  // failure follows dispatch or a nominal success whose resource contract
+  // could not be consumed, so callers must reconcile before retrying. Ensure's
+  // exact 201 + valid resource but missing found_existing is handled after
+  // this classifier: the row proves the selected resource, while only its
+  // required metadata is unavailable (matching qurl-go).
   if (error instanceof RuntimeError || (error.status >= 400 && error.status < 500)) {
     throw error;
   }
@@ -1082,6 +1086,12 @@ async function isValidConnectorResourceId(value: string): Promise<boolean> {
   }
 }
 
+function requireConnectorSubtleCrypto(method: string): void {
+  if (!globalThis.crypto?.subtle) {
+    throw new RuntimeError(`${method}: requires the Web Crypto SubtleCrypto API`);
+  }
+}
+
 async function requireConnectorResourceId(resourceId: string, method: string): Promise<void> {
   if (!(await isValidConnectorResourceId(resourceId))) {
     throw clientValidationError(
@@ -1093,7 +1103,7 @@ async function requireConnectorResourceId(resourceId: string, method: string): P
 type ConnectorResourceExpectation = {
   slug?: string;
   resourceId?: string;
-  allowRevoked?: boolean;
+  revokedIsLifecycleError?: boolean;
 };
 
 function containsControlCharacter(value: string): boolean {
@@ -1163,14 +1173,14 @@ async function parseConnectorResource(
     throw unexpectedResponseError(`${method}: response has invalid alias`);
   }
   if (resource.status === "revoked") {
-    if (expectation.allowRevoked !== true) {
+    if (expectation.revokedIsLifecycleError !== true) {
       throw unexpectedResponseError(
         `${method}: active-only operation returned a revoked connector resource`,
       );
     }
     throw new QURLError({
       status: 0,
-      code: "connector_resource_revoked",
+      code: ERROR_CODE_CONNECTOR_RESOURCE_REVOKED,
       title: "Connector Resource Revoked",
       detail: `${method}: qURL Connector resource is revoked`,
     });
@@ -1181,7 +1191,22 @@ async function parseConnectorResource(
   if (resource.crid !== undefined && typeof resource.crid !== "string") {
     throw unexpectedResponseError(`${method}: response has invalid crid`);
   }
-  return new ConnectorResource(client, resource);
+  if (
+    resource.desired_state !== undefined &&
+    resource.desired_state !== "on" &&
+    resource.desired_state !== "off"
+  ) {
+    throw unexpectedResponseError(`${method}: response has invalid desired_state`);
+  }
+  if (
+    resource.serving_epoch !== undefined &&
+    (typeof resource.serving_epoch !== "number" ||
+      !Number.isSafeInteger(resource.serving_epoch) ||
+      resource.serving_epoch < 0)
+  ) {
+    throw unexpectedResponseError(`${method}: response has invalid serving_epoch`);
+  }
+  return new ConnectorResource(client, resource, CONNECTOR_RESOURCE_CONSTRUCTOR_TOKEN);
 }
 
 function requireValidTags(tags: string[] | null | undefined): void {
@@ -2359,16 +2384,27 @@ export class QURLClient {
   }
 
   /** Find or create the active qURL Connector resource for an immutable slug. */
-  async ensureConnectorResource(slug: string): Promise<EnsureConnectorResourceResult> {
+  async ensureConnectorResource(
+    slug: string,
+    requestOptions?: RequestOptions,
+  ): Promise<EnsureConnectorResourceResult> {
     requireConnectorSlug(slug, "ensureConnectorResource");
+    // Response validation imports the producer's P-256 resource key. Preflight
+    // before POST so a missing runtime capability cannot orphan a committed row.
+    requireConnectorSubtleCrypto("ensureConnectorResource");
     let response: ApiResponse<Resource>;
     let resource: ConnectorResource;
     try {
-      response = await this.rawRequest<Resource>("POST", "/v1/resources", {
-        type: "tunnel",
-        slug,
-        find_or_create: true,
-      });
+      response = await this.rawRequest<Resource>(
+        "POST",
+        "/v1/resources",
+        {
+          type: "tunnel",
+          slug,
+          find_or_create: true,
+        },
+        { requestOptions },
+      );
       if (response.__http_status !== 201) {
         throw unexpectedResponseError(
           `ensureConnectorResource: expected HTTP 201, got ${response.__http_status ?? "unknown"}`,
@@ -2404,7 +2440,7 @@ export class QURLClient {
     }
     return parseConnectorResource(this, data?.resource, "getConnectorResource", {
       resourceId,
-      allowRevoked: true,
+      revokedIsLifecycleError: true,
     });
   }
 
@@ -2444,7 +2480,12 @@ export class QURLClient {
     return parseConnectorResource(this, data[0], "getConnectorResourceBySlug", { slug });
   }
 
-  /** Revoke a qURL Connector resource by immutable public resource ID. */
+  /**
+   * Revoke a qURL Connector resource by immutable public resource ID.
+   *
+   * qurl-service does not apply Idempotency-Key replay to DELETE. After an
+   * outcome-unknown failure, reconcile by ID before issuing a deliberate retry.
+   */
   async deleteConnectorResource(resourceId: string): Promise<void> {
     await requireConnectorResourceId(resourceId, "deleteConnectorResource");
     try {
@@ -4255,6 +4296,8 @@ export interface EnsureConnectorResourceResult {
   foundExisting: boolean;
 }
 
+const CONNECTOR_RESOURCE_CONSTRUCTOR_TOKEN = Symbol("validated ConnectorResource");
+
 /**
  * A validated qURL Connector resource bound to the client that loaded it.
  *
@@ -4272,7 +4315,13 @@ export class ConnectorResource extends ProtectedResource {
   readonly desiredState?: string;
   readonly servingEpoch?: number;
 
-  constructor(client: QURLClient, details: Resource) {
+  /** @internal Instances are returned by QURLClient after wire validation. */
+  constructor(client: QURLClient, details: Resource, validationToken: symbol) {
+    if (validationToken !== CONNECTOR_RESOURCE_CONSTRUCTOR_TOKEN) {
+      throw clientValidationError(
+        "ConnectorResource cannot be constructed directly; load it through QURLClient",
+      );
+    }
     super(client, details.resource_id, details.target_url, details);
     this.resourceId = details.resource_id;
     this.crid = details.crid;

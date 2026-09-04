@@ -70,7 +70,10 @@ If qURL Connector protects the service, address its management-plane resource
 by immutable slug instead of calling `protectUrl`:
 
 ```typescript
-const { resource, foundExisting } = await client.ensureConnectorResource('prod-dashboard');
+const { resource, foundExisting } = await client.ensureConnectorResource(
+  'prod-dashboard',
+  { idempotencyKey: 'connector-bootstrap-prod-dashboard' },
+);
 const portal = await resource.createPortal({ validFor: '5m' });
 ```
 
@@ -81,13 +84,21 @@ derive or substitute one for another. Use `getConnectorResource(resourceId)`
 or `getConnectorResourceBySlug(slug)` for read-only lookup and
 `deleteConnectorResource(resourceId)` to revoke it. The older
 `connectorResource(slug)` spelling remains as a deprecated alias for the slug
-lookup.
+lookup, but this is a breaking change from its retired alias-based behavior.
+`ConnectorResource` instances cannot be constructed directly; the client
+returns them only after validating the complete response contract.
 
 `ensureConnectorResource` and `deleteConnectorResource` throw
 `ConnectorResourceOutcomeUnknownError` when a dispatched mutation may have
 committed but its response cannot prove the result. Reconcile by immutable slug
 or resource ID before deciding whether to retry; the original typed error is
 available as `cause`.
+For `ensureConnectorResource`, reuse the same `idempotencyKey` on any deliberate
+retry. qurl-service does not apply idempotency replay to DELETE, so after an
+outcome-unknown `deleteConnectorResource` call, reconcile by resource ID before
+issuing a deliberate retry. A valid exact-201 resource missing only
+`meta.found_existing` is known to have selected that row but still fails as an
+unwrapped `unexpected_response` because required ensure metadata is absent.
 
 If you persist the resource id, future calls do not need to recreate the
 handle (no API call is made until you mint):
@@ -184,7 +195,7 @@ console.log(`Access granted to ${access.target_url} for ${access.access_grant?.e
 | `protectUrl(targetUrl, opts?)` | Protect a private URL → portal-minting `ProtectedResource` handle |
 | `resource.createPortal(opts?)` / `createPortal(resourceOrId, opts?)` | Mint a short-lived portal link (`Portal`) |
 | `createPortalForUrl(targetUrl, opts?)` | Protect + mint in one API call → `{ portal, resource }` |
-| `ensureConnectorResource(slug)` | Find or create an active Connector resource by immutable slug |
+| `ensureConnectorResource(slug, requestOptions?)` | Find or create an active Connector resource by immutable slug |
 | `getConnectorResource(resourceId)` / `getConnectorResourceBySlug(slug)` | Load a validated Connector resource by immutable identity |
 | `deleteConnectorResource(resourceId)` | Revoke a Connector resource by immutable public resource ID |
 | `connectorResource(slug)` | Deprecated alias for `getConnectorResourceBySlug` |
