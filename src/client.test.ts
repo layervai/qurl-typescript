@@ -1,5 +1,5 @@
-import { describe, it, expect, vi } from "vitest";
-import { QURLClient } from "./client.js";
+import { describe, it, expect, expectTypeOf, vi } from "vitest";
+import { isApiKeyRequestScope, QURLClient } from "./client.js";
 import {
   AuthenticationError,
   AuthorizationError,
@@ -16,7 +16,14 @@ import {
   TimeoutError,
   ValidationError,
 } from "./errors.js";
-import type { BatchCreateInput, CreateInput, ExtendInput, MintInput } from "./types.js";
+import type {
+  ApiKeyRequestScope,
+  BatchCreateInput,
+  CreateInput,
+  CredentialClaim,
+  ExtendInput,
+  MintInput,
+} from "./types.js";
 import { mockFetch, mockFetches, createClient } from "./__tests__/test-helpers.js";
 
 const UUID_V7_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -1422,7 +1429,11 @@ describe("QURLClient", () => {
       events: ["qurl.created"],
       description: "primary",
     });
-    expect(apiKeyBody).toEqual({ name: "dashboard", scopes: ["qurl:read"] });
+    expect(apiKeyBody).toEqual({
+      kind: "api_key",
+      name: "dashboard",
+      scopes: ["qurl:read"],
+    });
     expect(customerBody).toEqual({ spending_cap_cents: 5000 });
   });
 
@@ -1439,8 +1450,8 @@ describe("QURLClient", () => {
       name: "dashboard",
       scopes: ["qurl:read"],
       expires_in: null as unknown as string,
-      purpose: null as unknown as "tunnel_bootstrap",
-      tunnel_slug: null as unknown as string,
+      target: null as unknown as string,
+      claims: null as unknown as CredentialClaim[],
     });
     await client.redeemAccessCode({
       code: "invite-code",
@@ -1459,7 +1470,7 @@ describe("QURLClient", () => {
     });
     expect(bodies).toEqual([
       { url: "https://example.com/hook", events: ["qurl.created"] },
-      { name: "dashboard", scopes: ["qurl:read"] },
+      { kind: "api_key", name: "dashboard", scopes: ["qurl:read"] },
       { code: "invite-code" },
       { resource_id: "r_x" },
     ]);
@@ -1760,6 +1771,435 @@ describe("QURLClient", () => {
     await expect(
       client.createApiKey({ name: "dashboard" } as Parameters<QURLClient["createApiKey"]>[0]),
     ).rejects.toBeInstanceOf(ValidationError);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("createApiKey passes through an explicit durable credential kind", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+
+    await createClient(fetch).createApiKey({
+      kind: "api_key",
+      name: "dashboard",
+      scopes: ["qurl:read"],
+    });
+
+    expect(JSON.parse(vi.mocked(fetch).mock.calls[0][1]?.body as string)).toEqual({
+      kind: "api_key",
+      name: "dashboard",
+      scopes: ["qurl:read"],
+    });
+  });
+
+  it("maps the durable credential kind returned by the service", async () => {
+    const fetch = mockFetch({
+      status: 201,
+      body: { data: { key_id: "key_obviously_fake", kind: "api_key" } },
+    });
+
+    await expect(
+      createClient(fetch).createApiKey({ name: "dashboard", scopes: ["qurl:read"] }),
+    ).resolves.toMatchObject({ kind: "api_key" });
+  });
+
+  it("does not mutate a durable-key input when defaulting its kind", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+    const input = { name: "dashboard", scopes: ["qurl:read"] as ApiKeyRequestScope[] };
+
+    await createClient(fetch).createApiKey(input);
+
+    expect(input).not.toHaveProperty("kind");
+  });
+
+  it("createApiKey mints a bound Connector enrollment token", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+    const client = createClient(fetch);
+
+    await client.createApiKey({
+      kind: "enrollment_token",
+      name: "prod-dashboard enrollment",
+      target: "connector",
+      claims: [{ type: "connector", id: "prod-dashboard" }],
+      expires_in: "2h",
+    });
+
+    const body = JSON.parse(vi.mocked(fetch).mock.calls[0][1]?.body as string) as Record<
+      string,
+      unknown
+    >;
+    expect(body).toEqual({
+      kind: "enrollment_token",
+      name: "prod-dashboard enrollment",
+      target: "connector",
+      claims: [{ type: "connector", id: "prod-dashboard" }],
+      expires_in: "2h",
+    });
+    // Enrollment-token scopes are server-assigned; sending them is a 400.
+    expect(body).not.toHaveProperty("scopes");
+  });
+
+  it("returns current enrollment credential response fields", async () => {
+    const fetch = mockFetch({
+      status: 201,
+      body: {
+        data: {
+          key_id: "key_obviously_fake",
+          kind: "enrollment_token",
+          target: "connector",
+          claims: [{ type: "connector", id: "prod-dashboard" }],
+          api_key: "qurl_test_obviously_fake_enrollment_token",
+        },
+      },
+    });
+
+    const result = await createClient(fetch).createApiKey({
+      kind: "enrollment_token",
+      name: "prod-dashboard enrollment",
+      target: "connector",
+      claims: [{ type: "connector", id: "prod-dashboard" }],
+    });
+
+    expect(result).toMatchObject({
+      kind: "enrollment_token",
+      target: "connector",
+      claims: [{ type: "connector", id: "prod-dashboard" }],
+    });
+  });
+
+  it("createApiKey lets the server derive target from claims", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+    const client = createClient(fetch);
+
+    await client.createApiKey({
+      kind: "enrollment_token",
+      name: "prod-dashboard enrollment",
+      claims: [{ type: "connector", id: "prod-dashboard" }],
+    });
+
+    const body = JSON.parse(vi.mocked(fetch).mock.calls[0][1]?.body as string) as Record<
+      string,
+      unknown
+    >;
+    expect(body).toEqual({
+      kind: "enrollment_token",
+      name: "prod-dashboard enrollment",
+      claims: [{ type: "connector", id: "prod-dashboard" }],
+    });
+    expect(body).not.toHaveProperty("scopes");
+    expect(body).not.toHaveProperty("target");
+  });
+
+  it("createApiKey mints an unbound agent enrollment token", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+
+    await createClient(fetch).createApiKey({
+      kind: "enrollment_token",
+      name: "unbound agent enrollment",
+    });
+
+    expect(JSON.parse(vi.mocked(fetch).mock.calls[0][1]?.body as string)).toEqual({
+      kind: "enrollment_token",
+      name: "unbound agent enrollment",
+    });
+  });
+
+  it("createApiKey accepts an explicit unbound agent target", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+
+    await createClient(fetch).createApiKey({
+      kind: "enrollment_token",
+      name: "unbound agent enrollment",
+      target: "agent",
+    });
+
+    expect(JSON.parse(vi.mocked(fetch).mock.calls[0][1]?.body as string)).toEqual({
+      kind: "enrollment_token",
+      name: "unbound agent enrollment",
+      target: "agent",
+    });
+  });
+
+  it("exports a request-scope guard for narrowing forward-compatible responses", () => {
+    const responseScope: string = "qurl:read";
+
+    expect(isApiKeyRequestScope(responseScope)).toBe(true);
+    expect(isApiKeyRequestScope("future:scope")).toBe(false);
+    if (isApiKeyRequestScope(responseScope)) {
+      expectTypeOf(responseScope).toEqualTypeOf<ApiKeyRequestScope>();
+    }
+  });
+
+  it("createApiKey accepts an explicit empty claim list for an unbound agent token", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+
+    await createClient(fetch).createApiKey({
+      kind: "enrollment_token",
+      name: "unbound agent enrollment",
+      claims: [],
+    });
+
+    expect(JSON.parse(vi.mocked(fetch).mock.calls[0][1]?.body as string)).toMatchObject({
+      claims: [],
+    });
+  });
+
+  it.each(["abc", "a".repeat(64)])(
+    "createApiKey accepts the connector claim ID boundary %s",
+    async (id) => {
+      const fetch = mockFetch({ status: 201, body: { data: {} } });
+
+      await createClient(fetch).createApiKey({
+        kind: "enrollment_token",
+        name: "bound agent enrollment",
+        target: "agent",
+        claims: [{ type: "connector", id }],
+      });
+
+      expect(fetch).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each(["24h", "86400s", "1d"])(
+    "createApiKey accepts the 24-hour boundary as %s",
+    async (expiresIn) => {
+      const fetch = mockFetch({ status: 201, body: { data: {} } });
+
+      await createClient(fetch).createApiKey({
+        kind: "enrollment_token",
+        name: "boundary enrollment",
+        expires_in: expiresIn,
+      });
+
+      expect(JSON.parse(vi.mocked(fetch).mock.calls[0][1]?.body as string)).toMatchObject({
+        expires_in: expiresIn,
+      });
+    },
+  );
+
+  it("createApiKey rejects target/claims on a durable api_key client-side", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+    const client = createClient(fetch);
+
+    for (const field of ["target", "claims"] as const) {
+      const error = await client
+        .createApiKey({
+          name: "dashboard",
+          scopes: ["qurl:read"],
+          [field]: field === "target" ? "connector" : [{ type: "connector", id: "prod-dashboard" }],
+        })
+        .catch((e: unknown) => e as ValidationError);
+
+      expect(error).toBeInstanceOf(ValidationError);
+      expect(error.detail).toContain(`${field} is only accepted for kind 'enrollment_token'`);
+    }
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("createApiKey rejects scopes on an enrollment token client-side", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+    const client = createClient(fetch);
+
+    const error = await client
+      .createApiKey({
+        kind: "enrollment_token",
+        name: "bound enrollment",
+        target: "agent",
+        scopes: ["qurl:agent"],
+      })
+      .catch((e: unknown) => e as ValidationError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error.detail).toContain("not accepted for kind 'enrollment_token'");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["an unknown kind", { kind: "future", name: "bad", scopes: ["qurl:read"] }, "kind must be"],
+    [
+      "the system-only device kind",
+      { kind: "device", name: "bad", scopes: ["qurl:read"] },
+      "kind must be",
+    ],
+    [
+      "expires_in on a durable key",
+      { kind: "api_key", name: "bad", scopes: ["qurl:read"], expires_in: "1h" },
+      "expires_in is only accepted",
+    ],
+    [
+      "an unknown durable scope",
+      { kind: "api_key", name: "bad", scopes: ["admin"] },
+      "unsupported permission",
+    ],
+    [
+      "an unknown target",
+      { kind: "enrollment_token", name: "bad", target: "future" },
+      "target must be",
+    ],
+    [
+      "a non-string target",
+      { kind: "enrollment_token", name: "bad", target: 42 },
+      "target must be",
+    ],
+    [
+      "a connector target without a claim",
+      { kind: "enrollment_token", name: "bad", target: "connector" },
+      "requires exactly one claim",
+    ],
+    [
+      "a connector target with an empty claim list",
+      { kind: "enrollment_token", name: "bad", target: "connector", claims: [] },
+      "requires exactly one claim",
+    ],
+    [
+      "more than one claim",
+      {
+        kind: "enrollment_token",
+        name: "bad",
+        claims: [
+          { type: "connector", id: "one" },
+          { type: "connector", id: "two" },
+        ],
+      },
+      "at most one claim",
+    ],
+    [
+      "more than one claim with an explicit connector target",
+      {
+        kind: "enrollment_token",
+        name: "bad",
+        target: "connector",
+        claims: [
+          { type: "connector", id: "one" },
+          { type: "connector", id: "two" },
+        ],
+      },
+      "at most one claim",
+    ],
+    [
+      "a non-array claims value",
+      { kind: "enrollment_token", name: "bad", claims: { type: "connector", id: "abc" } },
+      "claims must be an array",
+    ],
+    [
+      "a non-object claim",
+      { kind: "enrollment_token", name: "bad", claims: ["abc"] },
+      "claims[0] must be an object",
+    ],
+    [
+      "an invalid claim",
+      {
+        kind: "enrollment_token",
+        name: "bad",
+        claims: [{ type: "connector", id: "Bad ID" }],
+      },
+      "not a valid connector slug",
+    ],
+    [
+      "a two-character connector slug",
+      {
+        kind: "enrollment_token",
+        name: "bad",
+        claims: [{ type: "connector", id: "ab" }],
+      },
+      "not a valid connector slug",
+    ],
+    [
+      "a 65-character connector slug",
+      {
+        kind: "enrollment_token",
+        name: "bad",
+        claims: [{ type: "connector", id: "a".repeat(65) }],
+      },
+      "not a valid connector slug",
+    ],
+    [
+      "an unknown claim type",
+      {
+        kind: "enrollment_token",
+        name: "bad",
+        claims: [{ type: "agent", id: "prod-dashboard" }],
+      },
+      "claims[0].type must be 'connector'",
+    ],
+    [
+      "an unknown claim field",
+      {
+        kind: "enrollment_token",
+        name: "bad",
+        claims: [{ type: "connector", id: "prod-dashboard", extra: true }],
+      },
+      'claims[0]: unknown field "extra"',
+    ],
+    [
+      "a zero lifetime",
+      { kind: "enrollment_token", name: "bad", expires_in: "0s" },
+      "greater than zero and at most 24h",
+    ],
+    [
+      "a lifetime over 24h",
+      { kind: "enrollment_token", name: "bad", expires_in: "86401s" },
+      "greater than zero and at most 24h",
+    ],
+    [
+      "a one-week lifetime",
+      { kind: "enrollment_token", name: "bad", expires_in: "1w" },
+      "greater than zero and at most 24h",
+    ],
+    [
+      "a non-string lifetime",
+      { kind: "enrollment_token", name: "bad", expires_in: 3600 },
+      "expires_in must be a duration string",
+    ],
+    [
+      "a malformed lifetime",
+      { kind: "enrollment_token", name: "bad", expires_in: "hour" },
+      "must match",
+    ],
+  ])("createApiKey rejects %s before fetch", async (_name, input, expectedDetail) => {
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+
+    const error = await createClient(fetch)
+      .createApiKey(input as Parameters<QURLClient["createApiKey"]>[0])
+      .catch((caught: unknown) => caught as ValidationError);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error.detail).toContain(expectedDetail);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("updateApiKey rejects scopes outside the current service request enum", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+
+    await expect(
+      createClient(fetch).updateApiKey("key_abc123def456", { scopes: ["future:scope"] }),
+    ).rejects.toMatchObject({
+      code: ERROR_CODE_CLIENT_VALIDATION,
+      detail: expect.stringContaining("unsupported permission"),
+    });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("updateApiKey accepts a scope in the current service request enum", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+
+    await createClient(fetch).updateApiKey("key_abc123def456", { scopes: ["qurl:agent"] });
+
+    expect(JSON.parse(vi.mocked(fetch).mock.calls[0][1]?.body as string)).toEqual({
+      scopes: ["qurl:agent"],
+    });
+  });
+
+  it("createApiKey rejects the retired key_type/tunnel_slug/purpose fields", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+    const client = createClient(fetch);
+
+    for (const retired of ["key_type", "tunnel_slug", "purpose"]) {
+      await expect(
+        client.createApiKey({
+          name: "dashboard",
+          scopes: ["qurl:read"],
+          [retired]: "x",
+        } as Parameters<QURLClient["createApiKey"]>[0]),
+      ).rejects.toBeInstanceOf(ValidationError);
+    }
     expect(fetch).not.toHaveBeenCalled();
   });
 

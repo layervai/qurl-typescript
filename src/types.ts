@@ -833,33 +833,87 @@ export interface WebhookPayload {
   data?: Record<string, unknown>;
 }
 
-export type ApiKeyScope = OpenString<"qurl:read" | "qurl:write" | "qurl:resolve" | "qurl:agent">;
+/** Closed scope vocabulary accepted by current create/update request schemas. */
+export type ApiKeyRequestScope = "qurl:read" | "qurl:write" | "qurl:resolve" | "qurl:agent";
 
-export interface CreateApiKeyInput {
-  name: string;
-  scopes: ApiKeyScope[];
-  expires_in?: string;
-  purpose?: "tunnel_bootstrap";
-  tunnel_slug?: string;
+export type ApiKeyScope = OpenString<ApiKeyRequestScope>;
+
+/** Which credential `createApiKey` mints. `device` is system-minted only. */
+export type CredentialKind = OpenString<"api_key" | "enrollment_token" | "device">;
+
+/** Closed target vocabulary accepted by the current enrollment-token request schema. */
+export type CredentialTargetInput = "agent" | "connector";
+
+/** What a `kind: "enrollment_token"` credential enrolls. */
+export type CredentialTarget = OpenString<CredentialTargetInput>;
+
+/** Closed resource claim binding an enrollment token to one resource. */
+export interface CredentialClaimInput {
+  type: "connector";
+  /** Immutable 3-64 character connector slug. */
+  id: string;
 }
+
+/** A potentially partial resource claim returned for a credential. */
+export interface CredentialClaim {
+  /** `connector` is the only claim type today; responses remain forward-compatible. */
+  type?: OpenString<CredentialClaimInput["type"]>;
+  id?: string;
+}
+
+interface CreateCredentialBase {
+  name: string;
+}
+
+/** Input for a durable, caller-scoped account API key. */
+export interface CreateDurableApiKeyInput extends CreateCredentialBase {
+  /** Omit for backward compatibility; the SDK sends `api_key`. */
+  kind?: "api_key";
+  scopes: ApiKeyRequestScope[];
+  target?: never;
+  claims?: never;
+  expires_in?: never;
+}
+
+/** Input for a one-shot agent or Connector enrollment token. */
+export interface CreateEnrollmentTokenInput extends CreateCredentialBase {
+  kind: "enrollment_token";
+  /**
+   * Omit for enrollment tokens: the server derives scopes from the target.
+   */
+  scopes?: never;
+  /** Derived from `claims` when omitted. */
+  target?: CredentialTargetInput;
+  /** At most one entry is supported today. */
+  claims?: CredentialClaimInput[];
+  /** Defaults to 24h and cannot exceed 24h. */
+  expires_in?: string;
+}
+
+export type CreateApiKeyInput = CreateDurableApiKeyInput | CreateEnrollmentTokenInput;
 
 export interface UpdateApiKeyInput {
   name?: string;
-  scopes?: ApiKeyScope[];
+  scopes?: ApiKeyRequestScope[];
 }
 
 export interface ApiKey {
   key_id?: string;
   key_prefix?: string;
+  /** Unknown future kinds may appear; clients must tolerate them. */
+  kind?: CredentialKind;
   name?: string;
+  /** Server-assigned for enrollment tokens and device credentials. */
   scopes?: ApiKeyScope[];
   status?: "active" | "revoked" | (string & {});
   created_at?: string;
   updated_at?: string;
   last_used_at?: string;
   expires_at?: string;
-  purpose?: "tunnel_bootstrap" | (string & {});
-  tunnel_slug?: string;
+  /** Present only on enrollment tokens. */
+  target?: CredentialTarget;
+  /** Present only on bound enrollment tokens. */
+  claims?: CredentialClaim[];
 }
 
 export interface CreateApiKeyOutput extends ApiKey {

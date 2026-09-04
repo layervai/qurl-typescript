@@ -21,6 +21,7 @@ import type {
   AIAgentPolicy,
   ApiKey,
   ApiKeyListOutput,
+  ApiKeyRequestScope,
   BillingInvoiceListOutput,
   BatchCreateInput,
   BatchCreateOutput,
@@ -32,12 +33,16 @@ import type {
   CreateApiKeyInput,
   CreateApiKeyOutput,
   CreateBillingCheckoutInput,
+  CreateDurableApiKeyInput,
+  CreateEnrollmentTokenInput,
   CreateInput,
   CreateOutput,
   CreatePortalOptions,
   CreateQurlForResourceInput,
   CreateResourceInput,
   CreateWebhookInput,
+  CredentialClaimInput,
+  CredentialTargetInput,
   Customer,
   CheckoutSession,
   Domain,
@@ -385,15 +390,19 @@ assertExhaustive<
 >(true);
 
 const CREATE_API_KEY_FIELD_KEYS = [
+  "kind",
   "name",
   "scopes",
+  "target",
+  "claims",
   "expires_in",
-  "purpose",
-  "tunnel_slug",
-] as const satisfies readonly (keyof CreateApiKeyInput)[];
+] as const satisfies readonly (keyof CreateDurableApiKeyInput | keyof CreateEnrollmentTokenInput)[];
 
 assertExhaustive<
-  Exclude<keyof CreateApiKeyInput, (typeof CREATE_API_KEY_FIELD_KEYS)[number]> extends never
+  Exclude<
+    keyof CreateDurableApiKeyInput | keyof CreateEnrollmentTokenInput,
+    (typeof CREATE_API_KEY_FIELD_KEYS)[number]
+  > extends never
     ? true
     : never
 >(true);
@@ -655,6 +664,58 @@ const MAX_DESCRIPTION = 500;
 const MAX_CUSTOM_DOMAIN = 253;
 const MAX_MAX_SESSIONS = 1000;
 const MAX_API_KEY_NAME = 100;
+const API_KEY_REQUEST_SCOPE_VALUES = [
+  "qurl:read",
+  "qurl:write",
+  "qurl:resolve",
+  "qurl:agent",
+] as const satisfies readonly ApiKeyRequestScope[];
+assertExhaustive<
+  Exclude<ApiKeyRequestScope, (typeof API_KEY_REQUEST_SCOPE_VALUES)[number]> extends never
+    ? true
+    : never
+>(true);
+const API_KEY_REQUEST_SCOPES = new Set<string>(API_KEY_REQUEST_SCOPE_VALUES);
+
+/** Narrow a response scope before reusing it in a create/update request. */
+export function isApiKeyRequestScope(scope: string): scope is ApiKeyRequestScope {
+  return API_KEY_REQUEST_SCOPES.has(scope);
+}
+
+const CREDENTIAL_TARGET_VALUES = [
+  "agent",
+  "connector",
+] as const satisfies readonly CredentialTargetInput[];
+assertExhaustive<
+  Exclude<CredentialTargetInput, (typeof CREDENTIAL_TARGET_VALUES)[number]> extends never
+    ? true
+    : never
+>(true);
+const CREDENTIAL_TARGETS = new Set<string>(CREDENTIAL_TARGET_VALUES);
+
+const CREDENTIAL_CLAIM_TYPE_VALUES = [
+  "connector",
+] as const satisfies readonly CredentialClaimInput["type"][];
+assertExhaustive<
+  Exclude<CredentialClaimInput["type"], (typeof CREDENTIAL_CLAIM_TYPE_VALUES)[number]> extends never
+    ? true
+    : never
+>(true);
+const CREDENTIAL_CLAIM_TYPES = new Set<string>(CREDENTIAL_CLAIM_TYPE_VALUES);
+// Mirrors CredentialClaim.id in the service OpenAPI and domain.ValidateSlug.
+const CREDENTIAL_CLAIM_ID_PATTERN = /^[a-z][a-z0-9-]{1,62}[a-z0-9]$/;
+// Mirrors CreateApiKeyRequest.expires_in in the service OpenAPI. Composite
+// durations are deliberately invalid on this endpoint.
+const CREDENTIAL_DURATION_PATTERN = /^([0-9]+)([smhdw])$/;
+type CredentialDurationUnit = "s" | "m" | "h" | "d" | "w";
+const CREDENTIAL_DURATION_MULTIPLIERS: Readonly<Record<CredentialDurationUnit, bigint>> = {
+  s: 1n,
+  m: 60n,
+  h: 3600n,
+  d: 86400n,
+  w: 604800n,
+};
+const MAX_ENROLLMENT_TOKEN_TTL_SECONDS = 86400n;
 const MAX_ALIAS = 64;
 const MAX_SLUG = 64;
 const MAX_TARGET_PATH = 2048;
@@ -1265,6 +1326,66 @@ function validateApiKeyWriteFields(
   if (requiredFields.scopes || input.scopes !== undefined) {
     requireNonEmptyArrayField(input, "scopes", method);
     requireStringArrayElements(input.scopes, "scopes", method);
+    if ((input.scopes as string[]).some((scope) => !API_KEY_REQUEST_SCOPES.has(scope))) {
+      throw clientValidationError(`${method}: scopes contains an unsupported permission`);
+    }
+  }
+}
+
+function validateEnrollmentTokenFields(input: Record<string, unknown>, method: string): void {
+  if (
+    input.target !== undefined &&
+    (typeof input.target !== "string" || !CREDENTIAL_TARGETS.has(input.target))
+  ) {
+    throw clientValidationError(`${method}: target must be 'agent' or 'connector'`);
+  }
+
+  let claimCount = 0;
+  if (input.claims !== undefined) {
+    if (!Array.isArray(input.claims)) {
+      throw clientValidationError(`${method}: claims must be an array`);
+    }
+    if (input.claims.length > 1) {
+      throw clientValidationError(`${method}: claims must contain at most one claim`);
+    }
+    claimCount = input.claims.length;
+    for (const [index, claim] of input.claims.entries()) {
+      if (!claim || typeof claim !== "object" || Array.isArray(claim)) {
+        throw clientValidationError(`${method}: claims[${index}] must be an object`);
+      }
+      requireNoUnknownFields(
+        claim as Record<string, unknown>,
+        ["type", "id"],
+        `${method}: claims[${index}]`,
+      );
+      const record = claim as Record<string, unknown>;
+      if (typeof record.type !== "string" || !CREDENTIAL_CLAIM_TYPES.has(record.type)) {
+        throw clientValidationError(`${method}: claims[${index}].type must be 'connector'`);
+      }
+      if (typeof record.id !== "string" || !CREDENTIAL_CLAIM_ID_PATTERN.test(record.id)) {
+        throw clientValidationError(`${method}: claims[${index}].id is not a valid connector slug`);
+      }
+    }
+  }
+  if (input.target === "connector" && claimCount !== 1) {
+    throw clientValidationError(`${method}: target 'connector' requires exactly one claim`);
+  }
+
+  if (input.expires_in !== undefined) {
+    if (typeof input.expires_in !== "string") {
+      throw clientValidationError(`${method}: expires_in must be a duration string`);
+    }
+    const match = CREDENTIAL_DURATION_PATTERN.exec(input.expires_in);
+    if (!match) {
+      throw clientValidationError(`${method}: expires_in must match <integer><s|m|h|d|w>`);
+    }
+    const seconds =
+      BigInt(match[1]) * CREDENTIAL_DURATION_MULTIPLIERS[match[2] as CredentialDurationUnit];
+    if (seconds <= 0n || seconds > MAX_ENROLLMENT_TOKEN_TTL_SECONDS) {
+      throw clientValidationError(
+        `${method}: expires_in must be greater than zero and at most 24h`,
+      );
+    }
   }
 }
 
@@ -3204,10 +3325,37 @@ export class QURLClient {
       input as Record<string, unknown>,
       CREATE_API_KEY_FIELD_KEYS,
     );
+    // `kind` is required by the server and has no default there. Filling it
+    // in keeps the common durable-key call site unchanged.
+    normalizedRecord.kind ??= "api_key";
+    if (normalizedRecord.kind !== "api_key" && normalizedRecord.kind !== "enrollment_token") {
+      throw clientValidationError("createApiKey: kind must be 'api_key' or 'enrollment_token'");
+    }
+    // `scopes` and `target`/`claims` are mutually exclusive by kind, and the
+    // server rejects either mismatch with 400 invalid_input. Fail both
+    // directions locally rather than paying a round trip.
+    const isEnrollmentToken = normalizedRecord.kind === "enrollment_token";
+    if (isEnrollmentToken) {
+      if (normalizedRecord.scopes !== undefined) {
+        throw clientValidationError(
+          "createApiKey: scopes is not accepted for kind 'enrollment_token'; " +
+            "the server assigns them from target",
+        );
+      }
+      validateEnrollmentTokenFields(normalizedRecord, "createApiKey");
+    } else {
+      for (const field of ["target", "claims", "expires_in"] as const) {
+        if (normalizedRecord[field] !== undefined) {
+          throw clientValidationError(
+            `createApiKey: ${field} is only accepted for kind 'enrollment_token'`,
+          );
+        }
+      }
+    }
     const normalized = normalizedRecord as unknown as CreateApiKeyInput;
     validateApiKeyWriteFields(normalizedRecord, "createApiKey", {
       name: true,
-      scopes: true,
+      scopes: !isEnrollmentToken,
     });
     return this.request<CreateApiKeyOutput>("POST", "/v1/api-keys", normalized, options);
   }

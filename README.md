@@ -108,6 +108,30 @@ const portal = await resource.createPortal({
 qURL Connector assignment and registration use native UDP through
 `qurl-connector` and `qurl-go`. This TypeScript package handles browser and
 management-plane qURL APIs; it does not expose an HTTP enrollment API.
+It can mint the one-shot credential consumed by that native enrollment flow:
+
+```typescript
+const enrollment = await client.createApiKey({
+  kind: 'enrollment_token',
+  name: 'prod-dashboard enrollment',
+  target: 'connector',
+  claims: [{ type: 'connector', id: 'prod-dashboard' }],
+  expires_in: '15m',
+});
+if (!enrollment.api_key) throw new Error('Enrollment response omitted its one-time token');
+await deliverEnrollmentTokenSecurely(enrollment.api_key);
+```
+
+Durable `api_key` credentials require explicit scopes and do not accept
+`expires_in`; enrollment tokens derive their scopes from `target`/`claims` and
+expire within 24 hours. A connector claim's `id` is its immutable connector
+slug. Request enums are validated against the current service contract;
+response types remain additive for forward-compatible reads, and new request
+enum values require a matching SDK release. Use
+`isApiKeyRequestScope(scope)` to narrow a response scope before writing it back
+through `createApiKey` or `updateApiKey`.
+This credential surface requires the kind-first qurl-service contract at or
+after commit `047cf31e1cdf545e3060e0f9294d738a19fb997b`.
 
 ## Opening Portals
 
