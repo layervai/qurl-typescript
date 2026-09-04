@@ -76,6 +76,10 @@ export interface ShareLinkJSON {
  * Instances are frozen during construction and are not designed for subclassing.
  */
 export class ShareLink {
+  /**
+   * The one-time secret share link. This property is deliberately
+   * non-enumerable: read it directly instead of spreading or cloning the object.
+   */
   readonly link: string;
   /** Token ID when supplied by the service; older deployments may omit it. */
   readonly qurlId?: string;
@@ -106,12 +110,14 @@ export class ShareLink {
 
   /** Serialize safe metadata while redacting the one-time-returned credential. */
   toJSON(): ShareLinkJSON {
+    const expiresAt = this.expiresAt;
     return {
       link: "[redacted]",
       qurlId: this.qurlId,
       crid: this.crid,
       type: this.type,
-      expiresAt: this.expiresAt?.toISOString(),
+      expiresAt:
+        expiresAt && Number.isFinite(expiresAt.getTime()) ? expiresAt.toISOString() : undefined,
       expiresInSeconds: this.expiresInSeconds,
       singleUse: this.singleUse,
     };

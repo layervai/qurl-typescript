@@ -166,6 +166,19 @@ describe("shareResource", () => {
     expect(share.expiresAt?.toISOString()).toBe("2026-03-09T15:35:00.000Z");
   });
 
+  it("keeps redacted serialization safe after the exposed expiry date is invalidated", () => {
+    const share = new ShareLink({
+      link: "https://qurl.link/#qv2t1.example",
+      expiresAt: new Date("2026-03-09T15:35:00Z"),
+    });
+
+    share.expiresAt?.setTime(Number.NaN);
+
+    expect(share.toJSON()).toMatchObject({ link: "[redacted]", expiresAt: undefined });
+    expect(JSON.stringify(share)).not.toContain(share.link);
+    expect(inspect(share)).not.toContain(share.link);
+  });
+
   it("sends a positive whole-second TTL and preserves a caller idempotency key", async () => {
     const fetch = mockFetch({ status: 200, body: shareResponse() });
 
