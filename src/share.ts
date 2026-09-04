@@ -41,11 +41,13 @@ export interface ShareLinkInit {
 /** A freshly minted, one-time-returned access link for an existing resource. */
 export class ShareLink {
   readonly link: string;
+  /** Token ID when supplied by the service; older deployments may omit it. */
   readonly qurlId?: string;
   readonly crid?: string;
   readonly type?: string;
   readonly expiresAt?: Date;
   readonly expiresInSeconds?: number;
+  /** Whether the link is single-use; undefined when an older service omits the field. */
   readonly singleUse?: boolean;
 
   constructor(init: ShareLinkInit) {
@@ -59,8 +61,9 @@ export class ShareLink {
   }
 
   /**
-   * Tie this response to a DER SubjectPublicKeyInfo already held by the caller.
-   * Resolves only when the key re-derives the held CRID.
+   * Verify that this response's CRID was derived from a DER SubjectPublicKeyInfo
+   * already trusted by the caller. This binds the response CRID to that key; it
+   * does not independently prove that the secret link fragment belongs to it.
    */
   async verifyCrid(derSpki: ArrayBuffer | ArrayBufferView): Promise<void> {
     if (!this.crid) {

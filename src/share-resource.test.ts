@@ -13,7 +13,7 @@ import { QURLError, RuntimeError, ServerError, ValidationError } from "./errors.
 import { createClient, mockFetch } from "./__tests__/test-helpers.js";
 
 type CRIDVectors = {
-  producer_cases: Array<{ der_spki_b64url: string; expected_crid: string }>;
+  producer_cases: Array<{ name: string; der_spki_b64url: string; expected_crid: string }>;
   consumer_value_cases: Array<{
     name: string;
     value: string;
@@ -89,6 +89,15 @@ describe("shareResource", () => {
     const init = vi.mocked(fetch).mock.calls[0][1] as RequestInit;
     expect(init.body).toBe('{"ttl_seconds":90}');
     expect((init.headers as Record<string, string>)["Idempotency-Key"]).toBe("share-job-1");
+  });
+
+  it.each(["", "   "])("rejects an empty resource ID before the request", async (resourceId) => {
+    const fetch = mockFetch({ status: 200, body: shareResponse() });
+
+    await expect(createClient(fetch).shareResource(resourceId)).rejects.toBeInstanceOf(
+      ValidationError,
+    );
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -170,6 +179,36 @@ describe("shareResource", () => {
     await expect(createClient(fetch).shareResource("resource-id")).rejects.toMatchObject({
       code: "unexpected_response",
     });
+  });
+
+  it("fails closed when expires_in_seconds is negative", async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: shareResponse({ expires_in_seconds: -1 }),
+    });
+
+    await expect(createClient(fetch).shareResource("resource-id")).rejects.toMatchObject({
+      code: "unexpected_response",
+    });
+  });
+
+  it("trims transport whitespace from the returned secret link", async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: shareResponse({ qurl: "  https://qurl.link/#qv2t1.example  " }),
+    });
+
+    await expect(createClient(fetch).shareResource("resource-id")).resolves.toMatchObject({
+      link: "https://qurl.link/#qv2t1.example",
+    });
+  });
+
+  it("can verify a freshly shared response against a trusted resource key", async () => {
+    const fetch = mockFetch({ status: 200, body: shareResponse() });
+
+    const share = await createClient(fetch).shareResource("resource-id");
+
+    await expect(share.verifyCrid(b64url(matching.der_spki_b64url))).resolves.toBeUndefined();
   });
 
   it("preserves distinct 503 codes as typed server errors", async () => {

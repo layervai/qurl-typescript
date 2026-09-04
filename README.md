@@ -116,7 +116,7 @@ const share = await client.shareResource(resourceId, { ttlSeconds: 300 });
 console.log(share.link); // One-time-returned secret; capture it now
 console.log(share.qurlId); // Keep this to revoke only this link later
 
-// Optional: bind the response to DER SPKI key bytes you already trust.
+// Optional: verify the response CRID against DER SPKI bytes you already trust.
 await share.verifyCrid(resourcePublicKeyDer);
 ```
 
@@ -125,6 +125,10 @@ open that URL directly in the qURL browser flow; native programmatic opening
 uses qurl-go. The TypeScript client's `enterPortal` method is the legacy
 credentialed HTTP resolver for `at_` links and deliberately refuses to send a
 qv2 credential fragment to `/v1/resolve`.
+
+`verifyCrid` verifies that the response CRID derives from the trusted resource
+key; it does not independently bind the secret link fragment to that key.
+`qurlId` and `singleUse` are undefined when omitted by older service responses.
 
 ## Opening Portals
 

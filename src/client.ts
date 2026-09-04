@@ -2778,7 +2778,9 @@ export class QURLClient {
     if (
       wire.expires_in_seconds !== undefined &&
       wire.expires_in_seconds !== null &&
-      (typeof wire.expires_in_seconds !== "number" || !Number.isInteger(wire.expires_in_seconds))
+      (typeof wire.expires_in_seconds !== "number" ||
+        !Number.isInteger(wire.expires_in_seconds) ||
+        wire.expires_in_seconds < 0)
     ) {
       throw unexpectedResponseError("shareResource: response has invalid expires_in_seconds");
     }
@@ -2796,7 +2798,7 @@ export class QURLClient {
       throw unexpectedResponseError("shareResource: response has invalid expires_at");
     }
     return new ShareLink({
-      link: data.qurl,
+      link: data.qurl.trim(),
       qurlId: typeof wire.qurl_id === "string" && wire.qurl_id !== "" ? wire.qurl_id : undefined,
       crid: typeof wire.crid === "string" && wire.crid !== "" ? wire.crid : undefined,
       type: typeof wire.type === "string" && wire.type !== "" ? wire.type : undefined,
