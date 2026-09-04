@@ -684,7 +684,7 @@ function httpStatusContractError(status: number, detail: string): ValidationErro
  * UTF-8-safe snippet. Error messages must stay bounded even when a proxy or
  * compromised upstream returns very large structured problem fields.
  */
-function boundedErrorSnippet(value: unknown): string | undefined {
+function normalizedErrorSnippet(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const normalized = value
     // Strip control characters plus bidi override/isolate controls that can
@@ -693,7 +693,12 @@ function boundedErrorSnippet(value: unknown): string | undefined {
     .replace(/[\p{Cc}\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/gu, " ")
     .trim()
     .replace(/\s+/g, " ");
-  if (normalized === "") return undefined;
+  return normalized === "" ? undefined : normalized;
+}
+
+function boundedErrorSnippet(value: unknown): string | undefined {
+  const normalized = normalizedErrorSnippet(value);
+  if (normalized === undefined) return undefined;
   const encoded = TEXT_ENCODER.encode(normalized);
   if (encoded.byteLength <= MAX_ERROR_SNIPPET_BYTES) return normalized;
 
@@ -702,6 +707,18 @@ function boundedErrorSnippet(value: unknown): string | undefined {
   // Do not split a multi-byte UTF-8 sequence at the cap.
   while (end > 0 && (encoded[end] & 0xc0) === 0x80) end--;
   return `${TEXT_DECODER.decode(encoded.subarray(0, end))}${ellipsis}`;
+}
+
+/** Keep server error codes useful as exact machine-readable discriminants. */
+function boundedErrorCode(value: unknown): string | undefined {
+  const normalized = normalizedErrorSnippet(value);
+  if (
+    normalized === undefined ||
+    TEXT_ENCODER.encode(normalized).byteLength > MAX_ERROR_SNIPPET_BYTES
+  ) {
+    return undefined;
+  }
+  return normalized;
 }
 
 /** Bound the structured per-field diagnostics exposed on ValidationError. */
@@ -725,9 +742,9 @@ function boundedInvalidFields(value: unknown): Record<string, string> | undefine
 /** Bound server-controlled object keys before forwarding them to a debug sink. */
 function boundedObjectKeys(value: object): string[] {
   return Object.keys(value)
+    .slice(0, MAX_INVALID_FIELD_ENTRIES)
     .map((key) => boundedErrorSnippet(key))
-    .filter((key): key is string => key !== undefined)
-    .slice(0, MAX_INVALID_FIELD_ENTRIES);
+    .filter((key): key is string => key !== undefined);
 }
 
 async function cancelResponseBody(body: Response["body"]): Promise<void> {
@@ -767,7 +784,7 @@ async function readBoundedResponseBody(response: Response): Promise<string> {
   // for a non-empty body. Retain compatibility with Response-like test/custom
   // fetch implementations while still checking their materialized text before
   // this SDK parses it as JSON.
-  if (body === undefined) {
+  if (body === undefined || typeof body.getReader !== "function") {
     const materializedText: unknown =
       typeof response.text === "function" ? await response.text() : "";
     const text = typeof materializedText === "string" ? materializedText : "";
@@ -777,7 +794,14 @@ async function readBoundedResponseBody(response: Response): Promise<string> {
     ) {
       throw new ResponseBodyTooLargeError();
     }
-    if (text !== "") return text;
+    if (
+      text !== "" ||
+      response.status === 204 ||
+      response.status === 205 ||
+      response.status === 304
+    ) {
+      return text;
+    }
 
     // Older injected Response-like objects may implement json() but return an
     // empty placeholder from text(). This path is never used by native fetch.
@@ -3831,7 +3855,7 @@ export class QURLClient {
           `HTTP ${response.status}`;
         return {
           status: err.status ?? response.status,
-          code: boundedErrorSnippet(err.code) ?? ERROR_CODE_UNKNOWN,
+          code: boundedErrorCode(err.code) ?? ERROR_CODE_UNKNOWN,
           title,
           detail,
           type: boundedErrorSnippet(err.type),

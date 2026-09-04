@@ -3689,6 +3689,41 @@ describe("QURLClient", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
+  it("accepts an empty 204 from a bodyless shim whose json() resolves null", async () => {
+    const response = {
+      ok: true,
+      status: 204,
+      statusText: "No Content",
+      headers: new Headers(),
+      body: undefined,
+      text: () => Promise.resolve(""),
+      json: () => Promise.resolve(null),
+    } satisfies Partial<Response> as Response;
+    const fetch = vi.fn().mockResolvedValue(response);
+
+    await expect(createClient(fetch).delete("r_abc123def45")).resolves.toBeUndefined();
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("reads a Response-like shim whose body is not a WHATWG ReadableStream", async () => {
+    const response = {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      headers: new Headers(),
+      body: { pipe: () => undefined },
+      text: () =>
+        Promise.resolve(
+          JSON.stringify({
+            data: { plan: "growth", period_start: "2026-03-01", period_end: "2026-04-01" },
+          }),
+        ),
+    } satisfies Partial<Response> as Response;
+    const fetch = vi.fn().mockResolvedValue(response);
+
+    await expect(createClient(fetch).getQuota()).resolves.toMatchObject({ plan: "growth" });
+  });
+
   it("rejects invalid Idempotency-Key overrides before making a request", async () => {
     const fetch = mockFetch({
       status: 201,
@@ -4369,6 +4404,43 @@ describe("QURLClient", () => {
     expect(getReader).not.toHaveBeenCalled();
   });
 
+  it("falls back to streamed accounting for a duplicated Content-Length header", async () => {
+    const headers = new Headers();
+    headers.append("Content-Length", String(RESPONSE_BODY_LIMIT + 1));
+    headers.append("Content-Length", String(RESPONSE_BODY_LIMIT + 1));
+    const fetch = vi.fn(
+      async () => new Response("x".repeat(RESPONSE_BODY_LIMIT + 1), { status: 200, headers }),
+    );
+
+    await expect(
+      new QURLClient({
+        apiKey: "test-api-key",
+        baseUrl: "https://api.test.layerv.ai",
+        fetch: fetch as typeof globalThis.fetch,
+        maxRetries: 0,
+      }).getQuota(),
+    ).rejects.toMatchObject({ status: 200, code: ERROR_CODE_UNEXPECTED_RESPONSE });
+  });
+
+  it("does not replay DELETE after an oversized retryable-status response", async () => {
+    const fetch = vi.fn(
+      async () =>
+        new Response("x".repeat(RESPONSE_BODY_LIMIT + 1), {
+          status: 503,
+          headers: { "content-type": "text/plain" },
+        }),
+    );
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 3,
+    });
+
+    await expect(client.delete("r_abc123def45")).rejects.toBeInstanceOf(ServerError);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
   it("bounds materialized text from a Response-like fetch without a body stream", async () => {
     const secret = `response-secret-${"x".repeat(RESPONSE_BODY_LIMIT)}`;
     const fetch = vi.fn(
@@ -4487,7 +4559,7 @@ describe("QURLClient", () => {
     expect(error.detail).not.toContain("\uFFFD");
   });
 
-  it("keeps structured API error codes single-line, control-free, UTF-8-safe, and bounded", async () => {
+  it("maps an oversized structured API error code to the stable unknown discriminant", async () => {
     const code = `  ${"€".repeat(300)}\n\x00\x1b[2Jcode tail  `;
     const fetch = mockFetch({
       status: 400,
@@ -4497,10 +4569,7 @@ describe("QURLClient", () => {
       .getQuota()
       .catch((caught: unknown) => caught as QURLError);
 
-    expect(error.code.endsWith("...")).toBe(true);
-    expect(error.code).not.toContain("\n");
-    expect(error.code).not.toMatch(/[\p{Cc}\u202A-\u202E\u2066-\u2069]/u);
-    expect(new TextEncoder().encode(error.code).byteLength).toBeLessThanOrEqual(512);
+    expect(error.code).toBe(ERROR_CODE_UNKNOWN);
   });
 
   it("bounds and sanitizes all structured API error identifiers", async () => {
