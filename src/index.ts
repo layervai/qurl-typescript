@@ -1,6 +1,6 @@
 export { ProtectedResource, QURLClient } from "./client.js";
 export { CRIDVerificationError, ShareLink } from "./share.js";
-export type { CRIDVerificationErrorCode, ShareLinkInit } from "./share.js";
+export type { CRIDVerificationErrorCode, ShareLinkInit, ShareLinkJSON } from "./share.js";
 export {
   AuthenticationError,
   AuthorizationError,

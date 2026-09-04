@@ -129,8 +129,9 @@ qv2 credential fragment to `/v1/resolve`.
 `verifyCrid` verifies that the response CRID derives from the trusted resource
 key; it does not independently bind the secret link fragment to that key.
 It intentionally follows qurl-go's environment-agnostic key-match rule: CRID
-version bytes are locally validated, while environment classification is not
-part of key-to-digest verification. Binary inputs of any length are hashed;
+version zero is rejected as reserved, while every other structurally valid
+version is accepted and environment classification is not part of key-to-digest
+verification. Binary inputs of any length are hashed;
 `invalid_crid_key` is reserved for non-binary runtime values and a binary key
 that does not match reports `crid_mismatch`.
 `qurlId` and `singleUse` are undefined when omitted by older service responses.

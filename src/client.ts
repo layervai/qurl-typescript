@@ -2738,6 +2738,8 @@ export class QURLClient {
   /**
    * Mint a fresh, short-lived share link for an existing resource ID or CRID.
    * The returned link is secret and is not retrievable after this response.
+   * If you hold the trusted resource DER SPKI, call `ShareLink.verifyCrid()`
+   * before delivery to verify that the response CRID derives from that key.
    */
   async shareResource(
     id: string,
@@ -2775,6 +2777,11 @@ export class QURLClient {
         throw unexpectedResponseError(`shareResource: response has invalid ${field}`);
       }
     }
+    for (const field of ["qurl_id", "type"] as const) {
+      if (wire[field] === "") {
+        throw unexpectedResponseError(`shareResource: response has invalid ${field}`);
+      }
+    }
     if (
       wire.expires_in_seconds !== undefined &&
       wire.expires_in_seconds !== null &&
@@ -2799,11 +2806,11 @@ export class QURLClient {
     }
     return new ShareLink({
       link: data.qurl.trim(),
-      qurlId: typeof wire.qurl_id === "string" && wire.qurl_id !== "" ? wire.qurl_id : undefined,
+      qurlId: typeof wire.qurl_id === "string" ? wire.qurl_id : undefined,
       // Preserve an explicit empty string so verifyCrid can distinguish a
       // malformed CRID from an omitted additive field on an older response.
       crid: typeof wire.crid === "string" ? wire.crid : undefined,
-      type: typeof wire.type === "string" && wire.type !== "" ? wire.type : undefined,
+      type: typeof wire.type === "string" ? wire.type : undefined,
       expiresAt,
       expiresInSeconds:
         typeof wire.expires_in_seconds === "number" ? wire.expires_in_seconds : undefined,

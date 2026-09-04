@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import conformancePackage from "@layervai/qurl-conformance";
 import { Buffer } from "node:buffer";
 import { inspect } from "node:util";
+import { runInNewContext } from "node:vm";
 import {
   CRIDVerificationError,
   ERROR_CODE_CRID_MISMATCH,
@@ -213,6 +214,17 @@ describe("shareResource", () => {
     });
   });
 
+  it.each(["qurl_id", "type"])(
+    "fails closed when response field %s is explicitly empty",
+    async (field) => {
+      const fetch = mockFetch({ status: 200, body: shareResponse({ [field]: "" }) });
+
+      await expect(createClient(fetch).shareResource("resource-id")).rejects.toMatchObject({
+        code: "unexpected_response",
+      });
+    },
+  );
+
   it("fails closed when expires_at is not an RFC 3339 timestamp", async () => {
     const fetch = mockFetch({ status: 200, body: shareResponse({ expires_at: "not-a-date" }) });
 
@@ -367,16 +379,22 @@ describe("ShareLink.verifyCrid", () => {
       crid: acceptedTruncated.value,
     });
 
-    await expect(share.verifyCrid(b64url(matching.der_spki_b64url))).resolves.toBeUndefined();
+    // consumer_value_cases proves only syntax acceptance, not a relationship
+    // to producer_cases. An empty key must reach comparison and mismatch,
+    // rather than being coupled to whichever producer key built the fixture.
+    await expect(share.verifyCrid(new Uint8Array())).rejects.toMatchObject({
+      code: ERROR_CODE_CRID_MISMATCH,
+    });
   });
 
-  it("rejects a foreign key on the truncated CRID path", async () => {
+  it("accepts a cross-realm ArrayBuffer as binary key material", async () => {
     const share = new ShareLink({
       link: "https://qurl.link/#qv2t1.example",
-      crid: acceptedTruncated.value,
+      crid: matching.expected_crid,
     });
+    const crossRealm = runInNewContext("new ArrayBuffer(8)") as ArrayBuffer;
 
-    await expect(share.verifyCrid(b64url(foreign.der_spki_b64url))).rejects.toMatchObject({
+    await expect(share.verifyCrid(crossRealm)).rejects.toMatchObject({
       code: ERROR_CODE_CRID_MISMATCH,
     });
   });
