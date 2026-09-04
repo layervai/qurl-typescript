@@ -1669,7 +1669,11 @@ function parseExternalIdentityBindingResponse(
 function protectExternalIdentityBindingApiKey(
   apiKey: ExternalIdentityBindingApiKey,
 ): ExternalIdentityBindingApiKey {
-  const redacted = () => ({
+  const withoutPlaintext = () => ({
+    key_id: apiKey.key_id,
+    key_prefix: apiKey.key_prefix,
+  });
+  const redactedForInspection = () => ({
     key_id: apiKey.key_id,
     key_prefix: apiKey.key_prefix,
     plaintext: "[redacted]",
@@ -1683,8 +1687,11 @@ function protectExternalIdentityBindingApiKey(
       writable: false,
       configurable: false,
     },
-    toJSON: { value: redacted, enumerable: false },
-    [Symbol.for("nodejs.util.inspect.custom")]: { value: redacted, enumerable: false },
+    toJSON: { value: withoutPlaintext, enumerable: false },
+    [Symbol.for("nodejs.util.inspect.custom")]: {
+      value: redactedForInspection,
+      enumerable: false,
+    },
   });
   return apiKey;
 }

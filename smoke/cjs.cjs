@@ -62,6 +62,9 @@ async function smokeExternalIdentityBinding() {
   assert.equal(bindingRequest.headers["Idempotency-Key"], bindingKey);
   assert.equal(binding.binding_id, "eib_cjs_smoke");
   assert.equal(binding.replayed, true);
+  assert.equal(binding.api_key.plaintext, "qurl_test_obviously_fake_cjs_secret");
+  assert.ok(!("plaintext" in { ...binding.api_key }));
+  assert.ok(!("plaintext" in JSON.parse(JSON.stringify(binding.api_key))));
 }
 
 smokeExternalIdentityBinding()

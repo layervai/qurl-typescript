@@ -8793,7 +8793,7 @@ describe("createExternalIdentityBinding", () => {
   });
 
   it.each([null, [], "not-an-object"])(
-    "fails closed when the response body is not a binding object (%j)",
+    "fails closed after raw response metadata wrapping for non-object body %j",
     async (body) => {
       const fetch = mockFetch({ status: 201, body });
 
@@ -8802,7 +8802,10 @@ describe("createExternalIdentityBinding", () => {
           { provider: "teams", external_id: "tenant-obviously-fake" },
           { idempotencyKey: BINDING_IDEMPOTENCY_KEY },
         ),
-      ).rejects.toMatchObject({ code: ERROR_CODE_UNEXPECTED_RESPONSE });
+      ).rejects.toMatchObject({
+        code: ERROR_CODE_UNEXPECTED_RESPONSE,
+        detail: expect.stringContaining("missing required field binding_id"),
+      });
     },
   );
 
@@ -9329,6 +9332,35 @@ describe("createExternalIdentityBinding", () => {
     expect(debugOutput.join("\n")).not.toContain(BINDING_PLAINTEXT);
   });
 
+  it("never includes one-time plaintext from a non-JSON 201 in errors or debug logs", async () => {
+    const debugOutput: string[] = [];
+    const fetch = vi.fn(
+      async () =>
+        new Response(`{"api_key":{"plaintext":"${BINDING_PLAINTEXT}"}`, {
+          status: 201,
+          headers: { "content-type": "application/json" },
+        }),
+    );
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 0,
+      debug: (message, details) => debugOutput.push(`${message} ${JSON.stringify(details ?? {})}`),
+    });
+
+    const error = await client
+      .createExternalIdentityBinding(
+        { provider: "teams", external_id: "tenant-obviously-fake" },
+        { idempotencyKey: BINDING_IDEMPOTENCY_KEY },
+      )
+      .catch((caught: unknown) => caught as QURLError);
+
+    expect(error).toMatchObject({ code: ERROR_CODE_UNEXPECTED_RESPONSE, status: 201 });
+    expect(inspect(error, { depth: null })).not.toContain(BINDING_PLAINTEXT);
+    expect(debugOutput.join("\n")).not.toContain(BINDING_PLAINTEXT);
+  });
+
   it("never includes one-time plaintext in debug logs on a successful create", async () => {
     const debugOutput: string[] = [];
     const fetch = mockFetch({ status: 201, body: externalIdentityBindingData() });
@@ -9349,6 +9381,7 @@ describe("createExternalIdentityBinding", () => {
     expect(debugOutput.join("\n")).not.toContain(BINDING_PLAINTEXT);
     expect(JSON.stringify(result)).not.toContain(BINDING_PLAINTEXT);
     expect(JSON.stringify(result.api_key)).not.toContain(BINDING_PLAINTEXT);
+    expect(JSON.parse(JSON.stringify(result)).api_key).not.toHaveProperty("plaintext");
     expect(inspect(result, { depth: null })).not.toContain(BINDING_PLAINTEXT);
     expect({ ...result.api_key }).not.toHaveProperty("plaintext");
     expect(structuredClone(result.api_key)).not.toHaveProperty("plaintext");

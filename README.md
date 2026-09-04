@@ -240,9 +240,10 @@ await secretStore.put('obviously-fake-tenant-qurl-key', binding.api_key.plaintex
 error. A retry with the same idempotency key and exact same body can recover the
 same key for up to 24 hours; after that window the plaintext is unrecoverable.
 The property is directly readable for persistence but non-enumerable and
-redacted by JSON and Node inspection to reduce accidental structured logging.
+omitted by JSON and redacted by Node inspection to reduce accidental structured
+logging.
 Read `binding.api_key.plaintext` directly: JSON, spread, and structured-clone
-copies intentionally omit or redact it and cannot preserve the one-time secret.
+copies intentionally omit it and cannot preserve the one-time secret.
 `binding.replayed` is `true` when the service signals a replay using either its
 current `X-Idempotency-Replayed` header or the spec-declared
 `Idempotency-Replayed` header. It is `undefined` when replay state is absent or

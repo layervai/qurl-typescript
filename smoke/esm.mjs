@@ -58,5 +58,8 @@ const binding = await bindingClient.createExternalIdentityBinding(
 assert.equal(bindingRequest.headers["Idempotency-Key"], bindingKey);
 assert.equal(binding.binding_id, "eib_esm_smoke");
 assert.equal(binding.replayed, true);
+assert.equal(binding.api_key.plaintext, "qurl_test_obviously_fake_esm_secret");
+assert.ok(!("plaintext" in { ...binding.api_key }));
+assert.ok(!("plaintext" in JSON.parse(JSON.stringify(binding.api_key))));
 
 console.log("ESM smoke ok");

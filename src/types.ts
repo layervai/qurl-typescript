@@ -851,7 +851,8 @@ export interface ExternalIdentityBindingApiKey {
    * Full API key secret. This is returned only during create or a same-key,
    * same-body replay within 24 hours. Persist it securely immediately. Read
    * this property directly; JSON, spread, and structured-clone copies
-   * intentionally omit or redact it.
+   * intentionally omit it, while Node inspection replaces it with a redacted
+   * marker.
    */
   plaintext: string;
 }
