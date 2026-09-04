@@ -782,7 +782,30 @@ function pageFromMeta<T extends Record<string, unknown>>(
   };
 }
 
-const PATH_ACCESS_TOKEN_RE = /(^|[/?&#=])at_/;
+const PATH_EMBEDDED_ACCESS_TOKEN_RE = /[/?&#=]at_/;
+const MAX_PATH_ID_DECODE_PASSES = 3;
+
+interface PathIdValidationOptions {
+  /** Reject a bare access token in namespaces that accept resource/qURL IDs. */
+  rejectBareAccessToken?: boolean;
+  /** Safe, non-secret recovery guidance appended to an access-token error. */
+  accessTokenRecovery?: string;
+}
+
+const RESOURCE_ID_PATH_OPTIONS: PathIdValidationOptions = {
+  rejectBareAccessToken: true,
+  accessTokenRecovery: "pass a resource ID returned by the API",
+};
+
+const RESOURCE_OR_QURL_ID_PATH_OPTIONS: PathIdValidationOptions = {
+  rejectBareAccessToken: true,
+  accessTokenRecovery: "pass a resource or qURL display ID returned by the API",
+};
+
+const QURL_ID_PATH_OPTIONS: PathIdValidationOptions = {
+  rejectBareAccessToken: true,
+  accessTokenRecovery: "pass the qURL display ID, not its access token",
+};
 
 /**
  * Validates that a path-parameter argument is a non-empty string. Some callers
@@ -795,7 +818,7 @@ function requireNonEmptyId(
   id: unknown,
   method: string,
   field = "id",
-  accessTokenRecovery?: string,
+  options: PathIdValidationOptions = {},
 ): asserts id is string {
   // `.trim()` catches whitespace-only and padded IDs before they round-trip as
   // `%20...%20` paths that the server can only reject with a less useful 404.
@@ -817,28 +840,40 @@ function requireNonEmptyId(
   if (id === "." || id === "..") {
     throw clientValidationError(`${method}: ${field} is an invalid URL path segment`);
   }
-  // Probe a once-encoded input too. Callers sometimes pre-encode a copied
-  // link; encodeURIComponent leaves the token itself readable but hides the
-  // delimiter as `%23`, which would otherwise evade the raw delimiter check.
+  // Probe repeatedly encoded input too. Callers sometimes pre-encode a copied
+  // link before passing it through a URL builder that encodes it again. Cap
+  // decoding so hostile input cannot turn validation into unbounded work.
+  const decodedIds = [id];
   let decodedId = id;
-  try {
-    decodedId = decodeURIComponent(id);
-  } catch {
-    // Malformed percent escapes remain opaque and are left to the service.
+  for (let pass = 0; pass < MAX_PATH_ID_DECODE_PASSES; pass += 1) {
+    try {
+      const next = decodeURIComponent(decodedId);
+      if (next === decodedId) break;
+      decodedIds.push(next);
+      decodedId = next;
+    } catch {
+      // Malformed percent escapes remain opaque and are left to the service.
+      break;
+    }
   }
-  // qURL access tokens are credentials. Reject bare tokens plus tokens after
-  // URL/query delimiters before a credential can enter proxy/access logs as a
-  // path. The delimiter check preserves opaque IDs that merely contain "at_".
-  // Do not echo the caller-supplied value.
-  if (PATH_ACCESS_TOKEN_RE.test(id) || PATH_ACCESS_TOKEN_RE.test(decodedId)) {
+  // qURL access tokens are credentials. A token after a URL/query delimiter
+  // is structurally a credential in every namespace. Bare `at_...` values are
+  // rejected only for resource/qURL identifiers so this guard does not assert
+  // grammar over unrelated domain, session, webhook, or API-key IDs.
+  const containsAccessToken = decodedIds.some(
+    (value) =>
+      PATH_EMBEDDED_ACCESS_TOKEN_RE.test(value) ||
+      (options.rejectBareAccessToken === true && value.startsWith("at_")),
+  );
+  if (containsAccessToken) {
     throw clientValidationError(
-      `${method}: ${field} must not contain an access token${accessTokenRecovery ? `; ${accessTokenRecovery}` : ""}`,
+      `${method}: ${field} must not contain an access token${options.accessTokenRecovery ? `; ${options.accessTokenRecovery}` : ""}`,
     );
   }
   // A full target/qURL is a common argument mix-up, but it is distinct from
   // passing an access-token credential. Diagnose it accurately without
   // echoing the URL, which may itself contain sensitive query parameters.
-  if (/^https?:\/\//i.test(id) || /^https?:\/\//i.test(decodedId)) {
+  if (decodedIds.some((value) => /^https?:\/\//i.test(value))) {
     throw clientValidationError(`${method}: ${field} must be an identifier, not a URL`);
   }
 }
@@ -2011,7 +2046,7 @@ export class QURLClient {
    * need the full resource details.
    */
   resourceById(id: string): ProtectedResource {
-    requireNonEmptyId(id, "resourceById");
+    requireNonEmptyId(id, "resourceById", "id", RESOURCE_ID_PATH_OPTIONS);
     return new ProtectedResource(this, id);
   }
 
@@ -2096,7 +2131,7 @@ export class QURLClient {
         `createPortal: resource must be a ProtectedResource handle or a resource id string (got ${describeShape(resource)})`,
       );
     }
-    requireNonEmptyId(resourceId, "createPortal", "resource id");
+    requireNonEmptyId(resourceId, "createPortal", "resource id", RESOURCE_ID_PATH_OPTIONS);
     const body = buildCreatePortalBody(opts, "createPortal");
     const data = await this.request<PortalWireResponse>(
       "POST",
@@ -2340,7 +2375,7 @@ export class QURLClient {
    * prefix); the API resolves `q_` IDs to the parent resource automatically.
    */
   async get(id: string): Promise<QURL> {
-    requireNonEmptyId(id, "get");
+    requireNonEmptyId(id, "get", "id", RESOURCE_OR_QURL_ID_PATH_OPTIONS);
     const raw = await this.request<QURL & { qurls?: AccessToken[] }>(
       "GET",
       `/v1/qurls/${encodeURIComponent(id)}`,
@@ -2410,12 +2445,10 @@ export class QURLClient {
    * dot segment, URL-shaped, or contains a qURL access-token credential.
    */
   async delete(id: string): Promise<void> {
-    requireNonEmptyId(
-      id,
-      "delete",
-      "id",
-      "revoke individual tokens with revokeResourceQurl(resourceId, qurlId)",
-    );
+    requireNonEmptyId(id, "delete", "id", {
+      rejectBareAccessToken: true,
+      accessTokenRecovery: "revoke individual tokens with revokeResourceQurl(resourceId, qurlId)",
+    });
     await this.rawRequest("DELETE", `/v1/qurls/${encodeURIComponent(id)}`);
   }
 
@@ -2435,7 +2468,7 @@ export class QURLClient {
    * enforced separately by the runtime check inside `update()`.
    */
   async extend(id: string, input: ExtendInput, options?: RequestOptions): Promise<QURL> {
-    requireNonEmptyId(id, "extend");
+    requireNonEmptyId(id, "extend", "id", RESOURCE_OR_QURL_ID_PATH_OPTIONS);
     requireObjectInput(input, "extend");
     const { extend_by, expires_at } = input;
     if (extend_by === undefined && expires_at === undefined) {
@@ -2456,7 +2489,7 @@ export class QURLClient {
    * prefix); the API resolves `q_` IDs to the parent resource automatically.
    */
   async update(id: string, input: UpdateInput, options?: RequestOptions): Promise<QURL> {
-    requireNonEmptyId(id, "update");
+    requireNonEmptyId(id, "update", "id", RESOURCE_OR_QURL_ID_PATH_OPTIONS);
     requireObjectInput(input, "update");
     requireNoUnknownFields(input, UPDATE_FIELD_KEYS, "update");
     // Normalize null → undefined so untyped-JS callers passing
@@ -2504,7 +2537,7 @@ export class QURLClient {
    * server applies its 24h default expiration.
    */
   async mintLink(id: string, input?: MintInput, options?: RequestOptions): Promise<MintOutput> {
-    requireNonEmptyId(id, "mintLink");
+    requireNonEmptyId(id, "mintLink", "id", RESOURCE_OR_QURL_ID_PATH_OPTIONS);
     // Normalize null → omitted so untyped-JS callers passing
     // `{ expires_in: null, expires_at: "..." }` don't leak null into
     // the wire body via JSON.stringify and don't bypass the XOR check
@@ -2653,7 +2686,7 @@ export class QURLClient {
 
   /** Get one resource plus its bounded qURL preview. */
   async getResource(id: string): Promise<ResourceDetail> {
-    requireNonEmptyId(id, "getResource");
+    requireNonEmptyId(id, "getResource", "id", RESOURCE_ID_PATH_OPTIONS);
     return this.request<ResourceDetail>("GET", `/v1/resources/${encodeURIComponent(id)}`);
   }
 
@@ -2663,7 +2696,7 @@ export class QURLClient {
     input: UpdateResourceInput,
     options?: RequestOptions,
   ): Promise<Resource> {
-    requireNonEmptyId(id, "updateResource");
+    requireNonEmptyId(id, "updateResource", "id", RESOURCE_ID_PATH_OPTIONS);
     requireObjectInput(input, "updateResource");
     requireNoUnknownFields(input, UPDATE_RESOURCE_FIELD_KEYS, "updateResource");
     const validationInput = normalizePatchFields(
@@ -2691,7 +2724,7 @@ export class QURLClient {
 
   /** Revoke a resource and all of its qURLs. */
   async deleteResource(id: string): Promise<void> {
-    requireNonEmptyId(id, "deleteResource");
+    requireNonEmptyId(id, "deleteResource", "id", RESOURCE_ID_PATH_OPTIONS);
     await this.rawRequest("DELETE", `/v1/resources/${encodeURIComponent(id)}`);
   }
 
@@ -2705,7 +2738,7 @@ export class QURLClient {
     input?: CreateQurlForResourceInput,
     options?: RequestOptions,
   ): Promise<CreateOutput> {
-    requireNonEmptyId(id, "createQurlForResource");
+    requireNonEmptyId(id, "createQurlForResource", "id", RESOURCE_ID_PATH_OPTIONS);
     let normalized: CreateQurlForResourceInput | undefined = input;
     if (input !== undefined) {
       requireObjectInput(input, "createQurlForResource");
@@ -2727,8 +2760,8 @@ export class QURLClient {
 
   /** Revoke a specific qURL token on a resource. */
   async revokeResourceQurl(id: string, qurlId: string): Promise<void> {
-    requireNonEmptyId(id, "revokeResourceQurl");
-    requireNonEmptyId(qurlId, "revokeResourceQurl");
+    requireNonEmptyId(id, "revokeResourceQurl", "id", RESOURCE_ID_PATH_OPTIONS);
+    requireNonEmptyId(qurlId, "revokeResourceQurl", "qurl id", QURL_ID_PATH_OPTIONS);
     await this.rawRequest(
       "DELETE",
       `/v1/resources/${encodeURIComponent(id)}/qurls/${encodeURIComponent(qurlId)}`,
@@ -2742,8 +2775,8 @@ export class QURLClient {
     input: UpdateResourceQurlInput,
     options?: RequestOptions,
   ): Promise<QurlSummary> {
-    requireNonEmptyId(id, "updateResourceQurl");
-    requireNonEmptyId(qurlId, "updateResourceQurl");
+    requireNonEmptyId(id, "updateResourceQurl", "id", RESOURCE_ID_PATH_OPTIONS);
+    requireNonEmptyId(qurlId, "updateResourceQurl", "qurl id", QURL_ID_PATH_OPTIONS);
     requireObjectInput(input, "updateResourceQurl");
     requireNoUnknownFields(input, UPDATE_RESOURCE_QURL_FIELD_KEYS, "updateResourceQurl");
     const normalized = normalizePatchFields(
@@ -2772,7 +2805,7 @@ export class QURLClient {
    * this page and emits a debug log rather than pretending it fetched all pages.
    */
   async listResourceSessions(id: string): Promise<SessionListOutput> {
-    requireNonEmptyId(id, "listResourceSessions");
+    requireNonEmptyId(id, "listResourceSessions", "id", RESOURCE_ID_PATH_OPTIONS);
     const { data, meta } = await this.rawRequest<Session[]>(
       "GET",
       `/v1/resources/${encodeURIComponent(id)}/sessions`,
@@ -2799,7 +2832,7 @@ export class QURLClient {
    * return `0` because there are no sessions left to terminate.
    */
   async terminateAllResourceSessions(id: string): Promise<SessionTerminateOutput> {
-    requireNonEmptyId(id, "terminateAllResourceSessions");
+    requireNonEmptyId(id, "terminateAllResourceSessions", "id", RESOURCE_ID_PATH_OPTIONS);
     const path = `/v1/resources/${encodeURIComponent(id)}/sessions`;
     const { data, meta, __http_status } = await this.rawRequest<{ terminated?: number }>(
       "DELETE",
@@ -2820,7 +2853,7 @@ export class QURLClient {
 
   /** Terminate a specific resource session. */
   async terminateResourceSession(id: string, sessionId: string): Promise<void> {
-    requireNonEmptyId(id, "terminateResourceSession");
+    requireNonEmptyId(id, "terminateResourceSession", "id", RESOURCE_ID_PATH_OPTIONS);
     requireNonEmptyId(sessionId, "terminateResourceSession");
     await this.rawRequest(
       "DELETE",

@@ -2167,6 +2167,22 @@ describe("QURLClient", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("delete rejects a repeatedly encoded qURL link before its token can reach request logs", async () => {
+    const fetch = mockFetch({ status: 204 });
+    const client = createClient(fetch);
+    const encodedLink = encodeURIComponent(
+      encodeURIComponent(`https://qurl.link/#${SENSITIVE_ACCESS_TOKEN}`),
+    );
+
+    const error = await client.delete(encodedLink).catch((e: unknown) => e as ValidationError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).detail).toContain("access token");
+    expect((error as ValidationError).detail).not.toContain(encodedLink);
+    expect((error as ValidationError).detail).not.toContain(SENSITIVE_ACCESS_TOKEN);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it.each([".", ".."])("delete rejects the URL dot-segment identifier %s", async (resourceId) => {
     const fetch = mockFetch({ status: 204 });
     const client = createClient(fetch);
@@ -2281,6 +2297,37 @@ describe("QURLClient", () => {
       expect(fetch).not.toHaveBeenCalled();
     },
   );
+
+  it("does not apply resource access-token grammar to unrelated identifier namespaces", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+
+    await client.getDomain("at_future-domain-id");
+    await client.getWebhook("at_future-webhook-id");
+    await client.updateApiKey("at_future-api-key-id", { name: "renamed" });
+    await client.terminateResourceSession("resource-id", "at_future-session-id");
+
+    expect(fetch).toHaveBeenNthCalledWith(
+      1,
+      "https://api.test.layerv.ai/v1/domains/at_future-domain-id",
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(fetch).toHaveBeenNthCalledWith(
+      2,
+      "https://api.test.layerv.ai/v1/webhooks/at_future-webhook-id",
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(fetch).toHaveBeenNthCalledWith(
+      3,
+      "https://api.test.layerv.ai/v1/api-keys/at_future-api-key-id",
+      expect.objectContaining({ method: "PATCH" }),
+    );
+    expect(fetch).toHaveBeenNthCalledWith(
+      4,
+      "https://api.test.layerv.ai/v1/resources/resource-id/sessions/at_future-session-id",
+      expect.objectContaining({ method: "DELETE" }),
+    );
+  });
 
   it("update rejects empty id", async () => {
     const fetch = mockFetch({ status: 200, body: { data: {} } });
