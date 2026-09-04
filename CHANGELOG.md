@@ -4,6 +4,22 @@
 
 ### ⚠ BREAKING CHANGES
 
+- **client:** DELETE operations are no longer retried after transport, 429, or 5xx
+  failures because a dispatched mutation can have an unknown outcome. Documented
+  no-content DELETE endpoints now require an exact empty HTTP 204 response.
+- **client:** server-provided error codes, titles, details, problem identifiers,
+  request IDs, and up to 100 invalid-field entries have controls and
+  bidirectional formatting characters removed, are normalized to one line,
+  and are capped at 512 UTF-8 bytes per key/value so error objects and debug
+  paths stay bounded. Non-string invalid-field values are omitted, and
+  normalized-key collisions retain the first diagnostic.
+- **client:** API redirects are refused instead of followed, including when an
+  injected fetch implementation follows one before returning a response.
+- **client:** API response bodies larger than 1 MiB are rejected before JSON
+  parsing, including streamed bodies without a trustworthy Content-Length.
+- **client:** GET requests now retry transport failures that occur while reading
+  a response body regardless of the observed HTTP status; GET replay remains
+  safe while mutations retain status- and idempotency-specific retry rules.
 - **client:** remove the released legacy HTTP bootstrap method and the
   not-yet-released relay registration implementation. Native qURL Connector
   assignment and registration are UDP-only and belong in the Go runtime; the

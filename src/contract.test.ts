@@ -730,6 +730,7 @@ const NON_API_PROTOTYPE_METHODS: ReadonlySet<string> = new Set([
 // genuinely internal.
 const INTERNAL_HELPERS: ReadonlySet<string> = new Set([
   "request",
+  "requestNoContent",
   "rawRequest",
   "maskKey",
   "log",

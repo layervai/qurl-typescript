@@ -25,14 +25,12 @@ export const ERROR_CODE_UNKNOWN = "unknown";
 /**
  * Base error thrown by the qURL API client. Catch this to handle all SDK errors.
  *
- * **`status: 0` convention:** Client-detected failures — validation errors
- * (`code: "client_validation"`), unexpected response shapes
- * (`code: "unexpected_response"`), runtime capability errors
- * (`code: "runtime_error"`), network errors (`code: "network_error"`), and
- * timeouts (`code: "timeout"`) — all use `status: 0` because no real HTTP
- * status code applies. To distinguish between these cases, branch on `.code`
- * rather than `.status`. Non-zero `.status` always reflects a real HTTP
- * status from the API (e.g. 400, 401, 429, 500).
+ * **`status: 0` convention:** Client-only validation, runtime, network, and
+ * timeout failures use `status: 0` because no HTTP status applies. Logical
+ * response-shape guards can also use zero. An `unexpected_response` tied to a
+ * concrete HTTP contract violation (redirect, oversized body, wrong
+ * no-content status/body) instead preserves the observed status. Branch on
+ * `.code` first and then `.status`; see {@link ValidationError}.
  *
  * **`.code === "unknown"`** is a possible value when the server returns a
  * non-RFC-7807 response (e.g. a Cloudflare HTML error page, a gateway
@@ -119,9 +117,11 @@ export class NotFoundError extends QURLError {
  *   counts/length mismatch, per-entry contract violation): `.status`
  *   is `0`. The HTTP status that produced the bad body is appended
  *   to `.detail` as `(HTTP 400)` / `(HTTP 207)` etc. for diagnostics.
- * - Non-JSON body on a 2xx or passthrough status (e.g. proxy HTML
- *   error page, plaintext gateway error, truncated body): `.status`
- *   is the actual HTTP status (e.g. `400`, `200`).
+ * - Non-JSON, oversized, redirect, or exact-status/body-contract failure on a
+ *   2xx, passthrough, or other observed HTTP status: `.status` is the actual
+ *   HTTP status (e.g. `200`, `302`, `400`, `503`). Browser-filtered opaque
+ *   redirects use `.status === 0` because Fetch does not expose their 3xx
+ *   status.
  *
  * Consumers branching purely on `.status` should branch on `.code`
  * first, then `.detail` for shape-guard cases. See #59 for tracking
