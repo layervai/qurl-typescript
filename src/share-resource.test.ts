@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import conformancePackage from "@layervai/qurl-conformance";
 import { Buffer } from "node:buffer";
+import { inspect } from "node:util";
 import {
   CRIDVerificationError,
   ERROR_CODE_CRID_MISMATCH,
@@ -79,6 +80,21 @@ describe("shareResource", () => {
       "https://api.test.layerv.ai/v1/resources/resource%2Fpublic%2Bid/share",
       expect.objectContaining({ method: "POST", body: "{}" }),
     );
+  });
+
+  it("redacts the one-time credential from serialization, inspection, and object spread", async () => {
+    const share = await createClient(
+      mockFetch({ status: 200, body: shareResponse() }),
+    ).shareResource("resource-id");
+
+    expect(JSON.stringify(share)).not.toContain(share.link);
+    expect(JSON.parse(JSON.stringify(share))).toMatchObject({
+      link: "[redacted]",
+      qurlId: "q_a1b2c3d4e5f",
+    });
+    expect(inspect(share)).not.toContain(share.link);
+    expect({ ...share }).not.toHaveProperty("link");
+    expect(share.link).toBe("https://qurl.link/#qv2t1.example");
   });
 
   it("sends a positive whole-second TTL and preserves a caller idempotency key", async () => {
@@ -297,6 +313,19 @@ describe("ShareLink.verifyCrid", () => {
     await expect(share.verifyCrid(buffer)).resolves.toBeUndefined();
   });
 
+  it("hashes only the bytes in an offset ArrayBufferView", async () => {
+    const share = new ShareLink({
+      link: "https://qurl.link/#qv2t1.example",
+      crid: matching.expected_crid,
+    });
+    const bytes = b64url(matching.der_spki_b64url);
+    const padded = new Uint8Array(bytes.length + 16);
+    padded.fill(0xff);
+    padded.set(bytes, 8);
+
+    await expect(share.verifyCrid(padded.subarray(8, 8 + bytes.length))).resolves.toBeUndefined();
+  });
+
   it("accepts the conformance vector's truncated CRID path", async () => {
     const share = new ShareLink({
       link: "https://qurl.link/#qv2t1.example",
@@ -304,6 +333,17 @@ describe("ShareLink.verifyCrid", () => {
     });
 
     await expect(share.verifyCrid(b64url(matching.der_spki_b64url))).resolves.toBeUndefined();
+  });
+
+  it("rejects a foreign key on the truncated CRID path", async () => {
+    const share = new ShareLink({
+      link: "https://qurl.link/#qv2t1.example",
+      crid: acceptedTruncated.value,
+    });
+
+    await expect(share.verifyCrid(b64url(foreign.der_spki_b64url))).rejects.toMatchObject({
+      code: ERROR_CODE_CRID_MISMATCH,
+    });
   });
 
   it("rejects a foreign DER SPKI with a typed mismatch", async () => {
@@ -337,6 +377,17 @@ describe("ShareLink.verifyCrid", () => {
 
     await expect(share.verifyCrid("not binary" as never)).rejects.toMatchObject({
       code: ERROR_CODE_INVALID_CRID_KEY,
+    });
+  });
+
+  it("treats an empty binary key as a mismatch, matching qurl-go", async () => {
+    const share = new ShareLink({
+      link: "https://qurl.link/#qv2t1.example",
+      crid: matching.expected_crid,
+    });
+
+    await expect(share.verifyCrid(new Uint8Array())).rejects.toMatchObject({
+      code: ERROR_CODE_CRID_MISMATCH,
     });
   });
 

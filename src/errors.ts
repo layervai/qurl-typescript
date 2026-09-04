@@ -19,7 +19,7 @@ export const ERROR_CODE_RUNTIME = "runtime_error";
 export const ERROR_CODE_MISSING_CRID = "missing_crid";
 /** A held CRID failed the local CRID v1 validation gate. */
 export const ERROR_CODE_INVALID_CRID = "invalid_crid";
-/** A caller supplied something other than binary DER SPKI key data. */
+/** A caller supplied a non-binary runtime value where DER SPKI bytes are required. */
 export const ERROR_CODE_INVALID_CRID_KEY = "invalid_crid_key";
 /** A delivered key does not derive the held CRID. */
 export const ERROR_CODE_CRID_MISMATCH = "crid_mismatch";

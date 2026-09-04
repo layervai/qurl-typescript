@@ -52,12 +52,33 @@ export class ShareLink {
 
   constructor(init: ShareLinkInit) {
     this.link = init.link;
+    // Keep accidental object spread/structured logging from copying the
+    // one-time-returned credential. Callers can still read `.link` explicitly.
+    Object.defineProperty(this, "link", { enumerable: false });
     this.qurlId = init.qurlId;
     this.crid = init.crid;
     this.type = init.type;
     this.expiresAt = init.expiresAt;
     this.expiresInSeconds = init.expiresInSeconds;
     this.singleUse = init.singleUse;
+  }
+
+  /** Serialize safe metadata while redacting the one-time-returned credential. */
+  toJSON(): ShareLinkInit {
+    return {
+      link: "[redacted]",
+      qurlId: this.qurlId,
+      crid: this.crid,
+      type: this.type,
+      expiresAt: this.expiresAt,
+      expiresInSeconds: this.expiresInSeconds,
+      singleUse: this.singleUse,
+    };
+  }
+
+  /** Prevent Node's default object inspector from printing the credential. */
+  [Symbol.for("nodejs.util.inspect.custom")](): ShareLinkInit {
+    return this.toJSON();
   }
 
   /**
@@ -126,10 +147,10 @@ function parseCrid(value: string): { digest: Uint8Array } {
   }
   if (accumulator !== 0) throw invalidCrid();
   const bytes = Uint8Array.from(decoded);
-  // Version zero is reserved. Other version/environment bytes are deliberately
-  // accepted for forward compatibility, as required by the CRID conformance
-  // vectors; verification still fails closed unless the key-derived digest
-  // matches.
+  // Version zero is reserved. Like qurl-go, accept every other structurally
+  // valid version for forward compatibility. The version registry classifies
+  // environments for display/routing; KeyMatches/verifyCrid is deliberately
+  // environment-agnostic and proves only key-to-digest equality.
   if (bytes[0] === 0) throw invalidCrid();
   const payload = bytes.subarray(0, bytes.length - CRID_CHECKSUM_LENGTH);
   const checksum = bytes.subarray(bytes.length - CRID_CHECKSUM_LENGTH);
