@@ -21,6 +21,10 @@ import { mockFetch, mockFetches, createClient } from "./__tests__/test-helpers.j
 
 const UUID_V7_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const TARGET_PATH_MAX_LENGTH = 2048;
+const PUBLIC_RESOURCE_ID =
+  "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE2cTVv5_3eeYCcLLq5ROYCqcmY50HiKZ9ATglIkPnCji1E_S63UMtXba1moR8-Q6EV7oM6zwwh9_j2CDujzXvLA";
+const RESOURCE_CRID = "ahpviqz46qwcvx56glfatm3p3ooccwfcf2it4sdgjervwdkapykw3o3qdq2a";
+const SENSITIVE_ACCESS_TOKEN = "at_sensitive-token-value";
 
 function callHeaders(
   fetch: typeof globalThis.fetch | ReturnType<typeof vi.fn>,
@@ -1079,6 +1083,76 @@ describe("QURLClient", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  // TODO(upstream-contract): Keep these path and error assertions aligned with
+  // qurl-go Client.RevokePortal, the authoritative portal-revoke contract.
+  it.each([
+    ["public resource ID", PUBLIC_RESOURCE_ID],
+    ["CRID", RESOURCE_CRID],
+  ])("revokeResourceQurl accepts the Go SDK's %s identifier form", async (_label, resourceId) => {
+    const fetch = mockFetch({ status: 204 });
+    const client = createClient(fetch);
+
+    await expect(client.revokeResourceQurl(resourceId, "q_0123456789a")).resolves.toBeUndefined();
+    expect(fetch).toHaveBeenCalledWith(
+      `https://api.test.layerv.ai/v1/resources/${resourceId}/qurls/q_0123456789a`,
+      expect.objectContaining({ method: "DELETE" }),
+    );
+  });
+
+  it("revokeResourceQurl keeps both IDs inside one encoded path segment", async () => {
+    const fetch = mockFetch({ status: 204 });
+    const client = createClient(fetch);
+
+    await expect(client.revokeResourceQurl("r?/#1", "q?/#2")).resolves.toBeUndefined();
+    expect(fetch).toHaveBeenCalledWith(
+      "https://api.test.layerv.ai/v1/resources/r%3F%2F%231/qurls/q%3F%2F%232",
+      expect.objectContaining({ method: "DELETE" }),
+    );
+  });
+
+  it.each([
+    ["empty resource ID", "", "q_0123456789a"],
+    ["whitespace-only resource ID", "   ", "q_0123456789a"],
+    ["empty qURL ID", PUBLIC_RESOURCE_ID, ""],
+    ["whitespace-only qURL ID", PUBLIC_RESOURCE_ID, "   "],
+    ["dot-segment resource ID", ".", "q_0123456789a"],
+    ["dot-segment qURL ID", PUBLIC_RESOURCE_ID, ".."],
+    ["access-token resource ID", SENSITIVE_ACCESS_TOKEN, "q_0123456789a"],
+    ["access-token qURL ID", PUBLIC_RESOURCE_ID, SENSITIVE_ACCESS_TOKEN],
+  ])("revokeResourceQurl rejects a %s before fetch", async (_label, resourceId, qurlId) => {
+    const fetch = mockFetch({ status: 204 });
+    const client = createClient(fetch);
+
+    await expect(client.revokeResourceQurl(resourceId, qurlId)).rejects.toBeInstanceOf(
+      ValidationError,
+    );
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("revokeResourceQurl preserves the service's revoked error for typed branching", async () => {
+    const fetch = mockFetch({
+      status: 409,
+      body: {
+        error: {
+          title: "Conflict",
+          status: 409,
+          detail: "qURL is not active",
+          code: "revoked",
+        },
+      },
+    });
+    const client = createClient(fetch);
+
+    const error = await client
+      .revokeResourceQurl(PUBLIC_RESOURCE_ID, "q_0123456789a")
+      .catch((e: unknown) => e as QURLError);
+
+    expect(error).toBeInstanceOf(QURLError);
+    expect((error as QURLError).status).toBe(409);
+    expect((error as QURLError).code).toBe("revoked");
+    expect((error as QURLError).detail).toBe("qURL is not active");
+  });
+
   it("createQurlForResource validates shared qURL token options client-side", async () => {
     const fetch = mockFetch({ status: 201, body: { data: {} } });
     const client = createClient(fetch);
@@ -1970,43 +2044,475 @@ describe("QURLClient", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
-  it("deletes a qURL", async () => {
+  it.each([
+    ["public resource ID", PUBLIC_RESOURCE_ID],
+    ["CRID", RESOURCE_CRID],
+    ["legacy resource ID", "r_abc123def45"],
+    ["opaque resource ID containing at_", "future-at_-resource-id"],
+  ])("deletes a qURL by its %s", async (_label, resourceId) => {
     const fetch = mockFetch({ status: 204 });
     const client = createClient(fetch);
 
-    await expect(client.delete("r_abc123def45")).resolves.toBeUndefined();
+    await expect(client.delete(resourceId)).resolves.toBeUndefined();
+    expect(fetch).toHaveBeenCalledWith(
+      `https://api.test.layerv.ai/v1/qurls/${encodeURIComponent(resourceId)}`,
+      expect.objectContaining({ method: "DELETE" }),
+    );
   });
 
-  it("delete rejects q_ (display) IDs client-side", async () => {
-    // Spec: DELETE /v1/qurls/:id requires a resource ID (r_ prefix).
-    // To revoke a single token, the resources-scoped endpoint must be used.
+  it("treats resource IDs as opaque and leaves endpoint grammar to the service", async () => {
     const fetch = mockFetch({ status: 204 });
     const client = createClient(fetch);
 
-    const error = await client.delete("q_3a7f2c8e91b").catch((e: unknown) => e as ValidationError);
+    await expect(client.delete("future-resource-id-format")).resolves.toBeUndefined();
+    expect(fetch).toHaveBeenCalledWith(
+      "https://api.test.layerv.ai/v1/qurls/future-resource-id-format",
+      expect.objectContaining({ method: "DELETE" }),
+    );
+  });
+
+  it("rejects qURL display IDs before a destructive whole-resource delete", async () => {
+    const fetch = mockFetch({ status: 204 });
+    const client = createClient(fetch);
+
+    const displayId = "q_0123456789a";
+    const error = await client.delete(displayId).catch((e: unknown) => e as ValidationError);
+
     expect(error).toBeInstanceOf(ValidationError);
-    expect((error as ValidationError).code).toBe(ERROR_CODE_CLIENT_VALIDATION);
-    expect((error as ValidationError).detail).toContain("r_ prefix");
+    expect((error as ValidationError).detail).toContain("qURL display ID");
+    expect((error as ValidationError).detail).toContain("revokeResourceQurl(resourceId, qurlId)");
+    expect((error as ValidationError).detail).not.toContain(displayId);
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("delete error message reports only the 2-char prefix (no raw ID leak)", async () => {
-    // Info-leak hardening: the error message should not echo the raw
-    // caller-supplied ID (even truncated). Echoing just the prefix
-    // ("q_", "at_", etc.) gives the caller enough context to fix their
-    // code without leaking identifiers into observability pipelines.
+  it("delete rejects access tokens before they can enter a request URL", async () => {
+    const fetch = mockFetch({ status: 204 });
+    const client = createClient(fetch);
+    const accessToken = SENSITIVE_ACCESS_TOKEN;
+
+    const error = await client.delete(accessToken).catch((e: unknown) => e as ValidationError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).code).toBe(ERROR_CODE_CLIENT_VALIDATION);
+    expect((error as ValidationError).detail).toContain("access token");
+    expect((error as ValidationError).detail).toContain("pass a resource ID returned by the API");
+    expect((error as ValidationError).detail).not.toContain(accessToken);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each(["AT_sensitive-token-value", "qurl.link/open?token=AT_sensitive-token-value"])(
+    "delete rejects case-variant credential input %s",
+    async (credential) => {
+      const fetch = mockFetch({ status: 204 });
+
+      const error = await createClient(fetch)
+        .delete(credential)
+        .catch((caught: unknown) => caught as ValidationError);
+
+      expect(error).toMatchObject({
+        code: ERROR_CODE_CLIENT_VALIDATION,
+        detail: expect.stringContaining("access token"),
+      });
+      expect((error as ValidationError).detail).not.toContain(credential);
+      expect(fetch).not.toHaveBeenCalled();
+    },
+  );
+
+  it("delete rejects a full qURL link before its token can enter a request URL", async () => {
+    const fetch = mockFetch({ status: 204 });
+    const client = createClient(fetch);
+    const qurlLink = `https://qurl.link/#${SENSITIVE_ACCESS_TOKEN}`;
+
+    const error = await client.delete(qurlLink).catch((e: unknown) => e as ValidationError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).detail).toContain("access token");
+    expect((error as ValidationError).detail).not.toContain(qurlLink);
+    expect((error as ValidationError).detail).not.toContain(SENSITIVE_ACCESS_TOKEN);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("delete rejects a qURL link when its credential is in the query", async () => {
+    const fetch = mockFetch({ status: 204 });
+    const client = createClient(fetch);
+    const qurlLink = `https://qurl.link/open?token=${SENSITIVE_ACCESS_TOKEN}`;
+
+    const error = await client.delete(qurlLink).catch((e: unknown) => e as ValidationError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).detail).toContain("access token");
+    expect((error as ValidationError).detail).not.toContain(qurlLink);
+    expect((error as ValidationError).detail).not.toContain(SENSITIVE_ACCESS_TOKEN);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("delete diagnoses a target URL without claiming it contains an access token", async () => {
+    const fetch = mockFetch({ status: 204 });
+    const client = createClient(fetch);
+    const targetUrl = "https://docs.example.com/at_a_glance";
+
+    const error = await client.delete(targetUrl).catch((e: unknown) => e as ValidationError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).detail).toContain("must be an identifier, not a URL");
+    expect((error as ValidationError).detail).not.toContain("access token");
+    expect((error as ValidationError).detail).not.toContain(targetUrl);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("does not misdiagnose a benign at_-prefixed query value as a credential", async () => {
+    const fetch = mockFetch({ status: 204 });
+    const targetUrl = "https://docs.example.com/guide?tab=at_a_glance";
+
+    const error = await createClient(fetch)
+      .delete(targetUrl)
+      .catch((caught: unknown) => caught as ValidationError);
+
+    expect(error.detail).toContain("must be an identifier, not a URL");
+    expect(error.detail).not.toContain("access token");
+    expect(error.detail).not.toContain(targetUrl);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("diagnoses a canonical access token pasted from a custom-domain URL", async () => {
+    const fetch = mockFetch({ status: 204 });
+    const qurlLink = "https://links.example.com/at_abcdefghijklmnopqrstuv";
+
+    const error = await createClient(fetch)
+      .delete(qurlLink)
+      .catch((caught: unknown) => caught as ValidationError);
+
+    expect(error.detail).toContain("access token");
+    expect(error.detail).not.toContain(qurlLink);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("delete rejects a scheme-less link carrying an access token in its query", async () => {
+    const fetch = mockFetch({ status: 204 });
+    const client = createClient(fetch);
+    const qurlLink = `qurl.link/open?token=${SENSITIVE_ACCESS_TOKEN}`;
+
+    const error = await client.delete(qurlLink).catch((e: unknown) => e as ValidationError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).detail).toContain("access token");
+    expect((error as ValidationError).detail).not.toContain(qurlLink);
+    expect((error as ValidationError).detail).not.toContain(SENSITIVE_ACCESS_TOKEN);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("delete rejects a scheme-less link whose first query value is an access token", async () => {
+    const fetch = mockFetch({ status: 204 });
+    const client = createClient(fetch);
+    const qurlLink = `qurl.link/open?${SENSITIVE_ACCESS_TOKEN}`;
+
+    const error = await client.delete(qurlLink).catch((e: unknown) => e as ValidationError);
+
+    expect(error).toMatchObject({
+      code: ERROR_CODE_CLIENT_VALIDATION,
+      detail: expect.stringContaining("access token"),
+    });
+    expect((error as ValidationError).detail).not.toContain(qurlLink);
+    expect((error as ValidationError).detail).not.toContain(SENSITIVE_ACCESS_TOKEN);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("delete rejects a scheme-less link whose access token is a path segment", async () => {
+    const fetch = mockFetch({ status: 204 });
+    const qurlLink = `qurl.link/${SENSITIVE_ACCESS_TOKEN}`;
+
+    const error = await createClient(fetch)
+      .delete(qurlLink)
+      .catch((caught: unknown) => caught as ValidationError);
+
+    expect(error).toMatchObject({
+      code: ERROR_CODE_CLIENT_VALIDATION,
+      detail: expect.stringContaining("access token"),
+    });
+    expect((error as ValidationError).detail).not.toContain(qurlLink);
+    expect((error as ValidationError).detail).not.toContain(SENSITIVE_ACCESS_TOKEN);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("delete rejects a percent-encoded bare access token", async () => {
+    const fetch = mockFetch({ status: 204 });
+    const encodedToken = "%61t_sensitive-token-value";
+
+    const error = await createClient(fetch)
+      .delete(encodedToken)
+      .catch((caught: unknown) => caught as ValidationError);
+
+    expect(error).toMatchObject({
+      code: ERROR_CODE_CLIENT_VALIDATION,
+      detail: expect.stringContaining("access token"),
+    });
+    expect((error as ValidationError).detail).not.toContain(encodedToken);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("gives non-resource namespaces a generic recovery hint for pasted credentials", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+
+    const error = await createClient(fetch)
+      .getWebhook(`Bearer ${SENSITIVE_ACCESS_TOKEN}`)
+      .catch((caught: unknown) => caught as ValidationError);
+
+    expect(error.detail).toContain("pass the identifier returned by the API");
+    expect(error.detail).not.toContain(SENSITIVE_ACCESS_TOKEN);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each(["Bearer at_sensitive-token-value", "token:at_sensitive-token-value"])(
+    "delete rejects the pasted credential form %s",
+    async (credential) => {
+      const fetch = mockFetch({ status: 204 });
+      const error = await createClient(fetch)
+        .delete(credential)
+        .catch((caught: unknown) => caught as ValidationError);
+
+      expect(error).toMatchObject({
+        code: ERROR_CODE_CLIENT_VALIDATION,
+        detail: expect.stringContaining("access token"),
+      });
+      expect((error as ValidationError).detail).not.toContain(credential);
+      expect(fetch).not.toHaveBeenCalled();
+    },
+  );
+
+  it("delete rejects an access token pasted after a non-URL path fragment", async () => {
+    const fetch = mockFetch({ status: 204 });
+    const credential = `open/${SENSITIVE_ACCESS_TOKEN}`;
+
+    const error = await createClient(fetch)
+      .delete(credential)
+      .catch((caught: unknown) => caught as ValidationError);
+
+    expect(error.detail).toContain("access token");
+    expect(error.detail).not.toContain(SENSITIVE_ACCESS_TOKEN);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("delete rejects a percent-encoded qURL link before its token can reach request logs", async () => {
+    const fetch = mockFetch({ status: 204 });
+    const client = createClient(fetch);
+    const encodedLink = encodeURIComponent(`https://qurl.link/#${SENSITIVE_ACCESS_TOKEN}`);
+
+    const error = await client.delete(encodedLink).catch((e: unknown) => e as ValidationError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).detail).toContain("access token");
+    expect((error as ValidationError).detail).not.toContain(encodedLink);
+    expect((error as ValidationError).detail).not.toContain(SENSITIVE_ACCESS_TOKEN);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("delete rejects a repeatedly encoded qURL link before its token can reach request logs", async () => {
+    const fetch = mockFetch({ status: 204 });
+    const client = createClient(fetch);
+    const encodedLink = encodeURIComponent(
+      encodeURIComponent(`https://qurl.link/#${SENSITIVE_ACCESS_TOKEN}`),
+    );
+
+    const error = await client.delete(encodedLink).catch((e: unknown) => e as ValidationError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).detail).toContain("access token");
+    expect((error as ValidationError).detail).not.toContain(encodedLink);
+    expect((error as ValidationError).detail).not.toContain(SENSITIVE_ACCESS_TOKEN);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("delete rejects a triple-encoded qURL link at the bounded decode limit", async () => {
+    const fetch = mockFetch({ status: 204 });
+    const client = createClient(fetch);
+    const encodedLink = encodeURIComponent(
+      encodeURIComponent(encodeURIComponent(`https://qurl.link/#${SENSITIVE_ACCESS_TOKEN}`)),
+    );
+
+    const error = await client.delete(encodedLink).catch((e: unknown) => e as ValidationError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).detail).toContain("access token");
+    expect((error as ValidationError).detail).not.toContain(encodedLink);
+    expect((error as ValidationError).detail).not.toContain(SENSITIVE_ACCESS_TOKEN);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each(["%2e", "%2E", "%2e%2e", "%252e", "%252e%252e"])(
+    "delete rejects the encoded URL dot-segment identifier %s",
+    async (resourceId) => {
+      const fetch = mockFetch({ status: 204 });
+      const client = createClient(fetch);
+
+      await expect(client.delete(resourceId)).rejects.toMatchObject({
+        code: ERROR_CODE_CLIENT_VALIDATION,
+        detail: expect.stringContaining("invalid URL path segment"),
+      });
+      expect(fetch).not.toHaveBeenCalled();
+    },
+  );
+
+  it("leaves input beyond the three-pass decode inspection bound to the service", async () => {
+    const resourceId = "%2525252e";
+    const fetch = mockFetch({ status: 204 });
+
+    await expect(createClient(fetch).delete(resourceId)).resolves.toBeUndefined();
+    expect(fetch).toHaveBeenCalledWith(
+      `https://api.test.layerv.ai/v1/qurls/${encodeURIComponent(resourceId)}`,
+      expect.objectContaining({ method: "DELETE" }),
+    );
+  });
+
+  it("rejects a pre-encoded qURL display ID before whole-resource deletion", async () => {
+    const fetch = mockFetch({ status: 204 });
+
+    await expect(createClient(fetch).delete("%71_0123456789a")).rejects.toMatchObject({
+      code: ERROR_CODE_CLIENT_VALIDATION,
+      detail: expect.stringContaining("qURL display ID"),
+    });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("deleteResource leaves qURL display-ID resolution to the service", async () => {
+    const fetch = mockFetch({ status: 204 });
+
+    await expect(createClient(fetch).deleteResource("q_0123456789a")).resolves.toBeUndefined();
+    expect(fetch).toHaveBeenCalledWith(
+      "https://api.test.layerv.ai/v1/resources/q_0123456789a",
+      expect.objectContaining({ method: "DELETE" }),
+    );
+  });
+
+  it("rejects future q_-prefixed display IDs before whole-resource deletion", async () => {
+    const fetch = mockFetch({ status: 204 });
+
+    await expect(createClient(fetch).delete("q_future-display-id")).rejects.toMatchObject({
+      code: ERROR_CODE_CLIENT_VALIDATION,
+      detail: expect.stringContaining("qURL display ID"),
+    });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each(["Q_0123456789a", "%51_0123456789a"])(
+    "rejects case-variant qURL display ID %s before whole-resource deletion",
+    async (displayId) => {
+      const fetch = mockFetch({ status: 204 });
+
+      await expect(createClient(fetch).delete(displayId)).rejects.toMatchObject({
+        code: ERROR_CODE_CLIENT_VALIDATION,
+        detail: expect.stringContaining("qURL display ID"),
+      });
+      expect(fetch).not.toHaveBeenCalled();
+    },
+  );
+
+  it("bounds path identifier inspection before repeated decoding", async () => {
+    const accepted = "x".repeat(4096);
+    const acceptedFetch = mockFetch({ status: 204 });
+    await expect(createClient(acceptedFetch).delete(accepted)).resolves.toBeUndefined();
+    expect(acceptedFetch).toHaveBeenCalledTimes(1);
+
+    const rejected = "x".repeat(4097);
+    const rejectedFetch = mockFetch({ status: 204 });
+    const error = await createClient(rejectedFetch)
+      .delete(rejected)
+      .catch((caught: unknown) => caught as ValidationError);
+    expect(error).toMatchObject({
+      code: ERROR_CODE_CLIENT_VALIDATION,
+      detail: expect.stringContaining("4096 characters or fewer"),
+    });
+    expect((error as ValidationError).detail).not.toContain(rejected);
+    expect(rejectedFetch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["createPortal", (client: QURLClient, id: string) => client.createPortal(id)],
+    ["getResource", (client: QURLClient, id: string) => client.getResource(id)],
+    [
+      "updateResource",
+      (client: QURLClient, id: string) => client.updateResource(id, { alias: "updated-alias" }),
+    ],
+    ["deleteResource", (client: QURLClient, id: string) => client.deleteResource(id)],
+    [
+      "createQurlForResource",
+      (client: QURLClient, id: string) => client.createQurlForResource(id, {}),
+    ],
+    [
+      "revokeResourceQurl",
+      (client: QURLClient, id: string) => client.revokeResourceQurl(id, "q_0123456789a"),
+    ],
+    [
+      "updateResourceQurl",
+      (client: QURLClient, id: string) =>
+        client.updateResourceQurl(id, "q_0123456789a", { extend_by: "1h" }),
+    ],
+    ["listResourceSessions", (client: QURLClient, id: string) => client.listResourceSessions(id)],
+    [
+      "terminateAllResourceSessions",
+      (client: QURLClient, id: string) => client.terminateAllResourceSessions(id),
+    ],
+    [
+      "terminateResourceSession",
+      (client: QURLClient, id: string) => client.terminateResourceSession(id, "session-1"),
+    ],
+  ])("%s accepts current public resource identifiers", async (_name, invoke) => {
+    for (const id of [PUBLIC_RESOURCE_ID, RESOURCE_CRID]) {
+      const fetch = mockFetch({ status: 204 });
+      const responseError = await invoke(createClient(fetch), id).then(
+        () => null,
+        (caught: unknown) => caught,
+      );
+      if (responseError !== null) {
+        expect(responseError).toMatchObject({ detail: expect.stringContaining("Unexpected 204") });
+      }
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(fetch).mock.calls[0][0]).toContain(encodeURIComponent(id));
+    }
+  });
+
+  it.each([
+    ["get", (client: QURLClient, id: string) => client.get(id)],
+    ["update", (client: QURLClient, id: string) => client.update(id, { label: "updated" })],
+    ["extend", (client: QURLClient, id: string) => client.extend(id, { extend_by: "1h" })],
+    ["mintLink", (client: QURLClient, id: string) => client.mintLink(id, {})],
+  ])("%s rejects a case-variant bare access token before fetch", async (_name, invoke) => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+
+    await expect(invoke(createClient(fetch), "AT_sensitive-token-value")).rejects.toMatchObject({
+      code: ERROR_CODE_CLIENT_VALIDATION,
+      detail: expect.stringContaining("access token"),
+    });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([PUBLIC_RESOURCE_ID, RESOURCE_CRID])(
+    "resourceById accepts current public resource identifier %s",
+    (id) => {
+      expect(() => createClient(mockFetch({ status: 204 })).resourceById(id)).not.toThrow();
+    },
+  );
+
+  it.each([".", ".."])("delete rejects the URL dot-segment identifier %s", async (resourceId) => {
     const fetch = mockFetch({ status: 204 });
     const client = createClient(fetch);
 
-    const error = await client
-      .delete("q_3a7f2c8e91b_sensitive_suffix")
-      .catch((e: unknown) => e as ValidationError);
+    const error = await client.delete(resourceId).catch((e: unknown) => e as ValidationError);
+
     expect(error).toBeInstanceOf(ValidationError);
-    const detail = (error as ValidationError).detail;
-    expect(detail).toContain('starting with "q_"');
-    // Must not echo the full ID or any sensitive suffix.
-    expect(detail).not.toContain("3a7f2c8e91b");
-    expect(detail).not.toContain("sensitive_suffix");
+    expect((error as ValidationError).code).toBe(ERROR_CODE_CLIENT_VALIDATION);
+    expect((error as ValidationError).detail).toContain("invalid URL path segment");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("keeps opaque resource IDs inside one encoded URL segment", async () => {
+    const fetch = mockFetch({ status: 204 });
+    const client = createClient(fetch);
+
+    await expect(client.delete("a/../b?force=true")).resolves.toBeUndefined();
+    expect(fetch).toHaveBeenCalledWith(
+      "https://api.test.layerv.ai/v1/qurls/a%2F..%2Fb%3Fforce%3Dtrue",
+      expect.objectContaining({ method: "DELETE" }),
+    );
   });
 
   it("delete rejects non-string ids with a structured ValidationError (untyped-JS safety)", async () => {
@@ -2025,35 +2531,22 @@ describe("QURLClient", () => {
         .catch((e: unknown) => e as ValidationError);
       expect(error).toBeInstanceOf(ValidationError);
       expect((error as ValidationError).code).toBe(ERROR_CODE_CLIENT_VALIDATION);
-      // Must mention the type — operators need to know what came in.
-      const detail = (error as ValidationError).detail;
-      expect(detail).toMatch(/undefined|null|number|object/);
+      expect((error as ValidationError).detail).toContain("delete: id is required");
+      expect((error as ValidationError).detail).toContain(
+        badId === null ? "got null" : `got ${typeof badId}`,
+      );
     }
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("delete gives a distinct error for too-short / empty IDs", async () => {
-    // An empty string or 1-2 char input isn't a plausible ID — the
-    // "starting with X" wording would just echo noise (or nothing) and
-    // confuse callers. Assert the short-input branch reports the
-    // observed length so the caller sees what they actually sent.
-    //
-    // Also covers the edge case where the input is EXACTLY the prefix
-    // with no suffix (`"r_"` or `"q_"`): these pass/fail `startsWith`
-    // differently, but the length check runs first and catches both
-    // uniformly. Without this ordering, bare `"r_"` would slip through
-    // the prefix check and hit `DELETE /v1/qurls/r_` on the wire.
+  it("delete rejects empty and whitespace-only IDs", async () => {
     const fetch = mockFetch({ status: 204 });
     const client = createClient(fetch);
 
-    for (const badId of ["", "x", "ab", "r_", "q_", "at"]) {
+    for (const badId of ["", " ", "\t"]) {
       const error = await client.delete(badId).catch((e: unknown) => e as ValidationError);
       expect(error).toBeInstanceOf(ValidationError);
-      const detail = (error as ValidationError).detail;
-      expect(detail).toContain(`got ${badId.length} character`);
-      // Short-input branch must NOT fall through to the "starting with"
-      // wording that's meant for plausible-but-wrong-prefix IDs.
-      expect(detail).not.toContain("starting with");
+      expect((error as ValidationError).detail).toContain("delete: id is required");
     }
     expect(fetch).not.toHaveBeenCalled();
   });
@@ -2082,6 +2575,122 @@ describe("QURLClient", () => {
     expect(deleteError).toBeInstanceOf(ValidationError);
     expect(deleteError.detail).toContain("leading or trailing whitespace");
 
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("shared path id validation rejects URL dot segments before encoding", async () => {
+    const fetch = mockFetch({ status: 204 });
+    const client = createClient(fetch);
+
+    const error = await client.deleteResource("..").catch((e: unknown) => e as ValidationError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).code).toBe(ERROR_CODE_CLIENT_VALIDATION);
+    expect((error as ValidationError).detail).toContain("invalid URL path segment");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("applies shared URL and dot-segment safety to non-resource namespaces", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+
+    await expect(client.getWebhook("https://example.com/at_a_glance")).rejects.toMatchObject({
+      code: ERROR_CODE_CLIENT_VALIDATION,
+      detail: expect.stringContaining("identifier, not a URL"),
+    });
+    await expect(client.getDomain("..")).rejects.toMatchObject({
+      code: ERROR_CODE_CLIENT_VALIDATION,
+      detail: expect.stringContaining("invalid URL path segment"),
+    });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("applies path safety and length bounds to secondary qURL IDs", async () => {
+    const fetch = mockFetch({ status: 204 });
+    const client = createClient(fetch);
+
+    await expect(
+      client.revokeResourceQurl("resource-id", "Bearer at_sensitive-token-value"),
+    ).rejects.toMatchObject({
+      code: ERROR_CODE_CLIENT_VALIDATION,
+      detail: expect.stringContaining("access token"),
+    });
+    await expect(client.revokeResourceQurl("resource-id", "x".repeat(4097))).rejects.toMatchObject({
+      code: ERROR_CODE_CLIENT_VALIDATION,
+      detail: expect.stringContaining("4096 characters or fewer"),
+    });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([SENSITIVE_ACCESS_TOKEN, `https://qurl.link/#${SENSITIVE_ACCESS_TOKEN}`])(
+    "shared path id validation rejects credential input %s",
+    async (credential) => {
+      const fetch = mockFetch({ status: 200, body: { data: {} } });
+      const client = createClient(fetch);
+
+      const error = await client
+        .getResource(credential)
+        .catch((e: unknown) => e as ValidationError);
+
+      expect(error).toBeInstanceOf(ValidationError);
+      expect((error as ValidationError).detail).toContain("access token");
+      expect((error as ValidationError).detail).not.toContain(credential);
+      expect(fetch).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not apply resource access-token grammar to unrelated identifier namespaces", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+
+    await client.getDomain("at_future-domain-id");
+    await client.getWebhook("at_future-webhook-id");
+    await client.updateApiKey("at_future-api-key-id", { name: "renamed" });
+    await client.terminateResourceSession("resource-id", "at_future-session-id");
+
+    expect(fetch).toHaveBeenNthCalledWith(
+      1,
+      "https://api.test.layerv.ai/v1/domains/at_future-domain-id",
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(fetch).toHaveBeenNthCalledWith(
+      2,
+      "https://api.test.layerv.ai/v1/webhooks/at_future-webhook-id",
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(fetch).toHaveBeenNthCalledWith(
+      3,
+      "https://api.test.layerv.ai/v1/api-keys/at_future-api-key-id",
+      expect.objectContaining({ method: "PATCH" }),
+    );
+    expect(fetch).toHaveBeenNthCalledWith(
+      4,
+      "https://api.test.layerv.ai/v1/resources/resource-id/sessions/at_future-session-id",
+      expect.objectContaining({ method: "DELETE" }),
+    );
+  });
+
+  it("keeps a bare hostname valid in the domain identifier namespace", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+
+    await createClient(fetch).getDomain("links.example.com");
+
+    expect(fetch).toHaveBeenCalledWith(
+      "https://api.test.layerv.ai/v1/domains/links.example.com",
+      expect.objectContaining({ method: "GET" }),
+    );
+  });
+
+  it("labels an invalid terminateResourceSession session ID accurately", async () => {
+    const fetch = mockFetch({ status: 204 });
+    const client = createClient(fetch);
+
+    const error = await client
+      .terminateResourceSession("resource-id", " ")
+      .catch((e: unknown) => e as ValidationError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).detail).toContain("session id is required");
     expect(fetch).not.toHaveBeenCalled();
   });
 
