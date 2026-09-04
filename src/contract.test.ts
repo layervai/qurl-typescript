@@ -372,6 +372,22 @@ const METHOD_CASES: MethodCase[] = [
     invoke: (c) => c.createQurlForResource("r_x"),
   },
   {
+    method: "shareResource",
+    verb: "POST",
+    template: "/v1/resources/{id}/share",
+    mockBody: {
+      data: {
+        qurl_id: "q_y",
+        qurl: "https://qurl.link/#qv2t1.example",
+        type: "url",
+        expires_at: "2026-03-09T15:35:00Z",
+        expires_in_seconds: 300,
+        single_use: false,
+      },
+    },
+    invoke: (c) => c.shareResource("r_x"),
+  },
+  {
     method: "revokeResourceQurl",
     verb: "DELETE",
     template: "/v1/resources/{id}/qurls/{qurl_id}",

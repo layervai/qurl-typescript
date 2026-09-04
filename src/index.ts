@@ -1,10 +1,16 @@
 export { ProtectedResource, QURLClient } from "./client.js";
+export { CRIDVerificationError, ShareLink } from "./share.js";
+export type { CRIDVerificationErrorCode, ShareLinkInit, ShareLinkJSON } from "./share.js";
 export {
   AuthenticationError,
   AuthorizationError,
   createError,
   ERROR_CODE_AMBIGUOUS_RESOURCE,
   ERROR_CODE_CLIENT_VALIDATION,
+  ERROR_CODE_CRID_MISMATCH,
+  ERROR_CODE_INVALID_CRID,
+  ERROR_CODE_INVALID_CRID_KEY,
+  ERROR_CODE_MISSING_CRID,
   ERROR_CODE_NETWORK,
   ERROR_CODE_RESOURCE_NOT_FOUND,
   ERROR_CODE_RUNTIME,
@@ -97,6 +103,7 @@ export type {
   Session,
   SessionListOutput,
   SessionTerminateOutput,
+  ShareResourceOptions,
   TombstoneInfo,
   UnpaginatedOutput,
   UpdateApiKeyInput,

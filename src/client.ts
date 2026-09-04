@@ -13,6 +13,7 @@ import {
   ValidationError,
 } from "./errors.js";
 import { stripTrailingSlashes } from "./internal.js";
+import { ShareLink } from "./share.js";
 import type {
   AccessPolicy,
   AccessToken,
@@ -76,6 +77,7 @@ import type {
   Session,
   SessionListOutput,
   SessionTerminateOutput,
+  ShareResourceOptions,
   UpdateApiKeyInput,
   UpdateCustomerInput,
   UpdateInput,
@@ -265,6 +267,16 @@ const CREATE_QURL_FOR_RESOURCE_FIELD_KEYS = [
   "access_policy",
   "target_path",
 ] as const satisfies readonly (keyof CreateQurlForResourceInput)[];
+
+const SHARE_RESOURCE_OPTION_KEYS = [
+  "ttlSeconds",
+] as const satisfies readonly (keyof ShareResourceOptions)[];
+
+assertExhaustive<
+  Exclude<keyof ShareResourceOptions, (typeof SHARE_RESOURCE_OPTION_KEYS)[number]> extends never
+    ? true
+    : never
+>(true);
 
 assertExhaustive<
   Exclude<
@@ -2711,6 +2723,92 @@ export class QURLClient {
       normalized,
       options,
     );
+  }
+
+  /**
+   * Mint a fresh, short-lived share link for an existing resource ID or CRID.
+   * The returned link is secret and is not retrievable after this response.
+   * If you hold the trusted resource DER SPKI, call `ShareLink.verifyCrid()`
+   * before delivery to verify that the response CRID derives from that key.
+   */
+  async shareResource(
+    id: string,
+    options: ShareResourceOptions = {},
+    requestOptions?: RequestOptions,
+  ): Promise<ShareLink> {
+    requireNonEmptyId(id, "shareResource", "resource id");
+    requireObjectInput(options, "shareResource");
+    requireNoUnknownFields(options, SHARE_RESOURCE_OPTION_KEYS, "shareResource");
+    const body: { ttl_seconds?: number } = {};
+    if (options.ttlSeconds !== undefined) {
+      if (
+        typeof options.ttlSeconds !== "number" ||
+        !Number.isSafeInteger(options.ttlSeconds) ||
+        options.ttlSeconds <= 0
+      ) {
+        throw clientValidationError("shareResource: ttlSeconds must be a positive safe integer");
+      }
+      body.ttl_seconds = options.ttlSeconds;
+    }
+    const data = await this.request<Record<string, unknown>>(
+      "POST",
+      `/v1/resources/${encodeURIComponent(id)}/share`,
+      body,
+      requestOptions,
+    );
+    if (typeof data?.qurl !== "string" || data.qurl.trim() === "") {
+      throw unexpectedResponseError("shareResource: response is missing qurl");
+    }
+    const wire = data;
+    for (const field of ["qurl_id", "crid", "type", "expires_at"] as const) {
+      if (wire[field] !== undefined && wire[field] !== null && typeof wire[field] !== "string") {
+        throw unexpectedResponseError(`shareResource: response has invalid ${field}`);
+      }
+    }
+    for (const field of ["qurl_id", "type"] as const) {
+      if (
+        typeof wire[field] === "string" &&
+        (wire[field].trim() === "" || wire[field].trim() !== wire[field])
+      ) {
+        throw unexpectedResponseError(`shareResource: response has invalid ${field}`);
+      }
+    }
+    if (
+      wire.expires_in_seconds !== undefined &&
+      wire.expires_in_seconds !== null &&
+      (typeof wire.expires_in_seconds !== "number" ||
+        !Number.isSafeInteger(wire.expires_in_seconds) ||
+        wire.expires_in_seconds < 0)
+    ) {
+      throw unexpectedResponseError("shareResource: response has invalid expires_in_seconds");
+    }
+    if (
+      wire.single_use !== undefined &&
+      wire.single_use !== null &&
+      typeof wire.single_use !== "boolean"
+    ) {
+      throw unexpectedResponseError("shareResource: response has invalid single_use");
+    }
+    const expiresAt = parseApiDate(
+      typeof wire.expires_at === "string" ? wire.expires_at : undefined,
+    );
+    if (typeof wire.expires_at === "string" && expiresAt === undefined) {
+      throw unexpectedResponseError("shareResource: response has invalid expires_at");
+    }
+    return new ShareLink({
+      // Repair transport-only edge whitespace on the one-time credential;
+      // ancillary identifiers fail closed instead of being normalized.
+      link: data.qurl.trim(),
+      qurlId: typeof wire.qurl_id === "string" ? wire.qurl_id : undefined,
+      // Preserve an explicit empty string so verifyCrid can distinguish a
+      // malformed CRID from an omitted additive field on an older response.
+      crid: typeof wire.crid === "string" ? wire.crid : undefined,
+      type: typeof wire.type === "string" ? wire.type : undefined,
+      expiresAt,
+      expiresInSeconds:
+        typeof wire.expires_in_seconds === "number" ? wire.expires_in_seconds : undefined,
+      singleUse: typeof wire.single_use === "boolean" ? wire.single_use : undefined,
+    });
   }
 
   /** Revoke a specific qURL token on a resource. */

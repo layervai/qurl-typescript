@@ -506,6 +506,16 @@ export interface ResourceListOutput extends PaginatedOutput {
   resources: Resource[];
 }
 
+/** Options for minting a fresh share link from an existing resource ID or CRID. */
+export interface ShareResourceOptions {
+  /**
+   * Requested lifetime in positive whole seconds. Omit to use the platform
+   * default; an explicit zero is rejected to avoid silently lengthening a
+   * computed lifetime.
+   */
+  ttlSeconds?: number;
+}
+
 /** Input for minting a qURL against an existing resource. */
 export type CreateQurlForResourceInput = Omit<
   CreateInput,

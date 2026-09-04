@@ -109,6 +109,49 @@ qURL Connector assignment and registration use native UDP through
 `qurl-connector` and `qurl-go`. This TypeScript package handles browser and
 management-plane qURL APIs; it does not expose an HTTP enrollment API.
 
+If you already hold a resource ID or CRID, mint a fresh share link directly:
+
+```typescript
+const share = await client.shareResource(resourceId, { ttlSeconds: 300 });
+// Optional: verify the response CRID against DER SPKI bytes you already trust
+// before the secret leaves this process.
+await share.verifyCrid(resourcePublicKeyDer);
+await deliverToRecipient(share.link); // Secret; returned once and not retrievable
+console.log(share.qurlId); // Safe handle for revoking only this link later
+```
+
+`shareResource` returns the current share-safe `#qv2t1...` link. Recipients
+open that URL directly in the qURL browser flow; native programmatic opening
+uses qurl-go. The TypeScript client's `enterPortal` method is the legacy
+credentialed HTTP resolver for `at_` links and deliberately refuses to send a
+qv2 credential fragment to `/v1/resolve`.
+
+`verifyCrid` verifies that the response CRID derives from the trusted resource
+key; it does not independently bind the secret link fragment to that key.
+It intentionally follows qurl-go's environment-agnostic key-match rule: CRID
+version zero is rejected as reserved, while every other structurally valid
+version is accepted and environment classification is not part of key-to-digest
+verification. CRIDs use their canonical lowercase base32 spelling; uppercase or
+mixed-case spellings fail closed. Binary inputs of any length are hashed;
+`invalid_crid_key` is reserved for non-binary or unreadable (detached) runtime
+values, and a readable binary key that does not match reports `crid_mismatch`.
+Use `error instanceof CRIDVerificationError` (or `error.status === 0`) to
+distinguish these local verification failures from a server error that happens
+to use the same problem code.
+`qurlId` and `singleUse` are undefined when omitted by older service responses.
+`ShareLink` keeps `.link` directly readable but redacts it from JSON, Node
+inspection, and object spread to reduce accidental credential logging. Read
+`.link` directly before delivery; do not spread or clone a `ShareLink`, because
+those operations deliberately omit the credential. Browser developer consoles
+can still display non-enumerable properties, so do not log the object there.
+The constructor snapshots a caller-provided expiry, and the `ShareLink`
+properties are frozen, but its returned `expiresAt` value remains a normal
+mutable `Date`; copy it before applying in-place `Date` setters.
+
+Omitting `ttlSeconds` matches qurl-go's zero-value behavior and requests the
+platform default. TypeScript additionally rejects an explicit zero so a
+computed countdown cannot silently become a longer-lived default credential.
+
 ## Opening Portals
 
 Most recipients open qURL links directly and do not use this SDK at all. If
@@ -191,6 +234,7 @@ console.log(`Access granted to ${access.target_url} for ${access.access_grant?.e
 | `listResources(input?)` / `listAllResources(input?)` / `createResource(input)` / `getResource(id)` | Resource management |
 | `updateResource(id, input)` / `deleteResource(id)` | Update or revoke resources |
 | `createQurlForResource(id, input?)` | Mint a qURL for an existing resource |
+| `shareResource(id, options?, requestOptions?)` | Mint a fresh share-safe link and optional CRID proof for an existing resource |
 | `updateResourceQurl(id, qurlId, input)` / `revokeResourceQurl(id, qurlId)` | Manage one token on a resource |
 | `listResourceSessions(id)` / `terminateAllResourceSessions(id)` / `terminateResourceSession(id, sessionId)` | Inspect or terminate active sessions |
 | `listConnectorInstallations(input?)` / `listAllConnectorInstallations(input?)` | List connector installations |
@@ -249,6 +293,7 @@ import {
   NotFoundError,
   RateLimitError,
   ValidationError,
+  CRIDVerificationError,
 } from '@layervai/qurl';
 
 try {
@@ -278,6 +323,7 @@ try {
 | `ServerError` | 5xx | Server-side failure |
 | `NetworkError` | — | Connection failure |
 | `TimeoutError` | — | Request exceeded timeout |
+| `CRIDVerificationError` | — | Share-response CRID is missing, malformed, or does not match a trusted resource key |
 
 Client-detected failures use `status: 0` with a discriminating `code`:
 `"client_validation"` for bad input caught before a request, and — on the
@@ -285,6 +331,14 @@ portal surface — `"resource_not_found"` / `"ambiguous_resource"` when
 `connectorResource` cannot resolve a connector id to exactly one resource,
 and `"unexpected_response"` when a response is missing required fields (e.g.
 `enterPortal` failing closed on a grant with no resource URL).
+
+`ShareLink.verifyCrid()` uses `CRIDVerificationError` with `status: 0` and one
+of `"missing_crid"`, `"invalid_crid"`, `"invalid_crid_key"`, or
+`"crid_mismatch"`. It verifies the response CRID against DER SPKI bytes the
+caller already trusts; it does not prove that the secret link fragment belongs
+to that key. Verification succeeds by resolving without a value, so always
+`await` it before delivery. A runtime without Web Crypto SubtleCrypto rejects
+with `RuntimeError` instead of treating an unavailable verifier as success.
 
 ## Pagination
 
