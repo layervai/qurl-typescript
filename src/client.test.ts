@@ -2095,7 +2095,7 @@ describe("QURLClient", () => {
     expect(error).toBeInstanceOf(ValidationError);
     expect((error as ValidationError).code).toBe(ERROR_CODE_CLIENT_VALIDATION);
     expect((error as ValidationError).detail).toContain("access token");
-    expect((error as ValidationError).detail).toContain("revokeResourceQurl(resourceId, qurlId)");
+    expect((error as ValidationError).detail).toContain("pass a resource ID returned by the API");
     expect((error as ValidationError).detail).not.toContain(accessToken);
     expect(fetch).not.toHaveBeenCalled();
   });
@@ -2171,6 +2171,38 @@ describe("QURLClient", () => {
     expect((error as ValidationError).detail).toContain("access token");
     expect((error as ValidationError).detail).not.toContain(qurlLink);
     expect((error as ValidationError).detail).not.toContain(SENSITIVE_ACCESS_TOKEN);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("delete rejects a scheme-less link whose first query value is an access token", async () => {
+    const fetch = mockFetch({ status: 204 });
+    const client = createClient(fetch);
+    const qurlLink = `qurl.link/open?${SENSITIVE_ACCESS_TOKEN}`;
+
+    const error = await client.delete(qurlLink).catch((e: unknown) => e as ValidationError);
+
+    expect(error).toMatchObject({
+      code: ERROR_CODE_CLIENT_VALIDATION,
+      detail: expect.stringContaining("access token"),
+    });
+    expect(error.detail).not.toContain(qurlLink);
+    expect(error.detail).not.toContain(SENSITIVE_ACCESS_TOKEN);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("delete rejects a percent-encoded bare access token", async () => {
+    const fetch = mockFetch({ status: 204 });
+    const encodedToken = "%61t_sensitive-token-value";
+
+    const error = await createClient(fetch)
+      .delete(encodedToken)
+      .catch((caught: unknown) => caught as ValidationError);
+
+    expect(error).toMatchObject({
+      code: ERROR_CODE_CLIENT_VALIDATION,
+      detail: expect.stringContaining("access token"),
+    });
+    expect(error.detail).not.toContain(encodedToken);
     expect(fetch).not.toHaveBeenCalled();
   });
 

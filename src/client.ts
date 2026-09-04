@@ -787,7 +787,7 @@ function pageFromMeta<T extends Record<string, unknown>>(
 // opaque and future credential formats may not retain the `at_` prefix. The
 // delimiter requirement cannot collide with current base64url public keys,
 // standard-base64 keys, or base32 CRIDs.
-const PATH_EMBEDDED_ACCESS_TOKEN_RE = /[&#=:\s]at_/i;
+const PATH_EMBEDDED_ACCESS_TOKEN_RE = /[?&#=:\s]at_/i;
 const MAX_PATH_ID_DECODE_PASSES = 3;
 const MAX_PATH_ID_LENGTH = 4096;
 
@@ -802,6 +802,8 @@ interface PathIdValidationOptions {
 
 const REVOKE_INDIVIDUAL_QURL_RECOVERY =
   "revoke individual tokens with revokeResourceQurl(resourceId, qurlId)";
+const DELETE_RESOURCE_RECOVERY =
+  "pass a resource ID returned by the API; to revoke one qURL, call revokeResourceQurl(resourceId, qurlId)";
 
 const RESOURCE_ID_PATH_OPTIONS: PathIdValidationOptions = {
   // Today's resource forms (P-256 SPKI, CRID, and legacy r_) cannot collide
@@ -824,7 +826,7 @@ const QURL_ID_PATH_OPTIONS: PathIdValidationOptions = {
 
 const DELETE_QURL_RESOURCE_ID_PATH_OPTIONS: PathIdValidationOptions = {
   rejectBareAccessToken: true,
-  accessTokenRecovery: REVOKE_INDIVIDUAL_QURL_RECOVERY,
+  accessTokenRecovery: DELETE_RESOURCE_RECOVERY,
   // Current resource IDs have fixed public-key/CRID/r_ prefixes, so q_ is an
   // unambiguous display-ID mix-up. Revisit if resource keys become arbitrary
   // base64url strings, whose alphabet could legitimately start with q_.
@@ -873,11 +875,13 @@ function requireNonEmptyId(
   if (decodedIds.some((value) => value === "." || value === "..")) {
     throw clientValidationError(`${method}: ${field} is an invalid URL path segment`);
   }
-  // Classify URL-shaped input before applying the credential heuristic. A path
-  // such as `/at_a_glance` is ordinary URL text, while fragment/query/header
-  // delimiters and pasted `Bearer at_...` / `token:at_...` forms are strong
-  // credential signals. Bare `at_...` values are rejected only for
-  // resource/qURL identifiers so unrelated identifier namespaces stay opaque.
+  // `/` is deliberately outside the credential delimiter class so ordinary
+  // paths such as `/at_a_glance` are not misread as credentials. Fragment,
+  // query, header, and pasted `Bearer at_...` / `token:at_...` forms are strong
+  // credential signals. When a URL trips both heuristics, report the
+  // credential first because it is the more urgent mistake. Bare `at_...`
+  // values are rejected only for resource/qURL identifiers so unrelated
+  // identifier namespaces stay opaque.
   const containsUrl = decodedIds.some((value) => /^https?:\/\//i.test(value));
   const containsAccessToken = decodedIds.some(
     (value) =>

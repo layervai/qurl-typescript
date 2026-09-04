@@ -78,10 +78,11 @@ If you persist the resource id, future calls do not need to recreate the
 handle (no API call is made until you mint):
 
 ```typescript
-// Persist and reuse the opaque resource_id returned by the API.
-const storedResourceId = await resourceIdStore.get('prod-dashboard');
-const resource = client.resourceById(storedResourceId);
-const portal = await resource.createPortal({ validFor: '1h' });
+async function createPortalForStoredResource(storedResourceId: string) {
+  // Pass the exact opaque resource_id previously returned by the API.
+  const resource = client.resourceById(storedResourceId);
+  return resource.createPortal({ validFor: '1h' });
+}
 ```
 
 For one-off scripts, `client.createPortalForUrl` combines the two API calls
@@ -345,6 +346,9 @@ SDK-generated keys require `globalThis.crypto.getRandomValues`, which is availab
 ## Security Notes
 
 - Treat API keys and qURL links like credentials. Do not log them.
+- Resource/qURL path arguments reject pasted access tokens and full URLs before
+  dispatch without echoing the caller input. Pass the opaque identifier returned
+  by the API; never derive it from a secret qURL link.
 - Prefer short portal lifetimes such as `validFor: '5m'`.
 - Do not ask portal recipients to handle credentials. Recipients only need
   the link.
