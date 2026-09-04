@@ -1489,16 +1489,6 @@ type PortalWireResponse = {
   label?: string;
 };
 
-type ShareResourceWireResponse = {
-  qurl_id?: unknown;
-  qurl?: unknown;
-  crid?: unknown;
-  type?: unknown;
-  expires_at?: unknown;
-  expires_in_seconds?: unknown;
-  single_use?: unknown;
-};
-
 /**
  * Parse a {@link Portal} from a create-portal API response. `resource_id`
  * and `qurl_link` are required, mirroring qurl-go's fail-closed response
@@ -2753,14 +2743,14 @@ export class QURLClient {
     if (options.ttlSeconds !== undefined) {
       if (
         typeof options.ttlSeconds !== "number" ||
-        !Number.isInteger(options.ttlSeconds) ||
+        !Number.isSafeInteger(options.ttlSeconds) ||
         options.ttlSeconds <= 0
       ) {
-        throw clientValidationError("shareResource: ttlSeconds must be a positive whole number");
+        throw clientValidationError("shareResource: ttlSeconds must be a positive safe integer");
       }
       body.ttl_seconds = options.ttlSeconds;
     }
-    const data = await this.request<ShareResourceWireResponse>(
+    const data = await this.request<Record<string, unknown>>(
       "POST",
       `/v1/resources/${encodeURIComponent(id)}/share`,
       body,
@@ -2769,7 +2759,7 @@ export class QURLClient {
     if (typeof data?.qurl !== "string" || data.qurl.trim() === "") {
       throw unexpectedResponseError("shareResource: response is missing qurl");
     }
-    const wire = data as Record<string, unknown>;
+    const wire = data;
     for (const field of ["qurl_id", "crid", "type", "expires_at"] as const) {
       if (wire[field] !== undefined && wire[field] !== null && typeof wire[field] !== "string") {
         throw unexpectedResponseError(`shareResource: response has invalid ${field}`);

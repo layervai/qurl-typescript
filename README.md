@@ -138,7 +138,10 @@ values, and a readable binary key that does not match reports `crid_mismatch`.
 `ShareLink` keeps `.link` directly readable but redacts it from JSON, Node
 inspection, and object spread to reduce accidental credential logging. Read
 `.link` directly before delivery; do not spread or clone a `ShareLink`, because
-those operations deliberately omit the credential.
+those operations deliberately omit the credential. Browser developer consoles
+can still display non-enumerable properties, so do not log the object there.
+The `ShareLink` properties are frozen, but its `expiresAt` value is a normal
+mutable `Date`; copy it before applying in-place `Date` setters.
 
 Omitting `ttlSeconds` matches qurl-go's zero-value behavior and requests the
 platform default. TypeScript additionally rejects an explicit zero so a

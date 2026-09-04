@@ -51,6 +51,48 @@ if (!acceptedTruncated) throw new Error("CRID conformance vectors are missing a 
 // qurl-go@a528d1f confirms this version-0x02 truncated CRID matches
 // matching.der_spki_b64url through crid.KeyMatches.
 const matchingTruncated = "ai4jqpd7eaoslq7jinmjv4yikgzmcxgpjfsuobinv2mxyhi";
+const cridAlphabet = "abcdefghijklmnopqrstuvwxyz234567";
+
+function fullCridWithLateDigestMismatch(value: string): string {
+  const decoded: number[] = [];
+  let accumulator = 0;
+  let bits = 0;
+  for (const character of value) {
+    accumulator = (accumulator << 5) | cridAlphabet.indexOf(character);
+    bits += 5;
+    if (bits >= 8) {
+      bits -= 8;
+      decoded.push((accumulator >>> bits) & 0xff);
+      accumulator &= (1 << bits) - 1;
+    }
+  }
+  const bytes = Uint8Array.from(decoded);
+  bytes[32] ^= 1; // Last full-digest byte; the first 24 digest bytes still match.
+  let checksum = 0xffffffff;
+  for (const byte of bytes.subarray(0, 33)) {
+    checksum ^= byte;
+    for (let bit = 0; bit < 8; bit++) {
+      checksum = (checksum >>> 1) ^ (checksum & 1 ? 0x82f63b78 : 0);
+    }
+  }
+  checksum = ~checksum >>> 0;
+  bytes.set([checksum >>> 24, checksum >>> 16, checksum >>> 8, checksum], 33);
+
+  let encoded = "";
+  accumulator = 0;
+  bits = 0;
+  for (const byte of bytes) {
+    accumulator = (accumulator << 8) | byte;
+    bits += 8;
+    while (bits >= 5) {
+      bits -= 5;
+      encoded += cridAlphabet[(accumulator >>> bits) & 31];
+      accumulator &= (1 << bits) - 1;
+    }
+  }
+  if (bits > 0) encoded += cridAlphabet[(accumulator << (5 - bits)) & 31];
+  return encoded;
+}
 
 function b64url(value: string): Uint8Array<ArrayBuffer> {
   return Uint8Array.from(Buffer.from(value, "base64url"));
@@ -146,6 +188,7 @@ describe("shareResource", () => {
     ["fractional", 1.5],
     ["non-finite", Number.POSITIVE_INFINITY],
     ["not-a-number", Number.NaN],
+    ["outside the safe-integer range", Number.MAX_SAFE_INTEGER + 1],
     ["non-numeric", "300" as never],
   ])("rejects a %s TTL before the request", async (_name, ttlSeconds) => {
     const fetch = mockFetch({ status: 200, body: shareResponse() });
@@ -163,7 +206,7 @@ describe("shareResource", () => {
       createClient(fetch).shareResource("resource-id", { ttlSeconds: 0 }),
     ).rejects.toMatchObject({
       code: "client_validation",
-      detail: "shareResource: ttlSeconds must be a positive whole number",
+      detail: "shareResource: ttlSeconds must be a positive safe integer",
     });
 
     expect(fetch).not.toHaveBeenCalled();
@@ -412,7 +455,7 @@ describe("ShareLink.verifyCrid", () => {
     await expect(share.verifyCrid(padded.subarray(8, 8 + bytes.length))).resolves.toBeUndefined();
   });
 
-  it("accepts the conformance vector's truncated CRID path", async () => {
+  it("reaches byte comparison for the conformance vector's truncated CRID", async () => {
     const share = new ShareLink({
       link: "https://qurl.link/#qv2t1.example",
       crid: acceptedTruncated.value,
@@ -433,6 +476,17 @@ describe("ShareLink.verifyCrid", () => {
     });
 
     await expect(share.verifyCrid(b64url(matching.der_spki_b64url))).resolves.toBeUndefined();
+  });
+
+  it("compares all 32 digest bytes for a full CRID", async () => {
+    const share = new ShareLink({
+      link: "https://qurl.link/#qv2t1.example",
+      crid: fullCridWithLateDigestMismatch(matching.expected_crid),
+    });
+
+    await expect(share.verifyCrid(b64url(matching.der_spki_b64url))).rejects.toMatchObject({
+      code: ERROR_CODE_CRID_MISMATCH,
+    });
   });
 
   it("accepts a cross-realm ArrayBuffer as binary key material", async () => {
