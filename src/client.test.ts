@@ -2047,6 +2047,7 @@ describe("QURLClient", () => {
     ["public resource ID", PUBLIC_RESOURCE_ID],
     ["CRID", RESOURCE_CRID],
     ["legacy resource ID", "r_abc123def45"],
+    ["opaque resource ID containing at_", "future-at_-resource-id"],
   ])("deletes a qURL by its %s", async (_label, resourceId) => {
     const fetch = mockFetch({ status: 204 });
     const client = createClient(fetch);
@@ -2088,6 +2089,20 @@ describe("QURLClient", () => {
     const fetch = mockFetch({ status: 204 });
     const client = createClient(fetch);
     const qurlLink = "https://qurl.link/#at_sensitive-token-value";
+
+    const error = await client.delete(qurlLink).catch((e: unknown) => e as ValidationError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).detail).toContain("access token");
+    expect((error as ValidationError).detail).not.toContain(qurlLink);
+    expect((error as ValidationError).detail).not.toContain("at_sensitive-token-value");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("delete rejects URL-shaped input even when the credential is not in a fragment", async () => {
+    const fetch = mockFetch({ status: 204 });
+    const client = createClient(fetch);
+    const qurlLink = "https://qurl.link/open?token=at_sensitive-token-value";
 
     const error = await client.delete(qurlLink).catch((e: unknown) => e as ValidationError);
 

@@ -811,10 +811,10 @@ function requireNonEmptyId(
   if (id === "." || id === "..") {
     throw clientValidationError(`${method}: ${field} is an invalid URL path segment`);
   }
-  // qURL access tokens are credentials. Reject both a bare token and the
-  // platform link form before either can enter proxy/access logs as a path.
-  // Do not echo the caller-supplied value in the error.
-  if (id.startsWith("at_") || id.includes("#at_")) {
+  // qURL access tokens are credentials. Reject bare tokens, canonical
+  // fragment links, and other URL-shaped input before a credential can enter
+  // proxy/access logs as a path. Do not echo the caller-supplied value.
+  if (id.startsWith("at_") || id.includes("#at_") || /^https?:\/\//i.test(id)) {
     throw clientValidationError(
       `${method}: ${field} must not contain an access token${accessTokenRecovery ? `; ${accessTokenRecovery}` : ""}`,
     );
