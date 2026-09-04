@@ -2131,8 +2131,8 @@ export class QURLClient {
    * reach one private resource. Recipients open `portal.link` directly and
    * need no LayerV credentials. Prefer short lifetimes such as
    * `{ validFor: "5m" }`. Accepts a {@link ProtectedResource} handle or a
-   * resource id (`r_` prefix). REST-shaped equivalents: {@link mintLink} /
-   * {@link createQurlForResource}.
+   * resource identifier (current public ID, CRID, or legacy `r_...`).
+   * REST-shaped equivalents: {@link mintLink} / {@link createQurlForResource}.
    *
    * Duration options take a string (`"5m"`, `"24h"`; server-validated) or a
    * number of milliseconds with qurl-go's client-side guardrails: whole
@@ -2398,8 +2398,9 @@ export class QURLClient {
   /**
    * Get a qURL resource and its access tokens.
    *
-   * Accepts either a resource ID (`r_` prefix) or a qURL display ID (`q_`
-   * prefix); the API resolves `q_` IDs to the parent resource automatically.
+   * Accepts a current public resource ID, CRID, legacy `r_...` ID, or qURL
+   * display ID (`q_` prefix); the API resolves display IDs to the parent
+   * resource automatically.
    */
   async get(id: string): Promise<QURL> {
     requireNonEmptyId(id, "get", "id", RESOURCE_OR_QURL_ID_PATH_OPTIONS);
@@ -2488,8 +2489,8 @@ export class QURLClient {
   /**
    * Extend a qURL's expiration.
    *
-   * Accepts either a resource ID (`r_` prefix) or a qURL display ID (`q_`
-   * prefix). Convenience method — delegates to {@link update} with only the
+   * Accepts a current public resource ID, CRID, legacy `r_...` ID, or qURL
+   * display ID (`q_` prefix). Convenience method — delegates to {@link update} with only the
    * expiration fields. `ExtendInput` shares its `extend_by` / `expires_at`
    * fields with `UpdateInput` but is *narrower in two ways*: (1) exactly
    * one of the two must be present (XOR via `?: never`), where `UpdateInput`
@@ -2518,8 +2519,9 @@ export class QURLClient {
   /**
    * Update a qURL — extend expiration, change description, rename tags.
    *
-   * Accepts either a resource ID (`r_` prefix) or a qURL display ID (`q_`
-   * prefix); the API resolves `q_` IDs to the parent resource automatically.
+   * Accepts a current public resource ID, CRID, legacy `r_...` ID, or qURL
+   * display ID (`q_` prefix); the API resolves display IDs to the parent
+   * resource automatically.
    */
   async update(id: string, input: UpdateInput, options?: RequestOptions): Promise<QURL> {
     requireNonEmptyId(id, "update", "id", RESOURCE_OR_QURL_ID_PATH_OPTIONS);
@@ -2562,8 +2564,9 @@ export class QURLClient {
    *
    * Portal-flow equivalent: {@link createPortal}.
    *
-   * Accepts either a resource ID (`r_` prefix) or a qURL display ID (`q_`
-   * prefix); the API resolves `q_` IDs to the parent resource automatically.
+   * Accepts a current public resource ID, CRID, legacy `r_...` ID, or qURL
+   * display ID (`q_` prefix); the API resolves display IDs to the parent
+   * resource automatically.
    *
    * Passing `{}` or an object with all fields `null`/`undefined` is
    * equivalent to omitting the second argument: no body is sent, and the
@@ -3731,7 +3734,7 @@ export class ProtectedResource {
   // CONTRIBUTING.md's dual-build rule bars) so the binding stays on the
   // instance and out of Object.keys/JSON.stringify output.
   readonly #client: QURLClient;
-  /** The LayerV resource id (`r_` prefix). */
+  /** The LayerV resource identifier (current public ID, CRID, or legacy `r_...`). */
   readonly id: string;
   /** The private URL protected by this resource, when known. */
   readonly targetUrl?: string;
