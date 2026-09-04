@@ -853,6 +853,10 @@ export interface ExternalIdentityBindingApiKey {
    * property is directly readable but non-enumerable and redacted by JSON and
    * Node inspection to reduce accidental logging.
    */
+  /**
+   * One-time secret. Read this property directly; JSON, spread, and
+   * structured-clone copies intentionally omit or redact it.
+   */
   plaintext: string;
 }
 

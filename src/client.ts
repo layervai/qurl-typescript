@@ -35,7 +35,6 @@ import type {
   CreateExternalIdentityBindingInput,
   CreateExternalIdentityBindingOutput,
   CreateExternalIdentityBindingRequestOptions,
-  ExternalIdentityBindingApiKey,
   CreateInput,
   CreateOutput,
   CreatePortalOptions,
@@ -48,6 +47,7 @@ import type {
   DomainListOutput,
   DomainVerifyResult,
   ExtendInput,
+  ExternalIdentityBindingApiKey,
   Invoice,
   ListInput,
   ListOutput,
@@ -134,6 +134,7 @@ const MAX_IDEMPOTENCY_KEY = 256;
 const MIN_BINDING_IDEMPOTENCY_KEY = 32;
 const MAX_BINDING_EXTERNAL_ID = 256;
 const MAX_BINDING_DISPLAY_NAME = 100;
+const MAX_BINDING_LOCATION_BYTES = 512;
 const IDEMPOTENCY_KEY_VALUE_RE = /^[\x21-\x7e](?:[\x20-\x7e]*[\x21-\x7e])?$/;
 const UUID_HEX = Array.from({ length: 256 }, (_, i) => i.toString(16).padStart(2, "0"));
 
@@ -1610,7 +1611,8 @@ function parseExternalIdentityBindingResponse(
   if (binding.external_id !== expected.external_id) {
     return fail("response field external_id does not match the request");
   }
-  if (binding.display_name !== undefined && typeof binding.display_name !== "string") {
+  const displayName = binding.display_name ?? undefined;
+  if (displayName !== undefined && typeof displayName !== "string") {
     return fail("response has invalid field display_name");
   }
   if (
@@ -1653,7 +1655,7 @@ function parseExternalIdentityBindingResponse(
     external_id: binding.external_id,
     // display_name is non-authoritative presentation metadata; unlike the
     // security-relevant provider/external_id pair, it need not echo exactly.
-    display_name: binding.display_name as string | undefined,
+    display_name: displayName as string | undefined,
     api_key: apiKey,
     scopes: binding.scopes as CreateExternalIdentityBindingOutput["scopes"],
     created_at: binding.created_at,
@@ -1694,7 +1696,7 @@ function externalIdentityBindingLocation(headers: Headers | undefined): string |
     location === undefined ||
     location === "" ||
     /\s/.test(location) ||
-    TEXT_ENCODER.encode(location).byteLength > MAX_ERROR_SNIPPET_BYTES
+    TEXT_ENCODER.encode(location).byteLength > MAX_BINDING_LOCATION_BYTES
   ) {
     return undefined;
   }
@@ -1720,7 +1722,9 @@ function parseExternalIdentityReplayHeader(headers: Headers | undefined): {
   ].filter((value): value is string => value !== null && value !== undefined);
   if (rawValues.length === 0) return { replayed: undefined, state: "missing" };
 
-  const values = rawValues.map((value) => value.trim().toLowerCase());
+  const values = rawValues.flatMap((value) =>
+    value.split(",").map((part) => part.trim().toLowerCase()),
+  );
   if (values.every((value) => value === "true")) {
     return { replayed: true, state: "recognized" };
   }

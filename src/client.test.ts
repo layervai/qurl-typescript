@@ -8727,6 +8727,20 @@ describe("createExternalIdentityBinding", () => {
     expect(result.replayed).toBeUndefined();
   });
 
+  it("accepts duplicate replay headers when every value agrees", async () => {
+    const headers = new Headers();
+    headers.append("X-Idempotency-Replayed", "true");
+    headers.append("X-Idempotency-Replayed", "true");
+    const fetch = mockFetch({ status: 201, headers, body: externalIdentityBindingData() });
+
+    const result = await createClient(fetch).createExternalIdentityBinding(
+      { provider: "teams", external_id: "tenant-obviously-fake" },
+      { idempotencyKey: BINDING_IDEMPOTENCY_KEY },
+    );
+
+    expect(result.replayed).toBe(true);
+  });
+
   it("drops overlong server-provided Location metadata rather than returning a truncated URL", async () => {
     const fetch = mockFetch({
       status: 201,
@@ -8905,6 +8919,34 @@ describe("createExternalIdentityBinding", () => {
     expect(JSON.parse(vi.mocked(fetch).mock.calls[0][1]?.body as string)).toEqual({
       provider: "teams",
       external_id: "tenant-obviously-fake",
+    });
+  });
+
+  it("normalizes a null response display name to omitted", async () => {
+    const data = externalIdentityBindingData();
+    data.display_name = null;
+    const fetch = mockFetch({ status: 201, body: data });
+
+    await expect(
+      createClient(fetch).createExternalIdentityBinding(
+        { provider: "teams", external_id: "tenant-obviously-fake" },
+        { idempotencyKey: BINDING_IDEMPOTENCY_KEY },
+      ),
+    ).resolves.toMatchObject({ display_name: undefined });
+  });
+
+  it("forwards an explicit empty display name accepted as omitted by qurl-service", async () => {
+    const data = externalIdentityBindingData();
+    delete data.display_name;
+    const fetch = mockFetch({ status: 201, body: data });
+
+    await createClient(fetch).createExternalIdentityBinding(
+      { provider: "teams", external_id: "tenant-obviously-fake", display_name: "" },
+      { idempotencyKey: BINDING_IDEMPOTENCY_KEY },
+    );
+
+    expect(JSON.parse(vi.mocked(fetch).mock.calls[0][1]?.body as string)).toMatchObject({
+      display_name: "",
     });
   });
 
@@ -9102,6 +9144,38 @@ describe("createExternalIdentityBinding", () => {
     expect(debugOutput.join("\n")).not.toContain(BINDING_PLAINTEXT);
   });
 
+  it("recovers a lost binding response with the same key and body", async () => {
+    const recovered = new Response(JSON.stringify(externalIdentityBindingData()), {
+      status: 201,
+      headers: {
+        "content-type": "application/json",
+        "X-Idempotency-Replayed": "true",
+      },
+    });
+    const fetch = vi
+      .fn()
+      .mockRejectedValueOnce(new TypeError("response lost after dispatch"))
+      .mockResolvedValueOnce(recovered);
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 1,
+    });
+
+    const result = await client.createExternalIdentityBinding(
+      { provider: "teams", external_id: "tenant-obviously-fake" },
+      { idempotencyKey: BINDING_IDEMPOTENCY_KEY },
+    );
+
+    expect(result.replayed).toBe(true);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    const first = vi.mocked(fetch).mock.calls[0][1] as RequestInit;
+    const second = vi.mocked(fetch).mock.calls[1][1] as RequestInit;
+    expect(second.headers).toEqual(first.headers);
+    expect(second.body).toBe(first.body);
+  });
+
   it.each([
     { name: "missing", options: undefined },
     { name: "too short", options: { idempotencyKey: "x".repeat(31) } },
@@ -9259,6 +9333,7 @@ describe("createExternalIdentityBinding", () => {
     expect(JSON.stringify(result.api_key)).not.toContain(BINDING_PLAINTEXT);
     expect(inspect(result, { depth: null })).not.toContain(BINDING_PLAINTEXT);
     expect({ ...result.api_key }).not.toHaveProperty("plaintext");
+    expect(structuredClone(result.api_key)).not.toHaveProperty("plaintext");
   });
 
   it.each([

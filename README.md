@@ -230,8 +230,10 @@ const binding = await client.createExternalIdentityBinding(
   { idempotencyKey: '00000000-0000-4000-8000-000000000001-binding-v1' },
 );
 
-// Persist this secret in a secure store immediately, then remove it from memory.
+// Persist this secret in a secure store immediately.
 await secretStore.put('obviously-fake-tenant-qurl-key', binding.api_key.plaintext);
+// Then release every reference to `binding`; plaintext is intentionally
+// read-only and cannot be scrubbed in place.
 ```
 
 `api_key.plaintext` is a **one-time secret**. Never log it or include it in an
@@ -239,6 +241,8 @@ error. A retry with the same idempotency key and exact same body can recover the
 same key for up to 24 hours; after that window the plaintext is unrecoverable.
 The property is directly readable for persistence but non-enumerable and
 redacted by JSON and Node inspection to reduce accidental structured logging.
+Read `binding.api_key.plaintext` directly: JSON, spread, and structured-clone
+copies intentionally omit or redact it and cannot preserve the one-time secret.
 `binding.replayed` is `true` when the service signals a replay using either its
 current `X-Idempotency-Replayed` header or the spec-declared
 `Idempotency-Replayed` header. It is `undefined` when replay state is absent or
