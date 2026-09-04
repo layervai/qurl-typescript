@@ -66,13 +66,22 @@ same URL again returns the existing resource. `validFor` accepts a duration
 string (`'5m'`, `'24h'`) or a number of milliseconds (whole seconds, at least
 one minute); prefer short portal lifetimes.
 
-If qURL Connector already protects the service, use the connector id instead
-of calling `protectUrl`:
+If qURL Connector protects the service, address its management-plane resource
+by immutable slug instead of calling `protectUrl`:
 
 ```typescript
-const resource = await client.connectorResource('prod-dashboard');
+const { resource, foundExisting } = await client.ensureConnectorResource('prod-dashboard');
 const portal = await resource.createPortal({ validFor: '5m' });
 ```
+
+`resource.resourceId`, `resource.connectorRoutingId`, and
+`resource.knockResourceId` are three distinct server-issued values for public
+identity, reverse routing, and NHP admission. Consume each verbatim; never
+derive or substitute one for another. Use `getConnectorResource(resourceId)`
+or `getConnectorResourceBySlug(slug)` for read-only lookup and
+`deleteConnectorResource(resourceId)` to revoke it. The older
+`connectorResource(slug)` spelling remains as a deprecated alias for the slug
+lookup.
 
 If you persist the resource id, future calls do not need to recreate the
 handle (no API call is made until you mint):
@@ -169,7 +178,10 @@ console.log(`Access granted to ${access.target_url} for ${access.access_grant?.e
 | `protectUrl(targetUrl, opts?)` | Protect a private URL → portal-minting `ProtectedResource` handle |
 | `resource.createPortal(opts?)` / `createPortal(resourceOrId, opts?)` | Mint a short-lived portal link (`Portal`) |
 | `createPortalForUrl(targetUrl, opts?)` | Protect + mint in one API call → `{ portal, resource }` |
-| `connectorResource(connectorId)` | Handle for a service qURL Connector already protects |
+| `ensureConnectorResource(slug)` | Find or create an active Connector resource by immutable slug |
+| `getConnectorResource(resourceId)` / `getConnectorResourceBySlug(slug)` | Load a validated Connector resource by immutable identity |
+| `deleteConnectorResource(resourceId)` | Revoke a Connector resource by immutable public resource ID |
+| `connectorResource(slug)` | Deprecated alias for `getConnectorResourceBySlug` |
 | `resourceById(id)` | Handle from a stored resource id (no API call) |
 | `enterPortal(linkOrToken)` | Open a qURL link programmatically → `ResourceHandle` |
 

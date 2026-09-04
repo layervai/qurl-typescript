@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { QURLClient } from "./client.js";
+import { ConnectorResource, QURLClient } from "./client.js";
 import {
   AuthenticationError,
   AuthorizationError,
@@ -32,6 +32,26 @@ function sizedJSON(prefix: string, suffix: string, size: number): string {
   const body = `${prefix}${"x".repeat(paddingLength)}${suffix}`;
   expect(new TextEncoder().encode(body).byteLength).toBe(size);
   return body;
+}
+
+const CONNECTOR_RESOURCE_ID =
+  "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE2cTVv5_3eeYCcLLq5ROYCqcmY50HiKZ9ATglIkPnCji1E_S63UMtXba1moR8-Q6EV7oM6zwwh9_j2CDujzXvLA";
+const CONNECTOR_ROUTING_ID = "c-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+function connectorResourceData(overrides: Record<string, unknown> = {}) {
+  return {
+    resource_id: CONNECTOR_RESOURCE_ID,
+    crid: "ahpviqz46qwcvx56glfatm3p3ooccwfcf2it4sdgjervwdkapykw3o3qdq2a",
+    connector_routing_id: CONNECTOR_ROUTING_ID,
+    knock_resource_id: "asp-resource-1",
+    type: "tunnel",
+    status: "active",
+    slug: "prod-dashboard",
+    alias: "dashboard-display-name",
+    desired_state: "on",
+    serving_epoch: 7,
+    ...overrides,
+  };
 }
 
 function callHeaders(
@@ -1980,6 +2000,171 @@ describe("QURLClient", () => {
       client.createResource({ type: "tunnel", slug: "prod-dashboard" }),
     ).resolves.toBeDefined();
     expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("ensures a connector resource with the exact kind-first wire contract", async () => {
+    const fetch = mockFetch({
+      status: 201,
+      body: {
+        data: connectorResourceData(),
+        meta: { found_existing: true },
+      },
+    });
+    const client = createClient(fetch);
+
+    const result = await client.ensureConnectorResource("prod-dashboard");
+
+    expect(result.foundExisting).toBe(true);
+    expect(result.resource).toBeInstanceOf(ConnectorResource);
+    expect(result.resource.resourceId).toBe(CONNECTOR_RESOURCE_ID);
+    expect(result.resource.connectorRoutingId).toBe(CONNECTOR_ROUTING_ID);
+    expect(result.resource.knockResourceId).toBe("asp-resource-1");
+    expect(result.resource.slug).toBe("prod-dashboard");
+    expect(result.resource.alias).toBe("dashboard-display-name");
+    expect(fetch).toHaveBeenCalledWith(
+      "https://api.test.layerv.ai/v1/resources",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ type: "tunnel", slug: "prod-dashboard", find_or_create: true }),
+      }),
+    );
+  });
+
+  it.each([
+    ["alternate success status", { status: 200, meta: { found_existing: false } }],
+    ["missing found-existing metadata", { status: 201, meta: {} }],
+  ])("fails closed when connector ensure returns %s", async (_name, response) => {
+    const fetch = mockFetch({
+      status: response.status,
+      body: { data: connectorResourceData(), meta: response.meta },
+    });
+    const client = createClient(fetch);
+
+    await expect(client.ensureConnectorResource("prod-dashboard")).rejects.toMatchObject({
+      code: ERROR_CODE_UNEXPECTED_RESPONSE,
+    });
+  });
+
+  it("gets a connector resource by immutable resource ID from the detail envelope", async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: { data: { resource: connectorResourceData() } },
+    });
+    const client = createClient(fetch);
+
+    const resource = await client.getConnectorResource(CONNECTOR_RESOURCE_ID);
+
+    expect(resource.resourceId).toBe(CONNECTOR_RESOURCE_ID);
+    expect(fetch).toHaveBeenCalledWith(
+      `https://api.test.layerv.ai/v1/resources/${CONNECTOR_RESOURCE_ID}`,
+      expect.objectContaining({ method: "GET" }),
+    );
+  });
+
+  it("gets a connector resource by immutable slug without treating alias as identity", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: [connectorResourceData()] } });
+    const client = createClient(fetch);
+
+    const resource = await client.getConnectorResourceBySlug("prod-dashboard");
+    const compatibilityHandle = await client.connectorResource("prod-dashboard");
+
+    expect(resource.slug).toBe("prod-dashboard");
+    expect(resource.alias).toBe("dashboard-display-name");
+    expect(compatibilityHandle).toBeInstanceOf(ConnectorResource);
+    expect(fetch).toHaveBeenNthCalledWith(
+      1,
+      "https://api.test.layerv.ai/v1/resources?slug=prod-dashboard",
+      expect.objectContaining({ method: "GET" }),
+    );
+  });
+
+  it.each([
+    ["missing", []],
+    ["ambiguous", [connectorResourceData(), connectorResourceData()]],
+  ])("rejects a %s connector slug lookup result", async (kind, data) => {
+    const fetch = mockFetch({ status: 200, body: { data } });
+    const client = createClient(fetch);
+
+    const error = await client
+      .getConnectorResourceBySlug("prod-dashboard")
+      .catch((caught: unknown) => caught as QURLError);
+
+    expect(error).toBeInstanceOf(QURLError);
+    expect(error.code).toBe(kind === "missing" ? "resource_not_found" : "ambiguous_resource");
+  });
+
+  it("deletes a connector resource by immutable resource ID", async () => {
+    const fetch = mockFetch({ status: 204 });
+    const client = createClient(fetch);
+
+    await expect(client.deleteConnectorResource(CONNECTOR_RESOURCE_ID)).resolves.toBeUndefined();
+    expect(fetch).toHaveBeenCalledWith(
+      `https://api.test.layerv.ai/v1/resources/${CONNECTOR_RESOURCE_ID}`,
+      expect.objectContaining({ method: "DELETE" }),
+    );
+  });
+
+  it.each([
+    ["missing routing ID", { connector_routing_id: undefined }],
+    ["cross-wired admission ID", { knock_resource_id: CONNECTOR_ROUTING_ID }],
+    ["wrong type", { type: "url" }],
+    ["wrong slug", { slug: "other-dashboard" }],
+  ])("fails closed when a connector resource response has %s", async (_name, overrides) => {
+    const fetch = mockFetch({
+      status: 200,
+      body: { data: [connectorResourceData(overrides)] },
+    });
+    const client = createClient(fetch);
+
+    const error = await client
+      .getConnectorResourceBySlug("prod-dashboard")
+      .catch((e: unknown) => e as QURLError);
+
+    expect(error).toBeInstanceOf(QURLError);
+    expect(error.code).toBe(ERROR_CODE_UNEXPECTED_RESPONSE);
+  });
+
+  it("classifies a revoked slug result as invalid active-only response", async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: { data: [connectorResourceData({ status: "revoked" })] },
+    });
+
+    await expect(
+      createClient(fetch).getConnectorResourceBySlug("prod-dashboard"),
+    ).rejects.toMatchObject({ code: ERROR_CODE_UNEXPECTED_RESPONSE });
+  });
+
+  it("classifies a revoked by-ID result as a connector lifecycle error", async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: { data: { resource: connectorResourceData({ status: "revoked" }) } },
+    });
+
+    await expect(
+      createClient(fetch).getConnectorResource(CONNECTOR_RESOURCE_ID),
+    ).rejects.toMatchObject({ code: "connector_resource_revoked" });
+  });
+
+  it.each(["", "ab", "UPPER", "-bad", "bad-"])(
+    "rejects invalid connector slug %s before fetch",
+    async (slug) => {
+      const fetch = mockFetch({ status: 200, body: { data: [] } });
+      const client = createClient(fetch);
+
+      await expect(client.getConnectorResourceBySlug(slug)).rejects.toBeInstanceOf(ValidationError);
+      expect(fetch).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rejects a non-canonical connector resource ID before fetch", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+
+    await expect(
+      client.getConnectorResource(`A${CONNECTOR_RESOURCE_ID.slice(1)}`),
+    ).rejects.toBeInstanceOf(ValidationError);
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("deletes a qURL", async () => {

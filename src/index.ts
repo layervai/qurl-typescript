@@ -1,4 +1,5 @@
-export { ProtectedResource, QURLClient } from "./client.js";
+export { ConnectorResource, ProtectedResource, QURLClient } from "./client.js";
+export type { EnsureConnectorResourceResult } from "./client.js";
 export {
   AuthenticationError,
   AuthorizationError,

@@ -876,6 +876,9 @@ const MAX_TARGET_PATH = 2048;
 const MAX_TAGS = 10;
 const MAX_TAG_LENGTH = 50;
 const MAX_AUTO_PAGINATION_PAGES = 10_000;
+const CONNECTOR_SLUG_PATTERN = /^[a-z][a-z0-9-]{1,62}[a-z0-9]$/;
+const CONNECTOR_RESOURCE_ID_PATTERN = /^[A-Za-z0-9_-]{122}$/;
+const CONNECTOR_ROUTING_ID_PATTERN = /^c-[a-z2-7]{51}[aq]$/;
 // CreateQurlRequest.target_url pattern is loose (just a URI) but
 // UpdateQurlRequest.tags pattern is specific — enforce it here.
 const TAG_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9 _-]*$/;
@@ -1016,6 +1019,156 @@ function requireNonEmptyId(id: string, method: string, field = "id"): void {
       `${method}: ${field} must not include leading or trailing whitespace`,
     );
   }
+}
+
+function requireConnectorSlug(slug: string, method: string): void {
+  if (typeof slug !== "string" || !CONNECTOR_SLUG_PATTERN.test(slug)) {
+    throw clientValidationError(
+      `${method}: slug must be 3-64 lowercase alphanumeric or hyphen characters, start with a letter, and end alphanumeric`,
+    );
+  }
+}
+
+function decodeCanonicalBase64Url(value: string): Uint8Array | undefined {
+  if (!CONNECTOR_RESOURCE_ID_PATTERN.test(value)) return undefined;
+  try {
+    const padded = value.replace(/-/g, "+").replace(/_/g, "/") + "==";
+    const binary = atob(padded);
+    const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+    const canonical = btoa(String.fromCharCode(...bytes))
+      .replace(/\+/g, "-")
+      .replace(/\//g, "_")
+      .replace(/=+$/, "");
+    return canonical === value ? bytes : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function isValidConnectorResourceId(value: string): Promise<boolean> {
+  const der = decodeCanonicalBase64Url(value);
+  if (!der) return false;
+  if (!globalThis.crypto?.subtle) {
+    throw new RuntimeError(
+      "qURL Connector resource validation requires the Web Crypto SubtleCrypto API",
+    );
+  }
+  try {
+    const keyData = new ArrayBuffer(der.byteLength);
+    new Uint8Array(keyData).set(der);
+    await globalThis.crypto.subtle.importKey(
+      "spki",
+      keyData,
+      { name: "ECDSA", namedCurve: "P-256" },
+      false,
+      ["verify"],
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function requireConnectorResourceId(resourceId: string, method: string): Promise<void> {
+  if (!(await isValidConnectorResourceId(resourceId))) {
+    throw clientValidationError(
+      `${method}: resource id must be a canonical unpadded base64url P-256 DER SPKI public key`,
+    );
+  }
+}
+
+type ConnectorResourceExpectation = {
+  slug?: string;
+  resourceId?: string;
+  allowRevoked?: boolean;
+};
+
+function containsControlCharacter(value: string): boolean {
+  return Array.from(value).some((character) => {
+    const codePoint = character.codePointAt(0) as number;
+    return codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f);
+  });
+}
+
+async function parseConnectorResource(
+  client: QURLClient,
+  value: unknown,
+  method: string,
+  expectation: ConnectorResourceExpectation = {},
+): Promise<ConnectorResource> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw unexpectedResponseError(`${method}: response is missing connector resource data`);
+  }
+  const resource = value as Resource;
+  if (
+    typeof resource.resource_id !== "string" ||
+    !(await isValidConnectorResourceId(resource.resource_id))
+  ) {
+    throw unexpectedResponseError(`${method}: response has missing or invalid resource_id`);
+  }
+  if (expectation.resourceId !== undefined && resource.resource_id !== expectation.resourceId) {
+    throw unexpectedResponseError(`${method}: response resource_id does not match the request`);
+  }
+  if (
+    typeof resource.connector_routing_id !== "string" ||
+    !CONNECTOR_ROUTING_ID_PATTERN.test(resource.connector_routing_id)
+  ) {
+    throw unexpectedResponseError(
+      `${method}: response has missing or invalid connector_routing_id`,
+    );
+  }
+  if (
+    typeof resource.knock_resource_id !== "string" ||
+    resource.knock_resource_id.trim() === "" ||
+    resource.knock_resource_id.trim() !== resource.knock_resource_id ||
+    containsControlCharacter(resource.knock_resource_id)
+  ) {
+    throw unexpectedResponseError(`${method}: response has missing or invalid knock_resource_id`);
+  }
+  if (
+    resource.resource_id === resource.knock_resource_id ||
+    resource.connector_routing_id === resource.knock_resource_id
+  ) {
+    throw unexpectedResponseError(
+      `${method}: response cross-wires resource identity, routing, and admission values`,
+    );
+  }
+  if (resource.type !== "tunnel") {
+    throw unexpectedResponseError(`${method}: response resource type is not tunnel`);
+  }
+  if (typeof resource.slug !== "string" || !CONNECTOR_SLUG_PATTERN.test(resource.slug)) {
+    throw unexpectedResponseError(`${method}: response has missing or invalid slug`);
+  }
+  if (expectation.slug !== undefined && resource.slug !== expectation.slug) {
+    throw unexpectedResponseError(`${method}: response slug does not match the request`);
+  }
+  if (
+    resource.alias !== undefined &&
+    resource.alias !== null &&
+    (typeof resource.alias !== "string" || !CONNECTOR_SLUG_PATTERN.test(resource.alias))
+  ) {
+    throw unexpectedResponseError(`${method}: response has invalid alias`);
+  }
+  if (resource.status === "revoked") {
+    if (expectation.allowRevoked !== true) {
+      throw unexpectedResponseError(
+        `${method}: active-only operation returned a revoked connector resource`,
+      );
+    }
+    throw new QURLError({
+      status: 0,
+      code: "connector_resource_revoked",
+      title: "Connector Resource Revoked",
+      detail: `${method}: qURL Connector resource is revoked`,
+    });
+  }
+  if (resource.status !== "active") {
+    throw unexpectedResponseError(`${method}: response has invalid resource status`);
+  }
+  if (resource.crid !== undefined && typeof resource.crid !== "string") {
+    throw unexpectedResponseError(`${method}: response has invalid crid`);
+  }
+  return new ConnectorResource(client, resource);
 }
 
 function requireValidTags(tags: string[] | null | undefined): void {
@@ -2192,51 +2345,102 @@ export class QURLClient {
     return new ProtectedResource(this, id);
   }
 
-  /**
-   * Return the resource qURL Connector created for `connectorId`.
-   *
-   * Use when qURL Connector already protects the service — do not call
-   * {@link protectUrl} again for the same service. The connector id is the
-   * resource slug LayerV stores for that connector; the LayerV API performs
-   * the slug lookup, and the SDK confirms the returned alias matches
-   * `connectorId` before binding the handle (qurl-go:
-   * `Client.ConnectorResource`).
-   *
-   * Throws {@link NotFoundError} (`status: 0`, `code: "resource_not_found"`)
-   * when no resource exists for the connector id, {@link QURLError}
-   * (`code: "ambiguous_resource"`) when the lookup returns more than one
-   * resource, and {@link ValidationError} (`code: "unexpected_response"`)
-   * when the returned resource's alias is missing or does not match.
-   */
-  async connectorResource(connectorId: string): Promise<ProtectedResource> {
-    requireNonEmptyId(connectorId, "connectorResource", "connector id");
-    const { resources } = await this.listResources({ slug: connectorId });
-    if (resources.length === 0) {
+  /** Find or create the active qURL Connector resource for an immutable slug. */
+  async ensureConnectorResource(slug: string): Promise<EnsureConnectorResourceResult> {
+    requireConnectorSlug(slug, "ensureConnectorResource");
+    const { data, meta, __http_status } = await this.rawRequest<Resource>("POST", "/v1/resources", {
+      type: "tunnel",
+      slug,
+      find_or_create: true,
+    });
+    if (__http_status !== 201) {
+      throw unexpectedResponseError(
+        `ensureConnectorResource: expected HTTP 201, got ${__http_status ?? "unknown"}`,
+      );
+    }
+    const resource = await parseConnectorResource(this, data, "ensureConnectorResource", {
+      slug,
+    });
+    const foundExisting = (meta as { found_existing?: unknown } | undefined)?.found_existing;
+    if (typeof foundExisting !== "boolean") {
+      throw unexpectedResponseError(
+        "ensureConnectorResource: response is missing meta.found_existing",
+      );
+    }
+    return { resource, foundExisting };
+  }
+
+  /** Fetch a qURL Connector resource by its immutable public resource ID. */
+  async getConnectorResource(resourceId: string): Promise<ConnectorResource> {
+    await requireConnectorResourceId(resourceId, "getConnectorResource");
+    const { data, __http_status } = await this.rawRequest<ResourceDetail>(
+      "GET",
+      `/v1/resources/${encodeURIComponent(resourceId)}`,
+    );
+    if (__http_status !== 200) {
+      throw unexpectedResponseError(
+        `getConnectorResource: expected HTTP 200, got ${__http_status ?? "unknown"}`,
+      );
+    }
+    return parseConnectorResource(this, data?.resource, "getConnectorResource", {
+      resourceId,
+      allowRevoked: true,
+    });
+  }
+
+  /** Fetch the single active qURL Connector resource for an immutable slug. */
+  async getConnectorResourceBySlug(slug: string): Promise<ConnectorResource> {
+    requireConnectorSlug(slug, "getConnectorResourceBySlug");
+    const { data, __http_status } = await this.rawRequest<Resource[]>(
+      "GET",
+      `/v1/resources?slug=${encodeURIComponent(slug)}`,
+    );
+    if (__http_status !== 200) {
+      throw unexpectedResponseError(
+        `getConnectorResourceBySlug: expected HTTP 200, got ${__http_status ?? "unknown"}`,
+      );
+    }
+    if (!Array.isArray(data)) {
+      throw unexpectedResponseError(
+        "getConnectorResourceBySlug: response has missing or invalid data",
+      );
+    }
+    if (data.length === 0) {
       throw new NotFoundError({
         status: 0,
         code: ERROR_CODE_RESOURCE_NOT_FOUND,
         title: "Resource Not Found",
-        detail: `connectorResource: no resource found for connector "${connectorId}"`,
+        detail: "getConnectorResourceBySlug: no active resource exists for the requested slug",
       });
     }
-    if (resources.length > 1) {
+    if (data.length > 1) {
       throw new QURLError({
         status: 0,
         code: ERROR_CODE_AMBIGUOUS_RESOURCE,
         title: "Ambiguous Resource",
-        detail: `connectorResource: connector "${connectorId}" returned ${resources.length} resources`,
+        detail: `getConnectorResourceBySlug: expected one resource, got ${data.length}`,
       });
     }
-    const resource = resources[0];
-    if (resource.alias !== connectorId) {
+    return parseConnectorResource(this, data[0], "getConnectorResourceBySlug", { slug });
+  }
+
+  /** Revoke a qURL Connector resource by immutable public resource ID. */
+  async deleteConnectorResource(resourceId: string): Promise<void> {
+    await requireConnectorResourceId(resourceId, "deleteConnectorResource");
+    const { __http_status } = await this.rawRequest(
+      "DELETE",
+      `/v1/resources/${encodeURIComponent(resourceId)}`,
+    );
+    if (__http_status !== 204) {
       throw unexpectedResponseError(
-        `connectorResource: connector "${connectorId}" returned a resource with a missing or different alias`,
+        `deleteConnectorResource: expected HTTP 204, got ${__http_status ?? "unknown"}`,
       );
     }
-    if (typeof resource.resource_id !== "string" || resource.resource_id.trim() === "") {
-      throw unexpectedResponseError("connectorResource: response is missing resource_id");
-    }
-    return new ProtectedResource(this, resource.resource_id, resource.target_url, resource);
+  }
+
+  /** @deprecated Use {@link getConnectorResourceBySlug}. */
+  async connectorResource(connectorId: string): Promise<ConnectorResource> {
+    return this.getConnectorResourceBySlug(connectorId);
   }
 
   /**
@@ -3980,7 +4184,7 @@ export class QURLClient {
  * A LayerV-protected resource, bound to the client that produced it.
  *
  * Obtained from {@link QURLClient.protectUrl},
- * {@link QURLClient.connectorResource}, or {@link QURLClient.resourceById} —
+ * {@link QURLClient.getConnectorResourceBySlug}, or {@link QURLClient.resourceById} —
  * not constructed directly. Mint short-lived access links for the resource
  * with {@link createPortal} (qurl-go: `qurl.Resource`).
  */
@@ -4026,5 +4230,41 @@ export class ProtectedResource {
     requestOptions?: RequestOptions,
   ): Promise<Portal> {
     return this.#client.createPortal(this, opts, requestOptions);
+  }
+}
+
+/** Result of idempotently ensuring a qURL Connector resource. */
+export interface EnsureConnectorResourceResult {
+  resource: ConnectorResource;
+  foundExisting: boolean;
+}
+
+/**
+ * A validated qURL Connector resource bound to the client that loaded it.
+ *
+ * Resource identity, reverse-routing identity, and NHP admission identity are
+ * distinct server-issued values. Callers must consume each field verbatim and
+ * must never derive one from another.
+ */
+export class ConnectorResource extends ProtectedResource {
+  readonly resourceId: string;
+  readonly crid?: string;
+  readonly connectorRoutingId: string;
+  readonly knockResourceId: string;
+  readonly slug: string;
+  readonly alias?: string;
+  readonly desiredState?: string;
+  readonly servingEpoch?: number;
+
+  constructor(client: QURLClient, details: Resource) {
+    super(client, details.resource_id, details.target_url, details);
+    this.resourceId = details.resource_id;
+    this.crid = details.crid;
+    this.connectorRoutingId = details.connector_routing_id as string;
+    this.knockResourceId = details.knock_resource_id as string;
+    this.slug = details.slug as string;
+    this.alias = details.alias ?? undefined;
+    this.desiredState = details.desired_state;
+    this.servingEpoch = details.serving_epoch;
   }
 }

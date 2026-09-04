@@ -14,6 +14,7 @@ const esm = await import("@layervai/qurl");
 const expectedRuntimeExports = [
   "AuthenticationError",
   "AuthorizationError",
+  "ConnectorResource",
   "ERROR_CODE_AMBIGUOUS_RESOURCE",
   "ERROR_CODE_CLIENT_VALIDATION",
   "ERROR_CODE_NETWORK",

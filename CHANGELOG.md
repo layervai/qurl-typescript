@@ -20,6 +20,10 @@
 - **client:** GET requests now retry transport failures that occur while reading
   a response body regardless of the observed HTTP status; GET replay remains
   safe while mutations retain status- and idempotency-specific retry rules.
+- **client:** replace the legacy alias-based `connectorResource(connectorId)`
+  lookup with qurl-go-compatible Connector resource management keyed by an
+  immutable slug or canonical public resource ID. Connector identity, reverse
+  routing, and NHP admission IDs are now validated and exposed separately.
 - **client:** remove the released legacy HTTP bootstrap method and the
   not-yet-released relay registration implementation. Native qURL Connector
   assignment and registration are UDP-only and belong in the Go runtime; the
