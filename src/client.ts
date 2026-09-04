@@ -13,6 +13,7 @@ import {
   ValidationError,
 } from "./errors.js";
 import { stripTrailingSlashes } from "./internal.js";
+import { ShareLink } from "./share.js";
 import type {
   AccessPolicy,
   AccessToken,
@@ -76,6 +77,7 @@ import type {
   Session,
   SessionListOutput,
   SessionTerminateOutput,
+  ShareResourceOptions,
   UpdateApiKeyInput,
   UpdateCustomerInput,
   UpdateInput,
@@ -265,6 +267,16 @@ const CREATE_QURL_FOR_RESOURCE_FIELD_KEYS = [
   "access_policy",
   "target_path",
 ] as const satisfies readonly (keyof CreateQurlForResourceInput)[];
+
+const SHARE_RESOURCE_OPTION_KEYS = [
+  "ttlSeconds",
+] as const satisfies readonly (keyof ShareResourceOptions)[];
+
+assertExhaustive<
+  Exclude<keyof ShareResourceOptions, (typeof SHARE_RESOURCE_OPTION_KEYS)[number]> extends never
+    ? true
+    : never
+>(true);
 
 assertExhaustive<
   Exclude<
@@ -1475,6 +1487,16 @@ type PortalWireResponse = {
   expires_at?: string;
   qurl_id?: string;
   label?: string;
+};
+
+type ShareResourceWireResponse = {
+  qurl_id?: string;
+  qurl?: string;
+  crid?: string;
+  type?: string;
+  expires_at?: string;
+  expires_in_seconds?: number;
+  single_use?: boolean;
 };
 
 /**
@@ -2711,6 +2733,52 @@ export class QURLClient {
       normalized,
       options,
     );
+  }
+
+  /**
+   * Mint a fresh, short-lived share link for an existing resource ID or CRID.
+   * The returned link is secret and is not retrievable after this response.
+   */
+  async shareResource(
+    id: string,
+    input: ShareResourceOptions = {},
+    options?: RequestOptions,
+  ): Promise<ShareLink> {
+    requireNonEmptyId(id, "shareResource", "resource id");
+    requireObjectInput(input, "shareResource");
+    requireNoUnknownFields(input, SHARE_RESOURCE_OPTION_KEYS, "shareResource");
+    const body: { ttl_seconds?: number } = {};
+    if (input.ttlSeconds !== undefined) {
+      if (
+        typeof input.ttlSeconds !== "number" ||
+        !Number.isFinite(input.ttlSeconds) ||
+        !Number.isInteger(input.ttlSeconds) ||
+        input.ttlSeconds < 0
+      ) {
+        throw clientValidationError(
+          "shareResource: ttlSeconds must be a non-negative whole number",
+        );
+      }
+      if (input.ttlSeconds > 0) body.ttl_seconds = input.ttlSeconds;
+    }
+    const data = await this.request<ShareResourceWireResponse>(
+      "POST",
+      `/v1/resources/${encodeURIComponent(id)}/share`,
+      body,
+      options,
+    );
+    if (typeof data?.qurl !== "string" || data.qurl.trim() === "") {
+      throw unexpectedResponseError("shareResource: response is missing qurl");
+    }
+    return new ShareLink({
+      link: data.qurl,
+      qurlId: data.qurl_id || undefined,
+      crid: data.crid || undefined,
+      type: data.type,
+      expiresAt: parseApiDate(data.expires_at),
+      expiresInSeconds: data.expires_in_seconds,
+      singleUse: data.single_use,
+    });
   }
 
   /** Revoke a specific qURL token on a resource. */

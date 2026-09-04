@@ -109,6 +109,23 @@ qURL Connector assignment and registration use native UDP through
 `qurl-connector` and `qurl-go`. This TypeScript package handles browser and
 management-plane qURL APIs; it does not expose an HTTP enrollment API.
 
+If you already hold a resource ID or CRID, mint a fresh share link directly:
+
+```typescript
+const share = await client.shareResource(resourceId, { ttlSeconds: 300 });
+console.log(share.link); // One-time-returned secret; capture it now
+console.log(share.qurlId); // Keep this to revoke only this link later
+
+// Optional: bind the response to DER SPKI key bytes you already trust.
+await share.verifyCrid(resourcePublicKeyDer);
+```
+
+`shareResource` returns the current share-safe `#qv2t1...` link. Recipients
+open that URL directly in the qURL browser flow; native programmatic opening
+uses qurl-go. The TypeScript client's `enterPortal` method is the legacy
+credentialed HTTP resolver for `at_` links and deliberately refuses to send a
+qv2 credential fragment to `/v1/resolve`.
+
 ## Opening Portals
 
 Most recipients open qURL links directly and do not use this SDK at all. If
