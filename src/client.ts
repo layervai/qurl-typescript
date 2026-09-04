@@ -2777,7 +2777,7 @@ export class QURLClient {
       wire.expires_in_seconds !== undefined &&
       wire.expires_in_seconds !== null &&
       (typeof wire.expires_in_seconds !== "number" ||
-        !Number.isInteger(wire.expires_in_seconds) ||
+        !Number.isSafeInteger(wire.expires_in_seconds) ||
         wire.expires_in_seconds < 0)
     ) {
       throw unexpectedResponseError("shareResource: response has invalid expires_in_seconds");
@@ -2796,6 +2796,8 @@ export class QURLClient {
       throw unexpectedResponseError("shareResource: response has invalid expires_at");
     }
     return new ShareLink({
+      // Repair transport-only edge whitespace on the one-time credential;
+      // ancillary identifiers fail closed instead of being normalized.
       link: data.qurl.trim(),
       qurlId: typeof wire.qurl_id === "string" ? wire.qurl_id : undefined,
       // Preserve an explicit empty string so verifyCrid can distinguish a

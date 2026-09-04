@@ -356,7 +356,7 @@ describe("shareResource", () => {
     ).toMatch(/^[0-9a-f-]{36}$/);
   });
 
-  it.each([1.5, Number.POSITIVE_INFINITY])(
+  it.each([1.5, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1])(
     "fails closed when expires_in_seconds is the non-integer %s",
     async (expiresInSeconds) => {
       const fetch = mockFetch({

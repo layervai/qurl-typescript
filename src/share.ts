@@ -71,7 +71,10 @@ export interface ShareLinkJSON {
   singleUse?: boolean;
 }
 
-/** A freshly minted, one-time-returned access link for an existing resource. */
+/**
+ * A freshly minted, one-time-returned access link for an existing resource.
+ * Instances are frozen during construction and are not designed for subclassing.
+ */
 export class ShareLink {
   readonly link: string;
   /** Token ID when supplied by the service; older deployments may omit it. */

@@ -131,7 +131,8 @@ key; it does not independently bind the secret link fragment to that key.
 It intentionally follows qurl-go's environment-agnostic key-match rule: CRID
 version zero is rejected as reserved, while every other structurally valid
 version is accepted and environment classification is not part of key-to-digest
-verification. Binary inputs of any length are hashed;
+verification. CRIDs use their canonical lowercase base32 spelling; uppercase or
+mixed-case spellings fail closed. Binary inputs of any length are hashed;
 `invalid_crid_key` is reserved for non-binary or unreadable (detached) runtime
 values, and a readable binary key that does not match reports `crid_mismatch`.
 Use `error instanceof CRIDVerificationError` (or `error.status === 0`) to
