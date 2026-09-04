@@ -849,13 +849,9 @@ export interface ExternalIdentityBindingApiKey {
   key_prefix: string;
   /**
    * Full API key secret. This is returned only during create or a same-key,
-   * same-body replay within 24 hours. Persist it securely immediately. The
-   * property is directly readable but non-enumerable and redacted by JSON and
-   * Node inspection to reduce accidental logging.
-   */
-  /**
-   * One-time secret. Read this property directly; JSON, spread, and
-   * structured-clone copies intentionally omit or redact it.
+   * same-body replay within 24 hours. Persist it securely immediately. Read
+   * this property directly; JSON, spread, and structured-clone copies
+   * intentionally omit or redact it.
    */
   plaintext: string;
 }

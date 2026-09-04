@@ -251,6 +251,9 @@ is a transport-level signal and can be `true` on the caller's first invocation
 when an SDK retry recovers a response whose initial delivery was lost.
 `binding.location` contains the response `Location` only when it is a bounded
 HTTP(S) URL or absolute path; unusable or overlong values are omitted.
+Cross-origin browser code can read these response-header fields only when the
+service exposes `Location` and the replay header through CORS; otherwise they
+remain `undefined` even when the wire response carried them.
 The service returns exact HTTP 201 with a
 top-level binding object for both fresh creates and replays. If the SDK rejects
 a successful response because that status or shape drifted, retry with the same

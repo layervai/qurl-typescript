@@ -8630,6 +8630,22 @@ describe("createExternalIdentityBinding", () => {
     });
   });
 
+  it("surfaces a bounded absolute HTTPS Location", async () => {
+    const location = "https://api.layerv.ai/v1/external-identity-bindings/eib_obviously_fake";
+    const fetch = mockFetch({
+      status: 201,
+      headers: { Location: location },
+      body: externalIdentityBindingData(),
+    });
+
+    const result = await createClient(fetch).createExternalIdentityBinding(
+      { provider: "teams", external_id: "tenant-obviously-fake" },
+      { idempotencyKey: BINDING_IDEMPOTENCY_KEY },
+    );
+
+    expect(result.location).toBe(location);
+  });
+
   it.each(["Idempotency-Replayed", "X-Idempotency-Replayed"])(
     "treats the %s header as a replay signal",
     async (headerName) => {
@@ -8756,23 +8772,25 @@ describe("createExternalIdentityBinding", () => {
     expect(result.location).toBeUndefined();
   });
 
-  it.each(["javascript:alert(1)", "//evil.invalid/binding", "not a location"])(
-    "drops unusable Location metadata (%s)",
-    async (location) => {
-      const fetch = mockFetch({
-        status: 201,
-        headers: { Location: location },
-        body: externalIdentityBindingData(),
-      });
+  it.each([
+    "javascript:alert(1)",
+    "//evil.invalid/binding",
+    "/\\evil.invalid/binding",
+    "not a location",
+  ])("drops unusable Location metadata (%s)", async (location) => {
+    const fetch = mockFetch({
+      status: 201,
+      headers: { Location: location },
+      body: externalIdentityBindingData(),
+    });
 
-      const result = await createClient(fetch).createExternalIdentityBinding(
-        { provider: "teams", external_id: "tenant-obviously-fake" },
-        { idempotencyKey: BINDING_IDEMPOTENCY_KEY },
-      );
+    const result = await createClient(fetch).createExternalIdentityBinding(
+      { provider: "teams", external_id: "tenant-obviously-fake" },
+      { idempotencyKey: BINDING_IDEMPOTENCY_KEY },
+    );
 
-      expect(result.location).toBeUndefined();
-    },
-  );
+    expect(result.location).toBeUndefined();
+  });
 
   it.each([null, [], "not-an-object"])(
     "fails closed when the response body is not a binding object (%j)",
@@ -8968,7 +8986,7 @@ describe("createExternalIdentityBinding", () => {
     expect(inspect(error, { depth: null })).not.toContain(BINDING_PLAINTEXT);
   });
 
-  it("logs a safe diagnostic when the optional replay header is absent", async () => {
+  it("does not log when the optional replay header is absent on a fresh create", async () => {
     const debug = vi.fn();
     const fetch = mockFetch({
       status: 201,
@@ -8988,9 +9006,9 @@ describe("createExternalIdentityBinding", () => {
       { idempotencyKey: BINDING_IDEMPOTENCY_KEY },
     );
 
-    expect(debug).toHaveBeenCalledWith(
+    expect(debug).not.toHaveBeenCalledWith(
       "createExternalIdentityBinding: response omitted optional replay header",
-      expect.objectContaining({ request_id: expect.any(String) }),
+      expect.anything(),
     );
     expect(inspect(debug.mock.calls, { depth: null })).not.toContain(BINDING_PLAINTEXT);
   });

@@ -1700,7 +1700,9 @@ function externalIdentityBindingLocation(headers: Headers | undefined): string |
   ) {
     return undefined;
   }
-  if (location.startsWith("/") && !location.startsWith("//")) return location;
+  if (location.startsWith("/") && !location.startsWith("//") && !location.startsWith("/\\")) {
+    return location;
+  }
   try {
     const parsed = new URL(location);
     return parsed.protocol === "https:" || parsed.protocol === "http:" ? location : undefined;
@@ -3680,11 +3682,7 @@ export class QURLClient {
     }
     const responseHeaders = envelope.__response_headers;
     const replay = parseExternalIdentityReplayHeader(responseHeaders);
-    if (replay.state === "missing") {
-      this.log("createExternalIdentityBinding: response omitted optional replay header", {
-        request_id: requestId,
-      });
-    } else if (replay.state === "unrecognized") {
+    if (replay.state === "unrecognized") {
       // Deliberately omit the raw header value from diagnostics.
       this.log("createExternalIdentityBinding: response has unrecognized replay header", {
         request_id: requestId,
