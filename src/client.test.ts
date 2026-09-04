@@ -5308,6 +5308,27 @@ describe("QURLClient", () => {
     }
   });
 
+  it("retains the first structured invalid-field diagnostic after normalized-key collisions", async () => {
+    const fetch = mockFetch({
+      status: 400,
+      body: {
+        error: {
+          title: "Bad Request",
+          status: 400,
+          detail: "Invalid input",
+          code: "validation_error",
+          invalid_fields: { "target\u202E url": "first", "target url": "second" },
+        },
+      },
+    });
+
+    const error = await createClient(fetch)
+      .create({ target_url: "https://example.com" })
+      .catch((caught: unknown) => caught as ValidationError);
+
+    expect(error.invalidFields).toEqual({ "target url": "first" });
+  });
+
   it("throws ValidationError on 422", async () => {
     const fetch = mockFetch({
       status: 422,
@@ -6000,6 +6021,35 @@ describe("QURLClient", () => {
 
     const messages = debugFn.mock.calls.map((c: unknown[]) => c[0]);
     expect(messages.some((m: string) => m.includes("unexpected error response shape"))).toBe(true);
+  });
+
+  it("bounds and sanitizes keys logged for an unexpected error response shape", async () => {
+    const debugFn = vi.fn();
+    const longKey = `${"€".repeat(300)}\n\u202Esecret-tail`;
+    const body = Object.fromEntries([
+      [longKey, true],
+      ...Array.from({ length: 120 }, (_, index) => [`field-${index}`, true]),
+    ]);
+    const fetch = mockFetch({ status: 500, body });
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch,
+      maxRetries: 0,
+      debug: debugFn,
+    });
+
+    await client.getQuota().catch(() => {});
+
+    const metadata = debugFn.mock.calls.find(([message]) =>
+      String(message).includes("unexpected error response shape"),
+    )?.[1] as { body_keys?: string[] };
+    expect(metadata.body_keys).toHaveLength(100);
+    for (const key of metadata.body_keys ?? []) {
+      expect(new TextEncoder().encode(key).byteLength).toBeLessThanOrEqual(512);
+      expect(key).not.toMatch(/[\p{Cc}\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/u);
+      expect(key).not.toContain("secret-tail");
+    }
   });
 
   it("5xx with JSON body but missing `error` envelope surfaces as ServerError with .code === 'unknown'", async () => {
@@ -7555,6 +7605,26 @@ describe("QURLClient", () => {
     // trace pasted into a support ticket carries the correlation
     // handle without a follow-up round-trip.
     expect((error as ValidationError).detail).toContain("[request_id=req_shape_guard_correlation]");
+  });
+
+  it("sanitizes and bounds batch shape-guard request IDs", async () => {
+    const requestId = `${"€".repeat(300)}\n\u202Esecret-tail`;
+    const fetch = mockFetch({
+      status: 400,
+      body: {
+        data: { unexpected: "not a batch response" },
+        meta: { request_id: requestId },
+      },
+    });
+
+    const error = await createClient(fetch)
+      .batchCreate({ items: [{ target_url: "https://example.com" }] })
+      .catch((caught: unknown) => caught as ValidationError);
+
+    expect(new TextEncoder().encode(error.requestId ?? "").byteLength).toBeLessThanOrEqual(512);
+    expect(error.requestId).not.toMatch(/[\p{Cc}\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/u);
+    expect(error.requestId).not.toContain("secret-tail");
+    expect(error.detail).not.toContain("secret-tail");
   });
 
   it("batch create shape-guard error has undefined requestId when meta is absent", async () => {

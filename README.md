@@ -332,6 +332,10 @@ observed HTTP status.
 
 Configure with `maxRetries` (default: 3). Set to `0` to disable.
 
+When DELETE returns `RateLimitError`, use `retryAfter` for scheduling but
+reconcile current resource state before issuing a deliberate retry; the SDK
+does not assume the rejected response proves the mutation never ran.
+
 > **Worst-case latency**: `timeout` is enforced per *attempt*, not for the whole request. Total worst-case latency is roughly `timeout × (maxRetries + 1) + sum(retry delays)`. Operators tuning `timeout` should account for this when sizing health-check budgets.
 
 For POST/PATCH requests, the SDK generates a UUIDv7 `Idempotency-Key` once per logical call and reuses it across SDK-managed retries, so the API can return the original result instead of creating duplicate resources. If your application catches an error and calls the SDK again, pass a stable override so the new call deduplicates with the first one. Caller-provided keys must be non-empty printable ASCII strings of at most 256 characters and must not start or end with spaces. Use a unique key for each logical operation; reusing one key for a different request can return the first cached response. To tie retries to your own upstream job or request ID, pass a per-call override:
@@ -354,9 +358,11 @@ SDK-generated keys require `globalThis.crypto.getRandomValues`, which is availab
 - SDK API requests use manual redirect handling. Redirect-capable HTTP statuses
   (300, 301, 302, 303, 305, 307, 308), browser `opaqueredirect` responses, and responses a custom fetch reports as already redirected are rejected as
   a typed `QURLError` (`code: "unexpected_response"`) without requesting the
-  `Location` target, so `Authorization` and `Idempotency-Key` headers are never
-  forwarded through redirects. A non-redirecting 304 is handled as an ordinary
-  unsuccessful API response rather than mislabeled as a redirect.
+  `Location` target. This prevents forwarding `Authorization` and
+  `Idempotency-Key` when the fetch implementation honors `redirect: "manual"`
+  and accurately exposes `Response.redirected`; injected shims must uphold that
+  contract. A non-redirecting 304 is handled as an ordinary unsuccessful API
+  response rather than mislabeled as a redirect.
 - API success and error bodies are limited to **1 MiB (1,048,576 bytes)**,
   matching qurl-go's security posture. The SDK checks `Content-Length` when
   present and independently counts streamed bytes, so missing or inaccurate

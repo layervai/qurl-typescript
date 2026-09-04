@@ -11,7 +11,8 @@
   request IDs, and up to 100 invalid-field entries have controls and
   bidirectional formatting characters removed, are normalized to one line,
   and are capped at 512 UTF-8 bytes per key/value so error objects and debug
-  paths stay bounded.
+  paths stay bounded. Non-string invalid-field values are omitted, and
+  normalized-key collisions retain the first diagnostic.
 - **client:** API redirects are refused instead of followed, including when an
   injected fetch implementation follows one before returning a response.
 - **client:** API response bodies larger than 1 MiB are rejected before JSON

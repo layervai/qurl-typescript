@@ -96,11 +96,12 @@ import { VERSION } from "./version.js";
 const DEFAULT_BASE_URL = "https://api.layerv.ai";
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_TIMEOUT = 30_000;
-// Match qurl-go's API-client posture: one MiB is ample for the API's
-// bounded JSON envelopes (including 100-item batch responses), while
-// preventing a broken or hostile upstream from making the SDK buffer an
-// unbounded body. The limit is enforced from Content-Length when usable and
-// again while consuming the response stream.
+// Match qurl-go a528d1f's exact API response cap. Current qurl-service list
+// routes cap pages at 100 items; the largest explicitly bounded blob on a list
+// item is a webhook delivery's 8 KiB response-body preview. Keep this aligned
+// with Go and the service contract rather than widening one SDK independently.
+// The limit is enforced from Content-Length when usable and again while
+// consuming the response stream.
 const MAX_RESPONSE_BODY_BYTES = 1 << 20;
 const MAX_ERROR_SNIPPET_BYTES = 512;
 const MAX_INVALID_FIELD_ENTRIES = 100;
@@ -653,12 +654,13 @@ function fillRandomBytes(bytes: Uint8Array<ArrayBuffer>): void {
  * just on success/passthrough returns.
  */
 function unexpectedResponseError(detail: string, request_id?: string): ValidationError {
+  const safeRequestId = boundedErrorSnippet(request_id);
   return new ValidationError({
     status: 0,
     code: ERROR_CODE_UNEXPECTED_RESPONSE,
     title: "Unexpected Response",
     detail,
-    request_id,
+    request_id: safeRequestId,
   });
 }
 
@@ -707,15 +709,25 @@ function boundedInvalidFields(value: unknown): Record<string, string> | undefine
   if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
 
   const entries: [string, string][] = [];
+  const retainedKeys = new Set<string>();
   for (const [rawKey, rawValue] of Object.entries(value)) {
     const key = boundedErrorSnippet(rawKey);
     const fieldDetail = boundedErrorSnippet(rawValue);
-    if (key !== undefined && fieldDetail !== undefined) {
+    if (key !== undefined && fieldDetail !== undefined && !retainedKeys.has(key)) {
+      retainedKeys.add(key);
       entries.push([key, fieldDetail]);
       if (entries.length === MAX_INVALID_FIELD_ENTRIES) break;
     }
   }
   return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
+
+/** Bound server-controlled object keys before forwarding them to a debug sink. */
+function boundedObjectKeys(value: object): string[] {
+  return Object.keys(value)
+    .slice(0, MAX_INVALID_FIELD_ENTRIES)
+    .map((key) => boundedErrorSnippet(key))
+    .filter((key): key is string => key !== undefined);
 }
 
 async function cancelResponseBody(body: Response["body"]): Promise<void> {
@@ -1958,7 +1970,7 @@ export class QURLClient {
     // .requestId property AND the message string so a stack trace
     // pasted into a support ticket carries the correlation handle
     // without a follow-up round-trip.
-    const requestId = envelope.meta?.request_id;
+    const requestId = boundedErrorSnippet(envelope.meta?.request_id);
     const requestIdSuffix = requestId !== undefined ? ` [request_id=${requestId}]` : "";
 
     // `Number.isInteger` rejects NaN, Infinity, and floats. Combined
@@ -3827,7 +3839,7 @@ export class QURLClient {
       this.log(`unexpected error response shape from ${response.status}`, {
         status: response.status,
         body_keys:
-          typeof json === "object" && json !== null ? Object.keys(json as object) : undefined,
+          typeof json === "object" && json !== null ? boundedObjectKeys(json as object) : undefined,
       });
     } catch {
       // Body wasn't valid JSON. Log so operators can distinguish this from a

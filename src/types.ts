@@ -955,7 +955,10 @@ export interface ClientOptions {
   apiKey: string;
   /** Base URL. Defaults to https://api.layerv.ai */
   baseUrl?: string;
-  /** Custom fetch implementation. */
+  /**
+   * Custom fetch implementation. Redirect-safety requires it to honor
+   * `redirect: "manual"` and accurately expose `Response.redirected`.
+   */
   fetch?: typeof globalThis.fetch;
   /** Maximum retry attempts for transient errors (429, 5xx). Default: 3. */
   maxRetries?: number;
