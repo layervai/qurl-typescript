@@ -36,6 +36,10 @@ const foreign = vectors.producer_cases.find(
   ({ der_spki_b64url }) => der_spki_b64url !== matching.der_spki_b64url,
 );
 if (!foreign) throw new Error("CRID conformance vectors are missing a foreign resource key");
+const acceptedTruncated = vectors.consumer_value_cases.find(
+  ({ value, outcome }) => outcome === "accept" && value.length === 47,
+);
+if (!acceptedTruncated) throw new Error("CRID conformance vectors are missing a truncated CRID");
 
 function b64url(value: string): Uint8Array<ArrayBuffer> {
   return Uint8Array.from(Buffer.from(value, "base64url"));
@@ -91,14 +95,17 @@ describe("shareResource", () => {
     expect((init.headers as Record<string, string>)["Idempotency-Key"]).toBe("share-job-1");
   });
 
-  it.each(["", "   "])("rejects an empty resource ID before the request", async (resourceId) => {
-    const fetch = mockFetch({ status: 200, body: shareResponse() });
+  it.each(["", "   "])(
+    "rejects the empty resource ID %j before the request",
+    async (resourceId) => {
+      const fetch = mockFetch({ status: 200, body: shareResponse() });
 
-    await expect(createClient(fetch).shareResource(resourceId)).rejects.toBeInstanceOf(
-      ValidationError,
-    );
-    expect(fetch).not.toHaveBeenCalled();
-  });
+      await expect(createClient(fetch).shareResource(resourceId)).rejects.toBeInstanceOf(
+        ValidationError,
+      );
+      expect(fetch).not.toHaveBeenCalled();
+    },
+  );
 
   it.each([
     ["negative", -1],
@@ -181,6 +188,14 @@ describe("shareResource", () => {
     });
   });
 
+  it("fails closed when expires_at is an explicit empty string", async () => {
+    const fetch = mockFetch({ status: 200, body: shareResponse({ expires_at: "" }) });
+
+    await expect(createClient(fetch).shareResource("resource-id")).rejects.toMatchObject({
+      code: "unexpected_response",
+    });
+  });
+
   it("fails closed when expires_in_seconds is negative", async () => {
     const fetch = mockFetch({
       status: 200,
@@ -189,6 +204,40 @@ describe("shareResource", () => {
 
     await expect(createClient(fetch).shareResource("resource-id")).rejects.toMatchObject({
       code: "unexpected_response",
+    });
+  });
+
+  it.each([1.5, Number.POSITIVE_INFINITY])(
+    "fails closed when expires_in_seconds is the non-integer %s",
+    async (expiresInSeconds) => {
+      const fetch = mockFetch({
+        status: 200,
+        body: shareResponse({ expires_in_seconds: expiresInSeconds }),
+      });
+
+      await expect(createClient(fetch).shareResource("resource-id")).rejects.toMatchObject({
+        code: "unexpected_response",
+      });
+    },
+  );
+
+  it.each(["qurl_id", "crid", "type", "expires_at", "expires_in_seconds", "single_use"])(
+    "treats a null optional response field %s as omitted",
+    async (field) => {
+      const fetch = mockFetch({ status: 200, body: shareResponse({ [field]: null }) });
+
+      await expect(createClient(fetch).shareResource("resource-id")).resolves.toBeInstanceOf(
+        ShareLink,
+      );
+    },
+  );
+
+  it("preserves an explicit empty CRID as malformed rather than missing", async () => {
+    const fetch = mockFetch({ status: 200, body: shareResponse({ crid: "" }) });
+    const share = await createClient(fetch).shareResource("resource-id");
+
+    await expect(share.verifyCrid(b64url(matching.der_spki_b64url))).rejects.toMatchObject({
+      code: ERROR_CODE_INVALID_CRID,
     });
   });
 
@@ -246,6 +295,15 @@ describe("ShareLink.verifyCrid", () => {
     const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
 
     await expect(share.verifyCrid(buffer)).resolves.toBeUndefined();
+  });
+
+  it("accepts the conformance vector's truncated CRID path", async () => {
+    const share = new ShareLink({
+      link: "https://qurl.link/#qv2t1.example",
+      crid: acceptedTruncated.value,
+    });
+
+    await expect(share.verifyCrid(b64url(matching.der_spki_b64url))).resolves.toBeUndefined();
   });
 
   it("rejects a foreign DER SPKI with a typed mismatch", async () => {
@@ -324,7 +382,7 @@ describe("ShareLink.verifyCrid", () => {
 
       if (outcome === "reject") {
         expect(error).toMatchObject({
-          code: value === "" ? ERROR_CODE_MISSING_CRID : ERROR_CODE_INVALID_CRID,
+          code: ERROR_CODE_INVALID_CRID,
         });
       } else if (error instanceof CRIDVerificationError) {
         expect(error.code).not.toBe(ERROR_CODE_INVALID_CRID);

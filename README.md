@@ -113,8 +113,8 @@ If you already hold a resource ID or CRID, mint a fresh share link directly:
 
 ```typescript
 const share = await client.shareResource(resourceId, { ttlSeconds: 300 });
-console.log(share.link); // One-time-returned secret; capture it now
-console.log(share.qurlId); // Keep this to revoke only this link later
+await deliverToRecipient(share.link); // Secret; returned once and not retrievable
+console.log(share.qurlId); // Safe handle for revoking only this link later
 
 // Optional: verify the response CRID against DER SPKI bytes you already trust.
 await share.verifyCrid(resourcePublicKeyDer);
@@ -212,6 +212,7 @@ console.log(`Access granted to ${access.target_url} for ${access.access_grant?.e
 | `listResources(input?)` / `listAllResources(input?)` / `createResource(input)` / `getResource(id)` | Resource management |
 | `updateResource(id, input)` / `deleteResource(id)` | Update or revoke resources |
 | `createQurlForResource(id, input?)` | Mint a qURL for an existing resource |
+| `shareResource(id, options?, requestOptions?)` | Mint a fresh share-safe link and optional CRID proof for an existing resource |
 | `updateResourceQurl(id, qurlId, input)` / `revokeResourceQurl(id, qurlId)` | Manage one token on a resource |
 | `listResourceSessions(id)` / `terminateAllResourceSessions(id)` / `terminateResourceSession(id, sessionId)` | Inspect or terminate active sessions |
 | `listConnectorInstallations(input?)` / `listAllConnectorInstallations(input?)` | List connector installations |
@@ -270,6 +271,7 @@ import {
   NotFoundError,
   RateLimitError,
   ValidationError,
+  CRIDVerificationError,
 } from '@layervai/qurl';
 
 try {
@@ -299,6 +301,7 @@ try {
 | `ServerError` | 5xx | Server-side failure |
 | `NetworkError` | — | Connection failure |
 | `TimeoutError` | — | Request exceeded timeout |
+| `CRIDVerificationError` | — | Share-response CRID is missing, malformed, or does not match a trusted resource key |
 
 Client-detected failures use `status: 0` with a discriminating `code`:
 `"client_validation"` for bad input caught before a request, and — on the
@@ -306,6 +309,12 @@ portal surface — `"resource_not_found"` / `"ambiguous_resource"` when
 `connectorResource` cannot resolve a connector id to exactly one resource,
 and `"unexpected_response"` when a response is missing required fields (e.g.
 `enterPortal` failing closed on a grant with no resource URL).
+
+`ShareLink.verifyCrid()` uses `CRIDVerificationError` with `status: 0` and one
+of `"missing_crid"`, `"invalid_crid"`, `"invalid_crid_key"`, or
+`"crid_mismatch"`. It verifies the response CRID against DER SPKI bytes the
+caller already trusts; it does not prove that the secret link fragment belongs
+to that key.
 
 ## Pagination
 

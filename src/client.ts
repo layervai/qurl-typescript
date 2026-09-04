@@ -2800,7 +2800,9 @@ export class QURLClient {
     return new ShareLink({
       link: data.qurl.trim(),
       qurlId: typeof wire.qurl_id === "string" && wire.qurl_id !== "" ? wire.qurl_id : undefined,
-      crid: typeof wire.crid === "string" && wire.crid !== "" ? wire.crid : undefined,
+      // Preserve an explicit empty string so verifyCrid can distinguish a
+      // malformed CRID from an omitted additive field on an older response.
+      crid: typeof wire.crid === "string" ? wire.crid : undefined,
       type: typeof wire.type === "string" && wire.type !== "" ? wire.type : undefined,
       expiresAt,
       expiresInSeconds:

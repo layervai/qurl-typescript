@@ -66,7 +66,7 @@ export class ShareLink {
    * does not independently prove that the secret link fragment belongs to it.
    */
   async verifyCrid(derSpki: ArrayBuffer | ArrayBufferView): Promise<void> {
-    if (!this.crid) {
+    if (this.crid === undefined) {
       throw new CRIDVerificationError(
         ERROR_CODE_MISSING_CRID,
         "Share response carried no CRID; the resource key cannot be verified",
