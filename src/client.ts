@@ -659,7 +659,8 @@ const MAX_API_KEY_NAME = 100;
 const API_KEY_CREATE_SCOPES = new Set(["qurl:read", "qurl:write", "qurl:resolve", "qurl:agent"]);
 const CREDENTIAL_CLAIM_ID_PATTERN = /^[a-z][a-z0-9-]{1,62}[a-z0-9]$/;
 const CREDENTIAL_DURATION_PATTERN = /^([0-9]+)([smhdw])$/;
-const CREDENTIAL_DURATION_MULTIPLIERS: Readonly<Record<string, bigint>> = {
+type CredentialDurationUnit = "s" | "m" | "h" | "d" | "w";
+const CREDENTIAL_DURATION_MULTIPLIERS: Readonly<Record<CredentialDurationUnit, bigint>> = {
   s: 1n,
   m: 60n,
   h: 3600n,
@@ -1277,6 +1278,13 @@ function validateApiKeyWriteFields(
   if (requiredFields.scopes || input.scopes !== undefined) {
     requireNonEmptyArrayField(input, "scopes", method);
     requireStringArrayElements(input.scopes, "scopes", method);
+    if (
+      (input.scopes as unknown[]).some(
+        (scope) => typeof scope !== "string" || !API_KEY_CREATE_SCOPES.has(scope),
+      )
+    ) {
+      throw clientValidationError(`${method}: scopes contains an unsupported permission`);
+    }
   }
 }
 
@@ -1321,7 +1329,8 @@ function validateEnrollmentTokenFields(input: Record<string, unknown>, method: s
     if (!match) {
       throw clientValidationError(`${method}: expires_in must match <integer><s|m|h|d|w>`);
     }
-    const seconds = BigInt(match[1]) * CREDENTIAL_DURATION_MULTIPLIERS[match[2]];
+    const seconds =
+      BigInt(match[1]) * CREDENTIAL_DURATION_MULTIPLIERS[match[2] as CredentialDurationUnit];
     if (seconds <= 0n || seconds > MAX_ENROLLMENT_TOKEN_TTL_SECONDS) {
       throw clientValidationError(
         `${method}: expires_in must be greater than zero and at most 24h`,
@@ -3298,14 +3307,6 @@ export class QURLClient {
       name: true,
       scopes: !isEnrollmentToken,
     });
-    if (
-      !isEnrollmentToken &&
-      (normalizedRecord.scopes as unknown[]).some(
-        (scope) => typeof scope !== "string" || !API_KEY_CREATE_SCOPES.has(scope),
-      )
-    ) {
-      throw clientValidationError("createApiKey: scopes contains an unsupported permission");
-    }
     return this.request<CreateApiKeyOutput>("POST", "/v1/api-keys", normalized, options);
   }
 

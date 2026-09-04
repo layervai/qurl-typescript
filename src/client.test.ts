@@ -1823,6 +1823,37 @@ describe("QURLClient", () => {
     expect(body).not.toHaveProperty("target");
   });
 
+  it("createApiKey mints an unbound agent enrollment token", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+
+    await createClient(fetch).createApiKey({
+      kind: "enrollment_token",
+      name: "unbound agent enrollment",
+    });
+
+    expect(JSON.parse(vi.mocked(fetch).mock.calls[0][1]?.body as string)).toEqual({
+      kind: "enrollment_token",
+      name: "unbound agent enrollment",
+    });
+  });
+
+  it.each(["24h", "86400s"])(
+    "createApiKey accepts the 24-hour boundary as %s",
+    async (expiresIn) => {
+      const fetch = mockFetch({ status: 201, body: { data: {} } });
+
+      await createClient(fetch).createApiKey({
+        kind: "enrollment_token",
+        name: "boundary enrollment",
+        expires_in: expiresIn,
+      });
+
+      expect(JSON.parse(vi.mocked(fetch).mock.calls[0][1]?.body as string)).toMatchObject({
+        expires_in: expiresIn,
+      });
+    },
+  );
+
   it("createApiKey rejects target/claims on a durable api_key client-side", async () => {
     const fetch = mockFetch({ status: 201, body: { data: {} } });
     const client = createClient(fetch);
@@ -1861,16 +1892,26 @@ describe("QURLClient", () => {
   });
 
   it.each([
-    ["an unknown kind", { kind: "future", name: "bad", scopes: ["qurl:read"] }],
+    ["an unknown kind", { kind: "future", name: "bad", scopes: ["qurl:read"] }, "kind must be"],
     [
       "expires_in on a durable key",
       { kind: "api_key", name: "bad", scopes: ["qurl:read"], expires_in: "1h" },
+      "expires_in is only accepted",
     ],
-    ["an unknown durable scope", { kind: "api_key", name: "bad", scopes: ["admin"] }],
-    ["an unknown target", { kind: "enrollment_token", name: "bad", target: "future" }],
+    [
+      "an unknown durable scope",
+      { kind: "api_key", name: "bad", scopes: ["admin"] },
+      "unsupported permission",
+    ],
+    [
+      "an unknown target",
+      { kind: "enrollment_token", name: "bad", target: "future" },
+      "target must be",
+    ],
     [
       "a connector target without a claim",
       { kind: "enrollment_token", name: "bad", target: "connector" },
+      "requires exactly one claim",
     ],
     [
       "more than one claim",
@@ -1882,6 +1923,7 @@ describe("QURLClient", () => {
           { type: "connector", id: "two" },
         ],
       },
+      "at most one claim",
     ],
     [
       "an invalid claim",
@@ -1890,16 +1932,52 @@ describe("QURLClient", () => {
         name: "bad",
         claims: [{ type: "connector", id: "Bad ID" }],
       },
+      "not a valid connector id",
     ],
-    ["a zero lifetime", { kind: "enrollment_token", name: "bad", expires_in: "0s" }],
-    ["a lifetime over 24h", { kind: "enrollment_token", name: "bad", expires_in: "2d" }],
-    ["a malformed lifetime", { kind: "enrollment_token", name: "bad", expires_in: "hour" }],
-  ])("createApiKey rejects %s before fetch", async (_name, input) => {
+    [
+      "an unknown claim field",
+      {
+        kind: "enrollment_token",
+        name: "bad",
+        claims: [{ type: "connector", id: "prod-dashboard", extra: true }],
+      },
+      'claims[0]: unknown field "extra"',
+    ],
+    [
+      "a zero lifetime",
+      { kind: "enrollment_token", name: "bad", expires_in: "0s" },
+      "greater than zero and at most 24h",
+    ],
+    [
+      "a lifetime over 24h",
+      { kind: "enrollment_token", name: "bad", expires_in: "2d" },
+      "greater than zero and at most 24h",
+    ],
+    [
+      "a malformed lifetime",
+      { kind: "enrollment_token", name: "bad", expires_in: "hour" },
+      "must match",
+    ],
+  ])("createApiKey rejects %s before fetch", async (_name, input, expectedDetail) => {
     const fetch = mockFetch({ status: 201, body: { data: {} } });
 
+    const error = await createClient(fetch)
+      .createApiKey(input as Parameters<QURLClient["createApiKey"]>[0])
+      .catch((caught: unknown) => caught as ValidationError);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error.detail).toContain(expectedDetail);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("updateApiKey rejects scopes outside the current service request enum", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+
     await expect(
-      createClient(fetch).createApiKey(input as Parameters<QURLClient["createApiKey"]>[0]),
-    ).rejects.toBeInstanceOf(ValidationError);
+      createClient(fetch).updateApiKey("key_abc123def456", { scopes: ["future:scope"] }),
+    ).rejects.toMatchObject({
+      code: ERROR_CODE_CLIENT_VALIDATION,
+      detail: expect.stringContaining("unsupported permission"),
+    });
     expect(fetch).not.toHaveBeenCalled();
   });
 

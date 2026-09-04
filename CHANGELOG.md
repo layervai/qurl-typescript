@@ -7,7 +7,10 @@
 - **client:** adopt qurl-service's kind-first credential API. Retired
   `purpose`/`tunnel_slug` fields are removed; durable API keys and one-shot
   enrollment tokens now enforce their distinct scopes, targets, claims, and
-  expiry contracts before dispatch.
+  expiry contracts before dispatch. In particular, durable keys no longer
+  accept `expires_in`; only enrollment tokens may carry a lifetime. Requires a
+  qurl-service deployment with the kind-first credential contract at or after
+  `047cf31e1cdf545e3060e0f9294d738a19fb997b`.
 - **client:** remove the released legacy HTTP bootstrap method and the
   not-yet-released relay registration implementation. Native qURL Connector
   assignment and registration are UDP-only and belong in the Go runtime; the
