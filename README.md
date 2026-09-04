@@ -125,6 +125,8 @@ Durable `api_key` credentials require explicit scopes and do not accept
 `expires_in`; enrollment tokens derive their scopes from `target`/`claims` and
 expire within 24 hours. Request enums are validated against the current service
 contract; response types remain additive for forward-compatible reads.
+This credential surface requires the kind-first qurl-service contract at or
+after commit `047cf31e1cdf545e3060e0f9294d738a19fb997b`.
 
 ## Opening Portals
 
