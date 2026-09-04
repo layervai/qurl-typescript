@@ -11,9 +11,8 @@ const CRID_ALPHABET = "abcdefghijklmnopqrstuvwxyz234567";
 const CRID_FULL_LENGTH = 60;
 const CRID_TRUNCATED_LENGTH = 47;
 const CRID_CHECKSUM_LENGTH = 4;
-// ASCII bytes for "NHP-QURL-CRID-V1\0". Keeping this literal makes importing
-// the package safe even in runtimes without a global TextEncoder; verifyCrid
-// reports the missing Web Crypto capability through RuntimeError at call time.
+// ASCII bytes for "NHP-QURL-CRID-V1\0". Keep the verification domain fixed
+// and independent of runtime text encoding.
 const CRID_DOMAIN = Uint8Array.of(
   0x4e,
   0x48,
@@ -159,7 +158,7 @@ function copyBytes(value: ArrayBuffer | ArrayBufferView): Uint8Array<ArrayBuffer
   // so it is cross-realm safe without trusting a spoofable toStringTag.
   try {
     const copied = ArrayBuffer.prototype.slice.call(value as ArrayBuffer, 0);
-    return Uint8Array.from(new Uint8Array(copied));
+    return new Uint8Array(copied);
   } catch {
     // A non-ArrayBuffer or detached buffer falls through to the typed-view
     // branch/error below.
