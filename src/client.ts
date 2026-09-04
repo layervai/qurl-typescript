@@ -117,8 +117,9 @@ const RETRY_AFTER_PARSE_LIMIT_S = RETRY_AFTER_HARD_CAP_MS / 1000;
 const RETRYABLE_STATUS = new Set([429, 502, 503, 504]);
 // Keep mutating status retries 429-only until the service-side idempotency
 // cache contract is proven across 5xx, TTL, and replay-window edge cases.
-// Network-error retries still reuse Idempotency-Key below.
+// Fetch-level POST/PATCH retries still reuse Idempotency-Key below.
 const RETRYABLE_STATUS_MUTATING = new Set([429]);
+const NO_RETRYABLE_STATUSES = new Set<number>();
 type HttpMethod = "GET" | "POST" | "PATCH" | "DELETE";
 const IDEMPOTENCY_KEY_METHODS = new Set<HttpMethod>(["POST", "PATCH"]);
 const MUTATING_RETRY_METHODS = new Set<HttpMethod>(["POST", "PATCH"]);
@@ -1697,6 +1698,8 @@ interface ApiResponse<T> {
    * otherwise let the SDK silently overwrite a server-supplied value.
    */
   __http_status?: number;
+  /** SDK-injected exact-body signal used by no-content endpoint contracts. */
+  __http_body_empty?: boolean;
 }
 
 interface ApiErrorEnvelope {
@@ -2534,7 +2537,7 @@ export class QURLClient {
           "To revoke a single access token, use the resource-scoped token endpoint.",
       );
     }
-    await this.rawRequest("DELETE", `/v1/qurls/${encodeURIComponent(id)}`);
+    await this.requestNoContent(`/v1/qurls/${encodeURIComponent(id)}`);
   }
 
   /**
@@ -2810,7 +2813,7 @@ export class QURLClient {
   /** Revoke a resource and all of its qURLs. */
   async deleteResource(id: string): Promise<void> {
     requireNonEmptyId(id, "deleteResource");
-    await this.rawRequest("DELETE", `/v1/resources/${encodeURIComponent(id)}`);
+    await this.requestNoContent(`/v1/resources/${encodeURIComponent(id)}`);
   }
 
   /**
@@ -2847,8 +2850,7 @@ export class QURLClient {
   async revokeResourceQurl(id: string, qurlId: string): Promise<void> {
     requireNonEmptyId(id, "revokeResourceQurl");
     requireNonEmptyId(qurlId, "revokeResourceQurl");
-    await this.rawRequest(
-      "DELETE",
+    await this.requestNoContent(
       `/v1/resources/${encodeURIComponent(id)}/qurls/${encodeURIComponent(qurlId)}`,
     );
   }
@@ -2909,13 +2911,7 @@ export class QURLClient {
     };
   }
 
-  /**
-   * Terminate all active sessions for a resource.
-   *
-   * The returned count is best-effort under retries: if the first DELETE
-   * succeeds server-side but the response is lost, a retried request may
-   * return `0` because there are no sessions left to terminate.
-   */
+  /** Terminate all active sessions for a resource and return the server count. */
   async terminateAllResourceSessions(id: string): Promise<SessionTerminateOutput> {
     requireNonEmptyId(id, "terminateAllResourceSessions");
     const path = `/v1/resources/${encodeURIComponent(id)}/sessions`;
@@ -2940,8 +2936,7 @@ export class QURLClient {
   async terminateResourceSession(id: string, sessionId: string): Promise<void> {
     requireNonEmptyId(id, "terminateResourceSession");
     requireNonEmptyId(sessionId, "terminateResourceSession");
-    await this.rawRequest(
-      "DELETE",
+    await this.requestNoContent(
       `/v1/resources/${encodeURIComponent(id)}/sessions/${encodeURIComponent(sessionId)}`,
     );
   }
@@ -3146,7 +3141,7 @@ export class QURLClient {
   /** Remove a custom domain. */
   async deleteDomain(domain: string): Promise<void> {
     requireNonEmptyId(domain, "deleteDomain", "domain");
-    await this.rawRequest("DELETE", `/v1/domains/${encodeURIComponent(domain)}`);
+    await this.requestNoContent(`/v1/domains/${encodeURIComponent(domain)}`);
   }
 
   /** Trigger DNS verification for a custom domain. */
@@ -3267,7 +3262,7 @@ export class QURLClient {
   /** Delete a webhook. */
   async deleteWebhook(id: string): Promise<void> {
     requireNonEmptyId(id, "deleteWebhook");
-    await this.rawRequest("DELETE", `/v1/webhooks/${encodeURIComponent(id)}`);
+    await this.requestNoContent(`/v1/webhooks/${encodeURIComponent(id)}`);
   }
 
   /** Regenerate a webhook signing secret. */
@@ -3408,7 +3403,7 @@ export class QURLClient {
   /** Revoke an API key. */
   async revokeApiKey(keyId: string): Promise<void> {
     requireNonEmptyId(keyId, "revokeApiKey");
-    await this.rawRequest("DELETE", `/v1/api-keys/${encodeURIComponent(keyId)}`);
+    await this.requestNoContent(`/v1/api-keys/${encodeURIComponent(keyId)}`);
   }
 
   /** Redeem an access code. */
@@ -3474,7 +3469,7 @@ export class QURLClient {
   /** Revoke an access code. */
   async revokeAccessCode(id: string): Promise<void> {
     requireNonEmptyId(id, "revokeAccessCode");
-    await this.rawRequest("DELETE", `/v1/access-codes/${encodeURIComponent(id)}`);
+    await this.requestNoContent(`/v1/access-codes/${encodeURIComponent(id)}`);
   }
 
   // --- Internal HTTP plumbing ---
@@ -3496,6 +3491,16 @@ export class QURLClient {
       );
     }
     return data;
+  }
+
+  /** Require the service's exact 204 response with no response bytes. */
+  private async requestNoContent(path: string): Promise<void> {
+    const response = await this.rawRequest<never>("DELETE", path);
+    if (response.__http_status !== 204 || response.__http_body_empty !== true) {
+      throw unexpectedResponseError(
+        `Unexpected response from DELETE ${path}; expected empty HTTP 204`,
+      );
+    }
   }
 
   /**
@@ -3528,12 +3533,20 @@ export class QURLClient {
       headers["Idempotency-Key"] = idempotencyKey;
     }
 
-    // POST/PATCH keep status-code retries limited to rate limits. They
-    // still retry fetch-level failures below with the same Idempotency-Key,
-    // which fixes the duplicate-creation path from lost responses
-    // without broadening mutating 5xx replay behavior.
-    const mutatingForRetry = MUTATING_RETRY_METHODS.has(method);
-    const retryable = mutatingForRetry ? RETRYABLE_STATUS_MUTATING : RETRYABLE_STATUS;
+    // Reads may retry transient statuses and transport failures. POST/PATCH
+    // keep status-code retries limited to rate limits and reuse the same
+    // Idempotency-Key for fetch-level failures. DELETE is deliberately never
+    // replayed: endpoint semantics differ (individual revoke returns 409 on a
+    // repeat, while resource deletion can require lifecycle reconciliation),
+    // so the HTTP verb alone cannot prove a retry safe.
+    const idempotencyKeyBackedRetry = MUTATING_RETRY_METHODS.has(method);
+    const retryFetchFailure = method === "GET" || idempotencyKeyBackedRetry;
+    const retryable =
+      method === "GET"
+        ? RETRYABLE_STATUS
+        : idempotencyKeyBackedRetry
+          ? RETRYABLE_STATUS_MUTATING
+          : NO_RETRYABLE_STATUSES;
     const serializedBody = body !== undefined ? JSON.stringify(body) : undefined;
     let lastError: Error | undefined;
 
@@ -3571,7 +3584,7 @@ export class QURLClient {
             error: lastError.message,
           },
         );
-        if (attempt < this.maxRetries) {
+        if (retryFetchFailure && attempt < this.maxRetries) {
           continue;
         }
         throw lastError;
@@ -3635,11 +3648,19 @@ export class QURLClient {
               url,
             });
           }
-          return { data: undefined as unknown as T, __http_status: response.status };
+          return {
+            data: undefined as unknown as T,
+            __http_status: response.status,
+            __http_body_empty: responseBody.length === 0,
+          };
         }
         try {
           const json = JSON.parse(responseBody) as ApiResponse<T>;
-          return { ...json, __http_status: response.status };
+          return {
+            ...json,
+            __http_status: response.status,
+            __http_body_empty: responseBody.length === 0,
+          };
         } catch {
           // Non-JSON body on a 2xx response (server contract violation)
           // or on a passthrough status (e.g. proxy HTML on 400). The

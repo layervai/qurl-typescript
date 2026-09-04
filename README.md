@@ -315,13 +315,18 @@ const clientWithLogger = new QURLClient({
 
 ## Retry Behavior
 
-The client automatically retries failed requests with exponential backoff:
+The client retries only requests whose replay contract is explicit:
 
-- **GET/DELETE**: Retries on 429, 502, 503, 504
+- **GET**: Retries on 429, 502, 503, 504 and fetch-level failures
 - **POST/PATCH**: Retries status responses only on 429
-- **Network errors**: Always retried; POST/PATCH requests send an `Idempotency-Key` on the first attempt and reuse it on retries
+- **POST/PATCH network errors**: Retried with the `Idempotency-Key` generated on the first attempt
+- **DELETE**: Never replayed automatically. Individual revoke can return 409 on repeat, and resource deletion may require lifecycle reconciliation after a lost response; the HTTP verb alone does not prove a retry safe.
 - **`Retry-After` header**: Honored on 429 and 503 responses (RFC 7231 §7.1.3). Currently the SDK only parses **delta-seconds** values (e.g. `Retry-After: 30`); HTTP-date values (`Retry-After: Wed, 21 Oct 2026 07:28:00 GMT`) silently fall back to exponential backoff. Tracked in [#61](https://github.com/layervai/qurl-typescript/issues/61).
 - **Response failures**: Redirects and oversized bodies are not retried. Retryable status codes remain retryable when an intermediary returns HTML, an empty body, or another non-envelope error response.
+
+All documented no-content DELETE operations require exactly HTTP 204 with an
+empty response body. Alternate success statuses or response bytes fail closed
+as `unexpected_response` contract errors.
 
 Configure with `maxRetries` (default: 3). Set to `0` to disable.
 

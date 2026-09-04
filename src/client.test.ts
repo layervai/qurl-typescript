@@ -1989,6 +1989,47 @@ describe("QURLClient", () => {
     await expect(client.delete("r_abc123def45")).resolves.toBeUndefined();
   });
 
+  it.each([
+    ["delete", (client: QURLClient) => client.delete("r_abc123def45")],
+    ["deleteResource", (client: QURLClient) => client.deleteResource("r_abc123def45")],
+    [
+      "revokeResourceQurl",
+      (client: QURLClient) => client.revokeResourceQurl("r_abc123def45", "q_3a7f2c8e91b"),
+    ],
+    [
+      "terminateResourceSession",
+      (client: QURLClient) => client.terminateResourceSession("r_abc123def45", "session-1"),
+    ],
+    ["deleteDomain", (client: QURLClient) => client.deleteDomain("app.example.com")],
+    ["deleteWebhook", (client: QURLClient) => client.deleteWebhook("wh_abc")],
+    ["revokeApiKey", (client: QURLClient) => client.revokeApiKey("key_abc")],
+    ["revokeAccessCode", (client: QURLClient) => client.revokeAccessCode("code_abc")],
+  ])("%s requires the endpoint's exact 204 success status", async (_name, invoke) => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+
+    await expect(invoke(createClient(fetch))).rejects.toMatchObject({
+      code: ERROR_CODE_UNEXPECTED_RESPONSE,
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a non-empty body on a nominal 204 mutation response", async () => {
+    const response = {
+      ok: true,
+      status: 204,
+      statusText: "No Content",
+      headers: new Headers({}),
+      body: undefined,
+      text: () => Promise.resolve("unexpected"),
+      json: () => Promise.resolve(undefined),
+    } satisfies Partial<Response> as Response;
+    const fetch = vi.fn().mockResolvedValue(response);
+
+    await expect(
+      createClient(fetch as typeof globalThis.fetch).delete("r_abc123def45"),
+    ).rejects.toMatchObject({ code: ERROR_CODE_UNEXPECTED_RESPONSE });
+  });
+
   it("delete rejects q_ (display) IDs client-side", async () => {
     // Spec: DELETE /v1/qurls/:id requires a resource ID (r_ prefix).
     // To revoke a single token, the resources-scoped endpoint must be used.
@@ -5210,13 +5251,10 @@ describe("QURLClient", () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
-  it("retries DELETE on 502 without Idempotency-Key", async () => {
-    // DELETE is intentionally classified as non-mutating for retry
-    // purposes: HTTP DELETE is idempotent by spec (deleting an
-    // already-deleted resource is a no-op), and 204 responses carry
-    // no body to duplicate. Retrying 5xx on DELETE is safe and
-    // desirable. It does not need Idempotency-Key because the method
-    // itself is idempotent.
+  it("does not replay DELETE after a 502 response", async () => {
+    // Endpoint semantics, not the HTTP verb alone, determine replay safety.
+    // Individual qURL revoke returns 409 on repeat, while a connector/resource
+    // delete can require lifecycle reconciliation after an ambiguous result.
     const badGatewayResponse = {
       ok: false,
       status: 502,
@@ -5234,19 +5272,7 @@ describe("QURLClient", () => {
       text: () => Promise.resolve(""),
     } satisfies Partial<Response> as Response;
 
-    const noContentResponse = {
-      ok: true,
-      status: 204,
-      statusText: "No Content",
-      headers: new Headers({}),
-      json: () => Promise.resolve(undefined),
-      text: () => Promise.resolve(""),
-    } satisfies Partial<Response> as Response;
-
-    const fetch = vi
-      .fn()
-      .mockResolvedValueOnce(badGatewayResponse)
-      .mockResolvedValueOnce(noContentResponse);
+    const fetch = vi.fn().mockResolvedValue(badGatewayResponse);
     const client = new QURLClient({
       apiKey: "test-api-key",
       baseUrl: "https://api.test.layerv.ai",
@@ -5254,10 +5280,25 @@ describe("QURLClient", () => {
       maxRetries: 2,
     });
 
-    await expect(client.delete("r_abc123def45")).resolves.toBeUndefined();
-    expect(fetch).toHaveBeenCalledTimes(2);
+    await expect(client.delete("r_abc123def45")).rejects.toBeInstanceOf(ServerError);
+    expect(fetch).toHaveBeenCalledTimes(1);
     expect(callHeaders(fetch, 0)).not.toHaveProperty("Idempotency-Key");
-    expect(callHeaders(fetch, 1)).not.toHaveProperty("Idempotency-Key");
+  });
+
+  it("does not replay DELETE after a fetch-level outcome-unknown failure", async () => {
+    const fetch = vi
+      .fn()
+      .mockRejectedValueOnce(new TypeError("socket closed after dispatch"))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 2,
+    });
+
+    await expect(client.delete("r_abc123def45")).rejects.toBeInstanceOf(NetworkError);
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   it("retries POST on 429", async () => {
