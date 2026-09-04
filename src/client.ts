@@ -782,6 +782,8 @@ function pageFromMeta<T extends Record<string, unknown>>(
   };
 }
 
+const PATH_ACCESS_TOKEN_RE = /(^|[/?&#=])at_/;
+
 /**
  * Validates that a path-parameter argument is a non-empty string. Some callers
  * pass resource/qURL display IDs, while newer endpoints also pass domains,
@@ -789,14 +791,12 @@ function pageFromMeta<T extends Record<string, unknown>>(
  * only basic shape plus transport-safety rules and leaves endpoint-specific
  * identifier grammar to the service.
  */
-const PATH_ACCESS_TOKEN_RE = /(^|[/?&#=])at_/;
-
 function requireNonEmptyId(
   id: unknown,
   method: string,
   field = "id",
   accessTokenRecovery?: string,
-): void {
+): asserts id is string {
   // `.trim()` catches whitespace-only and padded IDs before they round-trip as
   // `%20...%20` paths that the server can only reject with a less useful 404.
   // The pre-flight error is more actionable than the 404.
@@ -2407,7 +2407,7 @@ export class QURLClient {
    * compatible when public resource identifiers evolve.
    *
    * @throws {ValidationError} If `id` is blank, padded with whitespace, a URL
-   * dot segment, or contains a qURL access-token credential.
+   * dot segment, URL-shaped, or contains a qURL access-token credential.
    */
   async delete(id: string): Promise<void> {
     requireNonEmptyId(

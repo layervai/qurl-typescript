@@ -2071,6 +2071,17 @@ describe("QURLClient", () => {
     );
   });
 
+  it("sends qURL display IDs to the service instead of applying local prefix grammar", async () => {
+    const fetch = mockFetch({ status: 204 });
+    const client = createClient(fetch);
+
+    await expect(client.delete("q_0123456789a")).resolves.toBeUndefined();
+    expect(fetch).toHaveBeenCalledWith(
+      "https://api.test.layerv.ai/v1/qurls/q_0123456789a",
+      expect.objectContaining({ method: "DELETE" }),
+    );
+  });
+
   it("delete rejects access tokens before they can enter a request URL", async () => {
     const fetch = mockFetch({ status: 204 });
     const client = createClient(fetch);
