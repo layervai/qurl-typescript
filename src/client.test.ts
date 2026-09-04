@@ -2237,6 +2237,83 @@ describe("QURLClient", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it.each(["Q_0123456789a", "%51_0123456789a"])(
+    "rejects case-variant qURL display ID %s before whole-resource deletion",
+    async (displayId) => {
+      const fetch = mockFetch({ status: 204 });
+
+      await expect(createClient(fetch).delete(displayId)).rejects.toMatchObject({
+        code: ERROR_CODE_CLIENT_VALIDATION,
+        detail: expect.stringContaining("qURL display ID"),
+      });
+      expect(fetch).not.toHaveBeenCalled();
+    },
+  );
+
+  it("bounds path identifier inspection before repeated decoding", async () => {
+    const accepted = "x".repeat(4096);
+    const acceptedFetch = mockFetch({ status: 204 });
+    await expect(createClient(acceptedFetch).delete(accepted)).resolves.toBeUndefined();
+    expect(acceptedFetch).toHaveBeenCalledTimes(1);
+
+    const rejected = "x".repeat(4097);
+    const rejectedFetch = mockFetch({ status: 204 });
+    const error = await createClient(rejectedFetch)
+      .delete(rejected)
+      .catch((caught: unknown) => caught as ValidationError);
+    expect(error).toMatchObject({
+      code: ERROR_CODE_CLIENT_VALIDATION,
+      detail: expect.stringContaining("4096 characters or fewer"),
+    });
+    expect(error.detail).not.toContain(rejected);
+    expect(rejectedFetch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["createPortal", (client: QURLClient, id: string) => client.createPortal(id)],
+    ["getResource", (client: QURLClient, id: string) => client.getResource(id)],
+    [
+      "updateResource",
+      (client: QURLClient, id: string) => client.updateResource(id, { alias: "updated-alias" }),
+    ],
+    ["deleteResource", (client: QURLClient, id: string) => client.deleteResource(id)],
+    [
+      "createQurlForResource",
+      (client: QURLClient, id: string) => client.createQurlForResource(id, {}),
+    ],
+    [
+      "revokeResourceQurl",
+      (client: QURLClient, id: string) => client.revokeResourceQurl(id, "q_0123456789a"),
+    ],
+    [
+      "updateResourceQurl",
+      (client: QURLClient, id: string) =>
+        client.updateResourceQurl(id, "q_0123456789a", { extend_by: "1h" }),
+    ],
+    ["listResourceSessions", (client: QURLClient, id: string) => client.listResourceSessions(id)],
+    [
+      "terminateAllResourceSessions",
+      (client: QURLClient, id: string) => client.terminateAllResourceSessions(id),
+    ],
+    [
+      "terminateResourceSession",
+      (client: QURLClient, id: string) => client.terminateResourceSession(id, "session-1"),
+    ],
+  ])("%s accepts current public resource identifiers", async (_name, invoke) => {
+    for (const id of [PUBLIC_RESOURCE_ID, RESOURCE_CRID]) {
+      const fetch = mockFetch({ status: 204 });
+      await invoke(createClient(fetch), id).catch(() => undefined);
+      expect(fetch).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it.each([PUBLIC_RESOURCE_ID, RESOURCE_CRID])(
+    "resourceById accepts current public resource identifier %s",
+    (id) => {
+      expect(() => createClient(mockFetch({ status: 204 })).resourceById(id)).not.toThrow();
+    },
+  );
+
   it.each([".", ".."])("delete rejects the URL dot-segment identifier %s", async (resourceId) => {
     const fetch = mockFetch({ status: 204 });
     const client = createClient(fetch);

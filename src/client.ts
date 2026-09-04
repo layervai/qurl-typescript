@@ -787,6 +787,7 @@ function pageFromMeta<T extends Record<string, unknown>>(
 // opaque and future credential formats may not retain the `at_` prefix.
 const PATH_EMBEDDED_ACCESS_TOKEN_RE = /[/?&#=]at_/;
 const MAX_PATH_ID_DECODE_PASSES = 3;
+const MAX_PATH_ID_LENGTH = 4096;
 
 interface PathIdValidationOptions {
   /** Reject a bare access token in namespaces that accept resource/qURL IDs. */
@@ -826,11 +827,11 @@ const DELETE_QURL_RESOURCE_ID_PATH_OPTIONS: PathIdValidationOptions = {
  * identifier grammar to the service.
  */
 function requireNonEmptyId(
-  id: unknown,
+  id: string,
   method: string,
   field = "id",
   options: PathIdValidationOptions = {},
-): asserts id is string {
+): string[] {
   // `.trim()` catches whitespace-only and padded IDs before they round-trip as
   // `%20...%20` paths that the server can only reject with a less useful 404.
   // The pre-flight error is more actionable than the 404.
@@ -844,6 +845,11 @@ function requireNonEmptyId(
   if (id.trim() !== id) {
     throw clientValidationError(
       `${method}: ${field} must not include leading or trailing whitespace`,
+    );
+  }
+  if (id.length > MAX_PATH_ID_LENGTH) {
+    throw clientValidationError(
+      `${method}: ${field} must be ${MAX_PATH_ID_LENGTH} characters or fewer`,
     );
   }
   const decodedIds = decodedPathIdForms(id);
@@ -873,6 +879,7 @@ function requireNonEmptyId(
   if (decodedIds.some((value) => /^https?:\/\//i.test(value))) {
     throw clientValidationError(`${method}: ${field} must be an identifier, not a URL`);
   }
+  return decodedIds;
 }
 
 function decodedPathIdForms(id: string): string[] {
@@ -2464,13 +2471,13 @@ export class QURLClient {
    * qURL display IDs are rejected because this legacy endpoint deletes the
    * whole parent resource; use {@link revokeResourceQurl} for one qURL.
    *
-   * @throws {ValidationError} If `id` is blank, padded with whitespace, a URL
-   * dot segment, qURL display ID, URL-shaped, or contains a qURL access-token
-   * credential.
+   * @throws {ValidationError} If `id` is blank, padded with whitespace, too
+   * long, a URL dot segment, URL-shaped, contains a qURL access-token
+   * credential, or is a qURL display ID.
    */
   async delete(id: string): Promise<void> {
-    requireNonEmptyId(id, "delete", "id", DELETE_QURL_RESOURCE_ID_PATH_OPTIONS);
-    if (decodedPathIdForms(id).some((value) => value.startsWith("q_"))) {
+    const decodedIds = requireNonEmptyId(id, "delete", "id", DELETE_QURL_RESOURCE_ID_PATH_OPTIONS);
+    if (decodedIds.some((value) => /^q_/i.test(value))) {
       throw clientValidationError(
         "delete: id must not be a qURL display ID; revoke individual tokens with revokeResourceQurl(resourceId, qurlId)",
       );

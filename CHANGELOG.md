@@ -4,6 +4,10 @@
 
 ### ⚠ BREAKING CHANGES
 
+- **client:** `delete()` no longer requires a legacy `r_...` resource ID. It
+  accepts current opaque public resource IDs and CRIDs, leaving identifier
+  grammar to qurl-service, while rejecting qURL display IDs before the legacy
+  whole-resource DELETE endpoint can be called accidentally.
 - **client:** path identifiers now reject leading/trailing whitespace, raw or
   repeatedly encoded `.` / `..` segments, URL-shaped values, and embedded qURL
   access-token credentials before making a request. Resource/qURL identifier
