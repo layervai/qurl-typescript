@@ -103,6 +103,7 @@ const DEFAULT_TIMEOUT = 30_000;
 // again while consuming the response stream.
 const MAX_RESPONSE_BODY_BYTES = 1 << 20;
 const MAX_ERROR_SNIPPET_BYTES = 512;
+const MAX_INVALID_FIELD_ENTRIES = 100;
 const TEXT_ENCODER = new TextEncoder();
 const TEXT_DECODER = new TextDecoder();
 const RETRY_BASE_DELAY_MS = 500;
@@ -663,8 +664,13 @@ function unexpectedResponseError(detail: string, request_id?: string): Validatio
 
 /** Construct an unexpected-response error while preserving the observed HTTP status. */
 function httpResponseContractError(response: Response, detail: string): ValidationError {
+  return httpStatusContractError(response.status, detail);
+}
+
+/** Construct an unexpected-response error from SDK-retained HTTP metadata. */
+function httpStatusContractError(status: number, detail: string): ValidationError {
   return new ValidationError({
-    status: response.status,
+    status,
     code: ERROR_CODE_UNEXPECTED_RESPONSE,
     title: "Unexpected Response",
     detail,
@@ -682,7 +688,7 @@ function boundedErrorSnippet(value: unknown): string | undefined {
     // Strip control characters plus bidi override/isolate controls that can
     // visually reorder diagnostics. Preserve other formatting characters
     // such as ZWJ/ZWNJ, which are required by legitimate scripts and emoji.
-    .replace(/[\p{Cc}\u202A-\u202E\u2066-\u2069]/gu, " ")
+    .replace(/[\p{Cc}\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/gu, " ")
     .trim()
     .replace(/\s+/g, " ");
   if (normalized === "") return undefined;
@@ -694,6 +700,22 @@ function boundedErrorSnippet(value: unknown): string | undefined {
   // Do not split a multi-byte UTF-8 sequence at the cap.
   while (end > 0 && (encoded[end] & 0xc0) === 0x80) end--;
   return `${TEXT_DECODER.decode(encoded.subarray(0, end))}${ellipsis}`;
+}
+
+/** Bound the structured per-field diagnostics exposed on ValidationError. */
+function boundedInvalidFields(value: unknown): Record<string, string> | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+
+  const entries: [string, string][] = [];
+  for (const [rawKey, rawValue] of Object.entries(value)) {
+    const key = boundedErrorSnippet(rawKey);
+    const fieldDetail = boundedErrorSnippet(rawValue);
+    if (key !== undefined && fieldDetail !== undefined) {
+      entries.push([key, fieldDetail]);
+      if (entries.length === MAX_INVALID_FIELD_ENTRIES) break;
+    }
+  }
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
 }
 
 async function cancelResponseBody(body: Response["body"]): Promise<void> {
@@ -734,7 +756,9 @@ async function readBoundedResponseBody(response: Response): Promise<string> {
   // fetch implementations while still checking their materialized text before
   // this SDK parses it as JSON.
   if (body === undefined) {
-    const text = typeof response.text === "function" ? await response.text() : "";
+    const materializedText: unknown =
+      typeof response.text === "function" ? await response.text() : "";
+    const text = typeof materializedText === "string" ? materializedText : "";
     if (
       text.length > MAX_RESPONSE_BODY_BYTES ||
       TEXT_ENCODER.encode(text).byteLength > MAX_RESPONSE_BODY_BYTES
@@ -3518,8 +3542,11 @@ export class QURLClient {
   private async requestNoContent(path: string): Promise<void> {
     const response = await this.rawRequest<never>("DELETE", path);
     if (response.__http_status !== 204 || response.__http_body_empty !== true) {
-      throw unexpectedResponseError(
-        `Unexpected response from DELETE ${path}; expected empty HTTP 204`,
+      const status = response.__http_status ?? 0;
+      const bodyShape = response.__http_body_empty ? "with an empty body" : "with response bytes";
+      throw httpStatusContractError(
+        status,
+        `Unexpected response from DELETE ${path}; expected empty HTTP 204, received HTTP ${status} ${bodyShape}`,
       );
     }
   }
@@ -3672,7 +3699,11 @@ export class QURLClient {
               detail: `Failed to read response body on HTTP ${response.status}`,
               retry_after: this.parseRetryAfter(response),
             });
-        if (retryable.has(response.status) && attempt < this.maxRetries) {
+        // A failed body read is a transport failure after headers arrived.
+        // GET is safe to replay regardless of the observed 2xx/4xx/5xx status;
+        // mutations retain the stricter status-based policy so a lost success
+        // body cannot silently replay a committed operation.
+        if ((method === "GET" || retryable.has(response.status)) && attempt < this.maxRetries) {
           lastError = readError;
           continue;
         }
@@ -3784,7 +3815,7 @@ export class QURLClient {
           detail,
           type: boundedErrorSnippet(err.type),
           instance: boundedErrorSnippet(err.instance),
-          invalid_fields: err.invalid_fields,
+          invalid_fields: boundedInvalidFields(err.invalid_fields),
           request_id: boundedErrorSnippet(json.meta?.request_id),
           retry_after: this.parseRetryAfter(response),
         };

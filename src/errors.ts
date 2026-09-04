@@ -119,10 +119,11 @@ export class NotFoundError extends QURLError {
  *   counts/length mismatch, per-entry contract violation): `.status`
  *   is `0`. The HTTP status that produced the bad body is appended
  *   to `.detail` as `(HTTP 400)` / `(HTTP 207)` etc. for diagnostics.
- * - Non-JSON, oversized, or redirect response on a 2xx, passthrough,
- *   or other observed HTTP status: `.status` is the actual HTTP status
- *   (e.g. `200`, `302`, `400`, `503`). Browser-filtered opaque redirects
- *   use `.status === 0` because Fetch does not expose their 3xx status.
+ * - Non-JSON, oversized, redirect, or exact-status/body-contract failure on a
+ *   2xx, passthrough, or other observed HTTP status: `.status` is the actual
+ *   HTTP status (e.g. `200`, `302`, `400`, `503`). Browser-filtered opaque
+ *   redirects use `.status === 0` because Fetch does not expose their 3xx
+ *   status.
  *
  * Consumers branching purely on `.status` should branch on `.code`
  * first, then `.detail` for shape-guard cases. See #59 for tracking

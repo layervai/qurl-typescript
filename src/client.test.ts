@@ -2008,7 +2008,9 @@ describe("QURLClient", () => {
     const fetch = mockFetch({ status: 200, body: { data: {} } });
 
     await expect(invoke(createClient(fetch))).rejects.toMatchObject({
+      status: 200,
       code: ERROR_CODE_UNEXPECTED_RESPONSE,
+      detail: expect.stringContaining("received HTTP 200"),
     });
     expect(fetch).toHaveBeenCalledTimes(1);
   });
@@ -2027,7 +2029,11 @@ describe("QURLClient", () => {
 
     await expect(
       createClient(fetch as typeof globalThis.fetch).delete("r_abc123def45"),
-    ).rejects.toMatchObject({ code: ERROR_CODE_UNEXPECTED_RESPONSE });
+    ).rejects.toMatchObject({
+      status: 204,
+      code: ERROR_CODE_UNEXPECTED_RESPONSE,
+      detail: expect.stringContaining("with response bytes"),
+    });
   });
 
   it("delete rejects q_ (display) IDs client-side", async () => {
@@ -4389,6 +4395,28 @@ describe("QURLClient", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
+  it("treats an undefined text result from a bodyless Response-like shim as empty", async () => {
+    const fetch = vi.fn(
+      async () =>
+        ({
+          ok: true,
+          redirected: false,
+          status: 204,
+          statusText: "No Content",
+          type: "basic",
+          headers: new Headers(),
+          body: undefined,
+          text: async () => undefined,
+          json: async () => undefined,
+        }) satisfies Partial<Response> as Response,
+    );
+
+    await expect(
+      createClient(fetch as typeof globalThis.fetch).delete("r_abc123def45"),
+    ).resolves.toBeUndefined();
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
   it("parses success and error JSON bodies exactly at the response limit", async () => {
     const successBody = sizedJSON('{"data":{"padding":"', '"}}', RESPONSE_BODY_LIMIT);
     const successFetch = vi.fn(
@@ -4434,7 +4462,7 @@ describe("QURLClient", () => {
   });
 
   it("keeps structured API error snippets single-line, dangerous-control-free, UTF-8-safe, and bounded", async () => {
-    const detail = `  👩‍💻‌ ${"€".repeat(300)}\n\x00\x1b[2J\x85\u202Eresponse\u2066 tail  `;
+    const detail = `  👩‍💻‌ ${"€".repeat(300)}\n\x00\x1b[2J\x85\u061C\u200E\u200F\u202Eresponse\u2066 tail  `;
     const fetch = mockFetch({
       status: 400,
       body: { error: { title: "Bad Request", code: "bad_request", detail } },
@@ -4445,7 +4473,7 @@ describe("QURLClient", () => {
 
     expect(error.detail.endsWith("...")).toBe(true);
     expect(error.detail).not.toContain("\n");
-    expect(error.detail).not.toMatch(/[\p{Cc}\u202A-\u202E\u2066-\u2069]/u);
+    expect(error.detail).not.toMatch(/[\p{Cc}\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/u);
     expect(new TextEncoder().encode(error.detail).byteLength).toBeLessThanOrEqual(512);
     expect(error.detail).toContain("‍");
     expect(error.detail).toContain("‌");
@@ -5245,6 +5273,41 @@ describe("QURLClient", () => {
     expect((err as ValidationError).invalidFields).toEqual({ target_url: "required" });
   });
 
+  it("bounds, sanitizes, and caps structured invalid-field diagnostics", async () => {
+    const invalidFields = Object.fromEntries(
+      Array.from({ length: 120 }, (_, index) => [
+        `field-${index}\u202E`,
+        `${"€".repeat(300)}\n\u061C\u200E\u200Fsecret-tail`,
+      ]),
+    );
+    const fetch = mockFetch({
+      status: 400,
+      body: {
+        error: {
+          title: "Bad Request",
+          status: 400,
+          detail: "Invalid input",
+          code: "validation_error",
+          invalid_fields: invalidFields,
+        },
+      },
+    });
+
+    const error = await createClient(fetch)
+      .create({ target_url: "https://example.com" })
+      .catch((caught: unknown) => caught as ValidationError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(Object.keys(error.invalidFields ?? {})).toHaveLength(100);
+    for (const [key, value] of Object.entries(error.invalidFields ?? {})) {
+      expect(key).not.toMatch(/[\p{Cc}\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/u);
+      expect(value).not.toMatch(/[\p{Cc}\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/u);
+      expect(new TextEncoder().encode(key).byteLength).toBeLessThanOrEqual(512);
+      expect(new TextEncoder().encode(value).byteLength).toBeLessThanOrEqual(512);
+      expect(value).not.toContain("secret-tail");
+    }
+  });
+
   it("throws ValidationError on 422", async () => {
     const fetch = mockFetch({
       status: 422,
@@ -5492,6 +5555,31 @@ describe("QURLClient", () => {
       },
     });
     const failure = new Response(brokenBody, { status: 503, statusText: "Unavailable" });
+    const success = new Response(
+      JSON.stringify({
+        data: { plan: "growth", period_start: "2026-03-01", period_end: "2026-04-01" },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+    const fetch = vi.fn().mockResolvedValueOnce(failure).mockResolvedValueOnce(success);
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 1,
+    });
+
+    await expect(client.getQuota()).resolves.toMatchObject({ plan: "growth" });
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries GET when a successful response body fails mid-stream", async () => {
+    const brokenBody = new globalThis.ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.error(new TypeError("successful response reset mid-body"));
+      },
+    });
+    const failure = new Response(brokenBody, { status: 200, statusText: "OK" });
     const success = new Response(
       JSON.stringify({
         data: { plan: "growth", period_start: "2026-03-01", period_end: "2026-04-01" },

@@ -317,7 +317,8 @@ const clientWithLogger = new QURLClient({
 
 The client retries only requests whose replay contract is explicit:
 
-- **GET**: Retries on 429, 502, 503, 504 and fetch-level failures
+- **GET**: Retries on 429, 502, 503, 504 and transport failures, including a
+  dropped response body after successful headers arrive
 - **POST/PATCH**: Retries status responses only on 429
 - **POST/PATCH network errors**: Retried with the `Idempotency-Key` generated on the first attempt
 - **DELETE**: Never replayed automatically, including on 429. Individual revoke can return 409 on repeat, resource deletion may require lifecycle reconciliation after a lost response, and a custom gateway status alone cannot prove the handler never ran. This matches qurl-go's explicit-caller-retry model.
@@ -326,7 +327,8 @@ The client retries only requests whose replay contract is explicit:
 
 All documented no-content DELETE operations require exactly HTTP 204 with an
 empty response body. Alternate success statuses or response bytes fail closed
-as `unexpected_response` contract errors.
+as `unexpected_response` contract errors whose `.status` preserves the
+observed HTTP status.
 
 Configure with `maxRetries` (default: 3). Set to `0` to disable.
 
@@ -364,9 +366,10 @@ SDK-generated keys require `globalThis.crypto.getRandomValues`, which is availab
   `text()`/`json()` result has already been materialized by that shim.
   Oversized bodies fail with a typed, non-retryable error before JSON decoding,
   while preserving the observed status-derived error class and `Retry-After`.
-  Server-provided error code/title/detail/type/instance/request-id snippets have
-  controls and bidirectional override/isolate characters removed, are normalized
-  to one line, and are capped at 512 UTF-8 bytes.
+  Server-provided error code/title/detail/type/instance/request-id snippets and
+  `invalidFields` keys/values have controls and bidirectional formatting
+  characters removed, are normalized to one line, and are capped at 512 UTF-8
+  bytes. At most 100 `invalidFields` entries are retained.
   Redirect/body-limit errors do not include `Location` values,
   response-body snippets, or request credentials in SDK errors or debug logs.
 - Prefer short portal lifetimes such as `validFor: '5m'`.
