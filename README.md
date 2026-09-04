@@ -322,7 +322,7 @@ The client retries only requests whose replay contract is explicit:
 - **POST/PATCH network errors**: Retried with the `Idempotency-Key` generated on the first attempt
 - **DELETE**: Never replayed automatically. Individual revoke can return 409 on repeat, and resource deletion may require lifecycle reconciliation after a lost response; the HTTP verb alone does not prove a retry safe.
 - **`Retry-After` header**: Honored on 429 and 503 responses (RFC 7231 §7.1.3). Currently the SDK only parses **delta-seconds** values (e.g. `Retry-After: 30`); HTTP-date values (`Retry-After: Wed, 21 Oct 2026 07:28:00 GMT`) silently fall back to exponential backoff. Tracked in [#61](https://github.com/layervai/qurl-typescript/issues/61).
-- **Response failures**: Redirects and oversized bodies are not retried. Retryable status codes remain retryable when an intermediary returns HTML, an empty body, or another non-envelope error response.
+- **Response failures**: Redirects and oversized bodies are not retried. Retryable status codes remain retryable when an intermediary returns HTML, an empty body, a mid-stream read failure, or another non-envelope error response.
 
 All documented no-content DELETE operations require exactly HTTP 204 with an
 empty response body. Alternate success statuses or response bytes fail closed
@@ -349,10 +349,12 @@ SDK-generated keys require `globalThis.crypto.getRandomValues`, which is availab
 ## Security Notes
 
 - Treat API keys and qURL links like credentials. Do not log them.
-- SDK API requests use manual redirect handling. Any 3xx response is rejected as
+- SDK API requests use manual redirect handling. Redirect-capable HTTP statuses
+  (300, 301, 302, 303, 305, 307, 308) and browser `opaqueredirect` responses are rejected as
   a typed `QURLError` (`code: "unexpected_response"`) without requesting the
   `Location` target, so `Authorization` and `Idempotency-Key` headers are never
-  forwarded through redirects.
+  forwarded through redirects. A non-redirecting 304 is handled as an ordinary
+  unsuccessful API response rather than mislabeled as a redirect.
 - API success and error bodies are limited to **1 MiB (1,048,576 bytes)**,
   matching qurl-go's security posture. The SDK checks `Content-Length` when
   present and independently counts streamed bytes, so missing or inaccurate

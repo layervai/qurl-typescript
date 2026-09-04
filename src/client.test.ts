@@ -3620,6 +3620,41 @@ describe("QURLClient", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
+  it("does not mislabel HTTP 304 as a redirect", async () => {
+    const fetch = vi.fn(
+      async () => new Response(null, { status: 304, statusText: "Not Modified" }),
+    );
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 0,
+    });
+
+    const error = await client.getQuota().catch((caught: unknown) => caught as QURLError);
+
+    expect(error).toBeInstanceOf(QURLError);
+    expect(error.status).toBe(304);
+    expect(error.detail).toBe("Not Modified");
+    expect(error.detail).not.toContain("redirect");
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("accepts an empty 204 from a Response-like shim whose json() rejects", async () => {
+    const response = {
+      ok: true,
+      status: 204,
+      statusText: "No Content",
+      headers: new Headers(),
+      text: () => Promise.resolve(""),
+      json: () => Promise.reject(new SyntaxError("Unexpected end of JSON input")),
+    } satisfies Partial<Response> as Response;
+    const fetch = vi.fn().mockResolvedValue(response);
+
+    await expect(createClient(fetch).delete("r_abc123def45")).resolves.toBeUndefined();
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
   it("rejects invalid Idempotency-Key overrides before making a request", async () => {
     const fetch = mockFetch({
       status: 201,
@@ -5248,6 +5283,37 @@ describe("QURLClient", () => {
 
     const result = await client.getQuota();
     expect(result.plan).toBe("growth");
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries GET when a retryable response body fails mid-stream", async () => {
+    let reads = 0;
+    const brokenBody = new globalThis.ReadableStream<Uint8Array>({
+      pull(controller) {
+        reads += 1;
+        if (reads === 1) {
+          controller.enqueue(new TextEncoder().encode('{"error":'));
+        } else {
+          controller.error(new TypeError("upstream reset mid-body"));
+        }
+      },
+    });
+    const failure = new Response(brokenBody, { status: 503, statusText: "Unavailable" });
+    const success = new Response(
+      JSON.stringify({
+        data: { plan: "growth", period_start: "2026-03-01", period_end: "2026-04-01" },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+    const fetch = vi.fn().mockResolvedValueOnce(failure).mockResolvedValueOnce(success);
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 1,
+    });
+
+    await expect(client.getQuota()).resolves.toMatchObject({ plan: "growth" });
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 

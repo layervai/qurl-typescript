@@ -7,6 +7,8 @@
 - **client:** DELETE operations are no longer retried after transport or 5xx
   failures because a dispatched mutation can have an unknown outcome. Documented
   no-content DELETE endpoints now require an exact empty HTTP 204 response.
+- **client:** server-provided error titles and details are normalized to one line
+  and capped at 512 UTF-8 bytes so error objects and debug paths stay bounded.
 - **client:** remove the released legacy HTTP bootstrap method and the
   not-yet-released relay registration implementation. Native qURL Connector
   assignment and registration are UDP-only and belong in the Go runtime; the

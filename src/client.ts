@@ -119,6 +119,7 @@ const RETRYABLE_STATUS = new Set([429, 502, 503, 504]);
 // cache contract is proven across 5xx, TTL, and replay-window edge cases.
 // Fetch-level POST/PATCH retries still reuse Idempotency-Key below.
 const RETRYABLE_STATUS_MUTATING = new Set([429]);
+const REDIRECT_RESPONSE_STATUSES = new Set([300, 301, 302, 303, 305, 307, 308]);
 const NO_RETRYABLE_STATUSES = new Set<number>();
 type HttpMethod = "GET" | "POST" | "PATCH" | "DELETE";
 const IDEMPOTENCY_KEY_METHODS = new Set<HttpMethod>(["POST", "PATCH"]);
@@ -734,7 +735,14 @@ async function readBoundedResponseBody(response: Response): Promise<string> {
 
     // Older injected Response-like objects may implement json() but return an
     // empty placeholder from text(). This path is never used by native fetch.
-    const serialized = JSON.stringify(await response.json());
+    let serialized: string | undefined;
+    try {
+      serialized = JSON.stringify(await response.json());
+    } catch {
+      // A Response-like shim may expose json() but reject on an empty 204
+      // body. Native fetch represents that body as null and returns above.
+      return "";
+    }
     if (serialized === undefined) return "";
     if (TEXT_ENCODER.encode(serialized).byteLength > MAX_RESPONSE_BODY_BYTES) {
       throw new ResponseBodyTooLargeError();
@@ -3595,12 +3603,11 @@ export class QURLClient {
       // Redirects are deterministic protocol violations for SDK API calls.
       // Refuse them before reading Location or entering retry handling so
       // Authorization and Idempotency-Key can never reach a follow-up target.
-      if ((response.status >= 300 && response.status < 400) || response.type === "opaqueredirect") {
+      if (REDIRECT_RESPONSE_STATUSES.has(response.status) || response.type === "opaqueredirect") {
         await cancelResponseBody(response.body);
-        const redirectKind =
-          response.status >= 300 && response.status < 400
-            ? `HTTP ${response.status}`
-            : "opaque browser";
+        const redirectKind = REDIRECT_RESPONSE_STATUSES.has(response.status)
+          ? `HTTP ${response.status}`
+          : "opaque browser";
         throw httpResponseContractError(
           response,
           `Refused ${redirectKind} redirect response for ${method} ${path}`,
@@ -3620,10 +3627,15 @@ export class QURLClient {
         this.log(`failed to read response body from ${response.status}`, {
           status: response.status,
         });
-        throw httpResponseContractError(
+        const readError = httpResponseContractError(
           response,
           `Failed to read response body on HTTP ${response.status}`,
         );
+        if (retryFetchFailure && retryable.has(response.status) && attempt < this.maxRetries) {
+          lastError = readError;
+          continue;
+        }
+        throw readError;
       }
 
       // `response.ok` is true for the entire 200-299 range, so partial-
