@@ -32,6 +32,8 @@ import type {
   CreateApiKeyInput,
   CreateApiKeyOutput,
   CreateBillingCheckoutInput,
+  CreateDurableApiKeyInput,
+  CreateEnrollmentTokenInput,
   CreateInput,
   CreateOutput,
   CreatePortalOptions,
@@ -391,10 +393,13 @@ const CREATE_API_KEY_FIELD_KEYS = [
   "target",
   "claims",
   "expires_in",
-] as const satisfies readonly (keyof CreateApiKeyInput)[];
+] as const satisfies readonly (keyof CreateDurableApiKeyInput | keyof CreateEnrollmentTokenInput)[];
 
 assertExhaustive<
-  Exclude<keyof CreateApiKeyInput, (typeof CREATE_API_KEY_FIELD_KEYS)[number]> extends never
+  Exclude<
+    keyof CreateDurableApiKeyInput | keyof CreateEnrollmentTokenInput,
+    (typeof CREATE_API_KEY_FIELD_KEYS)[number]
+  > extends never
     ? true
     : never
 >(true);
@@ -657,7 +662,10 @@ const MAX_CUSTOM_DOMAIN = 253;
 const MAX_MAX_SESSIONS = 1000;
 const MAX_API_KEY_NAME = 100;
 const API_KEY_CREATE_SCOPES = new Set(["qurl:read", "qurl:write", "qurl:resolve", "qurl:agent"]);
+// Mirrors CredentialClaim.id in the service OpenAPI and domain.ValidateSlug.
 const CREDENTIAL_CLAIM_ID_PATTERN = /^[a-z][a-z0-9-]{1,62}[a-z0-9]$/;
+// Mirrors CreateApiKeyRequest.expires_in in the service OpenAPI. Composite
+// durations are deliberately invalid on this endpoint.
 const CREDENTIAL_DURATION_PATTERN = /^([0-9]+)([smhdw])$/;
 type CredentialDurationUnit = "s" | "m" | "h" | "d" | "w";
 const CREDENTIAL_DURATION_MULTIPLIERS: Readonly<Record<CredentialDurationUnit, bigint>> = {
@@ -1295,7 +1303,10 @@ function validateEnrollmentTokenFields(input: Record<string, unknown>, method: s
 
   let claimCount = 0;
   if (input.claims !== undefined) {
-    if (!Array.isArray(input.claims) || input.claims.length > 1) {
+    if (!Array.isArray(input.claims)) {
+      throw clientValidationError(`${method}: claims must be an array`);
+    }
+    if (input.claims.length > 1) {
       throw clientValidationError(`${method}: claims must contain at most one claim`);
     }
     claimCount = input.claims.length;

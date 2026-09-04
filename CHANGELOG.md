@@ -11,6 +11,9 @@
   accept `expires_in`; only enrollment tokens may carry a lifetime. Requires a
   qurl-service deployment with the kind-first credential contract at or after
   `047cf31e1cdf545e3060e0f9294d738a19fb997b`.
+- **client:** create/update API-key request scopes now use the service's closed
+  `qurl:read`, `qurl:write`, `qurl:resolve`, and `qurl:agent` vocabulary. API-key
+  response scopes remain forward-compatible with future server values.
 - **client:** remove the released legacy HTTP bootstrap method and the
   not-yet-released relay registration implementation. Native qURL Connector
   assignment and registration are UDP-only and belong in the Go runtime; the

@@ -1837,6 +1837,36 @@ describe("QURLClient", () => {
     });
   });
 
+  it("createApiKey accepts an explicit empty claim list for an unbound agent token", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+
+    await createClient(fetch).createApiKey({
+      kind: "enrollment_token",
+      name: "unbound agent enrollment",
+      claims: [],
+    });
+
+    expect(JSON.parse(vi.mocked(fetch).mock.calls[0][1]?.body as string)).toMatchObject({
+      claims: [],
+    });
+  });
+
+  it.each(["abc", "a".repeat(64)])(
+    "createApiKey accepts the connector claim ID boundary %s",
+    async (id) => {
+      const fetch = mockFetch({ status: 201, body: { data: {} } });
+
+      await createClient(fetch).createApiKey({
+        kind: "enrollment_token",
+        name: "bound agent enrollment",
+        target: "agent",
+        claims: [{ type: "connector", id }],
+      });
+
+      expect(fetch).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it.each(["24h", "86400s"])(
     "createApiKey accepts the 24-hour boundary as %s",
     async (expiresIn) => {
@@ -1926,6 +1956,11 @@ describe("QURLClient", () => {
       "at most one claim",
     ],
     [
+      "a non-array claims value",
+      { kind: "enrollment_token", name: "bad", claims: { type: "connector", id: "abc" } },
+      "claims must be an array",
+    ],
+    [
       "an invalid claim",
       {
         kind: "enrollment_token",
@@ -1950,7 +1985,7 @@ describe("QURLClient", () => {
     ],
     [
       "a lifetime over 24h",
-      { kind: "enrollment_token", name: "bad", expires_in: "2d" },
+      { kind: "enrollment_token", name: "bad", expires_in: "86401s" },
       "greater than zero and at most 24h",
     ],
     [

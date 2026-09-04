@@ -835,6 +835,9 @@ export interface WebhookPayload {
 
 export type ApiKeyScope = OpenString<"qurl:read" | "qurl:write" | "qurl:resolve" | "qurl:agent">;
 
+/** Closed scope vocabulary accepted by current create/update request schemas. */
+export type ApiKeyRequestScope = "qurl:read" | "qurl:write" | "qurl:resolve" | "qurl:agent";
+
 /** Which credential `createApiKey` mints. `device` is system-minted only. */
 export type CredentialKind = OpenString<"api_key" | "enrollment_token" | "device">;
 
@@ -857,7 +860,7 @@ interface CreateCredentialBase {
 export interface CreateDurableApiKeyInput extends CreateCredentialBase {
   /** Omit for backward compatibility; the SDK sends `api_key`. */
   kind?: "api_key";
-  scopes: ApiKeyScope[];
+  scopes: ApiKeyRequestScope[];
   target?: never;
   claims?: never;
   expires_in?: never;
@@ -882,7 +885,7 @@ export type CreateApiKeyInput = CreateDurableApiKeyInput | CreateEnrollmentToken
 
 export interface UpdateApiKeyInput {
   name?: string;
-  scopes?: ApiKeyScope[];
+  scopes?: ApiKeyRequestScope[];
 }
 
 export interface ApiKey {
