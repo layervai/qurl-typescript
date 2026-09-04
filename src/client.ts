@@ -784,8 +784,10 @@ function pageFromMeta<T extends Record<string, unknown>>(
 
 // Best-effort defence-in-depth against today's access-token grammar. The
 // service remains authoritative because resource IDs and credentials are both
-// opaque and future credential formats may not retain the `at_` prefix.
-const PATH_EMBEDDED_ACCESS_TOKEN_RE = /[/?&#=]at_/;
+// opaque and future credential formats may not retain the `at_` prefix. The
+// delimiter requirement cannot collide with current base64url public keys,
+// standard-base64 keys, or base32 CRIDs.
+const PATH_EMBEDDED_ACCESS_TOKEN_RE = /[/?&#=]at_/i;
 const MAX_PATH_ID_DECODE_PASSES = 3;
 const MAX_PATH_ID_LENGTH = 4096;
 
@@ -794,6 +796,8 @@ interface PathIdValidationOptions {
   rejectBareAccessToken?: boolean;
   /** Safe, non-secret recovery guidance appended to an access-token error. */
   accessTokenRecovery?: string;
+  /** Reject qURL display IDs where the operation requires a parent resource. */
+  rejectQurlDisplayId?: boolean;
 }
 
 const RESOURCE_ID_PATH_OPTIONS: PathIdValidationOptions = {
@@ -817,6 +821,7 @@ const QURL_ID_PATH_OPTIONS: PathIdValidationOptions = {
 const DELETE_QURL_RESOURCE_ID_PATH_OPTIONS: PathIdValidationOptions = {
   rejectBareAccessToken: true,
   accessTokenRecovery: "revoke individual tokens with revokeResourceQurl(resourceId, qurlId)",
+  rejectQurlDisplayId: true,
 };
 
 /**
@@ -831,7 +836,7 @@ function requireNonEmptyId(
   method: string,
   field = "id",
   options: PathIdValidationOptions = {},
-): string[] {
+): void {
   // `.trim()` catches whitespace-only and padded IDs before they round-trip as
   // `%20...%20` paths that the server can only reject with a less useful 404.
   // The pre-flight error is more actionable than the 404.
@@ -866,7 +871,7 @@ function requireNonEmptyId(
   const containsAccessToken = decodedIds.some(
     (value) =>
       PATH_EMBEDDED_ACCESS_TOKEN_RE.test(value) ||
-      (options.rejectBareAccessToken === true && value.startsWith("at_")),
+      (options.rejectBareAccessToken === true && value.slice(0, 3).toLowerCase() === "at_"),
   );
   if (containsAccessToken) {
     throw clientValidationError(
@@ -879,7 +884,11 @@ function requireNonEmptyId(
   if (decodedIds.some((value) => /^https?:\/\//i.test(value))) {
     throw clientValidationError(`${method}: ${field} must be an identifier, not a URL`);
   }
-  return decodedIds;
+  if (options.rejectQurlDisplayId === true && decodedIds.some((value) => /^q_/i.test(value))) {
+    throw clientValidationError(
+      `${method}: ${field} must not be a qURL display ID; revoke individual tokens with revokeResourceQurl(resourceId, qurlId)`,
+    );
+  }
 }
 
 function decodedPathIdForms(id: string): string[] {
@@ -2468,6 +2477,8 @@ export class QURLClient {
    * Accepts the opaque public resource ID, CRID, or legacy `r_...` ID returned
    * by the API. The service owns identifier grammar so the SDK remains
    * compatible when public resource identifiers evolve.
+   * Consequently, even an implausibly short non-secret ID is sent for the
+   * service to classify rather than rejected using a stale client grammar.
    *
    * qURL display IDs are rejected because this legacy endpoint deletes the
    * whole parent resource; use {@link revokeResourceQurl} for one qURL.
@@ -2477,12 +2488,7 @@ export class QURLClient {
    * credential, or is a qURL display ID.
    */
   async delete(id: string): Promise<void> {
-    const decodedIds = requireNonEmptyId(id, "delete", "id", DELETE_QURL_RESOURCE_ID_PATH_OPTIONS);
-    if (decodedIds.some((value) => /^q_/i.test(value))) {
-      throw clientValidationError(
-        "delete: id must not be a qURL display ID; revoke individual tokens with revokeResourceQurl(resourceId, qurlId)",
-      );
-    }
+    requireNonEmptyId(id, "delete", "id", DELETE_QURL_RESOURCE_ID_PATH_OPTIONS);
     await this.rawRequest("DELETE", `/v1/qurls/${encodeURIComponent(id)}`);
   }
 

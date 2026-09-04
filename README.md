@@ -78,7 +78,8 @@ If you persist the resource id, future calls do not need to recreate the
 handle (no API call is made until you mint):
 
 ```typescript
-const resource = client.resourceById('r_demo1234567');
+// Persist and reuse the opaque resource_id returned by the API.
+const resource = client.resourceById(storedResourceId);
 const portal = await resource.createPortal({ validFor: '1h' });
 ```
 

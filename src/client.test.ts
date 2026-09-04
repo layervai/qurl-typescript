@@ -2100,6 +2100,24 @@ describe("QURLClient", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it.each(["AT_sensitive-token-value", "qurl.link/open?token=AT_sensitive-token-value"])(
+    "delete rejects case-variant credential input %s",
+    async (credential) => {
+      const fetch = mockFetch({ status: 204 });
+
+      const error = await createClient(fetch)
+        .delete(credential)
+        .catch((caught: unknown) => caught as ValidationError);
+
+      expect(error).toMatchObject({
+        code: ERROR_CODE_CLIENT_VALIDATION,
+        detail: expect.stringContaining("access token"),
+      });
+      expect(error.detail).not.toContain(credential);
+      expect(fetch).not.toHaveBeenCalled();
+    },
+  );
+
   it("delete rejects a full qURL link before its token can enter a request URL", async () => {
     const fetch = mockFetch({ status: 204 });
     const client = createClient(fetch);
@@ -2114,7 +2132,7 @@ describe("QURLClient", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("delete rejects URL-shaped input even when the credential is not in a fragment", async () => {
+  it("delete rejects a qURL link when its credential is in the query", async () => {
     const fetch = mockFetch({ status: 204 });
     const client = createClient(fetch);
     const qurlLink = `https://qurl.link/open?token=${SENSITIVE_ACCESS_TOKEN}`;
@@ -2304,7 +2322,23 @@ describe("QURLClient", () => {
       const fetch = mockFetch({ status: 204 });
       await invoke(createClient(fetch), id).catch(() => undefined);
       expect(fetch).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(fetch).mock.calls[0][0]).toContain(encodeURIComponent(id));
     }
+  });
+
+  it.each([
+    ["get", (client: QURLClient, id: string) => client.get(id)],
+    ["update", (client: QURLClient, id: string) => client.update(id, { label: "updated" })],
+    ["extend", (client: QURLClient, id: string) => client.extend(id, { extend_by: "1h" })],
+    ["mintLink", (client: QURLClient, id: string) => client.mintLink(id, {})],
+  ])("%s rejects a case-variant bare access token before fetch", async (_name, invoke) => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+
+    await expect(invoke(createClient(fetch), "AT_sensitive-token-value")).rejects.toMatchObject({
+      code: ERROR_CODE_CLIENT_VALIDATION,
+      detail: expect.stringContaining("access token"),
+    });
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it.each([PUBLIC_RESOURCE_ID, RESOURCE_CRID])(
