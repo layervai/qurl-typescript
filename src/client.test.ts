@@ -2113,6 +2113,34 @@ describe("QURLClient", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("delete diagnoses a target URL without claiming it contains an access token", async () => {
+    const fetch = mockFetch({ status: 204 });
+    const client = createClient(fetch);
+    const targetUrl = "https://internal.example.com/dashboard";
+
+    const error = await client.delete(targetUrl).catch((e: unknown) => e as ValidationError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).detail).toContain("must be an identifier, not a URL");
+    expect((error as ValidationError).detail).not.toContain("access token");
+    expect((error as ValidationError).detail).not.toContain(targetUrl);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("delete rejects a scheme-less link carrying an access token in its query", async () => {
+    const fetch = mockFetch({ status: 204 });
+    const client = createClient(fetch);
+    const qurlLink = "qurl.link/open?token=at_sensitive-token-value";
+
+    const error = await client.delete(qurlLink).catch((e: unknown) => e as ValidationError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).detail).toContain("access token");
+    expect((error as ValidationError).detail).not.toContain(qurlLink);
+    expect((error as ValidationError).detail).not.toContain("at_sensitive-token-value");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it.each([".", ".."])("delete rejects the URL dot-segment identifier %s", async (resourceId) => {
     const fetch = mockFetch({ status: 204 });
     const client = createClient(fetch);
