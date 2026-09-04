@@ -656,6 +656,17 @@ const MAX_DESCRIPTION = 500;
 const MAX_CUSTOM_DOMAIN = 253;
 const MAX_MAX_SESSIONS = 1000;
 const MAX_API_KEY_NAME = 100;
+const API_KEY_CREATE_SCOPES = new Set(["qurl:read", "qurl:write", "qurl:resolve", "qurl:agent"]);
+const CREDENTIAL_CLAIM_ID_PATTERN = /^[a-z][a-z0-9-]{1,62}[a-z0-9]$/;
+const CREDENTIAL_DURATION_PATTERN = /^([0-9]+)([smhdw])$/;
+const CREDENTIAL_DURATION_MULTIPLIERS: Readonly<Record<string, bigint>> = {
+  s: 1n,
+  m: 60n,
+  h: 3600n,
+  d: 86400n,
+  w: 604800n,
+};
+const MAX_ENROLLMENT_TOKEN_TTL_SECONDS = 86400n;
 const MAX_ALIAS = 64;
 const MAX_SLUG = 64;
 const MAX_TARGET_PATH = 2048;
@@ -1266,6 +1277,56 @@ function validateApiKeyWriteFields(
   if (requiredFields.scopes || input.scopes !== undefined) {
     requireNonEmptyArrayField(input, "scopes", method);
     requireStringArrayElements(input.scopes, "scopes", method);
+  }
+}
+
+function validateEnrollmentTokenFields(input: Record<string, unknown>, method: string): void {
+  if (input.target !== undefined && input.target !== "agent" && input.target !== "connector") {
+    throw clientValidationError(`${method}: target must be 'agent' or 'connector'`);
+  }
+
+  let claimCount = 0;
+  if (input.claims !== undefined) {
+    if (!Array.isArray(input.claims) || input.claims.length > 1) {
+      throw clientValidationError(`${method}: claims must contain at most one claim`);
+    }
+    claimCount = input.claims.length;
+    for (const claim of input.claims) {
+      if (!claim || typeof claim !== "object" || Array.isArray(claim)) {
+        throw clientValidationError(`${method}: claims[0] must be an object`);
+      }
+      requireNoUnknownFields(
+        claim as Record<string, unknown>,
+        ["type", "id"],
+        `${method}: claims[0]`,
+      );
+      const record = claim as Record<string, unknown>;
+      if (record.type !== "connector") {
+        throw clientValidationError(`${method}: claims[0].type must be 'connector'`);
+      }
+      if (typeof record.id !== "string" || !CREDENTIAL_CLAIM_ID_PATTERN.test(record.id)) {
+        throw clientValidationError(`${method}: claims[0].id is not a valid connector id`);
+      }
+    }
+  }
+  if (input.target === "connector" && claimCount !== 1) {
+    throw clientValidationError(`${method}: target 'connector' requires exactly one claim`);
+  }
+
+  if (input.expires_in !== undefined) {
+    if (typeof input.expires_in !== "string") {
+      throw clientValidationError(`${method}: expires_in must be a duration string`);
+    }
+    const match = CREDENTIAL_DURATION_PATTERN.exec(input.expires_in);
+    if (!match) {
+      throw clientValidationError(`${method}: expires_in must match <integer><s|m|h|d|w>`);
+    }
+    const seconds = BigInt(match[1]) * CREDENTIAL_DURATION_MULTIPLIERS[match[2]];
+    if (seconds <= 0n || seconds > MAX_ENROLLMENT_TOKEN_TTL_SECONDS) {
+      throw clientValidationError(
+        `${method}: expires_in must be greater than zero and at most 24h`,
+      );
+    }
   }
 }
 
@@ -3208,6 +3269,9 @@ export class QURLClient {
     // `kind` is required by the server and has no default there. Filling it
     // in keeps the common durable-key call site unchanged.
     normalizedRecord.kind ??= "api_key";
+    if (normalizedRecord.kind !== "api_key" && normalizedRecord.kind !== "enrollment_token") {
+      throw clientValidationError("createApiKey: kind must be 'api_key' or 'enrollment_token'");
+    }
     // `scopes` and `target`/`claims` are mutually exclusive by kind, and the
     // server rejects either mismatch with 400 invalid_input. Fail both
     // directions locally rather than paying a round trip.
@@ -3219,8 +3283,9 @@ export class QURLClient {
             "the server assigns them from target",
         );
       }
+      validateEnrollmentTokenFields(normalizedRecord, "createApiKey");
     } else {
-      for (const field of ["target", "claims"] as const) {
+      for (const field of ["target", "claims", "expires_in"] as const) {
         if (normalizedRecord[field] !== undefined) {
           throw clientValidationError(
             `createApiKey: ${field} is only accepted for kind 'enrollment_token'`,
@@ -3233,6 +3298,14 @@ export class QURLClient {
       name: true,
       scopes: !isEnrollmentToken,
     });
+    if (
+      !isEnrollmentToken &&
+      (normalizedRecord.scopes as unknown[]).some(
+        (scope) => typeof scope !== "string" || !API_KEY_CREATE_SCOPES.has(scope),
+      )
+    ) {
+      throw clientValidationError("createApiKey: scopes contains an unsupported permission");
+    }
     return this.request<CreateApiKeyOutput>("POST", "/v1/api-keys", normalized, options);
   }
 

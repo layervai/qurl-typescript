@@ -46,6 +46,8 @@ export type {
   CreateAccessCodeInput,
   CreateAccessCodeOutput,
   CreateApiKeyInput,
+  CreateDurableApiKeyInput,
+  CreateEnrollmentTokenInput,
   CreateApiKeyOutput,
   CreateBillingCheckoutInput,
   CreateInput,

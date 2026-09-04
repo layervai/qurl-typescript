@@ -1860,6 +1860,49 @@ describe("QURLClient", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["an unknown kind", { kind: "future", name: "bad", scopes: ["qurl:read"] }],
+    [
+      "expires_in on a durable key",
+      { kind: "api_key", name: "bad", scopes: ["qurl:read"], expires_in: "1h" },
+    ],
+    ["an unknown durable scope", { kind: "api_key", name: "bad", scopes: ["admin"] }],
+    ["an unknown target", { kind: "enrollment_token", name: "bad", target: "future" }],
+    [
+      "a connector target without a claim",
+      { kind: "enrollment_token", name: "bad", target: "connector" },
+    ],
+    [
+      "more than one claim",
+      {
+        kind: "enrollment_token",
+        name: "bad",
+        claims: [
+          { type: "connector", id: "one" },
+          { type: "connector", id: "two" },
+        ],
+      },
+    ],
+    [
+      "an invalid claim",
+      {
+        kind: "enrollment_token",
+        name: "bad",
+        claims: [{ type: "connector", id: "Bad ID" }],
+      },
+    ],
+    ["a zero lifetime", { kind: "enrollment_token", name: "bad", expires_in: "0s" }],
+    ["a lifetime over 24h", { kind: "enrollment_token", name: "bad", expires_in: "2d" }],
+    ["a malformed lifetime", { kind: "enrollment_token", name: "bad", expires_in: "hour" }],
+  ])("createApiKey rejects %s before fetch", async (_name, input) => {
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+
+    await expect(
+      createClient(fetch).createApiKey(input as Parameters<QURLClient["createApiKey"]>[0]),
+    ).rejects.toBeInstanceOf(ValidationError);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("createApiKey rejects the retired key_type/tunnel_slug fields", async () => {
     const fetch = mockFetch({ status: 201, body: { data: {} } });
     const client = createClient(fetch);

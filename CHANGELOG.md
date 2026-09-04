@@ -4,6 +4,10 @@
 
 ### ⚠ BREAKING CHANGES
 
+- **client:** adopt qurl-service's kind-first credential API. Retired
+  `purpose`/`tunnel_slug` fields are removed; durable API keys and one-shot
+  enrollment tokens now enforce their distinct scopes, targets, claims, and
+  expiry contracts before dispatch.
 - **client:** remove the released legacy HTTP bootstrap method and the
   not-yet-released relay registration implementation. Native qURL Connector
   assignment and registration are UDP-only and belong in the Go runtime; the

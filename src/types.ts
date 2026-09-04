@@ -849,23 +849,36 @@ export interface CredentialClaim {
   id: string;
 }
 
-export interface CreateApiKeyInput {
-  /** Defaults to `api_key`. `device` credentials can never be created here. */
-  kind?: OpenString<"api_key" | "enrollment_token">;
+interface CreateCredentialBase {
   name: string;
+}
+
+/** Input for a durable, caller-scoped account API key. */
+export interface CreateDurableApiKeyInput extends CreateCredentialBase {
+  /** Omit for backward compatibility; the SDK sends `api_key`. */
+  kind?: "api_key";
+  scopes: ApiKeyScope[];
+  target?: never;
+  claims?: never;
+  expires_in?: never;
+}
+
+/** Input for a one-shot agent or Connector enrollment token. */
+export interface CreateEnrollmentTokenInput extends CreateCredentialBase {
+  kind: "enrollment_token";
   /**
-   * Required for `kind: "api_key"`. Must be omitted for
-   * `kind: "enrollment_token"` — the server assigns those scopes from
-   * `target`, and sending this field returns 400 `invalid_input`.
+   * Omit for enrollment tokens: the server derives scopes from the target.
    */
-  scopes?: ApiKeyScope[];
-  /** Enrollment tokens only. Derived from `claims` when omitted. */
+  scopes?: never;
+  /** Derived from `claims` when omitted. */
   target?: CredentialTarget;
-  /** Enrollment tokens only. At most one entry is supported today. */
+  /** At most one entry is supported today. */
   claims?: CredentialClaim[];
-  /** Enrollment tokens only. Defaults to 24h and cannot exceed 24h. */
+  /** Defaults to 24h and cannot exceed 24h. */
   expires_in?: string;
 }
+
+export type CreateApiKeyInput = CreateDurableApiKeyInput | CreateEnrollmentTokenInput;
 
 export interface UpdateApiKeyInput {
   name?: string;
