@@ -238,16 +238,15 @@ describe("shareResource", () => {
     });
   });
 
-  it.each(["qurl_id", "type"])(
-    "fails closed when response field %s is explicitly empty",
-    async (field) => {
-      const fetch = mockFetch({ status: 200, body: shareResponse({ [field]: "" }) });
+  it.each(["qurl_id", "type"])("fails closed when response field %s is blank", async (field) => {
+    for (const value of ["", "   "]) {
+      const fetch = mockFetch({ status: 200, body: shareResponse({ [field]: value }) });
 
       await expect(createClient(fetch).shareResource("resource-id")).rejects.toMatchObject({
         code: "unexpected_response",
       });
-    },
-  );
+    }
+  });
 
   it("fails closed when expires_at is not an RFC 3339 timestamp", async () => {
     const fetch = mockFetch({ status: 200, body: shareResponse({ expires_at: "not-a-date" }) });

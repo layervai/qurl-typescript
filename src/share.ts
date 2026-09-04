@@ -142,6 +142,8 @@ export class ShareLink {
     message.set(key, CRID_DOMAIN.length);
     const derived = new Uint8Array(await crypto.subtle.digest("SHA-256", message));
     let difference = 0;
+    // Compare every framed digest byte: 32 for full CRIDs and 24 for the
+    // protocol's explicitly truncated form. Never clamp full CRIDs to 24.
     for (let i = 0; i < parsed.digest.length; i++) {
       difference |= parsed.digest[i] ^ derived[i];
     }
