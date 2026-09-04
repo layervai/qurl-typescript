@@ -2059,6 +2059,15 @@ describe("QURLClient", () => {
     }
   });
 
+  it("rejects an invalid connector ensure slug before dispatch", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: connectorResourceData() } });
+
+    await expect(createClient(fetch).ensureConnectorResource("UPPER")).rejects.toMatchObject({
+      code: ERROR_CODE_CLIENT_VALIDATION,
+    });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("forwards a caller idempotency key on connector ensure", async () => {
     const fetch = mockFetch({
       status: 201,
@@ -2389,6 +2398,17 @@ describe("QURLClient", () => {
     ).resolves.toBeInstanceOf(ConnectorResource);
   });
 
+  it("treats an empty next cursor as terminal pagination metadata", async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: { data: [connectorResourceData()], meta: { has_more: false, next_cursor: "" } },
+    });
+
+    await expect(
+      createClient(fetch).getConnectorResourceBySlug("prod-dashboard"),
+    ).resolves.toBeInstanceOf(ConnectorResource);
+  });
+
   it("preflights SubtleCrypto before connector slug lookup can dispatch", async () => {
     const fetch = mockFetch({ status: 200, body: { data: [connectorResourceData()] } });
     vi.stubGlobal("crypto", undefined);
@@ -2481,6 +2501,23 @@ describe("QURLClient", () => {
 
     expect(error).not.toBeInstanceOf(ConnectorResourceOutcomeUnknownError);
     expect(error).toMatchObject({ status: 409, code: "resource_conflict" });
+  });
+
+  it.each([
+    ["ensure", (client: QURLClient) => client.ensureConnectorResource("prod-dashboard")],
+    ["delete", (client: QURLClient) => client.deleteConnectorResource(CONNECTOR_RESOURCE_ID)],
+  ] as const)("classifies a connector %s HTTP 408 as outcome-unknown", async (_name, invoke) => {
+    const fetch = mockFetch({
+      status: 408,
+      body: { error: { status: 408, code: "request_timeout", title: "Request Timeout" } },
+    });
+
+    await expect(invoke(createClient(fetch))).rejects.toMatchObject({
+      constructor: ConnectorResourceOutcomeUnknownError,
+      status: 0,
+      cause: { status: 408, code: "request_timeout" },
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   it("preserves an authoritative repeated connector delete 404 as a known rejection", async () => {

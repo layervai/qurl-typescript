@@ -1042,14 +1042,16 @@ function classifyConnectorMutationFailure(error: unknown): never {
       new RuntimeError("Unexpected failure after Connector mutation dispatch", { cause: error }),
     );
   }
-  // An authoritative 4xx proves the mutation was rejected. Callers perform
+  // An authoritative 4xx other than Request Timeout proves the mutation was
+  // rejected. A 408 can be synthesized after an intermediary forwarded the
+  // request, so the mutation outcome remains unknown. Callers perform
   // argument/runtime preflight outside their mutation try blocks; every other
   // surfaced failure therefore follows dispatch or a nominal success whose
   // resource contract could not be consumed, so callers must reconcile before
   // retrying. Ensure's exact 201 + valid resource but missing found_existing is
   // handled after this classifier: the row proves the selected resource, while
   // only its required metadata is unavailable (matching qurl-go).
-  if (error.status >= 400 && error.status < 500) {
+  if (error.status >= 400 && error.status < 500 && error.status !== 408) {
     throw error;
   }
   throw new ConnectorResourceOutcomeUnknownError(error);
@@ -1102,7 +1104,24 @@ function requireConnectorSubtleCrypto(method: string): void {
 }
 
 async function requireConnectorResourceId(resourceId: string, method: string): Promise<void> {
-  if (!(await isValidConnectorResourceId(resourceId))) {
+  const der = decodeCanonicalBase64Url(resourceId);
+  if (!der) {
+    throw clientValidationError(
+      `${method}: resource id must be a canonical unpadded base64url P-256 DER SPKI public key`,
+    );
+  }
+  requireConnectorSubtleCrypto(method);
+  try {
+    const keyData = new ArrayBuffer(der.byteLength);
+    new Uint8Array(keyData).set(der);
+    await globalThis.crypto.subtle.importKey(
+      "spki",
+      keyData,
+      { name: "ECDSA", namedCurve: "P-256" },
+      false,
+      ["verify"],
+    );
+  } catch {
     throw clientValidationError(
       `${method}: resource id must be a canonical unpadded base64url P-256 DER SPKI public key`,
     );
@@ -2455,7 +2474,6 @@ export class QURLClient {
 
   /** Fetch a qURL Connector resource by its immutable public resource ID. */
   async getConnectorResource(resourceId: string): Promise<ConnectorResource> {
-    requireConnectorSubtleCrypto("getConnectorResource");
     await requireConnectorResourceId(resourceId, "getConnectorResource");
     const { data, __http_status } = await this.rawRequest<ResourceDetail>(
       "GET",
@@ -2494,7 +2512,10 @@ export class QURLClient {
         "getConnectorResourceBySlug: response has missing or invalid data",
       );
     }
-    if (meta?.has_more === true || (meta?.next_cursor !== undefined && meta.next_cursor !== null)) {
+    if (
+      meta?.has_more === true ||
+      (meta?.next_cursor !== undefined && meta.next_cursor !== null && meta.next_cursor !== "")
+    ) {
       throw unexpectedResponseError(
         "getConnectorResourceBySlug: point lookup unexpectedly returned pagination metadata",
       );
@@ -2543,7 +2564,6 @@ export class QURLClient {
    * outcome-unknown failure, reconcile by ID before issuing a deliberate retry.
    */
   async deleteConnectorResource(resourceId: string): Promise<void> {
-    requireConnectorSubtleCrypto("deleteConnectorResource");
     await requireConnectorResourceId(resourceId, "deleteConnectorResource");
     try {
       await this.requestNoContent(`/v1/resources/${encodeURIComponent(resourceId)}`);
@@ -4363,6 +4383,7 @@ const CONNECTOR_RESOURCE_CONSTRUCTOR_TOKEN = Symbol("validated ConnectorResource
  * must never derive one from another.
  */
 export class ConnectorResource extends ProtectedResource {
+  /** Alias of inherited `id`, named to match qurl-go's ConnectorResource. */
   readonly resourceId: string;
   /** Producer-supplied CRID carried verbatim; verify it against a trusted key before trust. */
   readonly crid?: string;
