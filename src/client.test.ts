@@ -2383,11 +2383,14 @@ describe("QURLClient", () => {
     );
   });
 
-  it("leaves non-display q_-prefixed opaque IDs to the service", async () => {
+  it("rejects future q_-prefixed display IDs before whole-resource deletion", async () => {
     const fetch = mockFetch({ status: 204 });
 
-    await expect(createClient(fetch).delete("q_future-resource-id")).resolves.toBeUndefined();
-    expect(fetch).toHaveBeenCalledTimes(1);
+    await expect(createClient(fetch).delete("q_future-display-id")).rejects.toMatchObject({
+      code: ERROR_CODE_CLIENT_VALIDATION,
+      detail: expect.stringContaining("qURL display ID"),
+    });
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it.each(["Q_0123456789a", "%51_0123456789a"])(

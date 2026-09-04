@@ -788,14 +788,19 @@ function pageFromMeta<T extends Record<string, unknown>>(
 // delimiter requirement cannot collide with current base64url public keys,
 // standard-base64 keys, or base32 CRIDs.
 const PATH_EMBEDDED_ACCESS_TOKEN_RE = /[?&#=:\s]at_/i;
+const PATH_PREFIXED_ACCESS_TOKEN_RE = /\/at_/i;
 const QURL_LINK_URL_RE = /^(?:https?:\/\/)?(?:[a-z0-9-]+\.)*qurl\.link(?::\d{1,5})?(?:\/|[?#])/i;
 const URL_EMBEDDED_ACCESS_TOKEN_RE = /[?&#=:/]at_[a-z0-9_-]{22}(?:$|[?&#:/])/i;
 // A host without a slash can be a legitimate domain identifier. Require the
 // path boundary so shared validation does not break the domain namespace.
 const PATH_SCHEMELESS_URL_RE = /^[a-z0-9-]+(?:\.[a-z0-9-]+)+(?::\d{1,5})?\//i;
-const QURL_DISPLAY_ID_RE = /^q_[0-9a-f]{11}$/i;
+const QURL_DISPLAY_ID_PREFIX_RE = /^q_/i;
 const MAX_PATH_ID_DECODE_PASSES = 3;
 const MAX_PATH_ID_LENGTH = 4096;
+
+function isUrlLikePathId(value: string): boolean {
+  return /^https?:\/\//i.test(value) || PATH_SCHEMELESS_URL_RE.test(value);
+}
 
 interface PathIdValidationOptions {
   /** Reject a bare access token in namespaces that accept resource/qURL IDs. */
@@ -834,10 +839,11 @@ const DELETE_QURL_RESOURCE_ID_PATH_OPTIONS: PathIdValidationOptions = {
   rejectBareAccessToken: true,
   accessTokenRecovery: DELETE_RESOURCE_RECOVERY,
   // Current resource IDs have fixed public-key/CRID/r_ prefixes, so q_ is an
-  // unambiguous display-ID mix-up. Revisit if resource keys become arbitrary
-  // base64url strings, whose alphabet could legitimately start with q_. This
-  // guard is specific to legacy DELETE /v1/qurls/{id}, which resolves a qURL
-  // display ID to its parent resource; DELETE /v1/resources/{id} does not.
+  // unambiguous display-ID mix-up. Guard the reserved prefix rather than the
+  // current display-ID suffix grammar: a future display-ID extension must not
+  // silently turn an individual revoke into whole-resource deletion. This is
+  // specific to legacy DELETE /v1/qurls/{id}, which resolves a qURL display ID
+  // to its parent resource; DELETE /v1/resources/{id} does not.
   rejectQurlDisplayId: true,
 };
 
@@ -892,18 +898,18 @@ function requireNonEmptyId(
   // webhook, session, and API-key IDs are deliberately opaque/open contracts.
   // Full URLs and delimiter/path-prefixed credentials remain rejected in
   // every namespace.
-  const containsUrl = decodedIds.some(
-    (value) => /^https?:\/\//i.test(value) || PATH_SCHEMELESS_URL_RE.test(value),
-  );
-  const containsAccessToken = decodedIds.some(
-    (value) =>
+  const containsUrl = decodedIds.some(isUrlLikePathId);
+  const containsAccessToken = decodedIds.some((value) => {
+    const valueIsUrl = isUrlLikePathId(value);
+    return (
       (QURL_LINK_URL_RE.test(value) &&
-        (PATH_EMBEDDED_ACCESS_TOKEN_RE.test(value) || /\/at_/i.test(value))) ||
-      (containsUrl
+        (PATH_EMBEDDED_ACCESS_TOKEN_RE.test(value) || PATH_PREFIXED_ACCESS_TOKEN_RE.test(value))) ||
+      (valueIsUrl
         ? URL_EMBEDDED_ACCESS_TOKEN_RE.test(value)
-        : PATH_EMBEDDED_ACCESS_TOKEN_RE.test(value) || /\/at_/i.test(value)) ||
-      (options.rejectBareAccessToken === true && value.slice(0, 3).toLowerCase() === "at_"),
-  );
+        : PATH_EMBEDDED_ACCESS_TOKEN_RE.test(value) || PATH_PREFIXED_ACCESS_TOKEN_RE.test(value)) ||
+      (options.rejectBareAccessToken === true && value.slice(0, 3).toLowerCase() === "at_")
+    );
+  });
   if (containsAccessToken) {
     const recovery = options.accessTokenRecovery ?? "pass the identifier returned by the API";
     throw clientValidationError(
@@ -918,7 +924,7 @@ function requireNonEmptyId(
   }
   if (
     options.rejectQurlDisplayId === true &&
-    decodedIds.some((value) => QURL_DISPLAY_ID_RE.test(value))
+    decodedIds.some((value) => QURL_DISPLAY_ID_PREFIX_RE.test(value))
   ) {
     throw clientValidationError(
       `${method}: ${field} must not be a qURL display ID; ${REVOKE_INDIVIDUAL_QURL_RECOVERY}`,
