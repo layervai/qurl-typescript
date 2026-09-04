@@ -2065,10 +2065,11 @@ describe("QURLClient", () => {
       body: { data: connectorResourceData(), meta: { found_existing: false } },
     });
 
-    await createClient(fetch).ensureConnectorResource("prod-dashboard", {
+    const result = await createClient(fetch).ensureConnectorResource("prod-dashboard", {
       idempotencyKey: "connector-ensure-job-1",
     });
 
+    expect(result.foundExisting).toBe(false);
     expect(callHeaders(fetch)["Idempotency-Key"]).toBe("connector-ensure-job-1");
   });
 
@@ -2174,6 +2175,35 @@ describe("QURLClient", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
+  it("classifies a runtime capability loss after connector ensure dispatch as outcome-unknown", async () => {
+    const fetch = vi.fn(async () => {
+      vi.stubGlobal("crypto", undefined);
+      return new Response(
+        JSON.stringify({
+          data: connectorResourceData(),
+          meta: { found_existing: false },
+        }),
+        { status: 201, headers: { "content-type": "application/json" } },
+      );
+    });
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 0,
+    });
+
+    try {
+      await expect(client.ensureConnectorResource("prod-dashboard")).rejects.toMatchObject({
+        constructor: ConnectorResourceOutcomeUnknownError,
+        cause: { constructor: RuntimeError, code: ERROR_CODE_RUNTIME },
+      });
+      expect(fetch).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("preserves an authoritative connector ensure 4xx as a known rejection", async () => {
     const fetch = mockFetch({
       status: 409,
@@ -2205,6 +2235,23 @@ describe("QURLClient", () => {
     });
   });
 
+  it("marks a revoked connector ensure result as outcome-unknown", async () => {
+    const fetch = mockFetch({
+      status: 201,
+      body: {
+        data: connectorResourceData({ status: "revoked" }),
+        meta: { found_existing: true },
+      },
+    });
+
+    await expect(
+      createClient(fetch).ensureConnectorResource("prod-dashboard"),
+    ).rejects.toMatchObject({
+      constructor: ConnectorResourceOutcomeUnknownError,
+      cause: { code: ERROR_CODE_UNEXPECTED_RESPONSE },
+    });
+  });
+
   it("gets a connector resource by immutable resource ID from the detail envelope", async () => {
     const fetch = mockFetch({
       status: 200,
@@ -2219,6 +2266,14 @@ describe("QURLClient", () => {
       `https://api.test.layerv.ai/v1/resources/${CONNECTOR_RESOURCE_ID}`,
       expect.objectContaining({ method: "GET" }),
     );
+  });
+
+  it("fails closed when connector resource detail omits its nested resource", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+
+    await expect(
+      createClient(fetch).getConnectorResource(CONNECTOR_RESOURCE_ID),
+    ).rejects.toMatchObject({ code: ERROR_CODE_UNEXPECTED_RESPONSE });
   });
 
   it("imports a prevalidated by-ID connector resource key only once", async () => {
@@ -2272,6 +2327,17 @@ describe("QURLClient", () => {
       "https://api.test.layerv.ai/v1/resources?slug=prod-dashboard",
       expect.objectContaining({ method: "GET" }),
     );
+  });
+
+  it("fails closed when a connector slug lookup claims another page exists", async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: { data: [connectorResourceData()], meta: { has_more: true } },
+    });
+
+    await expect(
+      createClient(fetch).getConnectorResourceBySlug("prod-dashboard"),
+    ).rejects.toMatchObject({ code: ERROR_CODE_UNEXPECTED_RESPONSE });
   });
 
   it("preflights SubtleCrypto before connector slug lookup can dispatch", async () => {
@@ -2366,6 +2432,20 @@ describe("QURLClient", () => {
 
     expect(error).not.toBeInstanceOf(ConnectorResourceOutcomeUnknownError);
     expect(error).toMatchObject({ status: 409, code: "resource_conflict" });
+  });
+
+  it("preserves an authoritative repeated connector delete 404 as a known rejection", async () => {
+    const fetch = mockFetch({
+      status: 404,
+      body: { error: { status: 404, code: "resource_not_found", title: "Not Found" } },
+    });
+
+    const error = await createClient(fetch)
+      .deleteConnectorResource(CONNECTOR_RESOURCE_ID)
+      .catch((caught: unknown) => caught as QURLError);
+
+    expect(error).not.toBeInstanceOf(ConnectorResourceOutcomeUnknownError);
+    expect(error).toMatchObject({ status: 404, code: "resource_not_found" });
   });
 
   it.each([

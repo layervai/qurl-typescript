@@ -881,6 +881,9 @@ const MAX_AUTO_PAGINATION_PAGES = 10_000;
 // These connector identity contracts are pinned to qurl-go a528d1f and
 // qurl-service 047cf31. Widen them only with a coordinated producer change.
 const CONNECTOR_SLUG_PATTERN = /^[a-z][a-z0-9-]{1,62}[a-z0-9]$/;
+// Current service schemas intentionally share this grammar, but keep the
+// mutable alias contract separate from the immutable lookup identity.
+const CONNECTOR_ALIAS_PATTERN = /^[a-z][a-z0-9-]{1,62}[a-z0-9]$/;
 const CONNECTOR_RESOURCE_ID_PATTERN = /^[A-Za-z0-9_-]{122}$/;
 const CONNECTOR_ROUTING_ID_PATTERN = /^c-[a-z2-7]{51}[aq]$/;
 // CreateQurlRequest.target_url pattern is loose (just a URI) but
@@ -1039,20 +1042,14 @@ function classifyConnectorMutationFailure(error: unknown): never {
       new RuntimeError("Unexpected failure after Connector mutation dispatch", { cause: error }),
     );
   }
-  // An authoritative 4xx proves the mutation was rejected. Runtime failures
-  // are pre-dispatch only because ensureConnectorResource preflights every
-  // runtime capability used by response validation before fetch. Do not add a
-  // post-dispatch RuntimeError path without changing this classification.
-  // Every other surfaced failure follows dispatch or a nominal success whose
+  // An authoritative 4xx proves the mutation was rejected. Callers perform
+  // argument/runtime preflight outside their mutation try blocks; every other
+  // surfaced failure therefore follows dispatch or a nominal success whose
   // resource contract could not be consumed, so callers must reconcile before
   // retrying. Ensure's exact 201 + valid resource but missing found_existing is
   // handled after this classifier: the row proves the selected resource, while
   // only its required metadata is unavailable (matching qurl-go).
-  if (
-    error instanceof RuntimeError ||
-    error.code === ERROR_CODE_CLIENT_VALIDATION ||
-    (error.status >= 400 && error.status < 500)
-  ) {
+  if (error.status >= 400 && error.status < 500) {
     throw error;
   }
   throw new ConnectorResourceOutcomeUnknownError(error);
@@ -1185,7 +1182,7 @@ async function parseConnectorResource(
   if (
     resource.alias !== undefined &&
     resource.alias !== null &&
-    (typeof resource.alias !== "string" || !CONNECTOR_SLUG_PATTERN.test(resource.alias))
+    (typeof resource.alias !== "string" || !CONNECTOR_ALIAS_PATTERN.test(resource.alias))
   ) {
     // qurl-service intentionally gives mutable aliases and immutable slugs the
     // same canonical wire grammar (domain aliasPattern/slugPattern). Keeping
@@ -2416,6 +2413,10 @@ export class QURLClient {
     // Response validation imports the producer's P-256 resource key. Preflight
     // before POST so a missing runtime capability cannot orphan a committed row.
     requireConnectorSubtleCrypto("ensureConnectorResource");
+    // Keep invalid options in the known pre-dispatch error arm. rawRequest
+    // validates again when building the request, which protects future callers
+    // that do not have this mutation-specific outcome contract.
+    validateRequestOptions(requestOptions);
     let response: ApiResponse<Resource>;
     let resource: ConnectorResource;
     try {
@@ -2478,7 +2479,7 @@ export class QURLClient {
     requireConnectorSubtleCrypto("getConnectorResourceBySlug");
     // qurl-service's slug point lookup is intrinsically active-only. It also
     // rejects combining `slug` with `status`, so this query must stay slug-only.
-    const { data, __http_status } = await this.rawRequest<Resource[]>(
+    const { data, meta, __http_status } = await this.rawRequest<Resource[]>(
       "GET",
       `/v1/resources?slug=${encodeURIComponent(slug)}`,
     );
@@ -2490,6 +2491,11 @@ export class QURLClient {
     if (!Array.isArray(data)) {
       throw unexpectedResponseError(
         "getConnectorResourceBySlug: response has missing or invalid data",
+      );
+    }
+    if (meta?.has_more === true || meta?.next_cursor !== undefined) {
+      throw unexpectedResponseError(
+        "getConnectorResourceBySlug: point lookup unexpectedly returned pagination metadata",
       );
     }
     // The service query is intentionally slug-only because qurl-service
@@ -4356,6 +4362,7 @@ const CONNECTOR_RESOURCE_CONSTRUCTOR_TOKEN = Symbol("validated ConnectorResource
  */
 export class ConnectorResource extends ProtectedResource {
   readonly resourceId: string;
+  /** Producer-supplied CRID carried verbatim; verify it against a trusted key before trust. */
   readonly crid?: string;
   readonly connectorRoutingId: string;
   readonly knockResourceId: string;
