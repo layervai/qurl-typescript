@@ -15,9 +15,13 @@ export const ERROR_CODE_UNEXPECTED_RESPONSE = "unexpected_response";
 export const ERROR_CODE_NETWORK = "network_error";
 export const ERROR_CODE_TIMEOUT = "timeout";
 export const ERROR_CODE_RUNTIME = "runtime_error";
-/** `connectorResource` found no resource for the connector id (client-detected, `status: 0`). */
+/** A dispatched Connector resource mutation could have committed and must be reconciled. */
+export const ERROR_CODE_CONNECTOR_RESOURCE_OUTCOME_UNKNOWN = "connector_resource_outcome_unknown";
+/** A by-ID Connector resource lookup found a revoked lifecycle row. */
+export const ERROR_CODE_CONNECTOR_RESOURCE_REVOKED = "connector_resource_revoked";
+/** A Connector slug lookup found no active resource (client-detected, `status: 0`). */
 export const ERROR_CODE_RESOURCE_NOT_FOUND = "resource_not_found";
-/** `connectorResource` matched more than one resource where exactly one is required (client-detected, `status: 0`). */
+/** A Connector slug lookup matched more than one active resource (client-detected, `status: 0`). */
 export const ERROR_CODE_AMBIGUOUS_RESOURCE = "ambiguous_resource";
 /** Fallback `.code` when the server returns a non-RFC-7807 response (HTML proxy page, plaintext gateway error, JSON without `error` envelope). */
 export const ERROR_CODE_UNKNOWN = "unknown";
@@ -109,7 +113,10 @@ export class NotFoundError extends QURLError {
  *   returning HTML on a passthrough status, or a batch response missing
  *   required fields).
  *
- * `instanceof ValidationError` catches both. To distinguish them, check
+ * `instanceof ValidationError` catches both on ordinary client/response
+ * paths. A Connector mutation wraps a post-dispatch `unexpected_response`
+ * in {@link ConnectorResourceOutcomeUnknownError}; inspect that error's
+ * typed `cause` before deciding whether to retry. To distinguish them, check
  * `.code` rather than using `instanceof` alone.
  *
  * **`.status` asymmetry within `code: "unexpected_response"`:**
@@ -147,6 +154,32 @@ export class ServerError extends QURLError {
   constructor(data: QURLErrorData) {
     super(data);
     this.name = "ServerError";
+  }
+}
+
+/**
+ * A Connector resource ensure/delete was dispatched, but the response cannot
+ * prove whether it committed. Reconcile by immutable slug or resource ID
+ * before choosing whether to retry. The original typed failure is in `cause`.
+ * The wrapper uses `status: 0` so generic HTTP-status retry predicates cannot
+ * replay the mutation; inspect `cause.status` for the observed HTTP status.
+ * A valid HTTP 201 Connector row missing only `meta.found_existing` is a known
+ * committed/selected row with incomplete metadata and is not wrapped here.
+ */
+export class ConnectorResourceOutcomeUnknownError extends QURLError {
+  declare readonly code: typeof ERROR_CODE_CONNECTOR_RESOURCE_OUTCOME_UNKNOWN;
+  declare readonly cause: QURLError;
+
+  constructor(cause: QURLError) {
+    super({
+      status: 0,
+      code: ERROR_CODE_CONNECTOR_RESOURCE_OUTCOME_UNKNOWN,
+      title: "Connector Resource Outcome Unknown",
+      detail: `Mutation outcome is unknown; reconcile before retrying. ${cause.detail}`,
+      request_id: cause.requestId,
+    });
+    this.name = "ConnectorResourceOutcomeUnknownError";
+    this.cause = cause;
   }
 }
 

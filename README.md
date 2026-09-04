@@ -66,13 +66,48 @@ same URL again returns the existing resource. `validFor` accepts a duration
 string (`'5m'`, `'24h'`) or a number of milliseconds (whole seconds, at least
 one minute); prefer short portal lifetimes.
 
-If qURL Connector already protects the service, use the connector id instead
-of calling `protectUrl`:
+If qURL Connector protects the service, address its management-plane resource
+by immutable slug instead of calling `protectUrl`:
 
 ```typescript
-const resource = await client.connectorResource('prod-dashboard');
+const { resource, foundExisting } = await client.ensureConnectorResource(
+  'prod-dashboard',
+  { idempotencyKey: 'connector-bootstrap-prod-dashboard' },
+);
+console.log(foundExisting ? 'Using existing connector resource' : 'Created connector resource');
 const portal = await resource.createPortal({ validFor: '5m' });
 ```
+
+`resource.resourceId`, `resource.connectorRoutingId`, and
+`resource.knockResourceId` are three distinct server-issued values for public
+identity, reverse routing, and NHP admission. Consume each verbatim; never
+derive or substitute one for another. Use `getConnectorResource(resourceId)`
+or `getConnectorResourceBySlug(slug)` for read-only lookup and
+`deleteConnectorResource(resourceId)` to revoke it. The older
+`connectorResource(slug)` spelling remains as a deprecated alias for the slug
+lookup, but this is a breaking change from its retired alias-based behavior.
+`ConnectorResource` instances cannot be constructed directly; the client
+returns them only after validating the complete response contract.
+
+These Connector-specific methods require qurl-service at or after
+`047cf31e1cdf545e3060e0f9294d738a19fb997b`, with canonical public resource,
+connector-routing, and NHP admission IDs present on every tunnel row. Publish
+this SDK only after that contract is deployed; older responses carrying legacy
+`r_...` resource IDs or missing routing/admission fields are intentionally
+rejected rather than interpreted loosely.
+
+`ensureConnectorResource` and `deleteConnectorResource` throw
+`ConnectorResourceOutcomeUnknownError` when a dispatched mutation may have
+committed but its response cannot prove the result. Reconcile by immutable slug
+or resource ID before deciding whether to retry. The wrapper deliberately uses
+`status: 0`; the original typed error is available as `cause`, including its
+observed HTTP status.
+For `ensureConnectorResource`, reuse the same `idempotencyKey` on any deliberate
+retry. qurl-service does not apply idempotency replay to DELETE, so after an
+outcome-unknown `deleteConnectorResource` call, reconcile by resource ID before
+issuing a deliberate retry. A valid exact-201 resource missing only
+`meta.found_existing` is known to have selected that row but still fails as an
+unwrapped `unexpected_response` because required ensure metadata is absent.
 
 If you persist the resource id, future calls do not need to recreate the
 handle (no API call is made until you mint):
@@ -169,7 +204,10 @@ console.log(`Access granted to ${access.target_url} for ${access.access_grant?.e
 | `protectUrl(targetUrl, opts?)` | Protect a private URL → portal-minting `ProtectedResource` handle |
 | `resource.createPortal(opts?)` / `createPortal(resourceOrId, opts?)` | Mint a short-lived portal link (`Portal`) |
 | `createPortalForUrl(targetUrl, opts?)` | Protect + mint in one API call → `{ portal, resource }` |
-| `connectorResource(connectorId)` | Handle for a service qURL Connector already protects |
+| `ensureConnectorResource(slug, requestOptions?)` | Find or create an active Connector resource by immutable slug |
+| `getConnectorResource(resourceId)` / `getConnectorResourceBySlug(slug)` | Load a validated Connector resource by immutable identity |
+| `deleteConnectorResource(resourceId)` | Revoke a Connector resource by immutable public resource ID |
+| `connectorResource(slug)` | Deprecated alias for `getConnectorResourceBySlug` |
 | `resourceById(id)` | Handle from a stored resource id (no API call) |
 | `enterPortal(linkOrToken)` | Open a qURL link programmatically → `ResourceHandle` |
 

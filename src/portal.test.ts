@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import conformancePackage from "@layervai/qurl-conformance";
-import { ProtectedResource, SIGNED_FRAGMENT_RE } from "./client.js";
+import { ConnectorResource, ProtectedResource, SIGNED_FRAGMENT_RE } from "./client.js";
 import { NotFoundError, QURLError, ValidationError } from "./errors.js";
 import { createClient, mockFetch, mockFetches } from "./__tests__/test-helpers.js";
 
@@ -30,6 +30,18 @@ const RESOURCE_DATA = {
   alias: "prod-dashboard",
   tags: [],
   created_at: "2026-03-10T10:00:00Z",
+};
+
+const CONNECTOR_RESOURCE_DATA = {
+  resource_id:
+    "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE2cTVv5_3eeYCcLLq5ROYCqcmY50HiKZ9ATglIkPnCji1E_S63UMtXba1moR8-Q6EV7oM6zwwh9_j2CDujzXvLA",
+  crid: "ahpviqz46qwcvx56glfatm3p3ooccwfcf2it4sdgjervwdkapykw3o3qdq2a",
+  connector_routing_id: "c-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  knock_resource_id: "asp-resource-1",
+  type: "tunnel",
+  status: "active",
+  slug: "prod-dashboard",
+  alias: "dashboard-display-name",
 };
 
 const PORTAL_DATA = {
@@ -341,16 +353,17 @@ describe("resourceById", () => {
 
 describe("connectorResource", () => {
   it("looks up the slug and returns a bound handle", async () => {
-    const fetch = mockFetch({ status: 200, body: { data: [RESOURCE_DATA] } });
+    const fetch = mockFetch({ status: 200, body: { data: [CONNECTOR_RESOURCE_DATA] } });
     const client = createClient(fetch);
 
     const resource = await client.connectorResource("prod-dashboard");
 
     const { url } = callRequest(fetch);
     expect(new URL(url).searchParams.get("slug")).toBe("prod-dashboard");
-    expect(resource.id).toBe("r_abc123def45");
-    expect(resource.targetUrl).toBe("https://internal.example.com/dashboard");
-    expect(resource.details?.alias).toBe("prod-dashboard");
+    expect(resource).toBeInstanceOf(ConnectorResource);
+    expect(resource.id).toBe(CONNECTOR_RESOURCE_DATA.resource_id);
+    expect(resource.slug).toBe("prod-dashboard");
+    expect(resource.alias).toBe("dashboard-display-name");
   });
 
   it("throws NotFoundError when no resource matches", async () => {
@@ -364,8 +377,10 @@ describe("connectorResource", () => {
   });
 
   it("throws on an ambiguous lookup", async () => {
-    const second = { ...RESOURCE_DATA, resource_id: "r_other9999999" };
-    const fetch = mockFetch({ status: 200, body: { data: [RESOURCE_DATA, second] } });
+    const fetch = mockFetch({
+      status: 200,
+      body: { data: [CONNECTOR_RESOURCE_DATA, CONNECTOR_RESOURCE_DATA] },
+    });
     const err = await createClient(fetch)
       .connectorResource("prod-dashboard")
       .catch((e: unknown) => e as QURLError);
@@ -373,12 +388,12 @@ describe("connectorResource", () => {
     expect((err as QURLError).code).toBe("ambiguous_resource");
   });
 
-  it("throws when the returned alias does not match", async () => {
-    const mismatched = { ...RESOURCE_DATA, alias: "some-other-alias" };
+  it("throws when the returned immutable slug does not match", async () => {
+    const mismatched = { ...CONNECTOR_RESOURCE_DATA, slug: "some-other-slug" };
     const fetch = mockFetch({ status: 200, body: { data: [mismatched] } });
     await expect(createClient(fetch).connectorResource("prod-dashboard")).rejects.toMatchObject({
       code: "unexpected_response",
-      detail: expect.stringContaining("missing or different alias"),
+      detail: expect.stringContaining("slug does not match"),
     });
   });
 
@@ -386,7 +401,7 @@ describe("connectorResource", () => {
     const client = createClient(mockFetch({ status: 200, body: { data: [] } }));
     await expect(client.connectorResource("   ")).rejects.toMatchObject({
       code: "client_validation",
-      detail: expect.stringContaining("connector id"),
+      detail: expect.stringContaining("slug"),
     });
   });
 });

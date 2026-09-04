@@ -470,10 +470,18 @@ export interface UpdateResourceInput {
 /** Resource data returned by the `/v1/resources` surface. */
 export interface Resource {
   resource_id: string;
+  /** Cryptographic Resource ID derived from the resource public key. */
+  crid?: string;
   type?: ResourceType;
   target_url?: string;
   knock_resource_id?: string;
+  /** Opaque reverse-connection routing label for qURL Connector resources. */
+  connector_routing_id?: string;
   status?: "active" | "revoked" | (string & {});
+  /** Durable qURL Connector sharing intent. */
+  desired_state?: "on" | "off" | (string & {});
+  /** Monotonic qURL Connector serving lifecycle; zero means never started. */
+  serving_epoch?: number;
   description?: string;
   tags?: string[];
   custom_domain?: string | null;

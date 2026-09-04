@@ -1,8 +1,10 @@
 import {
+  ConnectorResourceOutcomeUnknownError,
   createError,
   ERROR_CODE_AMBIGUOUS_RESOURCE,
   ERROR_CODE_CLIENT_VALIDATION,
   ERROR_CODE_RESOURCE_NOT_FOUND,
+  ERROR_CODE_CONNECTOR_RESOURCE_REVOKED,
   ERROR_CODE_UNEXPECTED_RESPONSE,
   ERROR_CODE_UNKNOWN,
   NetworkError,
@@ -876,6 +878,14 @@ const MAX_TARGET_PATH = 2048;
 const MAX_TAGS = 10;
 const MAX_TAG_LENGTH = 50;
 const MAX_AUTO_PAGINATION_PAGES = 10_000;
+// These connector identity contracts are pinned to qurl-go a528d1f and
+// qurl-service 047cf31. Widen them only with a coordinated producer change.
+const CONNECTOR_SLUG_PATTERN = /^[a-z][a-z0-9-]{1,62}[a-z0-9]$/;
+// Current service schemas intentionally share this grammar, but keep the
+// mutable alias contract separate from the immutable lookup identity.
+const CONNECTOR_ALIAS_PATTERN = /^[a-z][a-z0-9-]{1,62}[a-z0-9]$/;
+const CONNECTOR_RESOURCE_ID_PATTERN = /^[A-Za-z0-9_-]{122}$/;
+const CONNECTOR_ROUTING_ID_PATTERN = /^c-[a-z2-7]{51}[aq]$/;
 // CreateQurlRequest.target_url pattern is loose (just a URI) but
 // UpdateQurlRequest.tags pattern is specific — enforce it here.
 const TAG_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9 _-]*$/;
@@ -1016,6 +1026,221 @@ function requireNonEmptyId(id: string, method: string, field = "id"): void {
       `${method}: ${field} must not include leading or trailing whitespace`,
     );
   }
+}
+
+function requireConnectorSlug(slug: string, method: string): void {
+  if (typeof slug !== "string" || !CONNECTOR_SLUG_PATTERN.test(slug)) {
+    throw clientValidationError(
+      `${method}: slug must be 3-64 lowercase alphanumeric or hyphen characters, start with a letter, and end alphanumeric`,
+    );
+  }
+}
+
+function classifyConnectorMutationFailure(error: unknown): never {
+  if (!(error instanceof QURLError)) {
+    throw new ConnectorResourceOutcomeUnknownError(
+      new RuntimeError("Unexpected failure after Connector mutation dispatch", { cause: error }),
+    );
+  }
+  // An authoritative 4xx other than Request Timeout proves the mutation was
+  // rejected. A 408 can be synthesized after an intermediary forwarded the
+  // request, so the mutation outcome remains unknown. Callers perform
+  // argument/runtime preflight outside their mutation try blocks; every other
+  // surfaced failure therefore follows dispatch or a nominal success whose
+  // resource contract could not be consumed, so callers must reconcile before
+  // retrying. Ensure's exact 201 + valid resource but missing found_existing is
+  // handled after this classifier: the row proves the selected resource, while
+  // only its required metadata is unavailable (matching qurl-go).
+  if (error.status >= 400 && error.status < 500 && error.status !== 408) {
+    throw error;
+  }
+  throw new ConnectorResourceOutcomeUnknownError(error);
+}
+
+function decodeCanonicalBase64Url(value: string): Uint8Array | undefined {
+  if (!CONNECTOR_RESOURCE_ID_PATTERN.test(value)) return undefined;
+  try {
+    const padded = value.replace(/-/g, "+").replace(/_/g, "/") + "==";
+    const binary = atob(padded);
+    const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+    const canonical = btoa(String.fromCharCode(...bytes))
+      .replace(/\+/g, "-")
+      .replace(/\//g, "_")
+      .replace(/=+$/, "");
+    return canonical === value ? bytes : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function isValidConnectorResourceId(value: string): Promise<boolean> {
+  const der = decodeCanonicalBase64Url(value);
+  if (!der) return false;
+  if (!globalThis.crypto?.subtle) {
+    throw new RuntimeError(
+      "qURL Connector resource validation requires the Web Crypto SubtleCrypto API",
+    );
+  }
+  return importsAsConnectorPublicKey(der);
+}
+
+function requireConnectorSubtleCrypto(method: string): void {
+  if (!globalThis.crypto?.subtle) {
+    throw new RuntimeError(`${method}: requires the Web Crypto SubtleCrypto API`);
+  }
+}
+
+async function requireConnectorResourceId(resourceId: string, method: string): Promise<void> {
+  const der = decodeCanonicalBase64Url(resourceId);
+  if (!der) {
+    throw clientValidationError(
+      `${method}: resource id must be a canonical unpadded base64url P-256 DER SPKI public key`,
+    );
+  }
+  requireConnectorSubtleCrypto(method);
+  if (!(await importsAsConnectorPublicKey(der))) {
+    throw clientValidationError(
+      `${method}: resource id must be a canonical unpadded base64url P-256 DER SPKI public key`,
+    );
+  }
+}
+
+async function importsAsConnectorPublicKey(der: Uint8Array): Promise<boolean> {
+  try {
+    const keyData = new ArrayBuffer(der.byteLength);
+    new Uint8Array(keyData).set(der);
+    await globalThis.crypto.subtle.importKey(
+      "spki",
+      keyData,
+      { name: "ECDSA", namedCurve: "P-256" },
+      false,
+      ["verify"],
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+type ConnectorResourceExpectation = {
+  slug?: string;
+  resourceId?: string;
+  revokedIsLifecycleError?: boolean;
+};
+
+function containsControlCharacter(value: string): boolean {
+  return Array.from(value).some((character) => {
+    const codePoint = character.codePointAt(0) as number;
+    return codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f);
+  });
+}
+
+async function parseConnectorResource(
+  client: QURLClient,
+  value: unknown,
+  method: string,
+  expectation: ConnectorResourceExpectation = {},
+): Promise<ConnectorResource> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw unexpectedResponseError(`${method}: response is missing connector resource data`);
+  }
+  const resource = value as Resource;
+  if (typeof resource.resource_id !== "string") {
+    throw unexpectedResponseError(`${method}: response has missing or invalid resource_id`);
+  }
+  if (expectation.resourceId !== undefined && resource.resource_id !== expectation.resourceId) {
+    throw unexpectedResponseError(`${method}: response resource_id does not match the request`);
+  }
+  // A by-ID request already validated its requested resource key and matched
+  // this response byte-for-byte, so do not repeat the async key import.
+  if (
+    expectation.resourceId === undefined &&
+    !(await isValidConnectorResourceId(resource.resource_id))
+  ) {
+    throw unexpectedResponseError(`${method}: response has missing or invalid resource_id`);
+  }
+  if (
+    typeof resource.connector_routing_id !== "string" ||
+    !CONNECTOR_ROUTING_ID_PATTERN.test(resource.connector_routing_id)
+  ) {
+    throw unexpectedResponseError(
+      `${method}: response has missing or invalid connector_routing_id`,
+    );
+  }
+  if (
+    typeof resource.knock_resource_id !== "string" ||
+    resource.knock_resource_id.trim() === "" ||
+    resource.knock_resource_id.trim() !== resource.knock_resource_id ||
+    containsControlCharacter(resource.knock_resource_id)
+  ) {
+    throw unexpectedResponseError(`${method}: response has missing or invalid knock_resource_id`);
+  }
+  if (
+    resource.resource_id === resource.knock_resource_id ||
+    resource.connector_routing_id === resource.knock_resource_id
+  ) {
+    throw unexpectedResponseError(
+      `${method}: response cross-wires resource identity, routing, and admission values`,
+    );
+  }
+  if (resource.type !== "tunnel") {
+    throw unexpectedResponseError(`${method}: response resource type is not tunnel`);
+  }
+  if (typeof resource.slug !== "string" || !CONNECTOR_SLUG_PATTERN.test(resource.slug)) {
+    throw unexpectedResponseError(`${method}: response has missing or invalid slug`);
+  }
+  if (expectation.slug !== undefined && resource.slug !== expectation.slug) {
+    throw unexpectedResponseError(`${method}: response slug does not match the request`);
+  }
+  if (
+    resource.alias !== undefined &&
+    resource.alias !== null &&
+    (typeof resource.alias !== "string" || !CONNECTOR_ALIAS_PATTERN.test(resource.alias))
+  ) {
+    // qurl-service intentionally gives mutable aliases and immutable slugs the
+    // same canonical wire grammar (domain aliasPattern/slugPattern). Keeping
+    // response validation aligned avoids accepting a row the service itself
+    // could not create or update.
+    throw unexpectedResponseError(`${method}: response has invalid alias`);
+  }
+  if (resource.crid !== undefined && (typeof resource.crid !== "string" || resource.crid === "")) {
+    throw unexpectedResponseError(`${method}: response has invalid crid`);
+  }
+  // Match qurl-go: ConnectorResource carries an optional producer CRID
+  // verbatim. Consumers that possess a trusted delivered key can verify the
+  // binding separately; this management-plane row is not itself a trust root.
+  if (
+    resource.desired_state !== undefined &&
+    resource.desired_state !== "on" &&
+    resource.desired_state !== "off"
+  ) {
+    throw unexpectedResponseError(`${method}: response has invalid desired_state`);
+  }
+  if (
+    resource.serving_epoch !== undefined &&
+    (typeof resource.serving_epoch !== "number" ||
+      !Number.isSafeInteger(resource.serving_epoch) ||
+      resource.serving_epoch < 0)
+  ) {
+    throw unexpectedResponseError(`${method}: response has invalid serving_epoch`);
+  }
+  if (resource.status === "revoked") {
+    if (expectation.revokedIsLifecycleError !== true) {
+      throw unexpectedResponseError(
+        `${method}: active-only operation returned a revoked connector resource`,
+      );
+    }
+    throw new QURLError({
+      status: 0,
+      code: ERROR_CODE_CONNECTOR_RESOURCE_REVOKED,
+      title: "Connector Resource Revoked",
+      detail: `${method}: qURL Connector resource is revoked`,
+    });
+  }
+  if (resource.status !== "active") {
+    throw unexpectedResponseError(`${method}: response has invalid resource status`);
+  }
+  return new ConnectorResource(client, resource, CONNECTOR_RESOURCE_CONSTRUCTOR_TOKEN);
 }
 
 function requireValidTags(tags: string[] | null | undefined): void {
@@ -2192,51 +2417,158 @@ export class QURLClient {
     return new ProtectedResource(this, id);
   }
 
-  /**
-   * Return the resource qURL Connector created for `connectorId`.
-   *
-   * Use when qURL Connector already protects the service — do not call
-   * {@link protectUrl} again for the same service. The connector id is the
-   * resource slug LayerV stores for that connector; the LayerV API performs
-   * the slug lookup, and the SDK confirms the returned alias matches
-   * `connectorId` before binding the handle (qurl-go:
-   * `Client.ConnectorResource`).
-   *
-   * Throws {@link NotFoundError} (`status: 0`, `code: "resource_not_found"`)
-   * when no resource exists for the connector id, {@link QURLError}
-   * (`code: "ambiguous_resource"`) when the lookup returns more than one
-   * resource, and {@link ValidationError} (`code: "unexpected_response"`)
-   * when the returned resource's alias is missing or does not match.
-   */
-  async connectorResource(connectorId: string): Promise<ProtectedResource> {
-    requireNonEmptyId(connectorId, "connectorResource", "connector id");
-    const { resources } = await this.listResources({ slug: connectorId });
-    if (resources.length === 0) {
+  /** Find or create the active qURL Connector resource for an immutable slug. */
+  async ensureConnectorResource(
+    slug: string,
+    requestOptions?: RequestOptions,
+  ): Promise<EnsureConnectorResourceResult> {
+    requireConnectorSlug(slug, "ensureConnectorResource");
+    // Response validation imports the producer's P-256 resource key. Preflight
+    // before POST so a missing runtime capability cannot orphan a committed row.
+    requireConnectorSubtleCrypto("ensureConnectorResource");
+    // Keep invalid options in the known pre-dispatch error arm. rawRequest
+    // validates again when building the request, which protects future callers
+    // that do not have this mutation-specific outcome contract.
+    validateRequestOptions(requestOptions);
+    let response: ApiResponse<Resource>;
+    let resource: ConnectorResource;
+    try {
+      response = await this.rawRequest<Resource>(
+        "POST",
+        "/v1/resources",
+        {
+          type: "tunnel",
+          slug,
+          find_or_create: true,
+        },
+        { requestOptions },
+      );
+      // qurl-service dispatchFindOrCreate returns 201 for both newly-created
+      // and found-existing rows; meta.found_existing distinguishes the arms.
+      if (response.__http_status !== 201) {
+        throw unexpectedResponseError(
+          `ensureConnectorResource: expected HTTP 201, got ${response.__http_status ?? "unknown"}`,
+        );
+      }
+      resource = await parseConnectorResource(this, response.data, "ensureConnectorResource", {
+        slug,
+      });
+    } catch (error) {
+      classifyConnectorMutationFailure(error);
+    }
+    const foundExisting = (response.meta as { found_existing?: unknown } | undefined)
+      ?.found_existing;
+    if (typeof foundExisting !== "boolean") {
+      throw unexpectedResponseError(
+        "ensureConnectorResource: response is missing meta.found_existing; the validated resource exists, so reconcile by slug before retrying",
+      );
+    }
+    return { resource, foundExisting };
+  }
+
+  /** Fetch a qURL Connector resource by its immutable public resource ID. */
+  async getConnectorResource(resourceId: string): Promise<ConnectorResource> {
+    await requireConnectorResourceId(resourceId, "getConnectorResource");
+    const { data, __http_status } = await this.rawRequest<ResourceDetail>(
+      "GET",
+      `/v1/resources/${encodeURIComponent(resourceId)}`,
+    );
+    if (__http_status !== 200) {
+      throw unexpectedResponseError(
+        `getConnectorResource: expected HTTP 200, got ${__http_status ?? "unknown"}`,
+      );
+    }
+    return parseConnectorResource(this, data?.resource, "getConnectorResource", {
+      resourceId,
+      revokedIsLifecycleError: true,
+    });
+  }
+
+  /** Fetch the single active qURL Connector resource for an immutable slug. */
+  async getConnectorResourceBySlug(slug: string): Promise<ConnectorResource> {
+    requireConnectorSlug(slug, "getConnectorResourceBySlug");
+    // Parsing validates the returned P-256 resource key; avoid dispatching a
+    // read that this runtime cannot safely consume.
+    requireConnectorSubtleCrypto("getConnectorResourceBySlug");
+    // qurl-service's slug point lookup is intrinsically active-only. It also
+    // rejects combining `slug` with `status`, so this query must stay slug-only.
+    const { data, meta, __http_status } = await this.rawRequest<Resource[]>(
+      "GET",
+      `/v1/resources?slug=${encodeURIComponent(slug)}`,
+    );
+    if (__http_status !== 200) {
+      throw unexpectedResponseError(
+        `getConnectorResourceBySlug: expected HTTP 200, got ${__http_status ?? "unknown"}`,
+      );
+    }
+    if (!Array.isArray(data)) {
+      throw unexpectedResponseError(
+        "getConnectorResourceBySlug: response has missing or invalid data",
+      );
+    }
+    if (
+      meta?.has_more === true ||
+      (meta?.next_cursor !== undefined && meta.next_cursor !== null && meta.next_cursor !== "")
+    ) {
+      throw unexpectedResponseError(
+        "getConnectorResourceBySlug: point lookup unexpectedly returned pagination metadata",
+      );
+    }
+    // The service query is intentionally slug-only because qurl-service
+    // rejects slug+status. Its status vocabulary is closed to active/revoked.
+    // Reject malformed row shapes and unknown lifecycle values before
+    // cardinality, then filter stale revoked rows defensively from this
+    // active-only lookup.
+    for (const resource of data) {
+      if (
+        typeof resource !== "object" ||
+        resource === null ||
+        Array.isArray(resource) ||
+        (resource.status !== "active" && resource.status !== "revoked")
+      ) {
+        throw unexpectedResponseError(
+          "getConnectorResourceBySlug: response has invalid resource row",
+        );
+      }
+    }
+    const active = data.filter((resource) => resource.status === "active");
+    if (active.length === 0) {
       throw new NotFoundError({
         status: 0,
         code: ERROR_CODE_RESOURCE_NOT_FOUND,
         title: "Resource Not Found",
-        detail: `connectorResource: no resource found for connector "${connectorId}"`,
+        detail: "getConnectorResourceBySlug: no active resource exists for the requested slug",
       });
     }
-    if (resources.length > 1) {
+    if (active.length > 1) {
       throw new QURLError({
         status: 0,
         code: ERROR_CODE_AMBIGUOUS_RESOURCE,
         title: "Ambiguous Resource",
-        detail: `connectorResource: connector "${connectorId}" returned ${resources.length} resources`,
+        detail: `getConnectorResourceBySlug: expected one active resource, got ${active.length}`,
       });
     }
-    const resource = resources[0];
-    if (resource.alias !== connectorId) {
-      throw unexpectedResponseError(
-        `connectorResource: connector "${connectorId}" returned a resource with a missing or different alias`,
-      );
+    return parseConnectorResource(this, active[0], "getConnectorResourceBySlug", { slug });
+  }
+
+  /**
+   * Revoke a qURL Connector resource by immutable public resource ID.
+   *
+   * qurl-service does not apply Idempotency-Key replay to DELETE. After an
+   * outcome-unknown failure, reconcile by ID before issuing a deliberate retry.
+   */
+  async deleteConnectorResource(resourceId: string): Promise<void> {
+    await requireConnectorResourceId(resourceId, "deleteConnectorResource");
+    try {
+      await this.requestNoContent(`/v1/resources/${encodeURIComponent(resourceId)}`);
+    } catch (error) {
+      classifyConnectorMutationFailure(error);
     }
-    if (typeof resource.resource_id !== "string" || resource.resource_id.trim() === "") {
-      throw unexpectedResponseError("connectorResource: response is missing resource_id");
-    }
-    return new ProtectedResource(this, resource.resource_id, resource.target_url, resource);
+  }
+
+  /** @deprecated Use {@link getConnectorResourceBySlug}. */
+  async connectorResource(connectorId: string): Promise<ConnectorResource> {
+    return this.getConnectorResourceBySlug(connectorId);
   }
 
   /**
@@ -3980,7 +4312,7 @@ export class QURLClient {
  * A LayerV-protected resource, bound to the client that produced it.
  *
  * Obtained from {@link QURLClient.protectUrl},
- * {@link QURLClient.connectorResource}, or {@link QURLClient.resourceById} —
+ * {@link QURLClient.getConnectorResourceBySlug}, or {@link QURLClient.resourceById} —
  * not constructed directly. Mint short-lived access links for the resource
  * with {@link createPortal} (qurl-go: `qurl.Resource`).
  */
@@ -4026,5 +4358,51 @@ export class ProtectedResource {
     requestOptions?: RequestOptions,
   ): Promise<Portal> {
     return this.#client.createPortal(this, opts, requestOptions);
+  }
+}
+
+/** Result of idempotently ensuring a qURL Connector resource. */
+export interface EnsureConnectorResourceResult {
+  resource: ConnectorResource;
+  foundExisting: boolean;
+}
+
+const CONNECTOR_RESOURCE_CONSTRUCTOR_TOKEN = Symbol("validated ConnectorResource");
+
+/**
+ * A validated qURL Connector resource bound to the client that loaded it.
+ *
+ * Resource identity, reverse-routing identity, and NHP admission identity are
+ * distinct server-issued values. Callers must consume each field verbatim and
+ * must never derive one from another.
+ */
+export class ConnectorResource extends ProtectedResource {
+  /** Alias of inherited `id`, named to match qurl-go's ConnectorResource. */
+  readonly resourceId: string;
+  /** Producer-supplied CRID carried verbatim; verify it against a trusted key before trust. */
+  readonly crid?: string;
+  readonly connectorRoutingId: string;
+  readonly knockResourceId: string;
+  readonly slug: string;
+  readonly alias?: string;
+  readonly desiredState?: "on" | "off";
+  readonly servingEpoch?: number;
+
+  /** @internal Instances are returned by QURLClient after wire validation. */
+  constructor(client: QURLClient, details: Resource, validationToken: symbol) {
+    if (validationToken !== CONNECTOR_RESOURCE_CONSTRUCTOR_TOKEN) {
+      throw clientValidationError(
+        "ConnectorResource cannot be constructed directly; load it through QURLClient",
+      );
+    }
+    super(client, details.resource_id, details.target_url, details);
+    this.resourceId = details.resource_id;
+    this.crid = details.crid;
+    this.connectorRoutingId = details.connector_routing_id as string;
+    this.knockResourceId = details.knock_resource_id as string;
+    this.slug = details.slug as string;
+    this.alias = details.alias ?? undefined;
+    this.desiredState = details.desired_state as "on" | "off" | undefined;
+    this.servingEpoch = details.serving_epoch;
   }
 }
