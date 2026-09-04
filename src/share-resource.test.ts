@@ -105,7 +105,9 @@ describe("shareResource", () => {
     expect(inspect(share)).not.toContain(share.link);
     expect({ ...share }).not.toHaveProperty("link");
     expect(share.link).toBe("https://qurl.link/#qv2t1.example");
+    expect(Object.isFrozen(share)).toBe(true);
     expect(Reflect.set(share, "link", "https://evil.example/#stolen")).toBe(false);
+    expect(Reflect.set(share, "crid", "replaced")).toBe(false);
     expect(() => Object.defineProperty(share, "link", { enumerable: true })).toThrow(TypeError);
     expect(share.toJSON()).toMatchObject({
       link: "[redacted]",
@@ -503,6 +505,22 @@ describe("ShareLink.verifyCrid", () => {
       constructor: CRIDVerificationError,
       code: ERROR_CODE_INVALID_CRID_KEY,
     });
+  });
+
+  it("does not misclassify an allocation failure as invalid caller key material", async () => {
+    const share = new ShareLink({
+      link: "https://qurl.link/#qv2t1.example",
+      crid: matching.expected_crid,
+    });
+    const slice = vi.spyOn(ArrayBuffer.prototype, "slice").mockImplementationOnce(() => {
+      throw new RangeError("allocation failed");
+    });
+
+    try {
+      await expect(share.verifyCrid(new ArrayBuffer(8))).rejects.toThrow(RangeError);
+    } finally {
+      slice.mockRestore();
+    }
   });
 
   it("treats an empty binary key as a mismatch, matching qurl-go", async () => {

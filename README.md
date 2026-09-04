@@ -113,11 +113,11 @@ If you already hold a resource ID or CRID, mint a fresh share link directly:
 
 ```typescript
 const share = await client.shareResource(resourceId, { ttlSeconds: 300 });
+// Optional: verify the response CRID against DER SPKI bytes you already trust
+// before the secret leaves this process.
+await share.verifyCrid(resourcePublicKeyDer);
 await deliverToRecipient(share.link); // Secret; returned once and not retrievable
 console.log(share.qurlId); // Safe handle for revoking only this link later
-
-// Optional: verify the response CRID against DER SPKI bytes you already trust.
-await share.verifyCrid(resourcePublicKeyDer);
 ```
 
 `shareResource` returns the current share-safe `#qv2t1...` link. Recipients

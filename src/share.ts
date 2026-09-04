@@ -98,6 +98,7 @@ export class ShareLink {
     this.expiresAt = init.expiresAt;
     this.expiresInSeconds = init.expiresInSeconds;
     this.singleUse = init.singleUse;
+    Object.freeze(this);
   }
 
   /** Serialize safe metadata while redacting the one-time-returned credential. */
@@ -159,14 +160,16 @@ function copyBytes(value: ArrayBuffer | ArrayBufferView): Uint8Array<ArrayBuffer
   try {
     const copied = ArrayBuffer.prototype.slice.call(value as ArrayBuffer, 0);
     return new Uint8Array(copied);
-  } catch {
+  } catch (error) {
+    if (!(error instanceof TypeError)) throw error;
     // A non-ArrayBuffer or detached buffer falls through to the typed-view
     // branch/error below.
   }
   if (ArrayBuffer.isView(value)) {
     try {
       return Uint8Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength));
-    } catch {
+    } catch (error) {
+      if (!(error instanceof TypeError)) throw error;
       // Detached views are invalid caller key material, not raw TypeErrors.
     }
   }
