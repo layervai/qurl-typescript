@@ -2113,7 +2113,7 @@ describe("QURLClient", () => {
         code: ERROR_CODE_CLIENT_VALIDATION,
         detail: expect.stringContaining("access token"),
       });
-      expect(error.detail).not.toContain(credential);
+      expect((error as ValidationError).detail).not.toContain(credential);
       expect(fetch).not.toHaveBeenCalled();
     },
   );
@@ -2149,7 +2149,7 @@ describe("QURLClient", () => {
   it("delete diagnoses a target URL without claiming it contains an access token", async () => {
     const fetch = mockFetch({ status: 204 });
     const client = createClient(fetch);
-    const targetUrl = "https://internal.example.com/dashboard";
+    const targetUrl = "https://docs.example.com/at_a_glance";
 
     const error = await client.delete(targetUrl).catch((e: unknown) => e as ValidationError);
 
@@ -2173,6 +2173,23 @@ describe("QURLClient", () => {
     expect((error as ValidationError).detail).not.toContain(SENSITIVE_ACCESS_TOKEN);
     expect(fetch).not.toHaveBeenCalled();
   });
+
+  it.each(["Bearer at_sensitive-token-value", "token:at_sensitive-token-value"])(
+    "delete rejects the pasted credential form %s",
+    async (credential) => {
+      const fetch = mockFetch({ status: 204 });
+      const error = await createClient(fetch)
+        .delete(credential)
+        .catch((caught: unknown) => caught as ValidationError);
+
+      expect(error).toMatchObject({
+        code: ERROR_CODE_CLIENT_VALIDATION,
+        detail: expect.stringContaining("access token"),
+      });
+      expect((error as ValidationError).detail).not.toContain(credential);
+      expect(fetch).not.toHaveBeenCalled();
+    },
+  );
 
   it("delete rejects a percent-encoded qURL link before its token can reach request logs", async () => {
     const fetch = mockFetch({ status: 204 });
@@ -2283,7 +2300,7 @@ describe("QURLClient", () => {
       code: ERROR_CODE_CLIENT_VALIDATION,
       detail: expect.stringContaining("4096 characters or fewer"),
     });
-    expect(error.detail).not.toContain(rejected);
+    expect((error as ValidationError).detail).not.toContain(rejected);
     expect(rejectedFetch).not.toHaveBeenCalled();
   });
 
@@ -2443,6 +2460,38 @@ describe("QURLClient", () => {
     expect(error).toBeInstanceOf(ValidationError);
     expect((error as ValidationError).code).toBe(ERROR_CODE_CLIENT_VALIDATION);
     expect((error as ValidationError).detail).toContain("invalid URL path segment");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("applies shared URL and dot-segment safety to non-resource namespaces", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+
+    await expect(client.getWebhook("https://example.com/at_a_glance")).rejects.toMatchObject({
+      code: ERROR_CODE_CLIENT_VALIDATION,
+      detail: expect.stringContaining("identifier, not a URL"),
+    });
+    await expect(client.getDomain("..")).rejects.toMatchObject({
+      code: ERROR_CODE_CLIENT_VALIDATION,
+      detail: expect.stringContaining("invalid URL path segment"),
+    });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("applies path safety and length bounds to secondary qURL IDs", async () => {
+    const fetch = mockFetch({ status: 204 });
+    const client = createClient(fetch);
+
+    await expect(
+      client.revokeResourceQurl("resource-id", "Bearer at_sensitive-token-value"),
+    ).rejects.toMatchObject({
+      code: ERROR_CODE_CLIENT_VALIDATION,
+      detail: expect.stringContaining("access token"),
+    });
+    await expect(client.revokeResourceQurl("resource-id", "x".repeat(4097))).rejects.toMatchObject({
+      code: ERROR_CODE_CLIENT_VALIDATION,
+      detail: expect.stringContaining("4096 characters or fewer"),
+    });
     expect(fetch).not.toHaveBeenCalled();
   });
 

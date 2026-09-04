@@ -787,7 +787,7 @@ function pageFromMeta<T extends Record<string, unknown>>(
 // opaque and future credential formats may not retain the `at_` prefix. The
 // delimiter requirement cannot collide with current base64url public keys,
 // standard-base64 keys, or base32 CRIDs.
-const PATH_EMBEDDED_ACCESS_TOKEN_RE = /[/?&#=]at_/i;
+const PATH_EMBEDDED_ACCESS_TOKEN_RE = /[&#=:\s]at_/i;
 const MAX_PATH_ID_DECODE_PASSES = 3;
 const MAX_PATH_ID_LENGTH = 4096;
 
@@ -800,10 +800,14 @@ interface PathIdValidationOptions {
   rejectQurlDisplayId?: boolean;
 }
 
+const REVOKE_INDIVIDUAL_QURL_RECOVERY =
+  "revoke individual tokens with revokeResourceQurl(resourceId, qurlId)";
+
 const RESOURCE_ID_PATH_OPTIONS: PathIdValidationOptions = {
   // Today's resource forms (P-256 SPKI, CRID, and legacy r_) cannot collide
-  // with lowercase `at_`. This is credential-leak defense in depth, not a
-  // general resource-ID grammar; revisit if the service changes token format.
+  // with lowercase `at_` because they have fixed structural prefixes. This is
+  // credential-leak defense in depth, not a general resource-ID grammar;
+  // revisit if credential formats change or resource keys lose those prefixes.
   rejectBareAccessToken: true,
   accessTokenRecovery: "pass a resource ID returned by the API",
 };
@@ -820,7 +824,10 @@ const QURL_ID_PATH_OPTIONS: PathIdValidationOptions = {
 
 const DELETE_QURL_RESOURCE_ID_PATH_OPTIONS: PathIdValidationOptions = {
   rejectBareAccessToken: true,
-  accessTokenRecovery: "revoke individual tokens with revokeResourceQurl(resourceId, qurlId)",
+  accessTokenRecovery: REVOKE_INDIVIDUAL_QURL_RECOVERY,
+  // Current resource IDs have fixed public-key/CRID/r_ prefixes, so q_ is an
+  // unambiguous display-ID mix-up. Revisit if resource keys become arbitrary
+  // base64url strings, whose alphabet could legitimately start with q_.
   rejectQurlDisplayId: true,
 };
 
@@ -860,14 +867,18 @@ function requireNonEmptyId(
   const decodedIds = decodedPathIdForms(id);
   // URL resolvers and intermediaries can normalize raw or pre-encoded dot
   // segments before routing. Reject every decoded form we inspected so an
-  // item operation cannot be retargeted to a collection endpoint.
+  // item operation cannot be retargeted to a collection endpoint. Embedded
+  // `a/../b` remains an opaque single segment because the later URL builder
+  // percent-encodes its slash.
   if (decodedIds.some((value) => value === "." || value === "..")) {
     throw clientValidationError(`${method}: ${field} is an invalid URL path segment`);
   }
-  // qURL access tokens are credentials. A token after a URL/query delimiter
-  // is structurally a credential in every namespace. Bare `at_...` values are
-  // rejected only for resource/qURL identifiers so this guard does not assert
-  // grammar over unrelated domain, session, webhook, or API-key IDs.
+  // Classify URL-shaped input before applying the credential heuristic. A path
+  // such as `/at_a_glance` is ordinary URL text, while fragment/query/header
+  // delimiters and pasted `Bearer at_...` / `token:at_...` forms are strong
+  // credential signals. Bare `at_...` values are rejected only for
+  // resource/qURL identifiers so unrelated identifier namespaces stay opaque.
+  const containsUrl = decodedIds.some((value) => /^https?:\/\//i.test(value));
   const containsAccessToken = decodedIds.some(
     (value) =>
       PATH_EMBEDDED_ACCESS_TOKEN_RE.test(value) ||
@@ -881,12 +892,12 @@ function requireNonEmptyId(
   // A full target/qURL is a common argument mix-up, but it is distinct from
   // passing an access-token credential. Diagnose it accurately without
   // echoing the URL, which may itself contain sensitive query parameters.
-  if (decodedIds.some((value) => /^https?:\/\//i.test(value))) {
+  if (containsUrl) {
     throw clientValidationError(`${method}: ${field} must be an identifier, not a URL`);
   }
   if (options.rejectQurlDisplayId === true && decodedIds.some((value) => /^q_/i.test(value))) {
     throw clientValidationError(
-      `${method}: ${field} must not be a qURL display ID; revoke individual tokens with revokeResourceQurl(resourceId, qurlId)`,
+      `${method}: ${field} must not be a qURL display ID; ${REVOKE_INDIVIDUAL_QURL_RECOVERY}`,
     );
   }
 }

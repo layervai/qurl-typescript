@@ -79,6 +79,7 @@ handle (no API call is made until you mint):
 
 ```typescript
 // Persist and reuse the opaque resource_id returned by the API.
+const storedResourceId = await resourceIdStore.get('prod-dashboard');
 const resource = client.resourceById(storedResourceId);
 const portal = await resource.createPortal({ validFor: '1h' });
 ```
