@@ -782,6 +782,9 @@ function pageFromMeta<T extends Record<string, unknown>>(
   };
 }
 
+// Best-effort defence-in-depth against today's access-token grammar. The
+// service remains authoritative because resource IDs and credentials are both
+// opaque and future credential formats may not retain the `at_` prefix.
 const PATH_EMBEDDED_ACCESS_TOKEN_RE = /[/?&#=]at_/;
 const MAX_PATH_ID_DECODE_PASSES = 3;
 
@@ -805,6 +808,11 @@ const RESOURCE_OR_QURL_ID_PATH_OPTIONS: PathIdValidationOptions = {
 const QURL_ID_PATH_OPTIONS: PathIdValidationOptions = {
   rejectBareAccessToken: true,
   accessTokenRecovery: "pass the qURL display ID, not its access token",
+};
+
+const DELETE_QURL_RESOURCE_ID_PATH_OPTIONS: PathIdValidationOptions = {
+  rejectBareAccessToken: true,
+  accessTokenRecovery: "revoke individual tokens with revokeResourceQurl(resourceId, qurlId)",
 };
 
 /**
@@ -2441,14 +2449,20 @@ export class QURLClient {
    * by the API. The service owns identifier grammar so the SDK remains
    * compatible when public resource identifiers evolve.
    *
+   * qURL display IDs are rejected because this legacy endpoint deletes the
+   * whole parent resource; use {@link revokeResourceQurl} for one qURL.
+   *
    * @throws {ValidationError} If `id` is blank, padded with whitespace, a URL
-   * dot segment, URL-shaped, or contains a qURL access-token credential.
+   * dot segment, qURL display ID, URL-shaped, or contains a qURL access-token
+   * credential.
    */
   async delete(id: string): Promise<void> {
-    requireNonEmptyId(id, "delete", "id", {
-      rejectBareAccessToken: true,
-      accessTokenRecovery: "revoke individual tokens with revokeResourceQurl(resourceId, qurlId)",
-    });
+    requireNonEmptyId(id, "delete", "id", DELETE_QURL_RESOURCE_ID_PATH_OPTIONS);
+    if (id.startsWith("q_")) {
+      throw clientValidationError(
+        "delete: id must not be a qURL display ID; revoke individual tokens with revokeResourceQurl(resourceId, qurlId)",
+      );
+    }
     await this.rawRequest("DELETE", `/v1/qurls/${encodeURIComponent(id)}`);
   }
 
@@ -2854,7 +2868,7 @@ export class QURLClient {
   /** Terminate a specific resource session. */
   async terminateResourceSession(id: string, sessionId: string): Promise<void> {
     requireNonEmptyId(id, "terminateResourceSession", "id", RESOURCE_ID_PATH_OPTIONS);
-    requireNonEmptyId(sessionId, "terminateResourceSession");
+    requireNonEmptyId(sessionId, "terminateResourceSession", "session id");
     await this.rawRequest(
       "DELETE",
       `/v1/resources/${encodeURIComponent(id)}/sessions/${encodeURIComponent(sessionId)}`,
