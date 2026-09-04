@@ -1212,6 +1212,9 @@ async function parseConnectorResource(
   if (resource.crid !== undefined && (typeof resource.crid !== "string" || resource.crid === "")) {
     throw unexpectedResponseError(`${method}: response has invalid crid`);
   }
+  // Match qurl-go: ConnectorResource carries an optional producer CRID
+  // verbatim. Consumers that possess a trusted delivered key can verify the
+  // binding separately; this management-plane row is not itself a trust root.
   if (
     resource.desired_state !== undefined &&
     resource.desired_state !== "on" &&

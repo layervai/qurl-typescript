@@ -2116,13 +2116,19 @@ describe("QURLClient", () => {
       body: { error: { status: 503, code: "service_unavailable", title: "Unavailable" } },
     });
 
-    await expect(
-      createClient(fetch).ensureConnectorResource("prod-dashboard"),
-    ).rejects.toMatchObject({
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch,
+      maxRetries: 3,
+    });
+
+    await expect(client.ensureConnectorResource("prod-dashboard")).rejects.toMatchObject({
       constructor: ConnectorResourceOutcomeUnknownError,
       status: 0,
       cause: { constructor: ServerError, code: "service_unavailable", status: 503 },
     });
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   it("marks a connector ensure transport failure as outcome-unknown", async () => {
@@ -2366,6 +2372,9 @@ describe("QURLClient", () => {
     ["missing routing ID", { connector_routing_id: undefined }],
     ["cross-wired admission ID", { knock_resource_id: CONNECTOR_ROUTING_ID }],
     ["resource identity reused as admission ID", { knock_resource_id: CONNECTOR_RESOURCE_ID }],
+    ["padded admission ID", { knock_resource_id: " asp-resource-1 " }],
+    ["control character in admission ID", { knock_resource_id: "asp\u0000resource" }],
+    ["non-canonical routing ID", { connector_routing_id: `${CONNECTOR_ROUTING_ID.slice(0, -1)}b` }],
     [
       "canonical base64url resource ID that is not a P-256 key",
       { resource_id: NON_P256_CONNECTOR_RESOURCE_ID },
@@ -2523,7 +2532,7 @@ describe("QURLClient", () => {
     },
   );
 
-  it("rejects a non-canonical connector resource ID before fetch", async () => {
+  it("rejects a connector resource ID whose DER is not a P-256 key before fetch", async () => {
     const fetch = mockFetch({ status: 200, body: { data: {} } });
     const client = createClient(fetch);
 
@@ -2531,6 +2540,34 @@ describe("QURLClient", () => {
       client.getConnectorResource(`A${CONNECTOR_RESOURCE_ID.slice(1)}`),
     ).rejects.toBeInstanceOf(ValidationError);
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("rejects a non-canonical connector resource ID spelling before fetch", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+    const nonCanonical = `${CONNECTOR_RESOURCE_ID.slice(0, -1)}B`;
+
+    await expect(client.getConnectorResource(nonCanonical)).rejects.toBeInstanceOf(ValidationError);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      "getConnectorResource",
+      (client: QURLClient) => client.getConnectorResource(CONNECTOR_RESOURCE_ID),
+      { data: { resource: connectorResourceData() } },
+    ],
+    [
+      "getConnectorResourceBySlug",
+      (client: QURLClient) => client.getConnectorResourceBySlug("prod-dashboard"),
+      { data: [connectorResourceData()] },
+    ],
+  ])("%s requires exact HTTP 200", async (_name, call, body) => {
+    const fetch = mockFetch({ status: 201, body });
+
+    await expect(call(createClient(fetch))).rejects.toMatchObject({
+      code: ERROR_CODE_UNEXPECTED_RESPONSE,
+    });
   });
 
   it("rejects a non-canonical connector resource ID before delete fetch", async () => {
