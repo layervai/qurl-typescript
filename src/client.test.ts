@@ -2108,7 +2108,10 @@ describe("QURLClient", () => {
       .catch((caught: unknown) => caught as QURLError);
 
     expect(error).not.toBeInstanceOf(ConnectorResourceOutcomeUnknownError);
-    expect(error).toMatchObject({ code: ERROR_CODE_UNEXPECTED_RESPONSE });
+    expect(error).toMatchObject({
+      code: ERROR_CODE_UNEXPECTED_RESPONSE,
+      detail: expect.stringContaining("reconcile by slug before retrying"),
+    });
   });
 
   it("marks a connector ensure 5xx as outcome-unknown without hiding the server error", async () => {
@@ -2276,6 +2279,30 @@ describe("QURLClient", () => {
     ).rejects.toMatchObject({ code: ERROR_CODE_UNEXPECTED_RESPONSE });
   });
 
+  it.each([
+    [
+      "getConnectorResource",
+      (client: QURLClient) => client.getConnectorResource(CONNECTOR_RESOURCE_ID),
+    ],
+    [
+      "deleteConnectorResource",
+      (client: QURLClient) => client.deleteConnectorResource(CONNECTOR_RESOURCE_ID),
+    ],
+  ] as const)("preflights SubtleCrypto before %s can dispatch", async (_method, invoke) => {
+    const fetch = mockFetch({ status: 200, body: { data: { resource: connectorResourceData() } } });
+    vi.stubGlobal("crypto", undefined);
+    try {
+      await expect(invoke(createClient(fetch))).rejects.toMatchObject({
+        constructor: RuntimeError,
+        code: ERROR_CODE_RUNTIME,
+        detail: expect.stringContaining(`${_method}: requires the Web Crypto SubtleCrypto API`),
+      });
+      expect(fetch).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("imports a prevalidated by-ID connector resource key only once", async () => {
     const fetch = mockFetch({
       status: 200,
@@ -2338,6 +2365,28 @@ describe("QURLClient", () => {
     await expect(
       createClient(fetch).getConnectorResourceBySlug("prod-dashboard"),
     ).rejects.toMatchObject({ code: ERROR_CODE_UNEXPECTED_RESPONSE });
+  });
+
+  it("fails closed when a connector slug lookup returns a next cursor", async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: { data: [connectorResourceData()], meta: { next_cursor: "next-page" } },
+    });
+
+    await expect(
+      createClient(fetch).getConnectorResourceBySlug("prod-dashboard"),
+    ).rejects.toMatchObject({ code: ERROR_CODE_UNEXPECTED_RESPONSE });
+  });
+
+  it("treats a null next cursor as terminal pagination metadata", async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: { data: [connectorResourceData()], meta: { next_cursor: null } },
+    });
+
+    await expect(
+      createClient(fetch).getConnectorResourceBySlug("prod-dashboard"),
+    ).resolves.toBeInstanceOf(ConnectorResource);
   });
 
   it("preflights SubtleCrypto before connector slug lookup can dispatch", async () => {
@@ -2574,24 +2623,29 @@ describe("QURLClient", () => {
     ).rejects.toMatchObject({ code: ERROR_CODE_CONNECTOR_RESOURCE_REVOKED });
   });
 
-  it("validates a revoked by-ID row before lifecycle classification, matching qurl-go", async () => {
-    const fetch = mockFetch({
-      status: 200,
-      body: {
-        data: {
-          resource: connectorResourceData({
-            status: "revoked",
-            connector_routing_id: undefined,
-            knock_resource_id: undefined,
-          }),
+  it.each([
+    [
+      "missing routing and admission IDs",
+      { connector_routing_id: undefined, knock_resource_id: undefined },
+    ],
+    ["invalid CRID", { crid: 42 }],
+    ["invalid desired state", { desired_state: "paused" }],
+    ["invalid serving epoch", { serving_epoch: -1 }],
+  ])(
+    "validates a revoked by-ID row with %s before lifecycle classification",
+    async (_name, overrides) => {
+      const fetch = mockFetch({
+        status: 200,
+        body: {
+          data: { resource: connectorResourceData({ status: "revoked", ...overrides }) },
         },
-      },
-    });
+      });
 
-    await expect(
-      createClient(fetch).getConnectorResource(CONNECTOR_RESOURCE_ID),
-    ).rejects.toMatchObject({ code: ERROR_CODE_UNEXPECTED_RESPONSE });
-  });
+      await expect(
+        createClient(fetch).getConnectorResource(CONNECTOR_RESOURCE_ID),
+      ).rejects.toMatchObject({ code: ERROR_CODE_UNEXPECTED_RESPONSE });
+    },
+  );
 
   it("rejects direct ConnectorResource construction outside validated client responses", () => {
     const client = createClient(mockFetch({ status: 200 }));

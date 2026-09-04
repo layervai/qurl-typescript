@@ -1190,22 +1190,6 @@ async function parseConnectorResource(
     // could not create or update.
     throw unexpectedResponseError(`${method}: response has invalid alias`);
   }
-  if (resource.status === "revoked") {
-    if (expectation.revokedIsLifecycleError !== true) {
-      throw unexpectedResponseError(
-        `${method}: active-only operation returned a revoked connector resource`,
-      );
-    }
-    throw new QURLError({
-      status: 0,
-      code: ERROR_CODE_CONNECTOR_RESOURCE_REVOKED,
-      title: "Connector Resource Revoked",
-      detail: `${method}: qURL Connector resource is revoked`,
-    });
-  }
-  if (resource.status !== "active") {
-    throw unexpectedResponseError(`${method}: response has invalid resource status`);
-  }
   if (resource.crid !== undefined && (typeof resource.crid !== "string" || resource.crid === "")) {
     throw unexpectedResponseError(`${method}: response has invalid crid`);
   }
@@ -1226,6 +1210,22 @@ async function parseConnectorResource(
       resource.serving_epoch < 0)
   ) {
     throw unexpectedResponseError(`${method}: response has invalid serving_epoch`);
+  }
+  if (resource.status === "revoked") {
+    if (expectation.revokedIsLifecycleError !== true) {
+      throw unexpectedResponseError(
+        `${method}: active-only operation returned a revoked connector resource`,
+      );
+    }
+    throw new QURLError({
+      status: 0,
+      code: ERROR_CODE_CONNECTOR_RESOURCE_REVOKED,
+      title: "Connector Resource Revoked",
+      detail: `${method}: qURL Connector resource is revoked`,
+    });
+  }
+  if (resource.status !== "active") {
+    throw unexpectedResponseError(`${method}: response has invalid resource status`);
   }
   return new ConnectorResource(client, resource, CONNECTOR_RESOURCE_CONSTRUCTOR_TOKEN);
 }
@@ -2447,7 +2447,7 @@ export class QURLClient {
       ?.found_existing;
     if (typeof foundExisting !== "boolean") {
       throw unexpectedResponseError(
-        "ensureConnectorResource: response is missing meta.found_existing",
+        "ensureConnectorResource: response is missing meta.found_existing; the validated resource exists, so reconcile by slug before retrying",
       );
     }
     return { resource, foundExisting };
@@ -2455,6 +2455,7 @@ export class QURLClient {
 
   /** Fetch a qURL Connector resource by its immutable public resource ID. */
   async getConnectorResource(resourceId: string): Promise<ConnectorResource> {
+    requireConnectorSubtleCrypto("getConnectorResource");
     await requireConnectorResourceId(resourceId, "getConnectorResource");
     const { data, __http_status } = await this.rawRequest<ResourceDetail>(
       "GET",
@@ -2493,16 +2494,16 @@ export class QURLClient {
         "getConnectorResourceBySlug: response has missing or invalid data",
       );
     }
-    if (meta?.has_more === true || meta?.next_cursor !== undefined) {
+    if (meta?.has_more === true || (meta?.next_cursor !== undefined && meta.next_cursor !== null)) {
       throw unexpectedResponseError(
         "getConnectorResourceBySlug: point lookup unexpectedly returned pagination metadata",
       );
     }
     // The service query is intentionally slug-only because qurl-service
     // rejects slug+status. Its status vocabulary is closed to active/revoked.
-    // Reject malformed/unknown rows before cardinality so they can never be
-    // misreported as "not found" or "ambiguous", then filter stale revoked
-    // rows defensively from this active-only lookup.
+    // Reject malformed row shapes and unknown lifecycle values before
+    // cardinality, then filter stale revoked rows defensively from this
+    // active-only lookup.
     for (const resource of data) {
       if (
         typeof resource !== "object" ||
@@ -2542,6 +2543,7 @@ export class QURLClient {
    * outcome-unknown failure, reconcile by ID before issuing a deliberate retry.
    */
   async deleteConnectorResource(resourceId: string): Promise<void> {
+    requireConnectorSubtleCrypto("deleteConnectorResource");
     await requireConnectorResourceId(resourceId, "deleteConnectorResource");
     try {
       await this.requestNoContent(`/v1/resources/${encodeURIComponent(resourceId)}`);
