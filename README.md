@@ -238,7 +238,11 @@ same key for up to 24 hours; after that window the plaintext is unrecoverable.
 `binding.replayed` is `true` when the service signals a replay using either its
 current `X-Idempotency-Replayed` header or the spec-declared
 `Idempotency-Replayed` header. `binding.location` contains the response
-`Location` header when available.
+`Location` header when available. The service returns exact HTTP 201 with a
+top-level binding object for both fresh creates and replays. If the SDK rejects
+a successful response because that status or shape drifted, retry with the same
+key and byte-identical body within the 24-hour window to recover the one-time
+key.
 
 Conflict handling is code-specific even though both outcomes use HTTP 409:
 

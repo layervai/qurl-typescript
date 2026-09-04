@@ -1505,6 +1505,14 @@ function validateApiKeyWriteFields(
 }
 
 const EXTERNAL_IDENTITY_PROVIDERS = new Set(["slack", "discord", "teams"]);
+const EXTERNAL_IDENTITY_BINDING_RECOVERY_HINT =
+  "retry with the same idempotency key and identical body within 24 hours to recover the one-time key";
+
+function requireMaxUtf8Bytes(value: string, field: string, max: number): void {
+  if (TEXT_ENCODER.encode(value).byteLength > max) {
+    throw clientValidationError(`${field} must be at most ${max} UTF-8 bytes`);
+  }
+}
 
 function buildExternalIdentityBindingInput(
   input: CreateExternalIdentityBindingInput,
@@ -1523,11 +1531,13 @@ function buildExternalIdentityBindingInput(
     );
   }
   requireNonEmptyStringField(normalized, "external_id", "createExternalIdentityBinding");
-  requireMaxLength(
+  requireMaxUtf8Bytes(
     normalized.external_id as string,
     "createExternalIdentityBinding: external_id",
     MAX_BINDING_EXTERNAL_ID,
   );
+  // qurl-service reserves `#` as its persisted provider/id key separator and
+  // rejects it before binding, even though the provider ID is otherwise opaque.
   if ((normalized.external_id as string).includes("#")) {
     throw clientValidationError("createExternalIdentityBinding: external_id must not contain #");
   }
@@ -1536,11 +1546,13 @@ function buildExternalIdentityBindingInput(
       "createExternalIdentityBinding: display_name must be a string when provided",
     );
   }
-  requireMaxLength(
-    normalized.display_name as string | undefined,
-    "createExternalIdentityBinding: display_name",
-    MAX_BINDING_DISPLAY_NAME,
-  );
+  if (normalized.display_name !== undefined) {
+    requireMaxUtf8Bytes(
+      normalized.display_name as string,
+      "createExternalIdentityBinding: display_name",
+      MAX_BINDING_DISPLAY_NAME,
+    );
+  }
   return normalized as unknown as CreateExternalIdentityBindingInput;
 }
 
@@ -1572,7 +1584,10 @@ function parseExternalIdentityBindingResponse(
     // Deliberately include field names and expected shapes only. The response
     // contains one-time plaintext API key material that must never enter an
     // exception string or observability pipeline.
-    throw unexpectedResponseError(`createExternalIdentityBinding: ${reason}`, requestId);
+    throw unexpectedResponseError(
+      `createExternalIdentityBinding: ${reason}; ${EXTERNAL_IDENTITY_BINDING_RECOVERY_HINT}`,
+      requestId,
+    );
   };
   if (typeof data !== "object" || data === null || Array.isArray(data)) {
     return fail("response data must be an object");
@@ -1628,13 +1643,15 @@ function parseExternalIdentityBindingResponse(
     binding_id: binding.binding_id,
     provider: binding.provider as CreateExternalIdentityBindingOutput["provider"],
     external_id: binding.external_id,
+    // display_name is non-authoritative presentation metadata; unlike the
+    // security-relevant provider/external_id pair, it need not echo exactly.
     display_name: binding.display_name as string | undefined,
     api_key: {
       key_id: apiKey.key_id,
       key_prefix: apiKey.key_prefix,
       plaintext: apiKey.plaintext,
     },
-    scopes: binding.scopes as string[],
+    scopes: binding.scopes as CreateExternalIdentityBindingOutput["scopes"],
     created_at: binding.created_at,
     location: headers?.get("Location") || undefined,
     // qurl-service currently emits the X- spelling; the spec spelling is
@@ -3585,9 +3602,18 @@ export class QURLClient {
       // qurl-service returns 201 for both a fresh create and an idempotency
       // replay; replay state is carried by the response header, not status.
       throw unexpectedResponseError(
-        `createExternalIdentityBinding: expected HTTP 201 response (got HTTP ${envelope.__http_status ?? "unknown"})`,
+        `createExternalIdentityBinding: expected HTTP 201 response (got HTTP ${envelope.__http_status ?? "unknown"}); ${EXTERNAL_IDENTITY_BINDING_RECOVERY_HINT}`,
         requestId,
       );
+    }
+    const responseHeaders = envelope.__response_headers;
+    if (
+      !responseHeaders?.has("Idempotency-Replayed") &&
+      !responseHeaders?.has("X-Idempotency-Replayed")
+    ) {
+      this.log("createExternalIdentityBinding: response omitted optional replay header", {
+        request_id: requestId,
+      });
     }
     return parseExternalIdentityBindingResponse(
       // Unlike the API's common `{ data, meta }` envelope, this endpoint's
@@ -3595,7 +3621,7 @@ export class QURLClient {
       // the top level. rawRequest still injects status/header metadata onto
       // that parsed object, so validate the object itself here.
       envelope,
-      envelope.__response_headers,
+      responseHeaders,
       body,
       requestId,
     );

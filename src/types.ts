@@ -861,7 +861,7 @@ export interface CreateExternalIdentityBindingOutput {
   external_id: string;
   display_name?: string;
   api_key: ExternalIdentityBindingApiKey;
-  scopes: string[];
+  scopes: ApiKeyScope[];
   created_at: string;
   /** Resource location returned by the API, when the response header is available. */
   location?: string;

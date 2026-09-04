@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
+import { inspect } from "node:util";
 import { QURLClient } from "./client.js";
 import {
   AuthenticationError,
@@ -8760,6 +8761,55 @@ describe("createExternalIdentityBinding", () => {
       location: undefined,
       replayed: false,
     });
+    expect(JSON.parse(vi.mocked(fetch).mock.calls[0][1]?.body as string)).toEqual({
+      provider: "teams",
+      external_id: "tenant-obviously-fake",
+    });
+  });
+
+  it("fails closed on a standard data envelope and preserves replay recovery guidance", async () => {
+    const fetch = mockFetch({
+      status: 201,
+      body: { data: externalIdentityBindingData(), meta: { request_id: "req_binding_1" } },
+    });
+
+    const error = await createClient(fetch)
+      .createExternalIdentityBinding(
+        { provider: "teams", external_id: "tenant-obviously-fake" },
+        { idempotencyKey: BINDING_IDEMPOTENCY_KEY },
+      )
+      .catch((caught: unknown) => caught as QURLError);
+
+    expect(error).toMatchObject({ code: ERROR_CODE_UNEXPECTED_RESPONSE });
+    expect(error.detail).toContain("retry with the same idempotency key and identical body");
+    expect(inspect(error, { depth: null })).not.toContain(BINDING_PLAINTEXT);
+  });
+
+  it("logs a safe diagnostic when the optional replay header is absent", async () => {
+    const debug = vi.fn();
+    const fetch = mockFetch({
+      status: 201,
+      headers: { "X-Request-Id": "req_binding_missing_replay" },
+      body: externalIdentityBindingData(),
+    });
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch,
+      maxRetries: 0,
+      debug,
+    });
+
+    await client.createExternalIdentityBinding(
+      { provider: "teams", external_id: "tenant-obviously-fake" },
+      { idempotencyKey: BINDING_IDEMPOTENCY_KEY },
+    );
+
+    expect(debug).toHaveBeenCalledWith(
+      "createExternalIdentityBinding: response omitted optional replay header",
+      expect.objectContaining({ request_id: expect.any(String) }),
+    );
+    expect(inspect(debug.mock.calls, { depth: null })).not.toContain(BINDING_PLAINTEXT);
   });
 
   it("preserves an opaque external ID byte-for-byte, including case and surrounding spaces", async () => {
@@ -8955,6 +9005,10 @@ describe("createExternalIdentityBinding", () => {
       input: { provider: "teams", external_id: "x".repeat(257) },
     },
     {
+      name: "external ID over the service UTF-8 byte limit",
+      input: { provider: "teams", external_id: "🦄".repeat(65) },
+    },
+    {
       name: "non-string display name",
       input: { provider: "teams", external_id: "tenant-obviously-fake", display_name: 42 },
     },
@@ -8964,6 +9018,14 @@ describe("createExternalIdentityBinding", () => {
         provider: "teams",
         external_id: "tenant-obviously-fake",
         display_name: "x".repeat(101),
+      },
+    },
+    {
+      name: "display name over the service UTF-8 byte limit",
+      input: {
+        provider: "teams",
+        external_id: "tenant-obviously-fake",
+        display_name: "🦄".repeat(26),
       },
     },
   ])("rejects $name before sending", async ({ input }) => {
@@ -8997,6 +9059,8 @@ describe("createExternalIdentityBinding", () => {
 
     expect(error).toMatchObject({ code: ERROR_CODE_UNEXPECTED_RESPONSE, status: 0 });
     expect(String(error)).not.toContain(BINDING_PLAINTEXT);
+    expect(inspect(error, { depth: null })).not.toContain(BINDING_PLAINTEXT);
+    expect(error.detail).toContain("retry with the same idempotency key and identical body");
     expect(debugOutput.join("\n")).not.toContain(BINDING_PLAINTEXT);
   });
 
@@ -9025,6 +9089,7 @@ describe("createExternalIdentityBinding", () => {
 
     expect(caught).toBeInstanceOf(ValidationError);
     expect(String(caught)).not.toContain(BINDING_PLAINTEXT);
+    expect(inspect(caught, { depth: null })).not.toContain(BINDING_PLAINTEXT);
     expect(debugOutput.join("\n")).not.toContain(BINDING_PLAINTEXT);
   });
 
