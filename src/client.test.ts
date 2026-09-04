@@ -2136,7 +2136,11 @@ describe("QURLClient", () => {
       maxRetries: 3,
     });
 
-    await expect(client.ensureConnectorResource("prod-dashboard")).rejects.toMatchObject({
+    await expect(
+      client.ensureConnectorResource("prod-dashboard", {
+        idempotencyKey: "connector-ensure-job-503",
+      }),
+    ).rejects.toMatchObject({
       constructor: ConnectorResourceOutcomeUnknownError,
       status: 0,
       cause: { constructor: ServerError, code: "service_unavailable", status: 503 },
@@ -2658,6 +2662,17 @@ describe("QURLClient", () => {
     await expect(
       createClient(fetch).getConnectorResource(CONNECTOR_RESOURCE_ID),
     ).rejects.toMatchObject({ code: ERROR_CODE_CONNECTOR_RESOURCE_REVOKED });
+  });
+
+  it("fails closed on an unknown by-ID lifecycle status", async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: { data: { resource: connectorResourceData({ status: "pending" }) } },
+    });
+
+    await expect(
+      createClient(fetch).getConnectorResource(CONNECTOR_RESOURCE_ID),
+    ).rejects.toMatchObject({ code: ERROR_CODE_UNEXPECTED_RESPONSE });
   });
 
   it.each([

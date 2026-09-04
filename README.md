@@ -89,6 +89,13 @@ lookup, but this is a breaking change from its retired alias-based behavior.
 `ConnectorResource` instances cannot be constructed directly; the client
 returns them only after validating the complete response contract.
 
+These Connector-specific methods require qurl-service at or after
+`047cf31e1cdf545e3060e0f9294d738a19fb997b`, with canonical public resource,
+connector-routing, and NHP admission IDs present on every tunnel row. Publish
+this SDK only after that contract is deployed; older responses carrying legacy
+`r_...` resource IDs or missing routing/admission fields are intentionally
+rejected rather than interpreted loosely.
+
 `ensureConnectorResource` and `deleteConnectorResource` throw
 `ConnectorResourceOutcomeUnknownError` when a dispatched mutation may have
 committed but its response cannot prove the result. Reconcile by immutable slug

@@ -1081,20 +1081,7 @@ async function isValidConnectorResourceId(value: string): Promise<boolean> {
       "qURL Connector resource validation requires the Web Crypto SubtleCrypto API",
     );
   }
-  try {
-    const keyData = new ArrayBuffer(der.byteLength);
-    new Uint8Array(keyData).set(der);
-    await globalThis.crypto.subtle.importKey(
-      "spki",
-      keyData,
-      { name: "ECDSA", namedCurve: "P-256" },
-      false,
-      ["verify"],
-    );
-    return true;
-  } catch {
-    return false;
-  }
+  return importsAsConnectorPublicKey(der);
 }
 
 function requireConnectorSubtleCrypto(method: string): void {
@@ -1111,6 +1098,14 @@ async function requireConnectorResourceId(resourceId: string, method: string): P
     );
   }
   requireConnectorSubtleCrypto(method);
+  if (!(await importsAsConnectorPublicKey(der))) {
+    throw clientValidationError(
+      `${method}: resource id must be a canonical unpadded base64url P-256 DER SPKI public key`,
+    );
+  }
+}
+
+async function importsAsConnectorPublicKey(der: Uint8Array): Promise<boolean> {
   try {
     const keyData = new ArrayBuffer(der.byteLength);
     new Uint8Array(keyData).set(der);
@@ -1121,10 +1116,9 @@ async function requireConnectorResourceId(resourceId: string, method: string): P
       false,
       ["verify"],
     );
+    return true;
   } catch {
-    throw clientValidationError(
-      `${method}: resource id must be a canonical unpadded base64url P-256 DER SPKI public key`,
-    );
+    return false;
   }
 }
 
