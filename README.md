@@ -320,7 +320,7 @@ The client retries only requests whose replay contract is explicit:
 - **GET**: Retries on 429, 502, 503, 504 and fetch-level failures
 - **POST/PATCH**: Retries status responses only on 429
 - **POST/PATCH network errors**: Retried with the `Idempotency-Key` generated on the first attempt
-- **DELETE**: Never replayed automatically. Individual revoke can return 409 on repeat, and resource deletion may require lifecycle reconciliation after a lost response; the HTTP verb alone does not prove a retry safe.
+- **DELETE**: Never replayed automatically, including on 429. Individual revoke can return 409 on repeat, resource deletion may require lifecycle reconciliation after a lost response, and a custom gateway status alone cannot prove the handler never ran. This matches qurl-go's explicit-caller-retry model.
 - **`Retry-After` header**: Honored on 429 and 503 responses (RFC 7231 §7.1.3). Currently the SDK only parses **delta-seconds** values (e.g. `Retry-After: 30`); HTTP-date values (`Retry-After: Wed, 21 Oct 2026 07:28:00 GMT`) silently fall back to exponential backoff. Tracked in [#61](https://github.com/layervai/qurl-typescript/issues/61).
 - **Response failures**: Redirects and oversized bodies are not retried. Retryable status codes remain retryable when an intermediary returns HTML, an empty body, a mid-stream read failure, or another non-envelope error response.
 
@@ -350,7 +350,7 @@ SDK-generated keys require `globalThis.crypto.getRandomValues`, which is availab
 
 - Treat API keys and qURL links like credentials. Do not log them.
 - SDK API requests use manual redirect handling. Redirect-capable HTTP statuses
-  (300, 301, 302, 303, 305, 307, 308) and browser `opaqueredirect` responses are rejected as
+  (300, 301, 302, 303, 305, 307, 308), browser `opaqueredirect` responses, and responses a custom fetch reports as already redirected are rejected as
   a typed `QURLError` (`code: "unexpected_response"`) without requesting the
   `Location` target, so `Authorization` and `Idempotency-Key` headers are never
   forwarded through redirects. A non-redirecting 304 is handled as an ordinary
@@ -360,8 +360,9 @@ SDK-generated keys require `globalThis.crypto.getRandomValues`, which is availab
   present and independently counts streamed bytes, so missing or inaccurate
   headers cannot bypass the limit. Bodies exactly at the limit are accepted.
   Oversized bodies fail with a typed, non-retryable error before JSON decoding.
-  Server-provided error title/detail snippets are normalized and capped at 512
-  UTF-8 bytes. Redirect/body-limit errors do not include `Location` values,
+  Server-provided error title/detail snippets have control characters removed,
+  are normalized to one line, and are capped at 512 UTF-8 bytes.
+  Redirect/body-limit errors do not include `Location` values,
   response-body snippets, or request credentials in SDK errors or debug logs.
 - Prefer short portal lifetimes such as `validFor: '5m'`.
 - Do not ask portal recipients to handle credentials. Recipients only need

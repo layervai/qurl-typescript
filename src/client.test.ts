@@ -3620,6 +3620,34 @@ describe("QURLClient", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
+  it("rejects a redirect already followed by a custom fetch implementation", async () => {
+    const fetch = vi.fn(
+      async () =>
+        ({
+          ok: true,
+          redirected: true,
+          status: 200,
+          statusText: "OK",
+          type: "basic",
+          headers: new Headers(),
+          body: null,
+        }) satisfies Partial<Response> as Response,
+    );
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 2,
+    });
+
+    const error = await client.getQuota().catch((caught: unknown) => caught as QURLError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error.code).toBe(ERROR_CODE_UNEXPECTED_RESPONSE);
+    expect(error.detail).toContain("followed redirect");
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
   it("does not mislabel HTTP 304 as a redirect", async () => {
     const fetch = vi.fn(
       async () => new Response(null, { status: 304, statusText: "Not Modified" }),
@@ -4288,6 +4316,35 @@ describe("QURLClient", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
+  it("rejects an oversized declared Content-Length before reading the body", async () => {
+    const getReader = vi.fn(() => {
+      throw new Error("body must not be read");
+    });
+    const cancel = vi.fn(async () => undefined);
+    const fetch = vi.fn(
+      async () =>
+        ({
+          ok: true,
+          redirected: false,
+          status: 200,
+          statusText: "OK",
+          type: "basic",
+          headers: new Headers({ "content-length": String(RESPONSE_BODY_LIMIT + 1) }),
+          body: { cancel, getReader },
+        }) satisfies Partial<Response> as Response,
+    );
+
+    await expect(
+      new QURLClient({
+        apiKey: "test-api-key",
+        baseUrl: "https://api.test.layerv.ai",
+        fetch: fetch as typeof globalThis.fetch,
+      }).getQuota(),
+    ).rejects.toMatchObject({ code: ERROR_CODE_UNEXPECTED_RESPONSE });
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(getReader).not.toHaveBeenCalled();
+  });
+
   it("parses success and error JSON bodies exactly at the response limit", async () => {
     const successBody = sizedJSON('{"data":{"padding":"', '"}}', RESPONSE_BODY_LIMIT);
     const successFetch = vi.fn(
@@ -4332,8 +4389,8 @@ describe("QURLClient", () => {
     expect(error.detail).not.toContain("byte limit");
   });
 
-  it("keeps structured API error snippets single-line, UTF-8-safe, and bounded", async () => {
-    const detail = `  ${"€".repeat(300)}\nresponse tail  `;
+  it("keeps structured API error snippets single-line, control-free, UTF-8-safe, and bounded", async () => {
+    const detail = `  ${"€".repeat(300)}\n\x00\x1b[2J\x85response tail  `;
     const fetch = mockFetch({
       status: 400,
       body: { error: { title: "Bad Request", code: "bad_request", detail } },
@@ -4344,6 +4401,7 @@ describe("QURLClient", () => {
 
     expect(error.detail.endsWith("...")).toBe(true);
     expect(error.detail).not.toContain("\n");
+    expect(error.detail).not.toMatch(/[\p{Cc}\p{Cf}]/u);
     expect(new TextEncoder().encode(error.detail.slice(0, -3)).byteLength).toBeLessThanOrEqual(512);
     expect(() =>
       new TextDecoder("utf-8", { fatal: true }).decode(new TextEncoder().encode(error.detail)),
@@ -5349,6 +5407,32 @@ describe("QURLClient", () => {
     await expect(client.delete("r_abc123def45")).rejects.toBeInstanceOf(ServerError);
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(callHeaders(fetch, 0)).not.toHaveProperty("Idempotency-Key");
+  });
+
+  it("does not replay DELETE after a 429 response", async () => {
+    // Match qurl-go's explicit-caller-retry model. A custom gateway can emit
+    // 429 after dispatch, so receiving the status alone is not proof that a
+    // destructive operation was never applied.
+    const fetch = mockFetch({
+      status: 429,
+      body: {
+        error: {
+          title: "Rate Limited",
+          status: 429,
+          detail: "Slow down",
+          code: "rate_limited",
+        },
+      },
+    });
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch,
+      maxRetries: 2,
+    });
+
+    await expect(client.delete("r_abc123def45")).rejects.toBeInstanceOf(RateLimitError);
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   it("does not replay DELETE after a fetch-level outcome-unknown failure", async () => {

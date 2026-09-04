@@ -678,7 +678,10 @@ function httpResponseContractError(response: Response, detail: string): Validati
  */
 function boundedErrorSnippet(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
-  const normalized = value.trim().replace(/\s+/g, " ");
+  const normalized = value
+    .replace(/[\p{Cc}\p{Cf}]/gu, " ")
+    .trim()
+    .replace(/\s+/g, " ");
   if (normalized === "") return undefined;
   const encoded = TEXT_ENCODER.encode(normalized);
   if (encoded.byteLength <= MAX_ERROR_SNIPPET_BYTES) return normalized;
@@ -3603,11 +3606,17 @@ export class QURLClient {
       // Redirects are deterministic protocol violations for SDK API calls.
       // Refuse them before reading Location or entering retry handling so
       // Authorization and Idempotency-Key can never reach a follow-up target.
-      if (REDIRECT_RESPONSE_STATUSES.has(response.status) || response.type === "opaqueredirect") {
+      if (
+        response.redirected === true ||
+        REDIRECT_RESPONSE_STATUSES.has(response.status) ||
+        response.type === "opaqueredirect"
+      ) {
         await cancelResponseBody(response.body);
-        const redirectKind = REDIRECT_RESPONSE_STATUSES.has(response.status)
-          ? `HTTP ${response.status}`
-          : "opaque browser";
+        const redirectKind = response.redirected
+          ? "followed"
+          : REDIRECT_RESPONSE_STATUSES.has(response.status)
+            ? `HTTP ${response.status}`
+            : "opaque browser";
         throw httpResponseContractError(
           response,
           `Refused ${redirectKind} redirect response for ${method} ${path}`,
@@ -3619,6 +3628,9 @@ export class QURLClient {
         responseBody = await readBoundedResponseBody(response);
       } catch (err) {
         if (err instanceof ResponseBodyTooLargeError) {
+          this.log(`rejected oversized response body from ${response.status}`, {
+            status: response.status,
+          });
           throw httpResponseContractError(
             response,
             `Response body exceeds ${MAX_RESPONSE_BODY_BYTES}-byte limit on HTTP ${response.status}`,
