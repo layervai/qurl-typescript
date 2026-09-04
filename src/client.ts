@@ -3579,14 +3579,14 @@ export class QURLClient {
       body,
       { requestOptions: options },
     );
+    const requestId =
+      envelope.meta?.request_id ?? envelope.__response_headers?.get("X-Request-Id") ?? undefined;
     if (envelope.__http_status !== 201) {
       throw unexpectedResponseError(
         `createExternalIdentityBinding: expected HTTP 201 response (got HTTP ${envelope.__http_status ?? "unknown"})`,
-        envelope.meta?.request_id ?? envelope.__response_headers?.get("X-Request-Id") ?? undefined,
+        requestId,
       );
     }
-    const requestId =
-      envelope.meta?.request_id ?? envelope.__response_headers?.get("X-Request-Id") ?? undefined;
     return parseExternalIdentityBindingResponse(
       // Unlike the API's common `{ data, meta }` envelope, this endpoint's
       // OpenAPI contract and qurl-service handler return the binding object at

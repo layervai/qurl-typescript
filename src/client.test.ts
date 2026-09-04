@@ -8747,6 +8747,41 @@ describe("createExternalIdentityBinding", () => {
     });
   });
 
+  it("preserves an opaque external ID byte-for-byte, including case and surrounding spaces", async () => {
+    const data = externalIdentityBindingData();
+    data.external_id = " Tenant-ID ";
+    const fetch = mockFetch({ status: 201, body: data });
+
+    const result = await createClient(fetch).createExternalIdentityBinding(
+      { provider: "teams", external_id: " Tenant-ID " },
+      { idempotencyKey: BINDING_IDEMPOTENCY_KEY },
+    );
+
+    expect(result.external_id).toBe(" Tenant-ID ");
+    expect(JSON.parse(vi.mocked(fetch).mock.calls[0][1]?.body as string)).toMatchObject({
+      external_id: " Tenant-ID ",
+    });
+  });
+
+  it.each([
+    ["case", "Tenant-ID", "tenant-id"],
+    ["trailing space", "tenant-id", "tenant-id "],
+  ])(
+    "fails closed when the response changes external ID %s",
+    async (_kind, requested, returned) => {
+      const data = externalIdentityBindingData();
+      data.external_id = returned;
+      const fetch = mockFetch({ status: 201, body: data });
+
+      await expect(
+        createClient(fetch).createExternalIdentityBinding(
+          { provider: "teams", external_id: requested },
+          { idempotencyKey: BINDING_IDEMPOTENCY_KEY },
+        ),
+      ).rejects.toMatchObject({ code: ERROR_CODE_UNEXPECTED_RESPONSE });
+    },
+  );
+
   it.each(["already_exists", "idempotency_conflict"])(
     "preserves the distinct 409 %s code",
     async (code) => {
@@ -8927,15 +8962,27 @@ describe("createExternalIdentityBinding", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("rejects a non-201 success status before parsing the top-level binding", async () => {
+  it("rejects a non-201 success without exposing one-time plaintext", async () => {
+    const debugOutput: string[] = [];
     const fetch = mockFetch({ status: 200, body: externalIdentityBindingData() });
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch,
+      maxRetries: 0,
+      debug: (message, details) => debugOutput.push(`${message} ${JSON.stringify(details ?? {})}`),
+    });
 
-    await expect(
-      createClient(fetch).createExternalIdentityBinding(
+    const error = await client
+      .createExternalIdentityBinding(
         { provider: "teams", external_id: "tenant-obviously-fake" },
         { idempotencyKey: BINDING_IDEMPOTENCY_KEY },
-      ),
-    ).rejects.toMatchObject({ code: ERROR_CODE_UNEXPECTED_RESPONSE, status: 0 });
+      )
+      .catch((caught: unknown) => caught as QURLError);
+
+    expect(error).toMatchObject({ code: ERROR_CODE_UNEXPECTED_RESPONSE, status: 0 });
+    expect(String(error)).not.toContain(BINDING_PLAINTEXT);
+    expect(debugOutput.join("\n")).not.toContain(BINDING_PLAINTEXT);
   });
 
   it("never includes one-time plaintext in validation errors or debug logs", async () => {
