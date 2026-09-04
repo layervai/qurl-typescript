@@ -1141,18 +1141,12 @@ async function parseConnectorResource(
   if (expectation.resourceId !== undefined && resource.resource_id !== expectation.resourceId) {
     throw unexpectedResponseError(`${method}: response resource_id does not match the request`);
   }
-  // A by-ID request already prevalidated its requested resource key and then
-  // matched this field byte-for-byte. Surface revocation before validating
-  // active-only routing fields, which may be removed during teardown.
-  if (resource.status === "revoked" && expectation.revokedIsLifecycleError === true) {
-    throw new QURLError({
-      status: 0,
-      code: ERROR_CODE_CONNECTOR_RESOURCE_REVOKED,
-      title: "Connector Resource Revoked",
-      detail: `${method}: qURL Connector resource is revoked`,
-    });
-  }
-  if (!(await isValidConnectorResourceId(resource.resource_id))) {
+  // A by-ID request already validated its requested resource key and matched
+  // this response byte-for-byte, so do not repeat the async key import.
+  if (
+    expectation.resourceId === undefined &&
+    !(await isValidConnectorResourceId(resource.resource_id))
+  ) {
     throw unexpectedResponseError(`${method}: response has missing or invalid resource_id`);
   }
   if (
@@ -1200,9 +1194,17 @@ async function parseConnectorResource(
     throw unexpectedResponseError(`${method}: response has invalid alias`);
   }
   if (resource.status === "revoked") {
-    throw unexpectedResponseError(
-      `${method}: active-only operation returned a revoked connector resource`,
-    );
+    if (expectation.revokedIsLifecycleError !== true) {
+      throw unexpectedResponseError(
+        `${method}: active-only operation returned a revoked connector resource`,
+      );
+    }
+    throw new QURLError({
+      status: 0,
+      code: ERROR_CODE_CONNECTOR_RESOURCE_REVOKED,
+      title: "Connector Resource Revoked",
+      detail: `${method}: qURL Connector resource is revoked`,
+    });
   }
   if (resource.status !== "active") {
     throw unexpectedResponseError(`${method}: response has invalid resource status`);
@@ -2468,6 +2470,9 @@ export class QURLClient {
   /** Fetch the single active qURL Connector resource for an immutable slug. */
   async getConnectorResourceBySlug(slug: string): Promise<ConnectorResource> {
     requireConnectorSlug(slug, "getConnectorResourceBySlug");
+    // Parsing validates the returned P-256 resource key; avoid dispatching a
+    // read that this runtime cannot safely consume.
+    requireConnectorSubtleCrypto("getConnectorResourceBySlug");
     // qurl-service's slug point lookup is intrinsically active-only. It also
     // rejects combining `slug` with `status`, so this query must stay slug-only.
     const { data, __http_status } = await this.rawRequest<Resource[]>(
@@ -2485,12 +2490,23 @@ export class QURLClient {
       );
     }
     // The service query is intentionally slug-only because qurl-service
-    // rejects slug+status. Filter defensively client-side so a stale/revoked
-    // row cannot make this active-only helper return or become ambiguous.
-    const active = data.filter(
-      (resource) =>
-        typeof resource !== "object" || resource === null || resource.status === "active",
-    );
+    // rejects slug+status. Its status vocabulary is closed to active/revoked.
+    // Reject malformed/unknown rows before cardinality so they can never be
+    // misreported as "not found" or "ambiguous", then filter stale revoked
+    // rows defensively from this active-only lookup.
+    for (const resource of data) {
+      if (
+        typeof resource !== "object" ||
+        resource === null ||
+        Array.isArray(resource) ||
+        (resource.status !== "active" && resource.status !== "revoked")
+      ) {
+        throw unexpectedResponseError(
+          "getConnectorResourceBySlug: response has invalid resource row",
+        );
+      }
+    }
+    const active = data.filter((resource) => resource.status === "active");
     if (active.length === 0) {
       throw new NotFoundError({
         status: 0,
