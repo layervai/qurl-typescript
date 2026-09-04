@@ -2079,9 +2079,9 @@ describe("QURLClient", () => {
     const error = await client.delete(displayId).catch((e: unknown) => e as ValidationError);
 
     expect(error).toBeInstanceOf(ValidationError);
-    expect(error.detail).toContain("qURL display ID");
-    expect(error.detail).toContain("revokeResourceQurl(resourceId, qurlId)");
-    expect(error.detail).not.toContain(displayId);
+    expect((error as ValidationError).detail).toContain("qURL display ID");
+    expect((error as ValidationError).detail).toContain("revokeResourceQurl(resourceId, qurlId)");
+    expect((error as ValidationError).detail).not.toContain(displayId);
     expect(fetch).not.toHaveBeenCalled();
   });
 
@@ -2196,11 +2196,25 @@ describe("QURLClient", () => {
     const error = await client.delete(encodedLink).catch((e: unknown) => e as ValidationError);
 
     expect(error).toBeInstanceOf(ValidationError);
-    expect(error.detail).toContain("access token");
-    expect(error.detail).not.toContain(encodedLink);
-    expect(error.detail).not.toContain(SENSITIVE_ACCESS_TOKEN);
+    expect((error as ValidationError).detail).toContain("access token");
+    expect((error as ValidationError).detail).not.toContain(encodedLink);
+    expect((error as ValidationError).detail).not.toContain(SENSITIVE_ACCESS_TOKEN);
     expect(fetch).not.toHaveBeenCalled();
   });
+
+  it.each(["%2e", "%2e%2e", "%252e", "%252e%252e"])(
+    "delete rejects the encoded URL dot-segment identifier %s",
+    async (resourceId) => {
+      const fetch = mockFetch({ status: 204 });
+      const client = createClient(fetch);
+
+      await expect(client.delete(resourceId)).rejects.toMatchObject({
+        code: ERROR_CODE_CLIENT_VALIDATION,
+        detail: expect.stringContaining("invalid URL path segment"),
+      });
+      expect(fetch).not.toHaveBeenCalled();
+    },
+  );
 
   it.each([".", ".."])("delete rejects the URL dot-segment identifier %s", async (resourceId) => {
     const fetch = mockFetch({ status: 204 });
@@ -2357,7 +2371,7 @@ describe("QURLClient", () => {
       .catch((e: unknown) => e as ValidationError);
 
     expect(error).toBeInstanceOf(ValidationError);
-    expect(error.detail).toContain("session id is required");
+    expect((error as ValidationError).detail).toContain("session id is required");
     expect(fetch).not.toHaveBeenCalled();
   });
 

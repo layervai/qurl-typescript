@@ -796,6 +796,9 @@ interface PathIdValidationOptions {
 }
 
 const RESOURCE_ID_PATH_OPTIONS: PathIdValidationOptions = {
+  // Today's resource forms (P-256 SPKI, CRID, and legacy r_) cannot collide
+  // with lowercase `at_`. This is credential-leak defense in depth, not a
+  // general resource-ID grammar; revisit if the service changes token format.
   rejectBareAccessToken: true,
   accessTokenRecovery: "pass a resource ID returned by the API",
 };
@@ -843,14 +846,12 @@ function requireNonEmptyId(
       `${method}: ${field} must not include leading or trailing whitespace`,
     );
   }
-  // URL resolves bare dot segments before fetch; leaving these through can
-  // retarget an item request to its collection endpoint.
-  if (id === "." || id === "..") {
-    throw clientValidationError(`${method}: ${field} is an invalid URL path segment`);
-  }
   // Probe repeatedly encoded input too. Callers sometimes pre-encode a copied
-  // link before passing it through a URL builder that encodes it again. Cap
-  // decoding so hostile input cannot turn validation into unbounded work.
+  // link before passing it through a URL builder that encodes it again. Three
+  // passes cover the common accidental cases without allowing hostile input
+  // to create unbounded work. More deeply encoded or malformed-percent input
+  // deliberately fails open to the authoritative service after safe segment
+  // encoding; this heuristic is not an identifier parser.
   const decodedIds = [id];
   let decodedId = id;
   for (let pass = 0; pass < MAX_PATH_ID_DECODE_PASSES; pass += 1) {
@@ -863,6 +864,12 @@ function requireNonEmptyId(
       // Malformed percent escapes remain opaque and are left to the service.
       break;
     }
+  }
+  // URL resolvers and intermediaries can normalize raw or pre-encoded dot
+  // segments before routing. Reject every decoded form we inspected so an
+  // item operation cannot be retargeted to a collection endpoint.
+  if (decodedIds.some((value) => value === "." || value === "..")) {
+    throw clientValidationError(`${method}: ${field} is an invalid URL path segment`);
   }
   // qURL access tokens are credentials. A token after a URL/query delimiter
   // is structurally a credential in every namespace. Bare `at_...` values are

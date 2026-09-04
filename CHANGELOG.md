@@ -4,6 +4,12 @@
 
 ### ⚠ BREAKING CHANGES
 
+- **client:** path identifiers now reject leading/trailing whitespace, raw or
+  repeatedly encoded `.` / `..` segments, URL-shaped values, and embedded qURL
+  access-token credentials before making a request. Resource/qURL identifier
+  parameters additionally reject bare `at_...` access tokens. These inputs
+  previously reached the service and normally returned an HTTP error; callers
+  now receive a synchronous `ValidationError`.
 - **client:** remove the released legacy HTTP bootstrap method and the
   not-yet-released relay registration implementation. Native qURL Connector
   assignment and registration are UDP-only and belong in the Go runtime; the
