@@ -11,7 +11,28 @@ const CRID_ALPHABET = "abcdefghijklmnopqrstuvwxyz234567";
 const CRID_FULL_LENGTH = 60;
 const CRID_TRUNCATED_LENGTH = 47;
 const CRID_CHECKSUM_LENGTH = 4;
-const CRID_DOMAIN = new TextEncoder().encode("NHP-QURL-CRID-V1\0");
+// ASCII bytes for "NHP-QURL-CRID-V1\0". Keeping this literal makes importing
+// the package safe even in runtimes without a global TextEncoder; verifyCrid
+// reports the missing Web Crypto capability through RuntimeError at call time.
+const CRID_DOMAIN = Uint8Array.of(
+  0x4e,
+  0x48,
+  0x50,
+  0x2d,
+  0x51,
+  0x55,
+  0x52,
+  0x4c,
+  0x2d,
+  0x43,
+  0x52,
+  0x49,
+  0x44,
+  0x2d,
+  0x56,
+  0x31,
+  0x00,
+);
 const CRC32C_REVERSED_POLYNOMIAL = 0x82f63b78;
 
 export type CRIDVerificationErrorCode =

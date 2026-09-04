@@ -132,8 +132,8 @@ It intentionally follows qurl-go's environment-agnostic key-match rule: CRID
 version zero is rejected as reserved, while every other structurally valid
 version is accepted and environment classification is not part of key-to-digest
 verification. Binary inputs of any length are hashed;
-`invalid_crid_key` is reserved for non-binary runtime values and a binary key
-that does not match reports `crid_mismatch`.
+`invalid_crid_key` is reserved for non-binary or unreadable (detached) runtime
+values, and a readable binary key that does not match reports `crid_mismatch`.
 `qurlId` and `singleUse` are undefined when omitted by older service responses.
 `ShareLink` keeps `.link` directly readable but redacts it from JSON, Node
 inspection, and object spread to reduce accidental credential logging. Read
