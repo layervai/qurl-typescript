@@ -38,6 +38,10 @@ function sizedJSON(prefix: string, suffix: string, size: number): string {
 
 const CONNECTOR_RESOURCE_ID =
   "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE2cTVv5_3eeYCcLLq5ROYCqcmY50HiKZ9ATglIkPnCji1E_S63UMtXba1moR8-Q6EV7oM6zwwh9_j2CDujzXvLA";
+const NON_P256_CONNECTOR_RESOURCE_ID = btoa(String.fromCharCode(...new Uint8Array(91)))
+  .replace(/\+/g, "-")
+  .replace(/\//g, "_")
+  .replace(/=+$/, "");
 const CONNECTOR_ROUTING_ID = "c-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
 function connectorResourceData(overrides: Record<string, unknown> = {}) {
@@ -2061,28 +2065,42 @@ describe("QURLClient", () => {
     expect(callHeaders(fetch)["Idempotency-Key"]).toBe("connector-ensure-job-1");
   });
 
-  it.each([
-    ["alternate success status", { status: 200, meta: { found_existing: false } }],
-    ["missing found-existing metadata", { status: 201, meta: {} }],
-  ])("fails closed when connector ensure returns %s", async (_name, response) => {
-    const fetch = mockFetch({
-      status: response.status,
-      body: { data: connectorResourceData(), meta: response.meta },
-    });
-    const client = createClient(fetch);
+  it("preserves pre-dispatch connector ensure validation as a known rejection", async () => {
+    const fetch = mockFetch({ status: 201, body: {} });
 
-    const error = await client
+    const error = await createClient(fetch)
+      .ensureConnectorResource("prod-dashboard", { idempotencyKey: " padded " })
+      .catch((caught: unknown) => caught as QURLError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error).not.toBeInstanceOf(ConnectorResourceOutcomeUnknownError);
+    expect(error.code).toBe(ERROR_CODE_CLIENT_VALIDATION);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("classifies an alternate connector ensure success status as outcome-unknown", async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: { data: connectorResourceData(), meta: { found_existing: false } },
+    });
+
+    await expect(
+      createClient(fetch).ensureConnectorResource("prod-dashboard"),
+    ).rejects.toMatchObject({
+      constructor: ConnectorResourceOutcomeUnknownError,
+      cause: { code: ERROR_CODE_UNEXPECTED_RESPONSE },
+    });
+  });
+
+  it("fails connector ensure closed without outcome-unknown when metadata is missing", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: connectorResourceData(), meta: {} } });
+
+    const error = await createClient(fetch)
       .ensureConnectorResource("prod-dashboard")
-      .catch((caught: unknown) => caught);
-    if (_name === "missing found-existing metadata") {
-      expect(error).not.toBeInstanceOf(ConnectorResourceOutcomeUnknownError);
-      expect(error).toMatchObject({ code: ERROR_CODE_UNEXPECTED_RESPONSE });
-    } else {
-      expect(error).toMatchObject({
-        constructor: ConnectorResourceOutcomeUnknownError,
-        cause: { code: ERROR_CODE_UNEXPECTED_RESPONSE },
-      });
-    }
+      .catch((caught: unknown) => caught as QURLError);
+
+    expect(error).not.toBeInstanceOf(ConnectorResourceOutcomeUnknownError);
+    expect(error).toMatchObject({ code: ERROR_CODE_UNEXPECTED_RESPONSE });
   });
 
   it("marks a connector ensure 5xx as outcome-unknown without hiding the server error", async () => {
@@ -2127,6 +2145,27 @@ describe("QURLClient", () => {
       `https://api.test.layerv.ai/v1/resources/${CONNECTOR_RESOURCE_ID}`,
       expect.objectContaining({ method: "GET" }),
     );
+  });
+
+  it("rejects a valid Connector key response that does not match the requested resource ID", async () => {
+    const pair = await globalThis.crypto.subtle.generateKey(
+      { name: "ECDSA", namedCurve: "P-256" },
+      true,
+      ["sign", "verify"],
+    );
+    const der = new Uint8Array(await globalThis.crypto.subtle.exportKey("spki", pair.publicKey));
+    const otherResourceId = btoa(String.fromCharCode(...der))
+      .replace(/\+/g, "-")
+      .replace(/\//g, "_")
+      .replace(/=+$/, "");
+    const fetch = mockFetch({
+      status: 200,
+      body: { data: { resource: connectorResourceData({ resource_id: otherResourceId }) } },
+    });
+
+    await expect(
+      createClient(fetch).getConnectorResource(CONNECTOR_RESOURCE_ID),
+    ).rejects.toMatchObject({ code: ERROR_CODE_UNEXPECTED_RESPONSE });
   });
 
   it("gets a connector resource by immutable slug without treating alias as identity", async () => {
@@ -2204,6 +2243,11 @@ describe("QURLClient", () => {
   it.each([
     ["missing routing ID", { connector_routing_id: undefined }],
     ["cross-wired admission ID", { knock_resource_id: CONNECTOR_ROUTING_ID }],
+    ["resource identity reused as admission ID", { knock_resource_id: CONNECTOR_RESOURCE_ID }],
+    [
+      "canonical base64url resource ID that is not a P-256 key",
+      { resource_id: NON_P256_CONNECTOR_RESOURCE_ID },
+    ],
     ["wrong type", { type: "url" }],
     ["wrong slug", { slug: "other-dashboard" }],
     ["invalid alias", { alias: "Prod Dashboard" }],

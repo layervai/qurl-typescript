@@ -1040,7 +1040,11 @@ function classifyConnectorMutationFailure(error: unknown): never {
   // exact 201 + valid resource but missing found_existing is handled after
   // this classifier: the row proves the selected resource, while only its
   // required metadata is unavailable (matching qurl-go).
-  if (error instanceof RuntimeError || (error.status >= 400 && error.status < 500)) {
+  if (
+    error instanceof RuntimeError ||
+    error.code === ERROR_CODE_CLIENT_VALIDATION ||
+    (error.status >= 400 && error.status < 500)
+  ) {
     throw error;
   }
   throw new ConnectorResourceOutcomeUnknownError(error);
@@ -1170,6 +1174,10 @@ async function parseConnectorResource(
     resource.alias !== null &&
     (typeof resource.alias !== "string" || !CONNECTOR_SLUG_PATTERN.test(resource.alias))
   ) {
+    // qurl-service intentionally gives mutable aliases and immutable slugs the
+    // same canonical wire grammar (domain aliasPattern/slugPattern). Keeping
+    // response validation aligned avoids accepting a row the service itself
+    // could not create or update.
     throw unexpectedResponseError(`${method}: response has invalid alias`);
   }
   if (resource.status === "revoked") {
@@ -2405,6 +2413,8 @@ export class QURLClient {
         },
         { requestOptions },
       );
+      // qurl-service dispatchFindOrCreate returns 201 for both newly-created
+      // and found-existing rows; meta.found_existing distinguishes the arms.
       if (response.__http_status !== 201) {
         throw unexpectedResponseError(
           `ensureConnectorResource: expected HTTP 201, got ${response.__http_status ?? "unknown"}`,
@@ -2447,6 +2457,8 @@ export class QURLClient {
   /** Fetch the single active qURL Connector resource for an immutable slug. */
   async getConnectorResourceBySlug(slug: string): Promise<ConnectorResource> {
     requireConnectorSlug(slug, "getConnectorResourceBySlug");
+    // qurl-service's slug point lookup is intrinsically active-only. It also
+    // rejects combining `slug` with `status`, so this query must stay slug-only.
     const { data, __http_status } = await this.rawRequest<Resource[]>(
       "GET",
       `/v1/resources?slug=${encodeURIComponent(slug)}`,
