@@ -359,9 +359,14 @@ SDK-generated keys require `globalThis.crypto.getRandomValues`, which is availab
   matching qurl-go's security posture. The SDK checks `Content-Length` when
   present and independently counts streamed bytes, so missing or inaccurate
   headers cannot bypass the limit. Bodies exactly at the limit are accepted.
-  Oversized bodies fail with a typed, non-retryable error before JSON decoding.
-  Server-provided error title/detail snippets have control characters removed,
-  are normalized to one line, and are capped at 512 UTF-8 bytes.
+  Standards-compliant fetch implementations are bounded while streaming;
+  custom Response-like shims that omit `body` are validated after their
+  `text()`/`json()` result has already been materialized by that shim.
+  Oversized bodies fail with a typed, non-retryable error before JSON decoding,
+  while preserving the observed status-derived error class and `Retry-After`.
+  Server-provided error code/title/detail/type/instance/request-id snippets have
+  controls and bidirectional override/isolate characters removed, are normalized
+  to one line, and are capped at 512 UTF-8 bytes.
   Redirect/body-limit errors do not include `Location` values,
   response-body snippets, or request credentials in SDK errors or debug logs.
 - Prefer short portal lifetimes such as `validFor: '5m'`.

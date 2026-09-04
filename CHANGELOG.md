@@ -7,7 +7,8 @@
 - **client:** DELETE operations are no longer retried after transport, 429, or 5xx
   failures because a dispatched mutation can have an unknown outcome. Documented
   no-content DELETE endpoints now require an exact empty HTTP 204 response.
-- **client:** server-provided error codes, titles, and details have control characters
+- **client:** server-provided error codes, titles, details, problem identifiers,
+  and request IDs have controls and bidirectional override/isolate characters
   removed, are normalized to one line, and are capped at 512 UTF-8 bytes so
   error objects and debug paths stay bounded.
 - **client:** API redirects are refused instead of followed, including when an

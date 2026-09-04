@@ -70,8 +70,9 @@ for (const [name, sdk] of builds) {
     },
   });
   await assert.rejects(oversizedClient.getQuota(), (error) => {
-    assert.ok(error instanceof sdk.QURLError);
-    assert.equal(error.code, sdk.ERROR_CODE_UNEXPECTED_RESPONSE);
+    assert.ok(error instanceof sdk.ServerError);
+    assert.equal(error.status, 503);
+    assert.equal(error.code, sdk.ERROR_CODE_UNKNOWN);
     assert.ok(error.message.length < 256);
     assert.ok(!error.message.includes(oversizedMarker));
     return true;

@@ -4249,6 +4249,18 @@ describe("QURLClient", () => {
         ),
     },
     {
+      name: "JSON success without declared length",
+      status: 200,
+      contentType: "application/json",
+      headers: "absent" as const,
+      body: () =>
+        sizedJSON(
+          '{"data":{"secret":"response-credential-marker","padding":"',
+          '"}}',
+          RESPONSE_BODY_LIMIT + 1,
+        ),
+    },
+    {
       name: "non-JSON success with inaccurate declared length",
       status: 200,
       contentType: "text/html",
@@ -4280,9 +4292,11 @@ describe("QURLClient", () => {
 
     const error = await client.getQuota().catch((caught: unknown) => caught as QURLError);
 
-    expect(error).toBeInstanceOf(ValidationError);
+    expect(error).toBeInstanceOf(testCase.status >= 500 ? ServerError : ValidationError);
     expect(error.status).toBe(testCase.status);
-    expect(error.code).toBe(ERROR_CODE_UNEXPECTED_RESPONSE);
+    expect(error.code).toBe(
+      testCase.status >= 400 ? ERROR_CODE_UNKNOWN : ERROR_CODE_UNEXPECTED_RESPONSE,
+    );
     expect(error.detail).toContain(`${RESPONSE_BODY_LIMIT}-byte limit`);
     expect(error.message.length).toBeLessThan(256);
     expect(error.message).not.toContain("response-credential-marker");
@@ -4309,9 +4323,9 @@ describe("QURLClient", () => {
 
     const error = await client.getQuota().catch((caught: unknown) => caught as QURLError);
 
-    expect(error).toBeInstanceOf(ValidationError);
+    expect(error).toBeInstanceOf(ServerError);
     expect(error.status).toBe(503);
-    expect(error.code).toBe(ERROR_CODE_UNEXPECTED_RESPONSE);
+    expect(error.code).toBe(ERROR_CODE_UNKNOWN);
     expect(error.detail).toContain(`${RESPONSE_BODY_LIMIT}-byte limit`);
     expect(fetch).toHaveBeenCalledTimes(1);
   });
@@ -4369,8 +4383,8 @@ describe("QURLClient", () => {
       .getQuota()
       .catch((caught: unknown) => caught as QURLError);
 
-    expect(error).toBeInstanceOf(ValidationError);
-    expect(error).toMatchObject({ status: 503, code: ERROR_CODE_UNEXPECTED_RESPONSE });
+    expect(error).toBeInstanceOf(ServerError);
+    expect(error).toMatchObject({ status: 503, code: ERROR_CODE_UNKNOWN });
     expect(error.message).not.toContain("response-secret");
     expect(fetch).toHaveBeenCalledTimes(1);
   });
@@ -4415,12 +4429,12 @@ describe("QURLClient", () => {
     expect(error).toBeInstanceOf(ValidationError);
     expect(error.code).toBe("boundary_error");
     expect(error.detail.endsWith("...")).toBe(true);
-    expect(new TextEncoder().encode(error.detail.slice(0, -3)).byteLength).toBeLessThanOrEqual(512);
+    expect(new TextEncoder().encode(error.detail).byteLength).toBeLessThanOrEqual(512);
     expect(error.detail).not.toContain("byte limit");
   });
 
-  it("keeps structured API error snippets single-line, control-free, UTF-8-safe, and bounded", async () => {
-    const detail = `  ${"€".repeat(300)}\n\x00\x1b[2J\x85response tail  `;
+  it("keeps structured API error snippets single-line, dangerous-control-free, UTF-8-safe, and bounded", async () => {
+    const detail = `  👩‍💻‌ ${"€".repeat(300)}\n\x00\x1b[2J\x85\u202Eresponse\u2066 tail  `;
     const fetch = mockFetch({
       status: 400,
       body: { error: { title: "Bad Request", code: "bad_request", detail } },
@@ -4431,8 +4445,10 @@ describe("QURLClient", () => {
 
     expect(error.detail.endsWith("...")).toBe(true);
     expect(error.detail).not.toContain("\n");
-    expect(error.detail).not.toMatch(/[\p{Cc}\p{Cf}]/u);
-    expect(new TextEncoder().encode(error.detail.slice(0, -3)).byteLength).toBeLessThanOrEqual(512);
+    expect(error.detail).not.toMatch(/[\p{Cc}\u202A-\u202E\u2066-\u2069]/u);
+    expect(new TextEncoder().encode(error.detail).byteLength).toBeLessThanOrEqual(512);
+    expect(error.detail).toContain("‍");
+    expect(error.detail).toContain("‌");
     expect(() =>
       new TextDecoder("utf-8", { fatal: true }).decode(new TextEncoder().encode(error.detail)),
     ).not.toThrow();
@@ -4450,8 +4466,61 @@ describe("QURLClient", () => {
 
     expect(error.code.endsWith("...")).toBe(true);
     expect(error.code).not.toContain("\n");
-    expect(error.code).not.toMatch(/[\p{Cc}\p{Cf}]/u);
-    expect(new TextEncoder().encode(error.code.slice(0, -3)).byteLength).toBeLessThanOrEqual(512);
+    expect(error.code).not.toMatch(/[\p{Cc}\u202A-\u202E\u2066-\u2069]/u);
+    expect(new TextEncoder().encode(error.code).byteLength).toBeLessThanOrEqual(512);
+  });
+
+  it("bounds and sanitizes all structured API error identifiers", async () => {
+    const long = `${"€".repeat(300)}\n\u202Ecredential-tail`;
+    const fetch = mockFetch({
+      status: 400,
+      body: {
+        error: {
+          title: "Bad Request",
+          code: "bad_request",
+          detail: "Invalid request",
+          type: long,
+          instance: long,
+        },
+        meta: { request_id: long },
+      },
+    });
+    const error = await createClient(fetch)
+      .getQuota()
+      .catch((caught: unknown) => caught as QURLError);
+
+    for (const value of [error.type, error.instance, error.requestId]) {
+      expect(value).toBeDefined();
+      expect(new TextEncoder().encode(value!).byteLength).toBeLessThanOrEqual(512);
+      expect(value).not.toMatch(/[\p{Cc}\u202A-\u202E\u2066-\u2069]/u);
+      expect(value).not.toContain("credential-tail");
+    }
+  });
+
+  it("preserves the status error class and Retry-After for an oversized 429 body", async () => {
+    const fetch = vi.fn(
+      async () =>
+        new Response("x".repeat(RESPONSE_BODY_LIMIT + 1), {
+          status: 429,
+          headers: { "Retry-After": "7" },
+        }),
+    );
+    const error = await new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 2,
+    })
+      .getQuota()
+      .catch((caught: unknown) => caught as QURLError);
+
+    expect(error).toBeInstanceOf(RateLimitError);
+    expect(error).toMatchObject({
+      status: 429,
+      code: ERROR_CODE_UNKNOWN,
+      retryAfter: 7,
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   it("retries a retryable status even when its error body is non-JSON", async () => {
@@ -5518,6 +5587,43 @@ describe("QURLClient", () => {
     });
   });
 
+  it("releases and cancels a response stream after a body-read failure", async () => {
+    const releaseLock = vi.fn();
+    const cancel = vi.fn(async () => undefined);
+    const fetch = vi.fn(
+      async () =>
+        ({
+          ok: false,
+          redirected: false,
+          status: 503,
+          statusText: "Unavailable",
+          type: "basic",
+          headers: new Headers(),
+          body: {
+            cancel,
+            getReader: () => ({
+              read: async () => {
+                throw new TypeError("response body reset");
+              },
+              cancel: vi.fn(async () => undefined),
+              releaseLock,
+            }),
+          },
+        }) satisfies Partial<Response> as Response,
+    );
+
+    await expect(
+      new QURLClient({
+        apiKey: "test-api-key",
+        baseUrl: "https://api.test.layerv.ai",
+        fetch: fetch as typeof globalThis.fetch,
+        maxRetries: 0,
+      }).getQuota(),
+    ).rejects.toBeInstanceOf(ServerError);
+    expect(releaseLock).toHaveBeenCalledTimes(1);
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
   it.each([502, 503, 504])("does not replay DELETE after a %i response", async (status) => {
     // Endpoint semantics, not the HTTP verb alone, determine replay safety.
     // Individual qURL revoke returns 409 on repeat, while a connector/resource
@@ -5575,6 +5681,31 @@ describe("QURLClient", () => {
     });
 
     await expect(client.delete("r_abc123def45")).rejects.toBeInstanceOf(RateLimitError);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not replay terminateAllResourceSessions after a 503 response", async () => {
+    const fetch = mockFetch({
+      status: 503,
+      body: {
+        error: {
+          title: "Unavailable",
+          status: 503,
+          detail: "Outcome unknown",
+          code: "unavailable",
+        },
+      },
+    });
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch,
+      maxRetries: 2,
+    });
+
+    await expect(client.terminateAllResourceSessions("r_abc123def45")).rejects.toBeInstanceOf(
+      ServerError,
+    );
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 

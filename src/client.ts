@@ -679,17 +679,21 @@ function httpResponseContractError(response: Response, detail: string): Validati
 function boundedErrorSnippet(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const normalized = value
-    .replace(/[\p{Cc}\p{Cf}]/gu, " ")
+    // Strip control characters plus bidi override/isolate controls that can
+    // visually reorder diagnostics. Preserve other formatting characters
+    // such as ZWJ/ZWNJ, which are required by legitimate scripts and emoji.
+    .replace(/[\p{Cc}\u202A-\u202E\u2066-\u2069]/gu, " ")
     .trim()
     .replace(/\s+/g, " ");
   if (normalized === "") return undefined;
   const encoded = TEXT_ENCODER.encode(normalized);
   if (encoded.byteLength <= MAX_ERROR_SNIPPET_BYTES) return normalized;
 
-  let end = MAX_ERROR_SNIPPET_BYTES;
+  const ellipsis = "...";
+  let end = MAX_ERROR_SNIPPET_BYTES - TEXT_ENCODER.encode(ellipsis).byteLength;
   // Do not split a multi-byte UTF-8 sequence at the cap.
   while (end > 0 && (encoded[end] & 0xc0) === 0x80) end--;
-  return `${TEXT_DECODER.decode(encoded.subarray(0, end))}...`;
+  return `${TEXT_DECODER.decode(encoded.subarray(0, end))}${ellipsis}`;
 }
 
 async function cancelResponseBody(body: Response["body"]): Promise<void> {
@@ -731,7 +735,10 @@ async function readBoundedResponseBody(response: Response): Promise<string> {
   // this SDK parses it as JSON.
   if (body === undefined) {
     const text = typeof response.text === "function" ? await response.text() : "";
-    if (TEXT_ENCODER.encode(text).byteLength > MAX_RESPONSE_BODY_BYTES) {
+    if (
+      text.length > MAX_RESPONSE_BODY_BYTES ||
+      TEXT_ENCODER.encode(text).byteLength > MAX_RESPONSE_BODY_BYTES
+    ) {
       throw new ResponseBodyTooLargeError();
     }
     if (text !== "") return text;
@@ -747,7 +754,10 @@ async function readBoundedResponseBody(response: Response): Promise<string> {
       return "";
     }
     if (serialized === undefined) return "";
-    if (TEXT_ENCODER.encode(serialized).byteLength > MAX_RESPONSE_BODY_BYTES) {
+    if (
+      serialized.length > MAX_RESPONSE_BODY_BYTES ||
+      TEXT_ENCODER.encode(serialized).byteLength > MAX_RESPONSE_BODY_BYTES
+    ) {
       throw new ResponseBodyTooLargeError();
     }
     return serialized;
@@ -3631,11 +3641,22 @@ export class QURLClient {
           this.log(`rejected oversized response body from ${response.status}`, {
             status: response.status,
           });
-          throw httpResponseContractError(
-            response,
-            `Response body exceeds ${MAX_RESPONSE_BODY_BYTES}-byte limit on HTTP ${response.status}`,
-          );
+          const detail = `Response body exceeds ${MAX_RESPONSE_BODY_BYTES}-byte limit on HTTP ${response.status}`;
+          if (response.ok) {
+            throw httpResponseContractError(response, detail);
+          }
+          throw createError({
+            status: response.status,
+            // The unread body cannot supply a trustworthy server code. Keep
+            // the real HTTP status class (429/5xx) just like other unreadable
+            // error bodies instead of reclassifying it as client validation.
+            code: ERROR_CODE_UNKNOWN,
+            title: boundedErrorSnippet(response.statusText) || `HTTP ${response.status}`,
+            detail,
+            retry_after: this.parseRetryAfter(response),
+          });
         }
+        await cancelResponseBody(response.body);
         this.log(`failed to read response body from ${response.status}`, {
           status: response.status,
         });
@@ -3761,10 +3782,10 @@ export class QURLClient {
           code: boundedErrorSnippet(err.code) ?? ERROR_CODE_UNKNOWN,
           title,
           detail,
-          type: err.type,
-          instance: err.instance,
+          type: boundedErrorSnippet(err.type),
+          instance: boundedErrorSnippet(err.instance),
           invalid_fields: err.invalid_fields,
-          request_id: json.meta?.request_id,
+          request_id: boundedErrorSnippet(json.meta?.request_id),
           retry_after: this.parseRetryAfter(response),
         };
       }
