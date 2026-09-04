@@ -2200,7 +2200,7 @@ describe("QURLClient", () => {
 
     expect(error).toMatchObject({
       code: ERROR_CODE_CLIENT_VALIDATION,
-      detail: expect.stringContaining("must be an identifier, not a URL"),
+      detail: expect.stringContaining("access token"),
     });
     expect((error as ValidationError).detail).not.toContain(qurlLink);
     expect((error as ValidationError).detail).not.toContain(SENSITIVE_ACCESS_TOKEN);
@@ -2356,6 +2356,13 @@ describe("QURLClient", () => {
     );
   });
 
+  it("leaves non-display q_-prefixed opaque IDs to the service", async () => {
+    const fetch = mockFetch({ status: 204 });
+
+    await expect(createClient(fetch).delete("q_future-resource-id")).resolves.toBeUndefined();
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
   it.each(["Q_0123456789a", "%51_0123456789a"])(
     "rejects case-variant qURL display ID %s before whole-resource deletion",
     async (displayId) => {
@@ -2421,7 +2428,13 @@ describe("QURLClient", () => {
   ])("%s accepts current public resource identifiers", async (_name, invoke) => {
     for (const id of [PUBLIC_RESOURCE_ID, RESOURCE_CRID]) {
       const fetch = mockFetch({ status: 204 });
-      await invoke(createClient(fetch), id).catch(() => undefined);
+      const responseError = await invoke(createClient(fetch), id).then(
+        () => null,
+        (caught: unknown) => caught,
+      );
+      if (responseError !== null) {
+        expect(responseError).toMatchObject({ detail: expect.stringContaining("Unexpected 204") });
+      }
       expect(fetch).toHaveBeenCalledTimes(1);
       expect(vi.mocked(fetch).mock.calls[0][0]).toContain(encodeURIComponent(id));
     }
@@ -2624,6 +2637,17 @@ describe("QURLClient", () => {
       4,
       "https://api.test.layerv.ai/v1/resources/resource-id/sessions/at_future-session-id",
       expect.objectContaining({ method: "DELETE" }),
+    );
+  });
+
+  it("keeps a bare hostname valid in the domain identifier namespace", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+
+    await createClient(fetch).getDomain("links.example.com");
+
+    expect(fetch).toHaveBeenCalledWith(
+      "https://api.test.layerv.ai/v1/domains/links.example.com",
+      expect.objectContaining({ method: "GET" }),
     );
   });
 

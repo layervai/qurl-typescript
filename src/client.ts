@@ -788,7 +788,11 @@ function pageFromMeta<T extends Record<string, unknown>>(
 // delimiter requirement cannot collide with current base64url public keys,
 // standard-base64 keys, or base32 CRIDs.
 const PATH_EMBEDDED_ACCESS_TOKEN_RE = /[?&#=:\s]at_/i;
+const QURL_TOKEN_PATH_RE = /^(?:https?:\/\/)?(?:[a-z0-9-]+\.)*qurl\.link(?::\d{1,5})?\/at_/i;
+// A host without a slash can be a legitimate domain identifier. Require the
+// path boundary so shared validation does not break the domain namespace.
 const PATH_SCHEMELESS_URL_RE = /^[a-z0-9-]+(?:\.[a-z0-9-]+)+(?::\d{1,5})?\//i;
+const QURL_DISPLAY_ID_RE = /^q_[0-9a-f]{11}$/i;
 const MAX_PATH_ID_DECODE_PASSES = 3;
 const MAX_PATH_ID_LENGTH = 4096;
 
@@ -882,14 +886,18 @@ function requireNonEmptyId(
   // such as `/at_a_glance` is not misread as a credential. For non-URL input,
   // `/at_` remains a strong pasted-path signal. Fragment, query, header, and
   // pasted `Bearer at_...` / `token:at_...` forms are also strong signals.
-  // Bare `at_...` values are rejected only for resource/qURL identifiers so
-  // unrelated identifier namespaces stay opaque.
+  // Bare `at_...` values are rejected only for resource/qURL identifiers:
+  // those current formats have fixed non-colliding prefixes, while domain,
+  // webhook, session, and API-key IDs are deliberately opaque/open contracts.
+  // Full URLs and delimiter/path-prefixed credentials remain rejected in
+  // every namespace.
   const containsUrl = decodedIds.some(
     (value) => /^https?:\/\//i.test(value) || PATH_SCHEMELESS_URL_RE.test(value),
   );
   const containsAccessToken = decodedIds.some(
     (value) =>
       PATH_EMBEDDED_ACCESS_TOKEN_RE.test(value) ||
+      QURL_TOKEN_PATH_RE.test(value) ||
       (!containsUrl && /\/at_/i.test(value)) ||
       (options.rejectBareAccessToken === true && value.slice(0, 3).toLowerCase() === "at_"),
   );
@@ -905,7 +913,10 @@ function requireNonEmptyId(
   if (containsUrl) {
     throw clientValidationError(`${method}: ${field} must be an identifier, not a URL`);
   }
-  if (options.rejectQurlDisplayId === true && decodedIds.some((value) => /^q_/i.test(value))) {
+  if (
+    options.rejectQurlDisplayId === true &&
+    decodedIds.some((value) => QURL_DISPLAY_ID_RE.test(value))
+  ) {
     throw clientValidationError(
       `${method}: ${field} must not be a qURL display ID; ${REVOKE_INDIVIDUAL_QURL_RECOVERY}`,
     );
