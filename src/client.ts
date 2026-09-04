@@ -2743,28 +2743,28 @@ export class QURLClient {
    */
   async shareResource(
     id: string,
-    input: ShareResourceOptions = {},
-    options?: RequestOptions,
+    options: ShareResourceOptions = {},
+    requestOptions?: RequestOptions,
   ): Promise<ShareLink> {
     requireNonEmptyId(id, "shareResource", "resource id");
-    requireObjectInput(input, "shareResource");
-    requireNoUnknownFields(input, SHARE_RESOURCE_OPTION_KEYS, "shareResource");
+    requireObjectInput(options, "shareResource");
+    requireNoUnknownFields(options, SHARE_RESOURCE_OPTION_KEYS, "shareResource");
     const body: { ttl_seconds?: number } = {};
-    if (input.ttlSeconds !== undefined) {
+    if (options.ttlSeconds !== undefined) {
       if (
-        typeof input.ttlSeconds !== "number" ||
-        !Number.isInteger(input.ttlSeconds) ||
-        input.ttlSeconds <= 0
+        typeof options.ttlSeconds !== "number" ||
+        !Number.isInteger(options.ttlSeconds) ||
+        options.ttlSeconds <= 0
       ) {
         throw clientValidationError("shareResource: ttlSeconds must be a positive whole number");
       }
-      body.ttl_seconds = input.ttlSeconds;
+      body.ttl_seconds = options.ttlSeconds;
     }
     const data = await this.request<ShareResourceWireResponse>(
       "POST",
       `/v1/resources/${encodeURIComponent(id)}/share`,
       body,
-      options,
+      requestOptions,
     );
     if (typeof data?.qurl !== "string" || data.qurl.trim() === "") {
       throw unexpectedResponseError("shareResource: response is missing qurl");

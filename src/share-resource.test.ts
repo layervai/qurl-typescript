@@ -35,6 +35,11 @@ const vectors = (
 ).cridV1Vectors() as CRIDVectors;
 const matching = vectors.producer_cases.find(({ name }) => name === "resource_key_qv2_v01");
 if (!matching) throw new Error("CRID conformance vectors are missing resource_key_qv2_v01");
+const matchingDerSpki =
+  "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEcOtuxu2qhc3gt1E7BiEU0CLqEDlXDwzZq0JnESgMAwERX6y_XXF5Cn5SKITWIZQmUhCZ0pHHlVn7SmFUTAnTGQ";
+if (matching.der_spki_b64url !== matchingDerSpki) {
+  throw new Error("resource_key_qv2_v01 changed; refresh the qurl-go-confirmed truncated fixture");
+}
 const foreign = vectors.producer_cases.find(
   ({ der_spki_b64url }) => der_spki_b64url !== matching.der_spki_b64url,
 );
@@ -188,6 +193,14 @@ describe("shareResource", () => {
     });
   });
 
+  it("fails closed when the response omits the data envelope", async () => {
+    const fetch = mockFetch({ status: 200, body: { meta: { request_id: "req_share" } } });
+
+    await expect(createClient(fetch).shareResource("resource-id")).rejects.toMatchObject({
+      code: "unexpected_response",
+    });
+  });
+
   it("tolerates an omitted qurl_id from an older server", async () => {
     const fetch = mockFetch({ status: 200, body: shareResponse({ qurl_id: undefined }) });
 
@@ -310,6 +323,16 @@ describe("shareResource", () => {
 
     await expect(share.verifyCrid(b64url(matching.der_spki_b64url))).rejects.toMatchObject({
       code: ERROR_CODE_INVALID_CRID,
+    });
+  });
+
+  it("preserves an omitted response CRID as a typed missing-CRID verification failure", async () => {
+    const share = await createClient(
+      mockFetch({ status: 200, body: shareResponse({ crid: undefined }) }),
+    ).shareResource("resource-id");
+
+    await expect(share.verifyCrid(b64url(matching.der_spki_b64url))).rejects.toMatchObject({
+      code: ERROR_CODE_MISSING_CRID,
     });
   });
 
@@ -457,6 +480,31 @@ describe("ShareLink.verifyCrid", () => {
     });
   });
 
+  it("rejects a spoofed ArrayBuffer brand as an invalid caller key", async () => {
+    const share = new ShareLink({
+      link: "https://qurl.link/#qv2t1.example",
+      crid: matching.expected_crid,
+    });
+
+    await expect(
+      share.verifyCrid({ [Symbol.toStringTag]: "ArrayBuffer" } as never),
+    ).rejects.toMatchObject({ code: ERROR_CODE_INVALID_CRID_KEY });
+  });
+
+  it("rejects a detached ArrayBuffer through the documented error hierarchy", async () => {
+    const share = new ShareLink({
+      link: "https://qurl.link/#qv2t1.example",
+      crid: matching.expected_crid,
+    });
+    const detached = new ArrayBuffer(8);
+    structuredClone(detached, { transfer: [detached] });
+
+    await expect(share.verifyCrid(detached)).rejects.toMatchObject({
+      constructor: CRIDVerificationError,
+      code: ERROR_CODE_INVALID_CRID_KEY,
+    });
+  });
+
   it("treats an empty binary key as a mismatch, matching qurl-go", async () => {
     const share = new ShareLink({
       link: "https://qurl.link/#qv2t1.example",
@@ -486,6 +534,21 @@ describe("ShareLink.verifyCrid", () => {
 
   it("reports missing Web Crypto as a runtime capability error", async () => {
     vi.stubGlobal("crypto", undefined);
+    try {
+      const share = new ShareLink({
+        link: "https://qurl.link/#qv2t1.example",
+        crid: matching.expected_crid,
+      });
+      await expect(share.verifyCrid(b64url(matching.der_spki_b64url))).rejects.toBeInstanceOf(
+        RuntimeError,
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("reports a missing SubtleCrypto implementation as a runtime capability error", async () => {
+    vi.stubGlobal("crypto", {});
     try {
       const share = new ShareLink({
         link: "https://qurl.link/#qv2t1.example",

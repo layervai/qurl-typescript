@@ -328,7 +328,9 @@ and `"unexpected_response"` when a response is missing required fields (e.g.
 of `"missing_crid"`, `"invalid_crid"`, `"invalid_crid_key"`, or
 `"crid_mismatch"`. It verifies the response CRID against DER SPKI bytes the
 caller already trusts; it does not prove that the secret link fragment belongs
-to that key.
+to that key. Verification succeeds by resolving without a value, so always
+`await` it before delivery. A runtime without Web Crypto SubtleCrypto rejects
+with `RuntimeError` instead of treating an unavailable verifier as success.
 
 ## Pagination
 

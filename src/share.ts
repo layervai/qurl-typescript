@@ -134,14 +134,21 @@ export class ShareLink {
 }
 
 function copyBytes(value: ArrayBuffer | ArrayBufferView): Uint8Array<ArrayBuffer> {
-  // `instanceof ArrayBuffer` is realm-scoped. The brand check also accepts
-  // genuine buffers passed from a worker/vm realm without admitting objects
-  // that merely expose a caller-controlled `byteLength` property.
-  if (Object.prototype.toString.call(value) === "[object ArrayBuffer]") {
-    return Uint8Array.from(new Uint8Array(value as ArrayBuffer));
+  // Calling the intrinsic requires the real [[ArrayBufferData]] internal slot,
+  // so it is cross-realm safe without trusting a spoofable toStringTag.
+  try {
+    const copied = ArrayBuffer.prototype.slice.call(value as ArrayBuffer, 0);
+    return Uint8Array.from(new Uint8Array(copied));
+  } catch {
+    // A non-ArrayBuffer or detached buffer falls through to the typed-view
+    // branch/error below.
   }
   if (ArrayBuffer.isView(value)) {
-    return Uint8Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength));
+    try {
+      return Uint8Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength));
+    } catch {
+      // Detached views are invalid caller key material, not raw TypeErrors.
+    }
   }
   throw new CRIDVerificationError(
     ERROR_CODE_INVALID_CRID_KEY,
