@@ -244,14 +244,18 @@ omitted by JSON and redacted by Node inspection to reduce accidental structured
 logging.
 Read `binding.api_key.plaintext` directly: JSON, spread, and structured-clone
 copies intentionally omit it and cannot preserve the one-time secret.
+These protections reduce accidental disclosure; reflection, disabled custom
+inspection, browser debuggers, and heap snapshots can still reveal the live
+property, so do not log the object and release it after persistence.
 `binding.replayed` is `true` when the service signals a replay using either its
 current `X-Idempotency-Replayed` header or the spec-declared
-`Idempotency-Replayed` header. It is `undefined` when replay state is absent or
-unrecognized; current qurl-service omits the header for a fresh response. This
+`Idempotency-Replayed` header. It is `undefined` when replay state is absent,
+unrecognized, or conflicting; current qurl-service omits the header for a fresh response. This
 is a transport-level signal and can be `true` on the caller's first invocation
 when an SDK retry recovers a response whose initial delivery was lost.
 `binding.location` contains the response `Location` only when it is a bounded
-HTTP(S) URL or absolute path; unusable or overlong values are omitted.
+same-origin HTTPS URL or absolute path; unusable, credential-bearing,
+cross-origin, downgraded, or overlong values are omitted.
 Cross-origin browser code can read these response-header fields only when the
 service exposes `Location` and the replay header through CORS; otherwise they
 remain `undefined` even when the wire response carried them.

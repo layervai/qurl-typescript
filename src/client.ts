@@ -1579,6 +1579,7 @@ function validateExternalIdentityBindingRequestOptions(
 function parseExternalIdentityBindingResponse(
   data: unknown,
   headers: Headers | undefined,
+  baseUrl: string,
   expected: Pick<CreateExternalIdentityBindingInput, "provider" | "external_id">,
   replayed: boolean | undefined,
   requestId?: string,
@@ -1592,9 +1593,9 @@ function parseExternalIdentityBindingResponse(
       requestId,
     );
   };
-  if (typeof data !== "object" || data === null || Array.isArray(data)) {
-    return fail("response data must be an object");
-  }
+  // rawRequest wraps parsed JSON in an object with transport metadata. A
+  // non-object wire body therefore arrives without the required binding keys
+  // and fails closed in the field checks below.
   const binding = data as Record<string, unknown>;
   if (typeof binding.binding_id !== "string" || binding.binding_id.length === 0) {
     return fail("response is missing required field binding_id");
@@ -1661,7 +1662,7 @@ function parseExternalIdentityBindingResponse(
     created_at: binding.created_at,
     // Response metadata is untrusted too: keep it bounded before exposing it
     // to callers that may include the result in logs or telemetry.
-    location: externalIdentityBindingLocation(headers),
+    location: externalIdentityBindingLocation(headers, baseUrl),
     replayed,
   };
 }
@@ -1696,7 +1697,10 @@ function protectExternalIdentityBindingApiKey(
   return apiKey;
 }
 
-function externalIdentityBindingLocation(headers: Headers | undefined): string | undefined {
+function externalIdentityBindingLocation(
+  headers: Headers | undefined,
+  baseUrl: string,
+): string | undefined {
   const location = headers?.get("Location");
   if (
     location === null ||
@@ -1712,7 +1716,13 @@ function externalIdentityBindingLocation(headers: Headers | undefined): string |
   }
   try {
     const parsed = new URL(location);
-    return parsed.protocol === "https:" || parsed.protocol === "http:" ? location : undefined;
+    const expectedOrigin = new URL(baseUrl).origin;
+    return parsed.protocol === "https:" &&
+      parsed.origin === expectedOrigin &&
+      parsed.username === "" &&
+      parsed.password === ""
+      ? location
+      : undefined;
   } catch {
     return undefined;
   }
@@ -1720,7 +1730,7 @@ function externalIdentityBindingLocation(headers: Headers | undefined): string |
 
 function parseExternalIdentityReplayHeader(headers: Headers | undefined): {
   replayed: boolean | undefined;
-  state: "missing" | "recognized" | "unrecognized";
+  state: "missing" | "recognized" | "conflicting" | "unrecognized";
 } {
   // qurl-service currently emits the X- spelling only on replay; the OpenAPI
   // spelling is accepted for forward compatibility. Absence therefore means
@@ -1739,6 +1749,9 @@ function parseExternalIdentityReplayHeader(headers: Headers | undefined): {
   }
   if (values.every((value) => value === "false")) {
     return { replayed: false, state: "recognized" };
+  }
+  if (values.every((value) => value === "true" || value === "false")) {
+    return { replayed: undefined, state: "conflicting" };
   }
   return { replayed: undefined, state: "unrecognized" };
 }
@@ -3694,6 +3707,10 @@ export class QURLClient {
       this.log("createExternalIdentityBinding: response has unrecognized replay header", {
         request_id: requestId,
       });
+    } else if (replay.state === "conflicting") {
+      this.log("createExternalIdentityBinding: response has conflicting replay headers", {
+        request_id: requestId,
+      });
     }
     return parseExternalIdentityBindingResponse(
       // Unlike the API's common `{ data, meta }` envelope, this endpoint's
@@ -3702,6 +3719,7 @@ export class QURLClient {
       // that parsed object, so validate the object itself here.
       envelope,
       responseHeaders,
+      this.baseUrl,
       body,
       replay.replayed,
       requestId,

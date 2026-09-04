@@ -8621,6 +8621,9 @@ describe("createExternalIdentityBinding", () => {
       replayed: undefined,
     });
     expect(result.api_key.plaintext).toBe(BINDING_PLAINTEXT);
+    expect(result).not.toHaveProperty("__http_status");
+    expect(result).not.toHaveProperty("__http_body_empty");
+    expect(result).not.toHaveProperty("__response_headers");
     const init = vi.mocked(fetch).mock.calls[0][1] as RequestInit;
     expect(init.headers).toMatchObject({ "Idempotency-Key": BINDING_IDEMPOTENCY_KEY });
     expect(JSON.parse(init.body as string)).toEqual({
@@ -8631,7 +8634,7 @@ describe("createExternalIdentityBinding", () => {
   });
 
   it("surfaces a bounded absolute HTTPS Location", async () => {
-    const location = "https://api.layerv.ai/v1/external-identity-bindings/eib_obviously_fake";
+    const location = "https://api.test.layerv.ai/v1/external-identity-bindings/eib_obviously_fake";
     const fetch = mockFetch({
       status: 201,
       headers: { Location: location },
@@ -8725,7 +8728,8 @@ describe("createExternalIdentityBinding", () => {
     expect(inspect(debug.mock.calls, { depth: null })).not.toContain("maybe");
   });
 
-  it("does not classify conflicting replay headers", async () => {
+  it("does not classify conflicting replay headers and logs the conflict safely", async () => {
+    const debug = vi.fn();
     const fetch = mockFetch({
       status: 201,
       headers: {
@@ -8735,12 +8739,25 @@ describe("createExternalIdentityBinding", () => {
       body: externalIdentityBindingData(),
     });
 
-    const result = await createClient(fetch).createExternalIdentityBinding(
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch,
+      maxRetries: 0,
+      debug,
+    });
+    const result = await client.createExternalIdentityBinding(
       { provider: "teams", external_id: "tenant-obviously-fake" },
       { idempotencyKey: BINDING_IDEMPOTENCY_KEY },
     );
 
     expect(result.replayed).toBeUndefined();
+    expect(debug).toHaveBeenCalledWith(
+      "createExternalIdentityBinding: response has conflicting replay headers",
+      expect.any(Object),
+    );
+    expect(inspect(debug.mock.calls, { depth: null })).not.toContain("true");
+    expect(inspect(debug.mock.calls, { depth: null })).not.toContain("false");
   });
 
   it("accepts duplicate replay headers when every value agrees", async () => {
@@ -8776,6 +8793,9 @@ describe("createExternalIdentityBinding", () => {
     "javascript:alert(1)",
     "//evil.invalid/binding",
     "/\\evil.invalid/binding",
+    "http://api.test.layerv.ai/v1/external-identity-bindings/eib_obviously_fake",
+    "https://evil.invalid/v1/external-identity-bindings/eib_obviously_fake",
+    "https://user:password@api.test.layerv.ai/v1/external-identity-bindings/eib_obviously_fake",
     "not a location",
   ])("drops unusable Location metadata (%s)", async (location) => {
     const fetch = mockFetch({
@@ -8808,6 +8828,17 @@ describe("createExternalIdentityBinding", () => {
       });
     },
   );
+
+  it("fails closed when a 201 response body is empty", async () => {
+    const fetch = mockFetch({ status: 201 });
+
+    await expect(
+      createClient(fetch).createExternalIdentityBinding(
+        { provider: "teams", external_id: "tenant-obviously-fake" },
+        { idempotencyKey: BINDING_IDEMPOTENCY_KEY },
+      ),
+    ).rejects.toMatchObject({ code: ERROR_CODE_UNEXPECTED_RESPONSE });
+  });
 
   it.each([
     {
