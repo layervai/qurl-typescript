@@ -370,8 +370,11 @@ SDK-generated keys require `globalThis.crypto.getRandomValues`, which is availab
   Standards-compliant fetch implementations are bounded while streaming;
   custom Response-like shims that omit `body` are validated after their
   `text()`/`json()` result has already been materialized by that shim.
-  Oversized bodies fail with a typed, non-retryable error before JSON decoding,
-  while preserving the observed status-derived error class and `Retry-After`.
+  Oversized bodies fail with a typed error before JSON decoding while
+  preserving the observed status-derived error class and `Retry-After`.
+  Transient error statuses retain the normal retry policy for GET and
+  idempotency-key-backed mutations; oversized successful responses and DELETE
+  responses are not retried.
   Server-provided error code/title/detail/type/instance/request-id snippets and
   `invalidFields` keys/values have controls and bidirectional formatting
   characters removed, are normalized to one line, and are capped at 512 UTF-8

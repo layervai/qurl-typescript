@@ -4292,7 +4292,7 @@ describe("QURLClient", () => {
       apiKey: "request-credential-marker",
       baseUrl: "https://api.test.layerv.ai",
       fetch: fetch as typeof globalThis.fetch,
-      maxRetries: 2,
+      maxRetries: 0,
       debug,
     });
 
@@ -4312,14 +4312,23 @@ describe("QURLClient", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
-  it("does not retry an oversized body on a retryable status", async () => {
-    const fetch = vi.fn(
-      async () =>
+  it("retries an oversized error body when the status and method are retryable", async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
         new Response("x".repeat(RESPONSE_BODY_LIMIT + 1), {
           status: 503,
           headers: { "content-type": "text/plain" },
         }),
-    );
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            data: { plan: "growth", period_start: "2026-03-01", period_end: "2026-04-01" },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      );
     const client = new QURLClient({
       apiKey: "test-api-key",
       baseUrl: "https://api.test.layerv.ai",
@@ -4327,13 +4336,8 @@ describe("QURLClient", () => {
       maxRetries: 2,
     });
 
-    const error = await client.getQuota().catch((caught: unknown) => caught as QURLError);
-
-    expect(error).toBeInstanceOf(ServerError);
-    expect(error.status).toBe(503);
-    expect(error.code).toBe(ERROR_CODE_UNKNOWN);
-    expect(error.detail).toContain(`${RESPONSE_BODY_LIMIT}-byte limit`);
-    expect(fetch).toHaveBeenCalledTimes(1);
+    await expect(client.getQuota()).resolves.toMatchObject({ plan: "growth" });
+    expect(fetch).toHaveBeenCalledTimes(2);
   });
 
   it("rejects an oversized declared Content-Length before reading the body", async () => {
@@ -4384,7 +4388,7 @@ describe("QURLClient", () => {
       apiKey: "test-api-key",
       baseUrl: "https://api.test.layerv.ai",
       fetch: fetch as typeof globalThis.fetch,
-      maxRetries: 1,
+      maxRetries: 0,
     })
       .getQuota()
       .catch((caught: unknown) => caught as QURLError);
@@ -4480,6 +4484,7 @@ describe("QURLClient", () => {
     expect(() =>
       new TextDecoder("utf-8", { fatal: true }).decode(new TextEncoder().encode(error.detail)),
     ).not.toThrow();
+    expect(error.detail).not.toContain("\uFFFD");
   });
 
   it("keeps structured API error codes single-line, control-free, UTF-8-safe, and bounded", async () => {
@@ -4522,6 +4527,7 @@ describe("QURLClient", () => {
       expect(new TextEncoder().encode(value!).byteLength).toBeLessThanOrEqual(512);
       expect(value).not.toMatch(/[\p{Cc}\u202A-\u202E\u2066-\u2069]/u);
       expect(value).not.toContain("credential-tail");
+      expect(value).not.toContain("\uFFFD");
     }
   });
 
@@ -4537,7 +4543,7 @@ describe("QURLClient", () => {
       apiKey: "test-api-key",
       baseUrl: "https://api.test.layerv.ai",
       fetch: fetch as typeof globalThis.fetch,
-      maxRetries: 2,
+      maxRetries: 0,
     })
       .getQuota()
       .catch((caught: unknown) => caught as QURLError);

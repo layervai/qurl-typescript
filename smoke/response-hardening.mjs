@@ -62,6 +62,14 @@ for (const [name, sdk] of builds) {
     fetch: async (_url, init) => {
       oversizedCalls++;
       assert.equal(init.redirect, "manual");
+      if (oversizedCalls > 1) {
+        return new Response(
+          JSON.stringify({
+            data: { plan: "growth", period_start: "2026-03-01", period_end: "2026-04-01" },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
       return new Response(`${oversizedMarker}${"x".repeat(RESPONSE_LIMIT)}`, {
         status: 503,
         // Deliberately inaccurate: streamed-byte accounting must still reject.
@@ -69,15 +77,9 @@ for (const [name, sdk] of builds) {
       });
     },
   });
-  await assert.rejects(oversizedClient.getQuota(), (error) => {
-    assert.ok(error instanceof sdk.ServerError);
-    assert.equal(error.status, 503);
-    assert.equal(error.code, sdk.ERROR_CODE_UNKNOWN);
-    assert.ok(error.message.length < 256);
-    assert.ok(!error.message.includes(oversizedMarker));
-    return true;
-  });
-  assert.equal(oversizedCalls, 1, `${name} oversized response was retried`);
+  const recovered = await oversizedClient.getQuota();
+  assert.equal(recovered.plan, "growth");
+  assert.equal(oversizedCalls, 2, `${name} oversized transient response was not retried once`);
 
   const boundaryBody = sizedJSON('{"data":{"padding":"', '"}}', RESPONSE_LIMIT);
   const boundaryClient = new sdk.QURLClient({

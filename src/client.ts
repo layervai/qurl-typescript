@@ -122,7 +122,7 @@ const RETRYABLE_STATUS = new Set([429, 502, 503, 504]);
 // Fetch-level POST/PATCH retries still reuse Idempotency-Key below.
 const RETRYABLE_STATUS_MUTATING = new Set([429]);
 const REDIRECT_RESPONSE_STATUSES = new Set([300, 301, 302, 303, 305, 307, 308]);
-const NO_RETRYABLE_STATUSES = new Set<number>();
+const NO_RETRYABLE_STATUSES: ReadonlySet<number> = new Set<number>();
 type HttpMethod = "GET" | "POST" | "PATCH" | "DELETE";
 const IDEMPOTENCY_KEY_METHODS = new Set<HttpMethod>(["POST", "PATCH"]);
 const MUTATING_RETRY_METHODS = new Set<HttpMethod>(["POST", "PATCH"]);
@@ -725,9 +725,9 @@ function boundedInvalidFields(value: unknown): Record<string, string> | undefine
 /** Bound server-controlled object keys before forwarding them to a debug sink. */
 function boundedObjectKeys(value: object): string[] {
   return Object.keys(value)
-    .slice(0, MAX_INVALID_FIELD_ENTRIES)
     .map((key) => boundedErrorSnippet(key))
-    .filter((key): key is string => key !== undefined);
+    .filter((key): key is string => key !== undefined)
+    .slice(0, MAX_INVALID_FIELD_ENTRIES);
 }
 
 async function cancelResponseBody(body: Response["body"]): Promise<void> {
@@ -3641,7 +3641,7 @@ export class QURLClient {
         this.log(
           `${method} ${url} ${lastError instanceof TimeoutError ? "timed out" : "network error"}`,
           {
-            error: lastError.message,
+            error: boundedErrorSnippet(lastError.message),
           },
         );
         if (retryFetchFailure && attempt < this.maxRetries) {
@@ -3684,7 +3684,7 @@ export class QURLClient {
           if (response.ok) {
             throw httpResponseContractError(response, detail);
           }
-          throw createError({
+          const bodyError = createError({
             status: response.status,
             // The unread body cannot supply a trustworthy server code. Keep
             // the real HTTP status class (429/5xx) just like other unreadable
@@ -3694,6 +3694,15 @@ export class QURLClient {
             detail,
             retry_after: this.parseRetryAfter(response),
           });
+          // The unread body does not change operation semantics: retry a GET,
+          // or an idempotency-key-backed mutation on an explicitly retryable
+          // status. Successful oversized responses remain deterministic
+          // contract failures, and DELETE has no retryable statuses.
+          if (retryable.has(response.status) && attempt < this.maxRetries) {
+            lastError = bodyError;
+            continue;
+          }
+          throw bodyError;
         }
         await cancelResponseBody(response.body);
         this.log(`failed to read response body from ${response.status}`, {
@@ -3768,7 +3777,7 @@ export class QURLClient {
             `non-JSON body on ${isPassthrough ? "passthrough" : "success"} response ${response.status}`,
             {
               status: response.status,
-              content_type: response.headers.get("content-type") ?? undefined,
+              content_type: boundedErrorSnippet(response.headers.get("content-type")),
             },
           );
           throw createError({
@@ -3846,7 +3855,7 @@ export class QURLClient {
       // malformed envelope, and fall through to the status-only safety net.
       this.log(`non-JSON error response from ${response.status}`, {
         status: response.status,
-        content_type: response.headers.get("content-type") ?? undefined,
+        content_type: boundedErrorSnippet(response.headers.get("content-type")),
       });
     }
 
