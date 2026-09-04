@@ -91,8 +91,9 @@ returns them only after validating the complete response contract.
 `ensureConnectorResource` and `deleteConnectorResource` throw
 `ConnectorResourceOutcomeUnknownError` when a dispatched mutation may have
 committed but its response cannot prove the result. Reconcile by immutable slug
-or resource ID before deciding whether to retry; the original typed error is
-available as `cause`.
+or resource ID before deciding whether to retry. The wrapper deliberately uses
+`status: 0`; the original typed error is available as `cause`, including its
+observed HTTP status.
 For `ensureConnectorResource`, reuse the same `idempotencyKey` on any deliberate
 retry. qurl-service does not apply idempotency replay to DELETE, so after an
 outcome-unknown `deleteConnectorResource` call, reconcile by resource ID before

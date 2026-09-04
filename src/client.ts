@@ -1032,7 +1032,11 @@ function requireConnectorSlug(slug: string, method: string): void {
 }
 
 function classifyConnectorMutationFailure(error: unknown): never {
-  if (!(error instanceof QURLError)) throw error;
+  if (!(error instanceof QURLError)) {
+    throw new ConnectorResourceOutcomeUnknownError(
+      new RuntimeError("Unexpected failure after Connector mutation dispatch", { cause: error }),
+    );
+  }
   // An authoritative 4xx proves the mutation was rejected. Runtime failures
   // such as missing Web Crypto happen before fetch. Every other surfaced
   // failure follows dispatch or a nominal success whose resource contract
@@ -1127,14 +1131,14 @@ async function parseConnectorResource(
     throw unexpectedResponseError(`${method}: response is missing connector resource data`);
   }
   const resource = value as Resource;
-  if (
-    typeof resource.resource_id !== "string" ||
-    !(await isValidConnectorResourceId(resource.resource_id))
-  ) {
+  if (typeof resource.resource_id !== "string") {
     throw unexpectedResponseError(`${method}: response has missing or invalid resource_id`);
   }
   if (expectation.resourceId !== undefined && resource.resource_id !== expectation.resourceId) {
     throw unexpectedResponseError(`${method}: response resource_id does not match the request`);
+  }
+  if (!(await isValidConnectorResourceId(resource.resource_id))) {
+    throw unexpectedResponseError(`${method}: response has missing or invalid resource_id`);
   }
   if (
     typeof resource.connector_routing_id !== "string" ||
@@ -1196,7 +1200,7 @@ async function parseConnectorResource(
   if (resource.status !== "active") {
     throw unexpectedResponseError(`${method}: response has invalid resource status`);
   }
-  if (resource.crid !== undefined && typeof resource.crid !== "string") {
+  if (resource.crid !== undefined && (typeof resource.crid !== "string" || resource.crid === "")) {
     throw unexpectedResponseError(`${method}: response has invalid crid`);
   }
   if (
@@ -2473,7 +2477,14 @@ export class QURLClient {
         "getConnectorResourceBySlug: response has missing or invalid data",
       );
     }
-    if (data.length === 0) {
+    // The service query is intentionally slug-only because qurl-service
+    // rejects slug+status. Filter defensively client-side so a stale/revoked
+    // row cannot make this active-only helper return or become ambiguous.
+    const active = data.filter(
+      (resource) =>
+        typeof resource !== "object" || resource === null || resource.status !== "revoked",
+    );
+    if (active.length === 0) {
       throw new NotFoundError({
         status: 0,
         code: ERROR_CODE_RESOURCE_NOT_FOUND,
@@ -2481,15 +2492,15 @@ export class QURLClient {
         detail: "getConnectorResourceBySlug: no active resource exists for the requested slug",
       });
     }
-    if (data.length > 1) {
+    if (active.length > 1) {
       throw new QURLError({
         status: 0,
         code: ERROR_CODE_AMBIGUOUS_RESOURCE,
         title: "Ambiguous Resource",
-        detail: `getConnectorResourceBySlug: expected one resource, got ${data.length}`,
+        detail: `getConnectorResourceBySlug: expected one active resource, got ${active.length}`,
       });
     }
-    return parseConnectorResource(this, data[0], "getConnectorResourceBySlug", { slug });
+    return parseConnectorResource(this, active[0], "getConnectorResourceBySlug", { slug });
   }
 
   /**
@@ -4324,7 +4335,7 @@ export class ConnectorResource extends ProtectedResource {
   readonly knockResourceId: string;
   readonly slug: string;
   readonly alias?: string;
-  readonly desiredState?: string;
+  readonly desiredState?: "on" | "off";
   readonly servingEpoch?: number;
 
   /** @internal Instances are returned by QURLClient after wire validation. */
@@ -4341,7 +4352,7 @@ export class ConnectorResource extends ProtectedResource {
     this.knockResourceId = details.knock_resource_id as string;
     this.slug = details.slug as string;
     this.alias = details.alias ?? undefined;
-    this.desiredState = details.desired_state;
+    this.desiredState = details.desired_state as "on" | "off" | undefined;
     this.servingEpoch = details.serving_epoch;
   }
 }

@@ -2045,7 +2045,13 @@ describe("QURLClient", () => {
     try {
       await expect(
         createClient(fetch).ensureConnectorResource("prod-dashboard"),
-      ).rejects.toBeInstanceOf(RuntimeError);
+      ).rejects.toMatchObject({
+        constructor: RuntimeError,
+        code: ERROR_CODE_RUNTIME,
+        detail: expect.stringContaining(
+          "ensureConnectorResource: requires the Web Crypto SubtleCrypto API",
+        ),
+      });
       expect(fetch).not.toHaveBeenCalled();
     } finally {
       vi.unstubAllGlobals();
@@ -2113,8 +2119,34 @@ describe("QURLClient", () => {
       createClient(fetch).ensureConnectorResource("prod-dashboard"),
     ).rejects.toMatchObject({
       constructor: ConnectorResourceOutcomeUnknownError,
+      status: 0,
       cause: { constructor: ServerError, code: "service_unavailable", status: 503 },
     });
+  });
+
+  it("classifies an unexpected throwable after connector ensure dispatch as outcome-unknown", async () => {
+    const fetch = vi.fn(async () => {
+      const response = { headers: new Headers() } as Response;
+      Object.defineProperty(response, "status", {
+        get() {
+          throw new Error("custom response failure");
+        },
+      });
+      return response;
+    });
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 0,
+    });
+
+    await expect(client.ensureConnectorResource("prod-dashboard")).rejects.toMatchObject({
+      constructor: ConnectorResourceOutcomeUnknownError,
+      status: 0,
+      cause: { constructor: RuntimeError, code: ERROR_CODE_RUNTIME },
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   it("preserves an authoritative connector ensure 4xx as a known rejection", async () => {
@@ -2219,10 +2251,17 @@ describe("QURLClient", () => {
     ],
   ])("marks connector delete %s as outcome-unknown", async (_name, response) => {
     const fetch = vi.fn().mockImplementation(response);
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 3,
+    });
 
-    await expect(
-      createClient(fetch as typeof globalThis.fetch).deleteConnectorResource(CONNECTOR_RESOURCE_ID),
-    ).rejects.toMatchObject({ constructor: ConnectorResourceOutcomeUnknownError });
+    await expect(client.deleteConnectorResource(CONNECTOR_RESOURCE_ID)).rejects.toMatchObject({
+      constructor: ConnectorResourceOutcomeUnknownError,
+      status: 0,
+    });
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
@@ -2252,6 +2291,7 @@ describe("QURLClient", () => {
     ["wrong slug", { slug: "other-dashboard" }],
     ["invalid alias", { alias: "Prod Dashboard" }],
     ["invalid CRID type", { crid: 42 }],
+    ["empty CRID", { crid: "" }],
     ["invalid desired state", { desired_state: "paused" }],
     ["negative serving epoch", { serving_epoch: -1 }],
     ["fractional serving epoch", { serving_epoch: 1.5 }],
@@ -2270,7 +2310,7 @@ describe("QURLClient", () => {
     expect(error.code).toBe(ERROR_CODE_UNEXPECTED_RESPONSE);
   });
 
-  it("classifies a revoked slug result as invalid active-only response", async () => {
+  it("treats a revoked-only slug result as no active resource", async () => {
     const fetch = mockFetch({
       status: 200,
       body: { data: [connectorResourceData({ status: "revoked" })] },
@@ -2278,7 +2318,20 @@ describe("QURLClient", () => {
 
     await expect(
       createClient(fetch).getConnectorResourceBySlug("prod-dashboard"),
-    ).rejects.toMatchObject({ code: ERROR_CODE_UNEXPECTED_RESPONSE });
+    ).rejects.toMatchObject({ code: "resource_not_found" });
+  });
+
+  it("filters revoked rows before enforcing active slug uniqueness", async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: {
+        data: [connectorResourceData({ status: "revoked" }), connectorResourceData()],
+      },
+    });
+
+    await expect(
+      createClient(fetch).getConnectorResourceBySlug("prod-dashboard"),
+    ).resolves.toBeInstanceOf(ConnectorResource);
   });
 
   it("classifies a revoked by-ID result as a connector lifecycle error", async () => {

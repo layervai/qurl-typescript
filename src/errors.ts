@@ -161,6 +161,8 @@ export class ServerError extends QURLError {
  * A Connector resource ensure/delete was dispatched, but the response cannot
  * prove whether it committed. Reconcile by immutable slug or resource ID
  * before choosing whether to retry. The original typed failure is in `cause`.
+ * The wrapper uses `status: 0` so generic HTTP-status retry predicates cannot
+ * replay the mutation; inspect `cause.status` for the observed HTTP status.
  * A valid HTTP 201 Connector row missing only `meta.found_existing` is a known
  * committed/selected row with incomplete metadata and is not wrapped here.
  */
@@ -169,7 +171,7 @@ export class ConnectorResourceOutcomeUnknownError extends QURLError {
 
   constructor(cause: QURLError) {
     super({
-      status: cause.status,
+      status: 0,
       code: ERROR_CODE_CONNECTOR_RESOURCE_OUTCOME_UNKNOWN,
       title: "Connector Resource Outcome Unknown",
       detail: `Mutation outcome is unknown; reconcile before retrying. ${cause.detail}`,
