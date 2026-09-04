@@ -3582,6 +3582,8 @@ export class QURLClient {
     const requestId =
       envelope.meta?.request_id ?? envelope.__response_headers?.get("X-Request-Id") ?? undefined;
     if (envelope.__http_status !== 201) {
+      // qurl-service returns 201 for both a fresh create and an idempotency
+      // replay; replay state is carried by the response header, not status.
       throw unexpectedResponseError(
         `createExternalIdentityBinding: expected HTTP 201 response (got HTTP ${envelope.__http_status ?? "unknown"})`,
         requestId,

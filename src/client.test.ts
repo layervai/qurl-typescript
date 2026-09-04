@@ -8642,6 +8642,21 @@ describe("createExternalIdentityBinding", () => {
     },
   );
 
+  it("normalizes replay header casing and surrounding whitespace", async () => {
+    const fetch = mockFetch({
+      status: 201,
+      headers: { "Idempotency-Replayed": " TRUE " },
+      body: externalIdentityBindingData(),
+    });
+
+    const result = await createClient(fetch).createExternalIdentityBinding(
+      { provider: "teams", external_id: "tenant-obviously-fake" },
+      { idempotencyKey: BINDING_IDEMPOTENCY_KEY },
+    );
+
+    expect(result.replayed).toBe(true);
+  });
+
   it("treats a present replay header with value false as a fresh create", async () => {
     const fetch = mockFetch({
       status: 201,
