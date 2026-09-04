@@ -833,33 +833,32 @@ export interface WebhookPayload {
   data?: Record<string, unknown>;
 }
 
-export type ApiKeyScope = OpenString<"qurl:read" | "qurl:write" | "qurl:resolve" | "qurl:agent">;
-
 /** Closed scope vocabulary accepted by current create/update request schemas. */
 export type ApiKeyRequestScope = "qurl:read" | "qurl:write" | "qurl:resolve" | "qurl:agent";
+
+export type ApiKeyScope = OpenString<ApiKeyRequestScope>;
 
 /** Which credential `createApiKey` mints. `device` is system-minted only. */
 export type CredentialKind = OpenString<"api_key" | "enrollment_token" | "device">;
 
-/** What a `kind: "enrollment_token"` credential enrolls. */
-export type CredentialTarget = OpenString<"agent" | "connector">;
-
 /** Closed target vocabulary accepted by the current enrollment-token request schema. */
 export type CredentialTargetInput = "agent" | "connector";
 
-/** A resource claim binding an enrollment token to one resource. */
-export interface CredentialClaim {
-  /** `connector` is the only claim type today. */
-  type: OpenString<"connector">;
-  /** Immutable connector slug when `type` is `connector`. */
-  id: string;
-}
+/** What a `kind: "enrollment_token"` credential enrolls. */
+export type CredentialTarget = OpenString<CredentialTargetInput>;
 
+/** A resource claim binding an enrollment token to one resource. */
 /** Closed resource-claim shape accepted by the current enrollment-token request schema. */
 export interface CredentialClaimInput {
   type: "connector";
   /** Immutable 3-64 character connector slug. */
   id: string;
+}
+
+/** A resource claim returned for a credential. */
+export interface CredentialClaim extends Omit<CredentialClaimInput, "type"> {
+  /** `connector` is the only claim type today; responses remain forward-compatible. */
+  type: OpenString<CredentialClaimInput["type"]>;
 }
 
 interface CreateCredentialBase {

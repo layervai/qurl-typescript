@@ -664,19 +664,39 @@ const MAX_DESCRIPTION = 500;
 const MAX_CUSTOM_DOMAIN = 253;
 const MAX_MAX_SESSIONS = 1000;
 const MAX_API_KEY_NAME = 100;
-const API_KEY_REQUEST_SCOPES = new Set<string>([
+const API_KEY_REQUEST_SCOPE_VALUES = [
   "qurl:read",
   "qurl:write",
   "qurl:resolve",
   "qurl:agent",
-] satisfies ApiKeyRequestScope[]);
-const CREDENTIAL_TARGETS = new Set<string>([
+] as const satisfies readonly ApiKeyRequestScope[];
+assertExhaustive<
+  Exclude<ApiKeyRequestScope, (typeof API_KEY_REQUEST_SCOPE_VALUES)[number]> extends never
+    ? true
+    : never
+>(true);
+const API_KEY_REQUEST_SCOPES = new Set<string>(API_KEY_REQUEST_SCOPE_VALUES);
+
+const CREDENTIAL_TARGET_VALUES = [
   "agent",
   "connector",
-] satisfies CredentialTargetInput[]);
-const CREDENTIAL_CLAIM_TYPES = new Set<string>([
+] as const satisfies readonly CredentialTargetInput[];
+assertExhaustive<
+  Exclude<CredentialTargetInput, (typeof CREDENTIAL_TARGET_VALUES)[number]> extends never
+    ? true
+    : never
+>(true);
+const CREDENTIAL_TARGETS = new Set<string>(CREDENTIAL_TARGET_VALUES);
+
+const CREDENTIAL_CLAIM_TYPE_VALUES = [
   "connector",
-] satisfies CredentialClaimInput["type"][]);
+] as const satisfies readonly CredentialClaimInput["type"][];
+assertExhaustive<
+  Exclude<CredentialClaimInput["type"], (typeof CREDENTIAL_CLAIM_TYPE_VALUES)[number]> extends never
+    ? true
+    : never
+>(true);
+const CREDENTIAL_CLAIM_TYPES = new Set<string>(CREDENTIAL_CLAIM_TYPE_VALUES);
 // Mirrors CredentialClaim.id in the service OpenAPI and domain.ValidateSlug.
 const CREDENTIAL_CLAIM_ID_PATTERN = /^[a-z][a-z0-9-]{1,62}[a-z0-9]$/;
 // Mirrors CreateApiKeyRequest.expires_in in the service OpenAPI. Composite

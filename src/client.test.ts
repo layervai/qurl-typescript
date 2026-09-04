@@ -1773,6 +1773,22 @@ describe("QURLClient", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("createApiKey passes through an explicit durable credential kind", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+
+    await createClient(fetch).createApiKey({
+      kind: "api_key",
+      name: "dashboard",
+      scopes: ["qurl:read"],
+    });
+
+    expect(JSON.parse(vi.mocked(fetch).mock.calls[0][1]?.body as string)).toEqual({
+      kind: "api_key",
+      name: "dashboard",
+      scopes: ["qurl:read"],
+    });
+  });
+
   it("createApiKey mints a bound Connector enrollment token", async () => {
     const fetch = mockFetch({ status: 201, body: { data: {} } });
     const client = createClient(fetch);
