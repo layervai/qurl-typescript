@@ -1816,6 +1816,34 @@ describe("QURLClient", () => {
     expect(body).not.toHaveProperty("scopes");
   });
 
+  it("returns current enrollment credential response fields", async () => {
+    const fetch = mockFetch({
+      status: 201,
+      body: {
+        data: {
+          key_id: "key_obviously_fake",
+          kind: "enrollment_token",
+          target: "connector",
+          claims: [{ type: "connector", id: "prod-dashboard" }],
+          api_key: "qurl_test_obviously_fake_enrollment_token",
+        },
+      },
+    });
+
+    const result = await createClient(fetch).createApiKey({
+      kind: "enrollment_token",
+      name: "prod-dashboard enrollment",
+      target: "connector",
+      claims: [{ type: "connector", id: "prod-dashboard" }],
+    });
+
+    expect(result).toMatchObject({
+      kind: "enrollment_token",
+      target: "connector",
+      claims: [{ type: "connector", id: "prod-dashboard" }],
+    });
+  });
+
   it("createApiKey lets the server derive target from claims", async () => {
     const fetch = mockFetch({ status: 201, body: { data: {} } });
     const client = createClient(fetch);
@@ -1970,10 +1998,28 @@ describe("QURLClient", () => {
       "requires exactly one claim",
     ],
     [
+      "a connector target with an empty claim list",
+      { kind: "enrollment_token", name: "bad", target: "connector", claims: [] },
+      "requires exactly one claim",
+    ],
+    [
       "more than one claim",
       {
         kind: "enrollment_token",
         name: "bad",
+        claims: [
+          { type: "connector", id: "one" },
+          { type: "connector", id: "two" },
+        ],
+      },
+      "at most one claim",
+    ],
+    [
+      "more than one claim with an explicit connector target",
+      {
+        kind: "enrollment_token",
+        name: "bad",
+        target: "connector",
         claims: [
           { type: "connector", id: "one" },
           { type: "connector", id: "two" },

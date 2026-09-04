@@ -118,6 +118,7 @@ const enrollment = await client.createApiKey({
   claims: [{ type: 'connector', id: 'prod-dashboard' }],
   expires_in: '15m',
 });
+if (!enrollment.api_key) throw new Error('Enrollment response omitted its one-time token');
 await deliverEnrollmentTokenSecurely(enrollment.api_key);
 ```
 

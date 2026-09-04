@@ -847,8 +847,7 @@ export type CredentialTargetInput = "agent" | "connector";
 /** What a `kind: "enrollment_token"` credential enrolls. */
 export type CredentialTarget = OpenString<CredentialTargetInput>;
 
-/** A resource claim binding an enrollment token to one resource. */
-/** Closed resource-claim shape accepted by the current enrollment-token request schema. */
+/** Closed resource claim binding an enrollment token to one resource. */
 export interface CredentialClaimInput {
   type: "connector";
   /** Immutable 3-64 character connector slug. */
