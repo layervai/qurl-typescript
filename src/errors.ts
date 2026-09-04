@@ -19,9 +19,9 @@ export const ERROR_CODE_RUNTIME = "runtime_error";
 export const ERROR_CODE_CONNECTOR_RESOURCE_OUTCOME_UNKNOWN = "connector_resource_outcome_unknown";
 /** A by-ID Connector resource lookup found a revoked lifecycle row. */
 export const ERROR_CODE_CONNECTOR_RESOURCE_REVOKED = "connector_resource_revoked";
-/** `connectorResource` found no resource for the connector id (client-detected, `status: 0`). */
+/** A Connector slug lookup found no active resource (client-detected, `status: 0`). */
 export const ERROR_CODE_RESOURCE_NOT_FOUND = "resource_not_found";
-/** `connectorResource` matched more than one resource where exactly one is required (client-detected, `status: 0`). */
+/** A Connector slug lookup matched more than one active resource (client-detected, `status: 0`). */
 export const ERROR_CODE_AMBIGUOUS_RESOURCE = "ambiguous_resource";
 /** Fallback `.code` when the server returns a non-RFC-7807 response (HTML proxy page, plaintext gateway error, JSON without `error` envelope). */
 export const ERROR_CODE_UNKNOWN = "unknown";
@@ -167,6 +167,7 @@ export class ServerError extends QURLError {
  * committed/selected row with incomplete metadata and is not wrapped here.
  */
 export class ConnectorResourceOutcomeUnknownError extends QURLError {
+  declare readonly code: typeof ERROR_CODE_CONNECTOR_RESOURCE_OUTCOME_UNKNOWN;
   declare readonly cause: QURLError;
 
   constructor(cause: QURLError) {

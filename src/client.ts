@@ -878,6 +878,8 @@ const MAX_TARGET_PATH = 2048;
 const MAX_TAGS = 10;
 const MAX_TAG_LENGTH = 50;
 const MAX_AUTO_PAGINATION_PAGES = 10_000;
+// These connector identity contracts are pinned to qurl-go a528d1f and
+// qurl-service 047cf31. Widen them only with a coordinated producer change.
 const CONNECTOR_SLUG_PATTERN = /^[a-z][a-z0-9-]{1,62}[a-z0-9]$/;
 const CONNECTOR_RESOURCE_ID_PATTERN = /^[A-Za-z0-9_-]{122}$/;
 const CONNECTOR_ROUTING_ID_PATTERN = /^c-[a-z2-7]{51}[aq]$/;
@@ -1038,12 +1040,14 @@ function classifyConnectorMutationFailure(error: unknown): never {
     );
   }
   // An authoritative 4xx proves the mutation was rejected. Runtime failures
-  // such as missing Web Crypto happen before fetch. Every other surfaced
-  // failure follows dispatch or a nominal success whose resource contract
-  // could not be consumed, so callers must reconcile before retrying. Ensure's
-  // exact 201 + valid resource but missing found_existing is handled after
-  // this classifier: the row proves the selected resource, while only its
-  // required metadata is unavailable (matching qurl-go).
+  // are pre-dispatch only because ensureConnectorResource preflights every
+  // runtime capability used by response validation before fetch. Do not add a
+  // post-dispatch RuntimeError path without changing this classification.
+  // Every other surfaced failure follows dispatch or a nominal success whose
+  // resource contract could not be consumed, so callers must reconcile before
+  // retrying. Ensure's exact 201 + valid resource but missing found_existing is
+  // handled after this classifier: the row proves the selected resource, while
+  // only its required metadata is unavailable (matching qurl-go).
   if (
     error instanceof RuntimeError ||
     error.code === ERROR_CODE_CLIENT_VALIDATION ||
@@ -1137,6 +1141,17 @@ async function parseConnectorResource(
   if (expectation.resourceId !== undefined && resource.resource_id !== expectation.resourceId) {
     throw unexpectedResponseError(`${method}: response resource_id does not match the request`);
   }
+  // A by-ID request already prevalidated its requested resource key and then
+  // matched this field byte-for-byte. Surface revocation before validating
+  // active-only routing fields, which may be removed during teardown.
+  if (resource.status === "revoked" && expectation.revokedIsLifecycleError === true) {
+    throw new QURLError({
+      status: 0,
+      code: ERROR_CODE_CONNECTOR_RESOURCE_REVOKED,
+      title: "Connector Resource Revoked",
+      detail: `${method}: qURL Connector resource is revoked`,
+    });
+  }
   if (!(await isValidConnectorResourceId(resource.resource_id))) {
     throw unexpectedResponseError(`${method}: response has missing or invalid resource_id`);
   }
@@ -1185,17 +1200,9 @@ async function parseConnectorResource(
     throw unexpectedResponseError(`${method}: response has invalid alias`);
   }
   if (resource.status === "revoked") {
-    if (expectation.revokedIsLifecycleError !== true) {
-      throw unexpectedResponseError(
-        `${method}: active-only operation returned a revoked connector resource`,
-      );
-    }
-    throw new QURLError({
-      status: 0,
-      code: ERROR_CODE_CONNECTOR_RESOURCE_REVOKED,
-      title: "Connector Resource Revoked",
-      detail: `${method}: qURL Connector resource is revoked`,
-    });
+    throw unexpectedResponseError(
+      `${method}: active-only operation returned a revoked connector resource`,
+    );
   }
   if (resource.status !== "active") {
     throw unexpectedResponseError(`${method}: response has invalid resource status`);
@@ -2482,7 +2489,7 @@ export class QURLClient {
     // row cannot make this active-only helper return or become ambiguous.
     const active = data.filter(
       (resource) =>
-        typeof resource !== "object" || resource === null || resource.status !== "revoked",
+        typeof resource !== "object" || resource === null || resource.status === "active",
     );
     if (active.length === 0) {
       throw new NotFoundError({
