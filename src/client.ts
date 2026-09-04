@@ -1,4 +1,5 @@
 import {
+  ConnectorResourceOutcomeUnknownError,
   createError,
   ERROR_CODE_AMBIGUOUS_RESOURCE,
   ERROR_CODE_CLIENT_VALIDATION,
@@ -1027,6 +1028,18 @@ function requireConnectorSlug(slug: string, method: string): void {
       `${method}: slug must be 3-64 lowercase alphanumeric or hyphen characters, start with a letter, and end alphanumeric`,
     );
   }
+}
+
+function classifyConnectorMutationFailure(error: unknown): never {
+  if (!(error instanceof QURLError)) throw error;
+  // An authoritative 4xx proves the mutation was rejected. Runtime failures
+  // such as missing Web Crypto happen before fetch. Every other surfaced
+  // failure follows dispatch or a nominal success whose contract could not be
+  // consumed, so callers must reconcile before retrying.
+  if (error instanceof RuntimeError || (error.status >= 400 && error.status < 500)) {
+    throw error;
+  }
+  throw new ConnectorResourceOutcomeUnknownError(error);
 }
 
 function decodeCanonicalBase64Url(value: string): Uint8Array | undefined {
@@ -2348,20 +2361,27 @@ export class QURLClient {
   /** Find or create the active qURL Connector resource for an immutable slug. */
   async ensureConnectorResource(slug: string): Promise<EnsureConnectorResourceResult> {
     requireConnectorSlug(slug, "ensureConnectorResource");
-    const { data, meta, __http_status } = await this.rawRequest<Resource>("POST", "/v1/resources", {
-      type: "tunnel",
-      slug,
-      find_or_create: true,
-    });
-    if (__http_status !== 201) {
-      throw unexpectedResponseError(
-        `ensureConnectorResource: expected HTTP 201, got ${__http_status ?? "unknown"}`,
-      );
+    let response: ApiResponse<Resource>;
+    let resource: ConnectorResource;
+    try {
+      response = await this.rawRequest<Resource>("POST", "/v1/resources", {
+        type: "tunnel",
+        slug,
+        find_or_create: true,
+      });
+      if (response.__http_status !== 201) {
+        throw unexpectedResponseError(
+          `ensureConnectorResource: expected HTTP 201, got ${response.__http_status ?? "unknown"}`,
+        );
+      }
+      resource = await parseConnectorResource(this, response.data, "ensureConnectorResource", {
+        slug,
+      });
+    } catch (error) {
+      classifyConnectorMutationFailure(error);
     }
-    const resource = await parseConnectorResource(this, data, "ensureConnectorResource", {
-      slug,
-    });
-    const foundExisting = (meta as { found_existing?: unknown } | undefined)?.found_existing;
+    const foundExisting = (response.meta as { found_existing?: unknown } | undefined)
+      ?.found_existing;
     if (typeof foundExisting !== "boolean") {
       throw unexpectedResponseError(
         "ensureConnectorResource: response is missing meta.found_existing",
@@ -2427,14 +2447,10 @@ export class QURLClient {
   /** Revoke a qURL Connector resource by immutable public resource ID. */
   async deleteConnectorResource(resourceId: string): Promise<void> {
     await requireConnectorResourceId(resourceId, "deleteConnectorResource");
-    const { __http_status } = await this.rawRequest(
-      "DELETE",
-      `/v1/resources/${encodeURIComponent(resourceId)}`,
-    );
-    if (__http_status !== 204) {
-      throw unexpectedResponseError(
-        `deleteConnectorResource: expected HTTP 204, got ${__http_status ?? "unknown"}`,
-      );
+    try {
+      await this.requestNoContent(`/v1/resources/${encodeURIComponent(resourceId)}`);
+    } catch (error) {
+      classifyConnectorMutationFailure(error);
     }
   }
 

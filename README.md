@@ -83,6 +83,12 @@ or `getConnectorResourceBySlug(slug)` for read-only lookup and
 `connectorResource(slug)` spelling remains as a deprecated alias for the slug
 lookup.
 
+`ensureConnectorResource` and `deleteConnectorResource` throw
+`ConnectorResourceOutcomeUnknownError` when a dispatched mutation may have
+committed but its response cannot prove the result. Reconcile by immutable slug
+or resource ID before deciding whether to retry; the original typed error is
+available as `cause`.
+
 If you persist the resource id, future calls do not need to recreate the
 handle (no API call is made until you mint):
 

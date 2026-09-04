@@ -3,6 +3,7 @@ import { ConnectorResource, QURLClient } from "./client.js";
 import {
   AuthenticationError,
   AuthorizationError,
+  ConnectorResourceOutcomeUnknownError,
   ERROR_CODE_CLIENT_VALIDATION,
   ERROR_CODE_RUNTIME,
   ERROR_CODE_UNEXPECTED_RESPONSE,
@@ -2040,8 +2041,31 @@ describe("QURLClient", () => {
     });
     const client = createClient(fetch);
 
-    await expect(client.ensureConnectorResource("prod-dashboard")).rejects.toMatchObject({
-      code: ERROR_CODE_UNEXPECTED_RESPONSE,
+    const error = await client
+      .ensureConnectorResource("prod-dashboard")
+      .catch((caught: unknown) => caught);
+    if (_name === "missing found-existing metadata") {
+      expect(error).not.toBeInstanceOf(ConnectorResourceOutcomeUnknownError);
+      expect(error).toMatchObject({ code: ERROR_CODE_UNEXPECTED_RESPONSE });
+    } else {
+      expect(error).toMatchObject({
+        constructor: ConnectorResourceOutcomeUnknownError,
+        cause: { code: ERROR_CODE_UNEXPECTED_RESPONSE },
+      });
+    }
+  });
+
+  it("marks a connector ensure 5xx as outcome-unknown without hiding the server error", async () => {
+    const fetch = mockFetch({
+      status: 503,
+      body: { error: { status: 503, code: "service_unavailable", title: "Unavailable" } },
+    });
+
+    await expect(
+      createClient(fetch).ensureConnectorResource("prod-dashboard"),
+    ).rejects.toMatchObject({
+      constructor: ConnectorResourceOutcomeUnknownError,
+      cause: { constructor: ServerError, code: "service_unavailable", status: 503 },
     });
   });
 
@@ -2102,6 +2126,35 @@ describe("QURLClient", () => {
       `https://api.test.layerv.ai/v1/resources/${CONNECTOR_RESOURCE_ID}`,
       expect.objectContaining({ method: "DELETE" }),
     );
+  });
+
+  it.each([
+    ["transport failure", () => Promise.reject(new TypeError("socket closed"))],
+    [
+      "alternate successful response",
+      () => Promise.resolve(new Response(JSON.stringify({ data: {} }), { status: 200 })),
+    ],
+  ])("marks connector delete %s as outcome-unknown", async (_name, response) => {
+    const fetch = vi.fn().mockImplementation(response);
+
+    await expect(
+      createClient(fetch as typeof globalThis.fetch).deleteConnectorResource(CONNECTOR_RESOURCE_ID),
+    ).rejects.toMatchObject({ constructor: ConnectorResourceOutcomeUnknownError });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves an authoritative connector delete 4xx as a known rejection", async () => {
+    const fetch = mockFetch({
+      status: 409,
+      body: { error: { status: 409, code: "resource_conflict", title: "Conflict" } },
+    });
+
+    const error = await createClient(fetch)
+      .deleteConnectorResource(CONNECTOR_RESOURCE_ID)
+      .catch((caught: unknown) => caught as QURLError);
+
+    expect(error).not.toBeInstanceOf(ConnectorResourceOutcomeUnknownError);
+    expect(error).toMatchObject({ status: 409, code: "resource_conflict" });
   });
 
   it.each([
