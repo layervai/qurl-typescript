@@ -639,6 +639,29 @@ const METHOD_CASES: MethodCase[] = [
     },
   },
   {
+    method: "createExternalIdentityBinding",
+    verb: "POST",
+    template: "/v1/external-identity-bindings",
+    mockBody: {
+      binding_id: "eib_x",
+      provider: "teams",
+      external_id: "tenant-obviously-fake",
+      api_key: {
+        key_id: "key_x",
+        key_prefix: "qurl_test",
+        plaintext: "qurl_test_obviously_fake_secret",
+      },
+      scopes: ["qurl:read"],
+      created_at: "2026-08-02T00:00:00Z",
+    },
+    mockStatus: 201,
+    invoke: (c) =>
+      c.createExternalIdentityBinding(
+        { provider: "teams", external_id: "tenant-obviously-fake" },
+        { idempotencyKey: "tenant-obviously-fake-binding-0001" },
+      ),
+  },
+  {
     method: "createApiKey",
     verb: "POST",
     template: "/v1/api-keys",

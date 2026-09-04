@@ -202,12 +202,81 @@ console.log(`Access granted to ${access.target_url} for ${access.access_grant?.e
 | `listWebhooks(input?)` / `listAllWebhooks(input?)` / `createWebhook(input)` / `getWebhook(id)` | Webhook management |
 | `updateWebhook(id, input)` / `deleteWebhook(id)` / `regenerateWebhookSecret(id)` | Webhook updates and secret rotation |
 | `listWebhookEventTypes()` / `listWebhookDeliveries(id, input?)` / `listAllWebhookDeliveries(id, input?)` | Webhook metadata and delivery history |
+| `createExternalIdentityBinding(input, options)` | Bind a Slack, Discord, or Teams identity and issue its API key |
 | `createApiKey(input)` / `listApiKeys(input?)` / `listAllApiKeys(input?)` / `updateApiKey(id, input)` / `revokeApiKey(id)` | API key management |
 | `createAccessCode(input)` / `listAccessCodes()` / `redeemAccessCode(input)` / `revokeAccessCode(id)` | Access code management |
 
 `listResourceSessions(id)` and `listAccessCodes()` reflect currently unpaginated service endpoints. Their outputs always return `has_more: false`; if the service starts surfacing cursor metadata, the SDK emits a debug log rather than exposing an unactionable next-page signal.
 
 `listAll*()` methods validate ids and query params when called, before the async iterator is consumed. Wrap the `listAll*()` call itself in `try/catch` when passing dynamic input.
+
+### `createExternalIdentityBinding(input, options)`
+
+Create an owner binding for a Slack, Discord, or Teams identity. The API key
+must have `qurl:write` scope. The per-call `idempotencyKey` is mandatory for
+this operation, must be 32-256 printable ASCII characters, and must be derived
+from stable inputs such as the tenant ID. The SDK never generates this key for
+you: a random key would prevent recovery after a lost response. `external_id`
+is opaque but cannot be empty, exceed 256 UTF-8 bytes, or contain `#`;
+`display_name`, when present, cannot exceed 100 UTF-8 bytes.
+
+```typescript
+const binding = await client.createExternalIdentityBinding(
+  {
+    provider: 'teams',
+    external_id: '00000000-0000-4000-8000-000000000001',
+    display_name: 'Obviously Fake Tenant',
+  },
+  { idempotencyKey: '00000000-0000-4000-8000-000000000001-binding-v1' },
+);
+
+// Persist this secret in a secure store immediately.
+await secretStore.put('obviously-fake-tenant-qurl-key', binding.api_key.plaintext);
+// Then release every reference to `binding`; plaintext is intentionally
+// read-only and cannot be scrubbed in place.
+```
+
+`api_key.plaintext` is a **one-time secret**. Never log it or include it in an
+error. A retry with the same idempotency key and exact same body can recover the
+same key for up to 24 hours; after that window the plaintext is unrecoverable.
+The property is directly readable for persistence but non-enumerable and
+omitted by JSON and redacted by Node inspection to reduce accidental structured
+logging.
+Read `binding.api_key.plaintext` directly: JSON, spread, and structured-clone
+copies intentionally omit it and cannot preserve the one-time secret.
+These protections reduce accidental disclosure; reflection, disabled custom
+inspection, browser debuggers, and heap snapshots can still reveal the live
+property, so do not log the object and release it after persistence.
+`binding.replayed` is `true` when the service signals a replay using either its
+current `X-Idempotency-Replayed` header or the spec-declared
+`Idempotency-Replayed` header. It is `undefined` when replay state is absent,
+unrecognized, or conflicting; current qurl-service omits the header for a fresh response. This
+is a transport-level signal and can be `true` on the caller's first invocation
+when an SDK retry recovers a response whose initial delivery was lost.
+`binding.location` contains the response `Location` only when it is a bounded
+same-origin HTTPS URL or absolute path; unusable, credential-bearing,
+cross-origin, downgraded, or overlong values are omitted.
+Cross-origin browser code can read these response-header fields only when the
+service exposes `Location` and the replay header through CORS; otherwise they
+remain `undefined` even when the wire response carried them.
+The service returns exact HTTP 201 with a
+top-level binding object for both fresh creates and replays. If the SDK rejects
+a successful response because that status or shape drifted, retry with the same
+key and byte-identical body within the 24-hour window to recover the one-time
+key.
+
+Conflict handling is code-specific even though both outcomes use HTTP 409:
+
+- `already_exists`: the external identity is bound to another owner; changing
+  the idempotency key will not resolve it.
+- `idempotency_conflict`: the key was reused with a different body; retry only
+  with the original body or begin a genuinely new operation with a new stable
+  key.
+
+HTTP 403 with `code: "api_key_limit"` means the owner cannot receive another
+API key. HTTP 503 with `code: "service_unavailable"` can mean the endpoint is
+disabled in that environment or replay data is temporarily unavailable; honor
+`retryAfter` and retry with the **same key and exact body**.
 
 ### `batchCreate(input)`
 
@@ -350,6 +419,10 @@ await client.create(
 The portal verbs take the same per-call options as their final argument, e.g.
 `resource.createPortal({ validFor: '5m' }, { idempotencyKey: 'mint-alice-1' })`.
 
+`createExternalIdentityBinding` is the exception to automatic key generation:
+it requires a deterministic caller-supplied key of 32-256 characters so a new
+SDK call can recover the one-time plaintext after a lost response.
+
 SDK-generated keys require `globalThis.crypto.getRandomValues`, which is available in supported Node 20+ runtimes and modern edge/browser runtimes. In constrained runtimes without Web Crypto, pass a caller-provided key with `idempotencyKey`; otherwise POST/PATCH calls throw `RuntimeError` before sending a request.
 
 ## Security Notes
@@ -383,6 +456,8 @@ SDK-generated keys require `globalThis.crypto.getRandomValues`, which is availab
   or response-body snippets. Standard request debug logging includes the request
   URL, so do not place credentials in identifiers or enable debug output in a
   sensitive logging environment.
+- Securely persist external-binding `api_key.plaintext` immediately; it is a
+  one-time secret and becomes unrecoverable after its 24-hour replay window.
 - Prefer short portal lifetimes such as `validFor: '5m'`.
 - Do not ask portal recipients to handle credentials. Recipients only need
   the link.
