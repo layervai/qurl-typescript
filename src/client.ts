@@ -677,6 +677,11 @@ assertExhaustive<
 >(true);
 const API_KEY_REQUEST_SCOPES = new Set<string>(API_KEY_REQUEST_SCOPE_VALUES);
 
+/** Narrow a response scope before reusing it in a create/update request. */
+export function isApiKeyRequestScope(scope: string): scope is ApiKeyRequestScope {
+  return API_KEY_REQUEST_SCOPES.has(scope);
+}
+
 const CREDENTIAL_TARGET_VALUES = [
   "agent",
   "connector",

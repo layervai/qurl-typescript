@@ -1,4 +1,4 @@
-export { ProtectedResource, QURLClient } from "./client.js";
+export { isApiKeyRequestScope, ProtectedResource, QURLClient } from "./client.js";
 export {
   AuthenticationError,
   AuthorizationError,

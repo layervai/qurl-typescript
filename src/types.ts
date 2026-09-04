@@ -854,10 +854,11 @@ export interface CredentialClaimInput {
   id: string;
 }
 
-/** A resource claim returned for a credential. */
-export interface CredentialClaim extends Omit<CredentialClaimInput, "type"> {
+/** A potentially partial resource claim returned for a credential. */
+export interface CredentialClaim {
   /** `connector` is the only claim type today; responses remain forward-compatible. */
-  type: OpenString<CredentialClaimInput["type"]>;
+  type?: OpenString<CredentialClaimInput["type"]>;
+  id?: string;
 }
 
 interface CreateCredentialBase {

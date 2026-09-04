@@ -1,5 +1,5 @@
-import { describe, it, expect, vi } from "vitest";
-import { QURLClient } from "./client.js";
+import { describe, it, expect, expectTypeOf, vi } from "vitest";
+import { isApiKeyRequestScope, QURLClient } from "./client.js";
 import {
   AuthenticationError,
   AuthorizationError,
@@ -17,6 +17,7 @@ import {
   ValidationError,
 } from "./errors.js";
 import type {
+  ApiKeyRequestScope,
   BatchCreateInput,
   CreateInput,
   CredentialClaim,
@@ -1789,6 +1790,26 @@ describe("QURLClient", () => {
     });
   });
 
+  it("maps the durable credential kind returned by the service", async () => {
+    const fetch = mockFetch({
+      status: 201,
+      body: { data: { key_id: "key_obviously_fake", kind: "api_key" } },
+    });
+
+    await expect(
+      createClient(fetch).createApiKey({ name: "dashboard", scopes: ["qurl:read"] }),
+    ).resolves.toMatchObject({ kind: "api_key" });
+  });
+
+  it("does not mutate a durable-key input when defaulting its kind", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+    const input = { name: "dashboard", scopes: ["qurl:read"] as ApiKeyRequestScope[] };
+
+    await createClient(fetch).createApiKey(input);
+
+    expect(input).not.toHaveProperty("kind");
+  });
+
   it("createApiKey mints a bound Connector enrollment token", async () => {
     const fetch = mockFetch({ status: 201, body: { data: {} } });
     const client = createClient(fetch);
@@ -1879,6 +1900,32 @@ describe("QURLClient", () => {
       kind: "enrollment_token",
       name: "unbound agent enrollment",
     });
+  });
+
+  it("createApiKey accepts an explicit unbound agent target", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+
+    await createClient(fetch).createApiKey({
+      kind: "enrollment_token",
+      name: "unbound agent enrollment",
+      target: "agent",
+    });
+
+    expect(JSON.parse(vi.mocked(fetch).mock.calls[0][1]?.body as string)).toEqual({
+      kind: "enrollment_token",
+      name: "unbound agent enrollment",
+      target: "agent",
+    });
+  });
+
+  it("exports a request-scope guard for narrowing forward-compatible responses", () => {
+    const responseScope: string = "qurl:read";
+
+    expect(isApiKeyRequestScope(responseScope)).toBe(true);
+    expect(isApiKeyRequestScope("future:scope")).toBe(false);
+    if (isApiKeyRequestScope(responseScope)) {
+      expectTypeOf(responseScope).toEqualTypeOf<ApiKeyRequestScope>();
+    }
   });
 
   it("createApiKey accepts an explicit empty claim list for an unbound agent token", async () => {
