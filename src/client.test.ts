@@ -2185,8 +2185,25 @@ describe("QURLClient", () => {
       code: ERROR_CODE_CLIENT_VALIDATION,
       detail: expect.stringContaining("access token"),
     });
-    expect(error.detail).not.toContain(qurlLink);
-    expect(error.detail).not.toContain(SENSITIVE_ACCESS_TOKEN);
+    expect((error as ValidationError).detail).not.toContain(qurlLink);
+    expect((error as ValidationError).detail).not.toContain(SENSITIVE_ACCESS_TOKEN);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("delete rejects a scheme-less link whose access token is a path segment", async () => {
+    const fetch = mockFetch({ status: 204 });
+    const qurlLink = `qurl.link/${SENSITIVE_ACCESS_TOKEN}`;
+
+    const error = await createClient(fetch)
+      .delete(qurlLink)
+      .catch((caught: unknown) => caught as ValidationError);
+
+    expect(error).toMatchObject({
+      code: ERROR_CODE_CLIENT_VALIDATION,
+      detail: expect.stringContaining("must be an identifier, not a URL"),
+    });
+    expect((error as ValidationError).detail).not.toContain(qurlLink);
+    expect((error as ValidationError).detail).not.toContain(SENSITIVE_ACCESS_TOKEN);
     expect(fetch).not.toHaveBeenCalled();
   });
 
@@ -2202,7 +2219,19 @@ describe("QURLClient", () => {
       code: ERROR_CODE_CLIENT_VALIDATION,
       detail: expect.stringContaining("access token"),
     });
-    expect(error.detail).not.toContain(encodedToken);
+    expect((error as ValidationError).detail).not.toContain(encodedToken);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("gives non-resource namespaces a generic recovery hint for pasted credentials", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+
+    const error = await createClient(fetch)
+      .getWebhook(`Bearer ${SENSITIVE_ACCESS_TOKEN}`)
+      .catch((caught: unknown) => caught as ValidationError);
+
+    expect(error.detail).toContain("pass the identifier returned by the API");
+    expect(error.detail).not.toContain(SENSITIVE_ACCESS_TOKEN);
     expect(fetch).not.toHaveBeenCalled();
   });
 

@@ -788,6 +788,7 @@ function pageFromMeta<T extends Record<string, unknown>>(
 // delimiter requirement cannot collide with current base64url public keys,
 // standard-base64 keys, or base32 CRIDs.
 const PATH_EMBEDDED_ACCESS_TOKEN_RE = /[?&#=:\s]at_/i;
+const PATH_SCHEMELESS_URL_RE = /^[a-z0-9-]+(?:\.[a-z0-9-]+)+(?::\d{1,5})?\//i;
 const MAX_PATH_ID_DECODE_PASSES = 3;
 const MAX_PATH_ID_LENGTH = 4096;
 
@@ -829,7 +830,9 @@ const DELETE_QURL_RESOURCE_ID_PATH_OPTIONS: PathIdValidationOptions = {
   accessTokenRecovery: DELETE_RESOURCE_RECOVERY,
   // Current resource IDs have fixed public-key/CRID/r_ prefixes, so q_ is an
   // unambiguous display-ID mix-up. Revisit if resource keys become arbitrary
-  // base64url strings, whose alphabet could legitimately start with q_.
+  // base64url strings, whose alphabet could legitimately start with q_. This
+  // guard is specific to legacy DELETE /v1/qurls/{id}, which resolves a qURL
+  // display ID to its parent resource; DELETE /v1/resources/{id} does not.
   rejectQurlDisplayId: true,
 };
 
@@ -882,15 +885,18 @@ function requireNonEmptyId(
   // credential first because it is the more urgent mistake. Bare `at_...`
   // values are rejected only for resource/qURL identifiers so unrelated
   // identifier namespaces stay opaque.
-  const containsUrl = decodedIds.some((value) => /^https?:\/\//i.test(value));
+  const containsUrl = decodedIds.some(
+    (value) => /^https?:\/\//i.test(value) || PATH_SCHEMELESS_URL_RE.test(value),
+  );
   const containsAccessToken = decodedIds.some(
     (value) =>
       PATH_EMBEDDED_ACCESS_TOKEN_RE.test(value) ||
       (options.rejectBareAccessToken === true && value.slice(0, 3).toLowerCase() === "at_"),
   );
   if (containsAccessToken) {
+    const recovery = options.accessTokenRecovery ?? "pass the identifier returned by the API";
     throw clientValidationError(
-      `${method}: ${field} must not contain an access token${options.accessTokenRecovery ? `; ${options.accessTokenRecovery}` : ""}`,
+      `${method}: ${field} must not contain an access token; ${recovery}`,
     );
   }
   // A full target/qURL is a common argument mix-up, but it is distinct from
