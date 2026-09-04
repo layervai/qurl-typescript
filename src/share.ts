@@ -85,7 +85,7 @@ export class ShareLink {
   readonly qurlId?: string;
   readonly crid?: string;
   readonly type?: string;
-  readonly expiresAt?: Date;
+  readonly #expiresAtEpochMs?: number;
   readonly expiresInSeconds?: number;
   /** Whether the link is single-use; undefined when an older service omits the field. */
   readonly singleUse?: boolean;
@@ -102,10 +102,15 @@ export class ShareLink {
     this.qurlId = init.qurlId;
     this.crid = init.crid;
     this.type = init.type;
-    this.expiresAt = init.expiresAt && new Date(init.expiresAt.getTime());
+    this.#expiresAtEpochMs = init.expiresAt?.getTime();
     this.expiresInSeconds = init.expiresInSeconds;
     this.singleUse = init.singleUse;
     Object.freeze(this);
+  }
+
+  /** Effective expiry as a defensive copy; mutating it does not change this share. */
+  get expiresAt(): Date | undefined {
+    return this.#expiresAtEpochMs === undefined ? undefined : new Date(this.#expiresAtEpochMs);
   }
 
   /** Serialize safe metadata while redacting the one-time-returned credential. */

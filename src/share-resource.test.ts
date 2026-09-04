@@ -166,13 +166,22 @@ describe("shareResource", () => {
     expect(share.expiresAt?.toISOString()).toBe("2026-03-09T15:35:00.000Z");
   });
 
-  it("keeps redacted serialization safe after the exposed expiry date is invalidated", () => {
+  it("returns a defensive expiry-date copy", () => {
     const share = new ShareLink({
       link: "https://qurl.link/#qv2t1.example",
       expiresAt: new Date("2026-03-09T15:35:00Z"),
     });
 
-    share.expiresAt?.setTime(Number.NaN);
+    share.expiresAt?.setUTCFullYear(1970);
+
+    expect(share.expiresAt?.toISOString()).toBe("2026-03-09T15:35:00.000Z");
+  });
+
+  it("keeps redacted serialization safe after the exposed expiry date is invalidated", () => {
+    const share = new ShareLink({
+      link: "https://qurl.link/#qv2t1.example",
+      expiresAt: new Date(Number.NaN),
+    });
 
     expect(share.toJSON()).toMatchObject({ link: "[redacted]", expiresAt: undefined });
     expect(JSON.stringify(share)).not.toContain(share.link);
