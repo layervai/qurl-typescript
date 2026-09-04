@@ -123,8 +123,10 @@ await deliverEnrollmentTokenSecurely(enrollment.api_key);
 
 Durable `api_key` credentials require explicit scopes and do not accept
 `expires_in`; enrollment tokens derive their scopes from `target`/`claims` and
-expire within 24 hours. Request enums are validated against the current service
-contract; response types remain additive for forward-compatible reads.
+expire within 24 hours. A connector claim's `id` is its immutable connector
+slug. Request enums are validated against the current service contract;
+response types remain additive for forward-compatible reads, and new request
+enum values require a matching SDK release.
 This credential surface requires the kind-first qurl-service contract at or
 after commit `047cf31e1cdf545e3060e0f9294d738a19fb997b`.
 

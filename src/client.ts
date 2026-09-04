@@ -1338,7 +1338,7 @@ function validateEnrollmentTokenFields(input: Record<string, unknown>, method: s
         throw clientValidationError(`${method}: claims[${index}].type must be 'connector'`);
       }
       if (typeof record.id !== "string" || !CREDENTIAL_CLAIM_ID_PATTERN.test(record.id)) {
-        throw clientValidationError(`${method}: claims[${index}].id is not a valid connector id`);
+        throw clientValidationError(`${method}: claims[${index}].id is not a valid connector slug`);
       }
     }
   }

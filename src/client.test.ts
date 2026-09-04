@@ -1867,7 +1867,7 @@ describe("QURLClient", () => {
     },
   );
 
-  it.each(["24h", "86400s"])(
+  it.each(["24h", "86400s", "1d"])(
     "createApiKey accepts the 24-hour boundary as %s",
     async (expiresIn) => {
       const fetch = mockFetch({ status: 201, body: { data: {} } });
@@ -1944,6 +1944,11 @@ describe("QURLClient", () => {
       "target must be",
     ],
     [
+      "a non-string target",
+      { kind: "enrollment_token", name: "bad", target: 42 },
+      "target must be",
+    ],
+    [
       "a connector target without a claim",
       { kind: "enrollment_token", name: "bad", target: "connector" },
       "requires exactly one claim",
@@ -1977,7 +1982,34 @@ describe("QURLClient", () => {
         name: "bad",
         claims: [{ type: "connector", id: "Bad ID" }],
       },
-      "not a valid connector id",
+      "not a valid connector slug",
+    ],
+    [
+      "a two-character connector slug",
+      {
+        kind: "enrollment_token",
+        name: "bad",
+        claims: [{ type: "connector", id: "ab" }],
+      },
+      "not a valid connector slug",
+    ],
+    [
+      "a 65-character connector slug",
+      {
+        kind: "enrollment_token",
+        name: "bad",
+        claims: [{ type: "connector", id: "a".repeat(65) }],
+      },
+      "not a valid connector slug",
+    ],
+    [
+      "an unknown claim type",
+      {
+        kind: "enrollment_token",
+        name: "bad",
+        claims: [{ type: "agent", id: "prod-dashboard" }],
+      },
+      "claims[0].type must be 'connector'",
     ],
     [
       "an unknown claim field",
@@ -1997,6 +2029,16 @@ describe("QURLClient", () => {
       "a lifetime over 24h",
       { kind: "enrollment_token", name: "bad", expires_in: "86401s" },
       "greater than zero and at most 24h",
+    ],
+    [
+      "a one-week lifetime",
+      { kind: "enrollment_token", name: "bad", expires_in: "1w" },
+      "greater than zero and at most 24h",
+    ],
+    [
+      "a non-string lifetime",
+      { kind: "enrollment_token", name: "bad", expires_in: 3600 },
+      "expires_in must be a duration string",
     ],
     [
       "a malformed lifetime",
@@ -2024,6 +2066,16 @@ describe("QURLClient", () => {
       detail: expect.stringContaining("unsupported permission"),
     });
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("updateApiKey accepts a scope in the current service request enum", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+
+    await createClient(fetch).updateApiKey("key_abc123def456", { scopes: ["qurl:agent"] });
+
+    expect(JSON.parse(vi.mocked(fetch).mock.calls[0][1]?.body as string)).toEqual({
+      scopes: ["qurl:agent"],
+    });
   });
 
   it("createApiKey rejects the retired key_type/tunnel_slug/purpose fields", async () => {

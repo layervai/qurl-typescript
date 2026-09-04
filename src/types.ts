@@ -851,13 +851,14 @@ export type CredentialTargetInput = "agent" | "connector";
 export interface CredentialClaim {
   /** `connector` is the only claim type today. */
   type: OpenString<"connector">;
-  /** The claimed resource id. For `type: "connector"`, the connector id. */
+  /** Immutable connector slug when `type` is `connector`. */
   id: string;
 }
 
 /** Closed resource-claim shape accepted by the current enrollment-token request schema. */
 export interface CredentialClaimInput {
   type: "connector";
+  /** Immutable 3-64 character connector slug. */
   id: string;
 }
 
