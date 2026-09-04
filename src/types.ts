@@ -844,11 +844,20 @@ export type CredentialKind = OpenString<"api_key" | "enrollment_token" | "device
 /** What a `kind: "enrollment_token"` credential enrolls. */
 export type CredentialTarget = OpenString<"agent" | "connector">;
 
+/** Closed target vocabulary accepted by the current enrollment-token request schema. */
+export type CredentialTargetInput = "agent" | "connector";
+
 /** A resource claim binding an enrollment token to one resource. */
 export interface CredentialClaim {
   /** `connector` is the only claim type today. */
   type: OpenString<"connector">;
   /** The claimed resource id. For `type: "connector"`, the connector id. */
+  id: string;
+}
+
+/** Closed resource-claim shape accepted by the current enrollment-token request schema. */
+export interface CredentialClaimInput {
+  type: "connector";
   id: string;
 }
 
@@ -874,9 +883,9 @@ export interface CreateEnrollmentTokenInput extends CreateCredentialBase {
    */
   scopes?: never;
   /** Derived from `claims` when omitted. */
-  target?: CredentialTarget;
+  target?: CredentialTargetInput;
   /** At most one entry is supported today. */
-  claims?: CredentialClaim[];
+  claims?: CredentialClaimInput[];
   /** Defaults to 24h and cannot exceed 24h. */
   expires_in?: string;
 }

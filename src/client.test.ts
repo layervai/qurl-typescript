@@ -1924,6 +1924,11 @@ describe("QURLClient", () => {
   it.each([
     ["an unknown kind", { kind: "future", name: "bad", scopes: ["qurl:read"] }, "kind must be"],
     [
+      "the system-only device kind",
+      { kind: "device", name: "bad", scopes: ["qurl:read"] },
+      "kind must be",
+    ],
+    [
       "expires_in on a durable key",
       { kind: "api_key", name: "bad", scopes: ["qurl:read"], expires_in: "1h" },
       "expires_in is only accepted",
@@ -1959,6 +1964,11 @@ describe("QURLClient", () => {
       "a non-array claims value",
       { kind: "enrollment_token", name: "bad", claims: { type: "connector", id: "abc" } },
       "claims must be an array",
+    ],
+    [
+      "a non-object claim",
+      { kind: "enrollment_token", name: "bad", claims: ["abc"] },
+      "claims[0] must be an object",
     ],
     [
       "an invalid claim",
@@ -2016,7 +2026,7 @@ describe("QURLClient", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("createApiKey rejects the retired key_type/tunnel_slug fields", async () => {
+  it("createApiKey rejects the retired key_type/tunnel_slug/purpose fields", async () => {
     const fetch = mockFetch({ status: 201, body: { data: {} } });
     const client = createClient(fetch);
 

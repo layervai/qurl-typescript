@@ -21,6 +21,7 @@ import type {
   AIAgentPolicy,
   ApiKey,
   ApiKeyListOutput,
+  ApiKeyRequestScope,
   BillingInvoiceListOutput,
   BatchCreateInput,
   BatchCreateOutput,
@@ -40,6 +41,8 @@ import type {
   CreateQurlForResourceInput,
   CreateResourceInput,
   CreateWebhookInput,
+  CredentialClaimInput,
+  CredentialTargetInput,
   Customer,
   CheckoutSession,
   Domain,
@@ -661,7 +664,19 @@ const MAX_DESCRIPTION = 500;
 const MAX_CUSTOM_DOMAIN = 253;
 const MAX_MAX_SESSIONS = 1000;
 const MAX_API_KEY_NAME = 100;
-const API_KEY_CREATE_SCOPES = new Set(["qurl:read", "qurl:write", "qurl:resolve", "qurl:agent"]);
+const API_KEY_REQUEST_SCOPES = new Set<string>([
+  "qurl:read",
+  "qurl:write",
+  "qurl:resolve",
+  "qurl:agent",
+] satisfies ApiKeyRequestScope[]);
+const CREDENTIAL_TARGETS = new Set<string>([
+  "agent",
+  "connector",
+] satisfies CredentialTargetInput[]);
+const CREDENTIAL_CLAIM_TYPES = new Set<string>([
+  "connector",
+] satisfies CredentialClaimInput["type"][]);
 // Mirrors CredentialClaim.id in the service OpenAPI and domain.ValidateSlug.
 const CREDENTIAL_CLAIM_ID_PATTERN = /^[a-z][a-z0-9-]{1,62}[a-z0-9]$/;
 // Mirrors CreateApiKeyRequest.expires_in in the service OpenAPI. Composite
@@ -1286,18 +1301,17 @@ function validateApiKeyWriteFields(
   if (requiredFields.scopes || input.scopes !== undefined) {
     requireNonEmptyArrayField(input, "scopes", method);
     requireStringArrayElements(input.scopes, "scopes", method);
-    if (
-      (input.scopes as unknown[]).some(
-        (scope) => typeof scope !== "string" || !API_KEY_CREATE_SCOPES.has(scope),
-      )
-    ) {
+    if ((input.scopes as string[]).some((scope) => !API_KEY_REQUEST_SCOPES.has(scope))) {
       throw clientValidationError(`${method}: scopes contains an unsupported permission`);
     }
   }
 }
 
 function validateEnrollmentTokenFields(input: Record<string, unknown>, method: string): void {
-  if (input.target !== undefined && input.target !== "agent" && input.target !== "connector") {
+  if (
+    input.target !== undefined &&
+    (typeof input.target !== "string" || !CREDENTIAL_TARGETS.has(input.target))
+  ) {
     throw clientValidationError(`${method}: target must be 'agent' or 'connector'`);
   }
 
@@ -1310,21 +1324,21 @@ function validateEnrollmentTokenFields(input: Record<string, unknown>, method: s
       throw clientValidationError(`${method}: claims must contain at most one claim`);
     }
     claimCount = input.claims.length;
-    for (const claim of input.claims) {
+    for (const [index, claim] of input.claims.entries()) {
       if (!claim || typeof claim !== "object" || Array.isArray(claim)) {
-        throw clientValidationError(`${method}: claims[0] must be an object`);
+        throw clientValidationError(`${method}: claims[${index}] must be an object`);
       }
       requireNoUnknownFields(
         claim as Record<string, unknown>,
         ["type", "id"],
-        `${method}: claims[0]`,
+        `${method}: claims[${index}]`,
       );
       const record = claim as Record<string, unknown>;
-      if (record.type !== "connector") {
-        throw clientValidationError(`${method}: claims[0].type must be 'connector'`);
+      if (typeof record.type !== "string" || !CREDENTIAL_CLAIM_TYPES.has(record.type)) {
+        throw clientValidationError(`${method}: claims[${index}].type must be 'connector'`);
       }
       if (typeof record.id !== "string" || !CREDENTIAL_CLAIM_ID_PATTERN.test(record.id)) {
-        throw clientValidationError(`${method}: claims[0].id is not a valid connector id`);
+        throw clientValidationError(`${method}: claims[${index}].id is not a valid connector id`);
       }
     }
   }
