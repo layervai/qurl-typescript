@@ -3639,11 +3639,19 @@ export class QURLClient {
         this.log(`failed to read response body from ${response.status}`, {
           status: response.status,
         });
-        const readError = httpResponseContractError(
-          response,
-          `Failed to read response body on HTTP ${response.status}`,
-        );
-        if (retryFetchFailure && retryable.has(response.status) && attempt < this.maxRetries) {
+        const readError = response.ok
+          ? httpResponseContractError(
+              response,
+              `Failed to read response body on HTTP ${response.status}`,
+            )
+          : createError({
+              status: response.status,
+              code: ERROR_CODE_UNKNOWN,
+              title: boundedErrorSnippet(response.statusText) || `HTTP ${response.status}`,
+              detail: `Failed to read response body on HTTP ${response.status}`,
+              retry_after: this.parseRetryAfter(response),
+            });
+        if (retryable.has(response.status) && attempt < this.maxRetries) {
           lastError = readError;
           continue;
         }
@@ -3683,7 +3691,8 @@ export class QURLClient {
           return {
             ...json,
             __http_status: response.status,
-            __http_body_empty: responseBody.length === 0,
+            // JSON.parse("") throws, so parsed JSON is necessarily non-empty.
+            __http_body_empty: false,
           };
         } catch {
           // Non-JSON body on a 2xx response (server contract violation)
@@ -3749,7 +3758,7 @@ export class QURLClient {
           `HTTP ${response.status}`;
         return {
           status: err.status ?? response.status,
-          code: err.code ?? ERROR_CODE_UNKNOWN,
+          code: boundedErrorSnippet(err.code) ?? ERROR_CODE_UNKNOWN,
           title,
           detail,
           type: err.type,
@@ -3783,6 +3792,7 @@ export class QURLClient {
       code: ERROR_CODE_UNKNOWN,
       title: statusText,
       detail: statusText,
+      retry_after: this.parseRetryAfter(response),
     };
   }
 

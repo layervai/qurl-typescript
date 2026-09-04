@@ -4345,6 +4345,36 @@ describe("QURLClient", () => {
     expect(getReader).not.toHaveBeenCalled();
   });
 
+  it("bounds materialized text from a Response-like fetch without a body stream", async () => {
+    const secret = `response-secret-${"x".repeat(RESPONSE_BODY_LIMIT)}`;
+    const fetch = vi.fn(
+      async () =>
+        ({
+          ok: false,
+          redirected: false,
+          status: 503,
+          statusText: "Unavailable",
+          type: "basic",
+          headers: new Headers(),
+          body: undefined,
+          text: async () => secret,
+        }) satisfies Partial<Response> as Response,
+    );
+    const error = await new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 1,
+    })
+      .getQuota()
+      .catch((caught: unknown) => caught as QURLError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error).toMatchObject({ status: 503, code: ERROR_CODE_UNEXPECTED_RESPONSE });
+    expect(error.message).not.toContain("response-secret");
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
   it("parses success and error JSON bodies exactly at the response limit", async () => {
     const successBody = sizedJSON('{"data":{"padding":"', '"}}', RESPONSE_BODY_LIMIT);
     const successFetch = vi.fn(
@@ -4406,6 +4436,22 @@ describe("QURLClient", () => {
     expect(() =>
       new TextDecoder("utf-8", { fatal: true }).decode(new TextEncoder().encode(error.detail)),
     ).not.toThrow();
+  });
+
+  it("keeps structured API error codes single-line, control-free, UTF-8-safe, and bounded", async () => {
+    const code = `  ${"€".repeat(300)}\n\x00\x1b[2Jcode tail  `;
+    const fetch = mockFetch({
+      status: 400,
+      body: { error: { title: "Bad Request", code, detail: "Invalid request" } },
+    });
+    const error = await createClient(fetch)
+      .getQuota()
+      .catch((caught: unknown) => caught as QURLError);
+
+    expect(error.code.endsWith("...")).toBe(true);
+    expect(error.code).not.toContain("\n");
+    expect(error.code).not.toMatch(/[\p{Cc}\p{Cf}]/u);
+    expect(new TextEncoder().encode(error.code.slice(0, -3)).byteLength).toBeLessThanOrEqual(512);
   });
 
   it("retries a retryable status even when its error body is non-JSON", async () => {
@@ -5167,6 +5213,26 @@ describe("QURLClient", () => {
     expect((err as RateLimitError).retryAfter).toBe(5);
   });
 
+  it("preserves Retry-After on a non-envelope 429 response", async () => {
+    const fetch = vi.fn(
+      async () =>
+        new Response("rate limited by gateway", {
+          status: 429,
+          headers: { "Retry-After": "9", "content-type": "text/plain" },
+        }),
+    );
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 0,
+    });
+
+    const error = await client.getQuota().catch((caught: unknown) => caught as QURLError);
+    expect(error).toBeInstanceOf(RateLimitError);
+    expect(error).toMatchObject({ status: 429, code: ERROR_CODE_UNKNOWN, retryAfter: 9 });
+  });
+
   it("throws ServerError on 500", async () => {
     const fetch = mockFetch({
       status: 500,
@@ -5375,20 +5441,97 @@ describe("QURLClient", () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
-  it("does not replay DELETE after a 502 response", async () => {
+  it("retries POST after a 429 body-read failure with the same Idempotency-Key", async () => {
+    const brokenBody = new globalThis.ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.error(new TypeError("rate-limit body reset"));
+      },
+    });
+    const rateLimited = new Response(brokenBody, {
+      status: 429,
+      headers: { "Retry-After": "0" },
+    });
+    const created = new Response(
+      JSON.stringify({
+        data: {
+          resource_id: "r_abc123def45",
+          target_url: "https://example.com",
+          status: "active",
+          created_at: "2026-03-15T10:00:00Z",
+        },
+      }),
+      { status: 201, headers: { "content-type": "application/json" } },
+    );
+    const fetch = vi.fn().mockResolvedValueOnce(rateLimited).mockResolvedValueOnce(created);
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 1,
+    });
+
+    await expect(client.create({ target_url: "https://example.com" })).resolves.toMatchObject({
+      resource_id: "r_abc123def45",
+    });
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(callHeaders(fetch, 1)["Idempotency-Key"]).toBe(callHeaders(fetch, 0)["Idempotency-Key"]);
+  });
+
+  it("preserves status-derived error classes when an error body cannot be read", async () => {
+    const brokenResponse = (status: number, retryAfter?: string): Response =>
+      new Response(
+        new globalThis.ReadableStream<Uint8Array>({
+          pull(controller) {
+            controller.error(new TypeError("response body reset"));
+          },
+        }),
+        {
+          status,
+          headers: retryAfter === undefined ? undefined : { "Retry-After": retryAfter },
+        },
+      );
+
+    const serverError = await new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: vi.fn(async () => brokenResponse(503)) as typeof globalThis.fetch,
+      maxRetries: 0,
+    })
+      .getQuota()
+      .catch((caught: unknown) => caught as QURLError);
+    expect(serverError).toBeInstanceOf(ServerError);
+    expect(serverError).toMatchObject({ status: 503, code: ERROR_CODE_UNKNOWN });
+
+    const rateLimitError = await new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: vi.fn(async () => brokenResponse(429, "7")) as typeof globalThis.fetch,
+      maxRetries: 0,
+    })
+      .getQuota()
+      .catch((caught: unknown) => caught as QURLError);
+    expect(rateLimitError).toBeInstanceOf(RateLimitError);
+    expect(rateLimitError).toMatchObject({
+      status: 429,
+      code: ERROR_CODE_UNKNOWN,
+      retryAfter: 7,
+    });
+  });
+
+  it.each([502, 503, 504])("does not replay DELETE after a %i response", async (status) => {
     // Endpoint semantics, not the HTTP verb alone, determine replay safety.
     // Individual qURL revoke returns 409 on repeat, while a connector/resource
     // delete can require lifecycle reconciliation after an ambiguous result.
-    const badGatewayResponse = {
+    const gatewayResponse = {
       ok: false,
-      status: 502,
-      statusText: "Bad Gateway",
+      status,
+      statusText: "Gateway failure",
       headers: new Headers({}),
       json: () =>
         Promise.resolve({
           error: {
             title: "Bad Gateway",
-            status: 502,
+            status,
             detail: "Upstream error",
             code: "bad_gateway",
           },
@@ -5396,7 +5539,7 @@ describe("QURLClient", () => {
       text: () => Promise.resolve(""),
     } satisfies Partial<Response> as Response;
 
-    const fetch = vi.fn().mockResolvedValue(badGatewayResponse);
+    const fetch = vi.fn().mockResolvedValue(gatewayResponse);
     const client = new QURLClient({
       apiKey: "test-api-key",
       baseUrl: "https://api.test.layerv.ai",
