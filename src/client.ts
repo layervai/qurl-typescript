@@ -35,6 +35,7 @@ import type {
   CreateExternalIdentityBindingInput,
   CreateExternalIdentityBindingOutput,
   CreateExternalIdentityBindingRequestOptions,
+  ExternalIdentityBindingApiKey,
   CreateInput,
   CreateOutput,
   CreatePortalOptions,
@@ -1619,14 +1620,14 @@ function parseExternalIdentityBindingResponse(
   ) {
     return fail("response is missing required object api_key");
   }
-  const apiKey = binding.api_key as Record<string, unknown>;
-  if (typeof apiKey.key_id !== "string" || apiKey.key_id.length === 0) {
+  const apiKeyWire = binding.api_key as Record<string, unknown>;
+  if (typeof apiKeyWire.key_id !== "string" || apiKeyWire.key_id.length === 0) {
     return fail("response is missing required field api_key.key_id");
   }
-  if (typeof apiKey.key_prefix !== "string" || apiKey.key_prefix.length === 0) {
+  if (typeof apiKeyWire.key_prefix !== "string" || apiKeyWire.key_prefix.length === 0) {
     return fail("response is missing required field api_key.key_prefix");
   }
-  if (typeof apiKey.plaintext !== "string" || apiKey.plaintext.length === 0) {
+  if (typeof apiKeyWire.plaintext !== "string" || apiKeyWire.plaintext.length === 0) {
     return fail("response is missing required field api_key.plaintext");
   }
   if (
@@ -1640,6 +1641,12 @@ function parseExternalIdentityBindingResponse(
     return fail("response is missing required field created_at");
   }
 
+  const apiKey = protectExternalIdentityBindingApiKey({
+    key_id: apiKeyWire.key_id,
+    key_prefix: apiKeyWire.key_prefix,
+    plaintext: apiKeyWire.plaintext,
+  });
+
   return {
     binding_id: binding.binding_id,
     provider: binding.provider as CreateExternalIdentityBindingOutput["provider"],
@@ -1647,18 +1654,57 @@ function parseExternalIdentityBindingResponse(
     // display_name is non-authoritative presentation metadata; unlike the
     // security-relevant provider/external_id pair, it need not echo exactly.
     display_name: binding.display_name as string | undefined,
-    api_key: {
-      key_id: apiKey.key_id,
-      key_prefix: apiKey.key_prefix,
-      plaintext: apiKey.plaintext,
-    },
+    api_key: apiKey,
     scopes: binding.scopes as CreateExternalIdentityBindingOutput["scopes"],
     created_at: binding.created_at,
     // Response metadata is untrusted too: keep it bounded before exposing it
     // to callers that may include the result in logs or telemetry.
-    location: boundedErrorSnippet(headers?.get("Location")),
+    location: externalIdentityBindingLocation(headers),
     replayed,
   };
+}
+
+function protectExternalIdentityBindingApiKey(
+  apiKey: ExternalIdentityBindingApiKey,
+): ExternalIdentityBindingApiKey {
+  const redacted = () => ({
+    key_id: apiKey.key_id,
+    key_prefix: apiKey.key_prefix,
+    plaintext: "[redacted]",
+  });
+  // The secret remains directly readable for immediate persistence, but is
+  // omitted from spread and redacted by standard JSON/Node inspection paths.
+  Object.defineProperties(apiKey, {
+    plaintext: {
+      value: apiKey.plaintext,
+      enumerable: false,
+      writable: false,
+      configurable: false,
+    },
+    toJSON: { value: redacted, enumerable: false },
+    [Symbol.for("nodejs.util.inspect.custom")]: { value: redacted, enumerable: false },
+  });
+  return apiKey;
+}
+
+function externalIdentityBindingLocation(headers: Headers | undefined): string | undefined {
+  const location = headers?.get("Location");
+  if (
+    location === null ||
+    location === undefined ||
+    location === "" ||
+    /\s/.test(location) ||
+    TEXT_ENCODER.encode(location).byteLength > MAX_ERROR_SNIPPET_BYTES
+  ) {
+    return undefined;
+  }
+  if (location.startsWith("/") && !location.startsWith("//")) return location;
+  try {
+    const parsed = new URL(location);
+    return parsed.protocol === "https:" || parsed.protocol === "http:" ? location : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function parseExternalIdentityReplayHeader(headers: Headers | undefined): {

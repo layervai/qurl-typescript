@@ -237,12 +237,16 @@ await secretStore.put('obviously-fake-tenant-qurl-key', binding.api_key.plaintex
 `api_key.plaintext` is a **one-time secret**. Never log it or include it in an
 error. A retry with the same idempotency key and exact same body can recover the
 same key for up to 24 hours; after that window the plaintext is unrecoverable.
+The property is directly readable for persistence but non-enumerable and
+redacted by JSON and Node inspection to reduce accidental structured logging.
 `binding.replayed` is `true` when the service signals a replay using either its
 current `X-Idempotency-Replayed` header or the spec-declared
 `Idempotency-Replayed` header. It is `undefined` when replay state is absent or
-unrecognized; current qurl-service omits the header for a fresh response.
-`binding.location` contains a bounded, normalized copy of the response
-`Location` header when available and must not be followed without validation.
+unrecognized; current qurl-service omits the header for a fresh response. This
+is a transport-level signal and can be `true` on the caller's first invocation
+when an SDK retry recovers a response whose initial delivery was lost.
+`binding.location` contains the response `Location` only when it is a bounded
+HTTP(S) URL or absolute path; unusable or overlong values are omitted.
 The service returns exact HTTP 201 with a
 top-level binding object for both fresh creates and replays. If the SDK rejects
 a successful response because that status or shape drifted, retry with the same

@@ -849,7 +849,9 @@ export interface ExternalIdentityBindingApiKey {
   key_prefix: string;
   /**
    * Full API key secret. This is returned only during create or a same-key,
-   * same-body replay within 24 hours. Persist it securely immediately.
+   * same-body replay within 24 hours. Persist it securely immediately. The
+   * property is directly readable but non-enumerable and redacted by JSON and
+   * Node inspection to reduce accidental logging.
    */
   plaintext: string;
 }
@@ -863,7 +865,7 @@ export interface CreateExternalIdentityBindingOutput {
   api_key: ExternalIdentityBindingApiKey;
   scopes: ApiKeyScope[];
   created_at: string;
-  /** Bounded resource location returned by the API, when the response header is available. */
+  /** Valid bounded resource location, when supplied by the API. */
   location?: string;
   /**
    * Replay state reported by a service-supported idempotency header. Undefined

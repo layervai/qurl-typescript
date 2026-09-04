@@ -4,8 +4,8 @@
 
 ### Features
 
-- **client:** add `createExternalIdentityBinding()` for atomic Slack, Discord,
-  and Teams identity binding with one-time API-key recovery.
+- **client:** add `createExternalIdentityBinding()` for Slack, Discord, and
+  Teams identity binding with one-time API-key recovery.
 
 ### ⚠ BREAKING CHANGES
 
