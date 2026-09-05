@@ -17,6 +17,16 @@
         "types": "./dist/cjs/index.d.ts",
         "default": "./dist/cjs/index.js"
       }
+    },
+    "./node": {
+      "import": {
+        "types": "./dist/esm/node.d.ts",
+        "default": "./dist/esm/node.js"
+      },
+      "require": {
+        "types": "./dist/cjs/node.d.ts",
+        "default": "./dist/cjs/node.js"
+      }
     }
   },
   "scripts": {
@@ -27,7 +37,7 @@
     "lint": "eslint src/",
     "format": "prettier --write 'src/**/*.ts' 'smoke/**/*.{cjs,mjs}' 'scripts/**/*.mjs'",
     "format:check": "prettier --check 'src/**/*.ts' 'smoke/**/*.{cjs,mjs}' 'scripts/**/*.mjs'",
-    "smoke:dist": "node smoke/cjs.cjs && node smoke/esm.mjs && node smoke/parity.mjs && node smoke/idempotency.mjs && node smoke/response-hardening.mjs && node smoke/retired-agent-lifecycle.mjs",
+    "smoke:dist": "node smoke/cjs.cjs && node smoke/esm.mjs && node smoke/node-cjs.cjs && node smoke/node-esm.mjs && node smoke/parity.mjs && node smoke/idempotency.mjs && node smoke/response-hardening.mjs && node smoke/retired-agent-lifecycle.mjs",
     "prepublishOnly": "npm run build && npm run smoke:dist"
   },
   "keywords": [
@@ -45,7 +55,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@layervai/qurl-conformance": "0.11.0",
+    "@layervai/qurl-conformance": "0.13.0",
     "@types/node": "^26.0.1",
     "@typescript-eslint/eslint-plugin": "^8.60.0",
     "@typescript-eslint/parser": "^8.58.2",

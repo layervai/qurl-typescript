@@ -105,9 +105,10 @@ const portal = await resource.createPortal({
 });
 ```
 
-qURL Connector assignment and registration use native UDP through
-`qurl-connector` and `qurl-go`. This TypeScript package handles browser and
-management-plane qURL APIs; it does not expose an HTTP enrollment API.
+The Node-only `@layervai/qurl/node` entry opens received qv2 links with native
+NHP 1.1 UDP. It has no relay or HTTP-resolve fallback. Connector assignment and
+registration are separate producer operations and are not part of the portal
+opener.
 
 ## Opening Portals
 
@@ -126,6 +127,60 @@ Unlike qurl-go's offline `EnterPortal`, this SDK opens links through the
 LayerV API: the client needs an API key with the `qurl:resolve` scope.
 `enterPortal` fails closed — if access is granted but no resource URL comes
 back, it throws instead of returning an empty handle.
+
+### Proactive native Node opener
+
+Use the Node subpath when a service receives a qv2 link and must keep one NHP
+session ready for a low-latency private request. Construct and start one opener
+for that link during setup. `start()` sends the native UDP knock and schedules
+bounded background renewal before the admission expires. `fetch()` never opens
+or renews a session, and it never sleeps. It fails if the cached admission has
+expired.
+
+```javascript
+const { createPortalOpener } = require('@layervai/qurl/node');
+
+const opener = createPortalOpener({
+  qurl: process.env.PRIVATE_UPLOAD_QURL,
+  transport: 'native-only',
+});
+
+await opener.start();
+
+const response = await opener.fetch(
+  (authenticatedTarget) => ({
+    method: 'POST',
+    headers: signUploadForExactTarget(authenticatedTarget),
+    body: uploadBody,
+  }),
+  { redirects: 'error' },
+);
+```
+
+The request builder receives a copy of the exact authenticated ACK target. The
+opener ignores mutations to that copy and sends only to the fixed ACK URL. It
+adds the private `qurl_vsession` cookie, replaces a caller-supplied cookie with
+that name, and preserves other valid cookies. It does not accept a caller URL or
+path. Use `redirects: 'error'` for a request whose signature binds its method,
+target, timestamp, or nonce. This mode closes a redirect response and does not
+replay the request. The default `follow` mode permits at most 10 same-origin
+redirects and uses the standard 301/302/303 method rewrite rules.
+
+Native opening requires public deployment trust. Set `QURL_DEPLOYMENT` to one
+strict JSON object or to a path that contains that object. The object must have
+trusted P-256 issuer keys and native cell host, UDP port 443, and X25519 public
+key entries. The SDK loads and validates this value once when it constructs the
+opener. It does not perform discovery and it fails before DNS if the verified
+link names an unknown cell.
+
+Use `opener.health()` for the local `idle`, `starting`, `healthy`, `renewing`,
+`degraded`, `expired`, or `closed` state. A degraded state includes a typed
+renewal failure class but no raw session capability. Call `await opener.close()`
+during shutdown. Close cancels and waits for an active NHP exchange, then wipes
+the mutable private-key, visitor-secret, and session-token buffers. JavaScript
+can create immutable string copies during JSON and HTTP processing, so the SDK
+cannot promise full memory zeroization before garbage collection. Never log the
+qURL, ACK body, request cookies, or request headers.
 
 ## REST-Shaped API (Compatibility)
 

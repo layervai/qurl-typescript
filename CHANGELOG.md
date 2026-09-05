@@ -33,8 +33,16 @@
   a conflicting RFC 7807 `error.status` value can no longer change the typed
   error class.
 - **client:** remove the unsafe legacy HTTP bootstrap method and the incomplete
-  relay registration implementation. Native NHP 1.1 assignment, registration,
-  and proactive opener parity replace them under the program tracked in #248.
+  relay registration implementation. Native producer operations use separate,
+  fail-closed parity surfaces instead of these retired HTTP paths.
+
+### Features
+
+- **node:** add a Node-only native NHP 1.1 portal opener at
+  `@layervai/qurl/node` for both ESM and CommonJS. It verifies qv2 links locally,
+  uses strict deployment trust, opens through UDP with no relay fallback, keeps
+  one admission ready through bounded background renewal, and fetches only the
+  exact authenticated ACK target. Signed requests can reject all redirects.
 
 ### Bug Fixes
 
