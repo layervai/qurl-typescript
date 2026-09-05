@@ -5,8 +5,10 @@
 ### ⚠ BREAKING CHANGES
 
 - **client:** DELETE operations are no longer retried after transport, 429, or 5xx
-  failures because a dispatched mutation can have an unknown outcome. Documented
-  no-content DELETE endpoints now require an exact empty HTTP 204 response.
+  failures. This matches qurl-go's no-hidden-HTTP-retry rule, avoids request-path
+  pacing, and requires the caller to use `retryAfter` and reconcile state before
+  a deliberate retry. Documented no-content DELETE endpoints now require an
+  exact empty HTTP 204 response.
 - **client:** server-provided error codes, titles, details, problem identifiers,
   request IDs, and up to 100 invalid-field entries have controls and
   bidirectional formatting characters removed, are normalized to one line,
@@ -25,6 +27,11 @@
   not-yet-released relay registration implementation. Native qURL Connector
   assignment and registration are UDP-only and belong in the Go runtime; the
   TypeScript package remains focused on browser and management-plane qURL APIs.
+
+### Bug Fixes
+
+- **client:** preserve `Retry-After` on status-only 429 and 503 errors whose
+  response body is not a valid API error envelope.
 
 ## [0.3.1](https://github.com/layervai/qurl-typescript/compare/qurl-v0.3.0...qurl-v0.3.1) (2026-07-05)
 

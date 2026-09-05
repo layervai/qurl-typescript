@@ -4,7 +4,9 @@ import {
   AuthenticationError,
   AuthorizationError,
   ERROR_CODE_CLIENT_VALIDATION,
+  ERROR_CODE_NETWORK,
   ERROR_CODE_RUNTIME,
+  ERROR_CODE_TIMEOUT,
   ERROR_CODE_UNEXPECTED_RESPONSE,
   ERROR_CODE_UNKNOWN,
   NetworkError,
@@ -2011,6 +2013,7 @@ describe("QURLClient", () => {
       status: 200,
       code: ERROR_CODE_UNEXPECTED_RESPONSE,
       detail: expect.stringContaining("received HTTP 200"),
+      message: expect.stringContaining("may already have been applied"),
     });
     expect(fetch).toHaveBeenCalledTimes(1);
   });
@@ -2022,6 +2025,7 @@ describe("QURLClient", () => {
       status: 202,
       code: ERROR_CODE_UNEXPECTED_RESPONSE,
       detail: expect.stringContaining("received HTTP 202"),
+      message: expect.stringContaining("may already have been applied"),
     });
     expect(fetch).toHaveBeenCalledTimes(1);
   });
@@ -2044,6 +2048,7 @@ describe("QURLClient", () => {
       status: 204,
       code: ERROR_CODE_UNEXPECTED_RESPONSE,
       detail: expect.stringContaining("with response bytes"),
+      message: expect.stringContaining("may already have been applied"),
     });
   });
 
@@ -3684,6 +3689,66 @@ describe("QURLClient", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
+  it("rejects a changed non-empty response URL even when redirected is false", async () => {
+    const fetch = vi.fn(
+      async () =>
+        ({
+          ok: true,
+          redirected: false,
+          url: "https://redirected.example/v1/quota",
+          status: 200,
+          statusText: "OK",
+          type: "basic",
+          headers: new Headers(),
+          body: null,
+        }) satisfies Partial<Response> as Response,
+    );
+
+    await expect(
+      new QURLClient({
+        apiKey: "test-api-key",
+        baseUrl: "https://api.test.layerv.ai",
+        fetch: fetch as typeof globalThis.fetch,
+        maxRetries: 2,
+      }).getQuota(),
+    ).rejects.toMatchObject({ status: 200, code: ERROR_CODE_UNEXPECTED_RESPONSE });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("accepts an equivalent normalized response URL", async () => {
+    const fetch = vi.fn(
+      async () =>
+        ({
+          ok: true,
+          redirected: false,
+          url: "https://API.TEST.LAYERV.AI:443/v1/quota",
+          status: 200,
+          statusText: "OK",
+          type: "basic",
+          headers: new Headers({ "content-type": "application/json" }),
+          body: undefined,
+          text: async () =>
+            JSON.stringify({
+              data: {
+                plan: "growth",
+                period_start: "2026-03-01",
+                period_end: "2026-04-01",
+              },
+            }),
+        }) satisfies Partial<Response> as Response,
+    );
+
+    await expect(
+      new QURLClient({
+        apiKey: "test-api-key",
+        baseUrl: "https://api.test.layerv.ai",
+        fetch: fetch as typeof globalThis.fetch,
+        maxRetries: 0,
+      }).getQuota(),
+    ).resolves.toMatchObject({ plan: "growth" });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
   it("does not mislabel HTTP 304 as a redirect", async () => {
     const fetch = vi.fn(
       async () => new Response(null, { status: 304, statusText: "Not Modified" }),
@@ -4549,6 +4614,36 @@ describe("QURLClient", () => {
       createClient(fetch as typeof globalThis.fetch).delete("r_abc123def45"),
     ).resolves.toBeUndefined();
     expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not report a Response-like JSON serialization failure as an empty body", async () => {
+    const fetch = vi.fn(
+      async () =>
+        ({
+          ok: true,
+          redirected: false,
+          status: 200,
+          statusText: "OK",
+          type: "basic",
+          headers: new Headers(),
+          body: undefined,
+          text: async () => "",
+          json: async () => ({ data: { unsupported: 1n } }),
+        }) satisfies Partial<Response> as Response,
+    );
+
+    const error = await new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 0,
+    })
+      .getQuota()
+      .catch((caught: unknown) => caught as QURLError);
+
+    expect(error).toMatchObject({ status: 200, code: ERROR_CODE_UNEXPECTED_RESPONSE });
+    expect(error.detail).toContain("Failed to read response body");
+    expect(error.detail).not.toContain("non-JSON");
   });
 
   it("parses success and error JSON bodies exactly at the response limit", async () => {
@@ -5803,7 +5898,7 @@ describe("QURLClient", () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
-  it("retries POST after a 429 body-read failure with the same Idempotency-Key", async () => {
+  it("does not replay POST after a retryable 429 response body transport failure", async () => {
     const brokenBody = new globalThis.ReadableStream<Uint8Array>({
       pull(controller) {
         controller.error(new TypeError("rate-limit body reset"));
@@ -5813,18 +5908,7 @@ describe("QURLClient", () => {
       status: 429,
       headers: { "Retry-After": "0" },
     });
-    const created = new Response(
-      JSON.stringify({
-        data: {
-          resource_id: "r_abc123def45",
-          target_url: "https://example.com",
-          status: "active",
-          created_at: "2026-03-15T10:00:00Z",
-        },
-      }),
-      { status: 201, headers: { "content-type": "application/json" } },
-    );
-    const fetch = vi.fn().mockResolvedValueOnce(rateLimited).mockResolvedValueOnce(created);
+    const fetch = vi.fn().mockResolvedValue(rateLimited);
     const client = new QURLClient({
       apiKey: "test-api-key",
       baseUrl: "https://api.test.layerv.ai",
@@ -5832,14 +5916,15 @@ describe("QURLClient", () => {
       maxRetries: 1,
     });
 
-    await expect(client.create({ target_url: "https://example.com" })).resolves.toMatchObject({
-      resource_id: "r_abc123def45",
+    await expect(client.create({ target_url: "https://example.com" })).rejects.toMatchObject({
+      status: 0,
+      code: ERROR_CODE_NETWORK,
+      message: expect.stringContaining("HTTP 429"),
     });
-    expect(fetch).toHaveBeenCalledTimes(2);
-    expect(callHeaders(fetch, 1)["Idempotency-Key"]).toBe(callHeaders(fetch, 0)["Idempotency-Key"]);
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
-  it("preserves status-derived error classes when an error body cannot be read", async () => {
+  it("preserves typed transport failures and observed status diagnostics on body-read errors", async () => {
     const brokenResponse = (status: number, retryAfter?: string): Response =>
       new Response(
         new globalThis.ReadableStream<Uint8Array>({
@@ -5861,8 +5946,9 @@ describe("QURLClient", () => {
     })
       .getQuota()
       .catch((caught: unknown) => caught as QURLError);
-    expect(serverError).toBeInstanceOf(ServerError);
-    expect(serverError).toMatchObject({ status: 503, code: ERROR_CODE_UNKNOWN });
+    expect(serverError).toBeInstanceOf(NetworkError);
+    expect(serverError).toMatchObject({ status: 0, code: ERROR_CODE_NETWORK });
+    expect(serverError.message).toContain("HTTP 503");
 
     const rateLimitError = await new QURLClient({
       apiKey: "test-api-key",
@@ -5872,12 +5958,69 @@ describe("QURLClient", () => {
     })
       .getQuota()
       .catch((caught: unknown) => caught as QURLError);
-    expect(rateLimitError).toBeInstanceOf(RateLimitError);
-    expect(rateLimitError).toMatchObject({
-      status: 429,
-      code: ERROR_CODE_UNKNOWN,
-      retryAfter: 7,
+    expect(rateLimitError).toBeInstanceOf(NetworkError);
+    expect(rateLimitError).toMatchObject({ status: 0, code: ERROR_CODE_NETWORK });
+    expect(rateLimitError.message).toContain("HTTP 429");
+  });
+
+  it("reports a successful mutation body timeout without replaying the mutation", async () => {
+    const fetch = vi.fn(
+      async (_url: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
+        const signal = init?.signal;
+        const slowBody = new globalThis.ReadableStream<Uint8Array>({
+          start(controller) {
+            signal?.addEventListener(
+              "abort",
+              () => controller.error(signal.reason ?? new DOMException("aborted", "AbortError")),
+              { once: true },
+            );
+          },
+        });
+        return new Response(slowBody, { status: 201, statusText: "Created" });
+      },
+    );
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 2,
+      timeout: 5,
     });
+
+    const error = await client
+      .create({ target_url: "https://example.com" })
+      .catch((caught: unknown) => caught as QURLError);
+
+    expect(error).toBeInstanceOf(TimeoutError);
+    expect(error).toMatchObject({ status: 0, code: ERROR_CODE_TIMEOUT });
+    expect(error.message).toContain("HTTP 201");
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports a 503 mutation body transport failure without replaying the mutation", async () => {
+    const brokenBody = new globalThis.ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.error(new TypeError("response body reset"));
+      },
+    });
+    const fetch = vi.fn(
+      async () => new Response(brokenBody, { status: 503, statusText: "Unavailable" }),
+    );
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 2,
+    });
+
+    const error = await client
+      .create({ target_url: "https://example.com" })
+      .catch((caught: unknown) => caught as QURLError);
+
+    expect(error).toBeInstanceOf(NetworkError);
+    expect(error).toMatchObject({ status: 0, code: ERROR_CODE_NETWORK });
+    expect(error.message).toContain("HTTP 503");
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   it("releases and cancels a response stream after a body-read failure", async () => {
@@ -5912,7 +6055,7 @@ describe("QURLClient", () => {
         fetch: fetch as typeof globalThis.fetch,
         maxRetries: 0,
       }).getQuota(),
-    ).rejects.toBeInstanceOf(ServerError);
+    ).rejects.toBeInstanceOf(NetworkError);
     expect(releaseLock).toHaveBeenCalledTimes(1);
     expect(cancel).toHaveBeenCalledTimes(1);
   });

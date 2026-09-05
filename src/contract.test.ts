@@ -739,6 +739,7 @@ const INTERNAL_HELPERS: ReadonlySet<string> = new Set([
   "paginateAll",
   "retryDelay",
   "classifyFetchError",
+  "classifyResponseReadError",
   "mapQurlsField",
   "validateBatchCreateResponse",
 ]);

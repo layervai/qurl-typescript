@@ -153,6 +153,13 @@ class InvalidResponseEncodingError extends Error {
   }
 }
 
+class ResponseBodyMaterializationError extends Error {
+  constructor() {
+    super("Response-like fetch returned a value that cannot be serialized as JSON");
+    this.name = "ResponseBodyMaterializationError";
+  }
+}
+
 const NO_PASSTHROUGH_STATUSES: readonly number[] = [];
 const BATCH_PASSTHROUGH_STATUSES: readonly number[] = [400];
 
@@ -748,7 +755,6 @@ function boundedInvalidFields(value: unknown): Record<string, string> | undefine
     if (key !== undefined && fieldDetail !== undefined && !retainedKeys.has(key)) {
       retainedKeys.add(key);
       entries.push([key, fieldDetail]);
-      if (entries.length === MAX_INVALID_FIELD_ENTRIES) break;
     }
   }
   return entries.length > 0 ? Object.fromEntries(entries) : undefined;
@@ -778,6 +784,20 @@ function contentLengthExceedsLimit(response: Response): boolean {
   const value = response.headers.get("content-length");
   if (value === null || !/^\d+$/.test(value.trim())) return false;
   return Number(value) > MAX_RESPONSE_BODY_BYTES;
+}
+
+/** Detect a followed redirect from fetch implementations that expose only the final URL. */
+function responseUrlDiffers(responseUrl: unknown, requestUrl: string): boolean {
+  if (typeof responseUrl !== "string" || responseUrl === "") return false;
+  try {
+    // URL serialization normalizes equivalent spellings such as host case and
+    // an explicit default port, so they do not create false redirect reports.
+    return new URL(responseUrl).href !== new URL(requestUrl).href;
+  } catch {
+    // A non-empty invalid response URL cannot prove that credentials stayed on
+    // the requested endpoint. Fail closed without reflecting it in diagnostics.
+    return true;
+  }
 }
 
 /**
@@ -823,13 +843,19 @@ async function readBoundedResponseBody(response: Response): Promise<string> {
 
     // Older injected Response-like objects may implement json() but return an
     // empty placeholder from text(). This path is never used by native fetch.
-    let serialized: string | undefined;
+    let parsed: unknown;
     try {
-      serialized = JSON.stringify(await response.json());
+      parsed = await response.json();
     } catch {
       // A Response-like shim may expose json() but reject on an empty 204
       // body. Native fetch represents that body as null and returns above.
       return "";
+    }
+    let serialized: string | undefined;
+    try {
+      serialized = JSON.stringify(parsed);
+    } catch {
+      throw new ResponseBodyMaterializationError();
     }
     if (serialized === undefined) return "";
     if (
@@ -864,11 +890,16 @@ async function readBoundedResponseBody(response: Response): Promise<string> {
     reader.releaseLock();
   }
 
-  const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
+  let bytes: Uint8Array;
+  if (chunks.length === 1) {
+    bytes = chunks[0];
+  } else {
+    bytes = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
   }
   try {
     return TEXT_DECODER.decode(bytes);
@@ -3604,7 +3635,8 @@ export class QURLClient {
       const bodyShape = response.__http_body_empty ? "with an empty body" : "with response bytes";
       throw httpStatusContractError(
         status,
-        `Unexpected response from DELETE; expected empty HTTP 204, received HTTP ${status} ${bodyShape}`,
+        `Unexpected response from DELETE; expected empty HTTP 204, received HTTP ${status} ${bodyShape}. ` +
+          "The delete may already have been applied; reconcile resource state before retrying.",
       );
     }
   }
@@ -3642,9 +3674,10 @@ export class QURLClient {
     // Reads may retry transient statuses and transport failures. POST/PATCH
     // keep status-code retries limited to rate limits and reuse the same
     // Idempotency-Key for fetch-level failures. DELETE is deliberately never
-    // replayed: a transport failure after dispatch makes the mutation outcome
-    // unknown, and the HTTP verb alone cannot prove a replay safe. The caller
-    // must reconcile resource state before it issues another delete.
+    // replayed, including after 429: this matches qurl-go's no-hidden-HTTP-
+    // retry rule and avoids SDK pacing on an application request path. The
+    // caller receives retryAfter when supplied and must reconcile resource
+    // state before it chooses to issue another delete.
     const idempotencyKeyBackedRetry = MUTATING_RETRY_METHODS.has(method);
     const retryFetchFailure = method === "GET" || idempotencyKeyBackedRetry;
     const retryable =
@@ -3701,17 +3734,21 @@ export class QURLClient {
       // Redirects are deterministic protocol violations for SDK API calls.
       // Refuse them before reading Location or entering retry handling so
       // Authorization and Idempotency-Key can never reach a follow-up target.
+      const changedResponseUrl = responseUrlDiffers(response.url, url);
       if (
         response.redirected === true ||
+        changedResponseUrl ||
         REDIRECT_RESPONSE_STATUSES.has(response.status) ||
         response.type === "opaqueredirect"
       ) {
         await cancelResponseBody(response.body);
         const redirectKind = response.redirected
           ? "followed"
-          : REDIRECT_RESPONSE_STATUSES.has(response.status)
-            ? `HTTP ${response.status}`
-            : "opaque browser";
+          : changedResponseUrl
+            ? "changed response URL"
+            : REDIRECT_RESPONSE_STATUSES.has(response.status)
+              ? `HTTP ${response.status}`
+              : "opaque browser";
         throw httpResponseContractError(
           response,
           `Refused ${redirectKind} redirect response for ${method}`,
@@ -3778,6 +3815,21 @@ export class QURLClient {
           throw encodingError;
         }
         await cancelResponseBody(response.body);
+        const transportReadError = this.classifyResponseReadError(err, response);
+        if (transportReadError !== undefined) {
+          this.log(`transport failure while reading response body from ${response.status}`, {
+            status: response.status,
+            error: transportReadError.code,
+          });
+          // Headers do not make a mutation replay safe when the response body
+          // transport failed. Reads may retry; callers must reconcile a
+          // mutation before they choose to retry it.
+          if (method === "GET" && attempt < this.maxRetries) {
+            lastError = transportReadError;
+            continue;
+          }
+          throw transportReadError;
+        }
         this.log(`failed to read response body from ${response.status}`, {
           status: response.status,
         });
@@ -4014,11 +4066,29 @@ export class QURLClient {
   }
 
   private classifyFetchError(err: unknown): TimeoutError | NetworkError {
-    if (err instanceof DOMException && err.name === "TimeoutError") {
+    if (err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError")) {
       return new TimeoutError("Request timed out", { cause: err });
     }
     const cause = err instanceof Error ? err : undefined;
     return new NetworkError(cause?.message ?? String(err), { cause });
+  }
+
+  private classifyResponseReadError(
+    err: unknown,
+    response: Response,
+  ): TimeoutError | NetworkError | undefined {
+    if (err instanceof ResponseBodyMaterializationError) return undefined;
+    if (!(err instanceof Error)) return undefined;
+    if (err.name === "TimeoutError" || err.name === "AbortError") {
+      return new TimeoutError(
+        `Request timed out while reading response body after HTTP ${response.status}`,
+        { cause: err },
+      );
+    }
+    return new NetworkError(
+      `Network failure while reading response body after HTTP ${response.status}`,
+      { cause: err },
+    );
   }
 }
 
