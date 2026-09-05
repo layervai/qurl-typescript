@@ -5441,6 +5441,32 @@ describe("QURLClient", () => {
     }
   });
 
+  it("bounds inspected invalid-field entries when early values have the wrong type", async () => {
+    const invalidFields = Object.fromEntries([
+      ...Array.from({ length: 100 }, (_, index) => [`ignored-${index}`, index]),
+      ["must-not-be-scanned", "late diagnostic"],
+    ]);
+    const fetch = mockFetch({
+      status: 400,
+      body: {
+        error: {
+          title: "Bad Request",
+          status: 400,
+          detail: "Invalid input",
+          code: "validation_error",
+          invalid_fields: invalidFields,
+        },
+      },
+    });
+
+    const error = await createClient(fetch)
+      .create({ target_url: "https://example.com" })
+      .catch((caught: unknown) => caught as ValidationError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error.invalidFields).toBeUndefined();
+  });
+
   it("retains the first structured invalid-field diagnostic after normalized-key collisions", async () => {
     const fetch = mockFetch({
       status: 400,
@@ -5892,9 +5918,9 @@ describe("QURLClient", () => {
   });
 
   it.each([502, 503, 504])("does not replay DELETE after a %i response", async (status) => {
-    // Endpoint semantics, not the HTTP verb alone, determine replay safety.
-    // Individual qURL revoke returns 409 on repeat, while a connector/resource
-    // delete can require lifecycle reconciliation after an ambiguous result.
+    // A transport failure after dispatch makes the mutation outcome unknown.
+    // The caller reconciles resource state before it chooses to issue another
+    // delete; the HTTP verb alone cannot prove a replay safe.
     const gatewayResponse = {
       ok: false,
       status,
@@ -8044,6 +8070,121 @@ describe("QURLClient", () => {
     expect((error as QURLError).status).toBe(200);
     expect((error as QURLError).code).toBe(ERROR_CODE_UNEXPECTED_RESPONSE);
     expect((error as QURLError).detail).toContain("non-JSON");
+  });
+
+  it("bounds and sanitizes statusText on a non-JSON success response", async () => {
+    const statusText = `${"€".repeat(300)}\n\u202Ecredential-tail`;
+    const nonJsonOkFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText,
+      headers: new Headers({ "content-type": "text/html" }),
+      text: () => Promise.resolve("<html>broken response</html>"),
+    } satisfies Partial<Response> as Response);
+
+    const error = await createClient(nonJsonOkFetch as typeof globalThis.fetch)
+      .getQuota()
+      .catch((caught: unknown) => caught as QURLError);
+
+    expect(error).toBeInstanceOf(QURLError);
+    const renderedTitle = error.message.split(" (200):", 1)[0];
+    expect(new TextEncoder().encode(renderedTitle).byteLength).toBeLessThanOrEqual(512);
+    expect(renderedTitle).not.toMatch(/[\p{Cc}\u202A-\u202E\u2066-\u2069]/u);
+    expect(renderedTitle).not.toContain("credential-tail");
+  });
+
+  it("rejects malformed UTF-8 after a successful mutation without replaying it", async () => {
+    const encoder = new TextEncoder();
+    const malformedBody = new Uint8Array([
+      ...encoder.encode(
+        '{"data":{"resource_id":"r_new","target_url":"https://example.com","description":"',
+      ),
+      0xff,
+      ...encoder.encode('"}}'),
+    ]);
+    const fetch = vi.fn(
+      async () =>
+        new Response(malformedBody, {
+          status: 201,
+          statusText: "Created",
+          headers: { "content-type": "application/json" },
+        }),
+    );
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 2,
+    });
+
+    const error = await client
+      .create({ target_url: "https://example.com" })
+      .catch((caught: unknown) => caught as QURLError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error).toMatchObject({ status: 201, code: ERROR_CODE_UNEXPECTED_RESPONSE });
+    expect(error.detail).toContain("not valid UTF-8");
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry GET after a successful response with malformed UTF-8", async () => {
+    const encoder = new TextEncoder();
+    const malformedBody = new Uint8Array([
+      ...encoder.encode('{"data":{"plan":"'),
+      0xff,
+      ...encoder.encode('","period_start":"2026-03-01","period_end":"2026-04-01"}}'),
+    ]);
+    const fetch = vi.fn(
+      async () =>
+        new Response(malformedBody, {
+          status: 200,
+          statusText: "OK",
+          headers: { "content-type": "application/json" },
+        }),
+    );
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 2,
+    });
+
+    await expect(client.getQuota()).rejects.toMatchObject({
+      status: 200,
+      code: ERROR_CODE_UNEXPECTED_RESPONSE,
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a retryable error status retryable when its body has malformed UTF-8", async () => {
+    vi.useFakeTimers();
+    try {
+      const malformed = new Response(Uint8Array.from([0x7b, 0x22, 0xff, 0x22, 0x7d]), {
+        status: 503,
+        statusText: "Service Unavailable",
+      });
+      const success = new Response(
+        JSON.stringify({
+          data: { plan: "growth", period_start: "2026-03-01", period_end: "2026-04-01" },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+      const fetch = vi.fn().mockResolvedValueOnce(malformed).mockResolvedValueOnce(success);
+      const client = new QURLClient({
+        apiKey: "test-api-key",
+        baseUrl: "https://api.test.layerv.ai",
+        fetch: fetch as typeof globalThis.fetch,
+        maxRetries: 1,
+      });
+
+      const resultPromise = client.getQuota();
+      await vi.runAllTimersAsync();
+
+      await expect(resultPromise).resolves.toMatchObject({ plan: "growth" });
+      expect(fetch).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("batch create rejects success entries missing resource_id", async () => {

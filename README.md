@@ -321,9 +321,15 @@ The client retries only requests whose replay contract is explicit:
   dropped response body after successful headers arrive
 - **POST/PATCH**: Retries status responses only on 429
 - **POST/PATCH network errors**: Retried with the `Idempotency-Key` generated on the first attempt
-- **DELETE**: Never replayed automatically, including on 429. Individual revoke can return 409 on repeat, resource deletion may require lifecycle reconciliation after a lost response, and a custom gateway status alone cannot prove the handler never ran. This matches qurl-go's explicit-caller-retry model.
+- **DELETE**: Never replayed automatically, including on 429. A transport
+  failure after dispatch makes the mutation outcome unknown, and the HTTP verb
+  alone cannot prove a replay safe. Reconcile resource state before you issue
+  a deliberate retry. This matches qurl-go's explicit-caller-retry model.
 - **`Retry-After` header**: Honored on 429 and 503 responses (RFC 7231 §7.1.3). Currently the SDK only parses **delta-seconds** values (e.g. `Retry-After: 30`); HTTP-date values (`Retry-After: Wed, 21 Oct 2026 07:28:00 GMT`) silently fall back to exponential backoff. Tracked in [#61](https://github.com/layervai/qurl-typescript/issues/61).
-- **Response failures**: Redirects and oversized bodies are not retried. Retryable status codes remain retryable when an intermediary returns HTML, an empty body, a mid-stream read failure, or another non-envelope error response.
+- **Response failures**: Redirects, oversized successful bodies, and malformed
+  UTF-8 successful bodies are not retried. Retryable error statuses remain
+  retryable when an intermediary returns HTML, an empty body, malformed UTF-8,
+  a mid-stream read failure, or another non-envelope error response.
 
 All documented no-content DELETE operations require exactly HTTP 204 with an
 empty response body. Alternate success statuses or response bytes fail closed
@@ -367,6 +373,8 @@ SDK-generated keys require `globalThis.crypto.getRandomValues`, which is availab
   matching qurl-go's security posture. The SDK checks `Content-Length` when
   present and independently counts streamed bytes, so missing or inaccurate
   headers cannot bypass the limit. Bodies exactly at the limit are accepted.
+  A maximum-size list page can exceed the cap after JSON escaping; request a
+  smaller page if a list call reports the body-limit error.
   Standards-compliant fetch implementations are bounded while streaming;
   custom Response-like shims that omit `body` are validated after their
   `text()`/`json()` result has already been materialized by that shim.
@@ -375,6 +383,7 @@ SDK-generated keys require `globalThis.crypto.getRandomValues`, which is availab
   Transient error statuses retain the normal retry policy for GET and
   idempotency-key-backed mutations; oversized successful responses and DELETE
   responses are not retried.
+  Successful JSON bodies with malformed UTF-8 are rejected without replay.
   Server-provided error code/title/detail/type/instance/request-id snippets and
   `invalidFields` keys/values have controls and bidirectional formatting
   characters removed, are normalized to one line, and are capped at 512 UTF-8

@@ -15,8 +15,9 @@
   normalized-key collisions retain the first diagnostic.
 - **client:** API redirects are refused instead of followed, including when an
   injected fetch implementation follows one before returning a response.
-- **client:** API response bodies larger than 1 MiB are rejected before JSON
-  parsing, including streamed bodies without a trustworthy Content-Length.
+- **client:** API response bodies larger than 1 MiB and successful JSON bodies
+  with malformed UTF-8 are rejected before JSON parsing. The size limit also
+  applies to streamed bodies without a trustworthy Content-Length.
 - **client:** GET requests now retry transport failures that occur while reading
   a response body regardless of the observed HTTP status; GET replay remains
   safe while mutations retain status- and idempotency-specific retry rules.

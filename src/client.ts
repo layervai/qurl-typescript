@@ -96,17 +96,21 @@ import { VERSION } from "./version.js";
 const DEFAULT_BASE_URL = "https://api.layerv.ai";
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_TIMEOUT = 30_000;
-// Match qurl-go a528d1f's exact API response cap. Current qurl-service list
-// routes cap pages at 100 items; the largest explicitly bounded blob on a list
-// item is a webhook delivery's 8 KiB response-body preview. Keep this aligned
-// with Go and the service contract rather than widening one SDK independently.
+// Match qurl-go c4f2f98's exact API response cap. Current qurl-service list
+// routes cap pages at 100 items. A caller can still exceed this cap with a
+// large, heavily escaped webhook-delivery page, so list callers must request a
+// smaller page if the service reports the body-limit error. Keep the default
+// aligned with Go rather than widening one SDK independently.
 // The limit is enforced from Content-Length when usable and again while
 // consuming the response stream.
 const MAX_RESPONSE_BODY_BYTES = 1 << 20;
 const MAX_ERROR_SNIPPET_BYTES = 512;
 const MAX_INVALID_FIELD_ENTRIES = 100;
 const TEXT_ENCODER = new TextEncoder();
-const TEXT_DECODER = new TextDecoder();
+// RFC 8259 JSON exchanged between systems must be valid UTF-8. A non-fatal
+// decoder would replace malformed bytes with U+FFFD before JSON.parse and hide
+// the producer's exact contract violation.
+const TEXT_DECODER = new TextDecoder("utf-8", { fatal: true });
 const RETRY_BASE_DELAY_MS = 500;
 // Bounds local exponential backoff (NOT server-asserted Retry-After —
 // see `RETRY_AFTER_HARD_CAP_MS` for that).
@@ -139,6 +143,13 @@ class ResponseBodyTooLargeError extends Error {
   constructor() {
     super(`Response body exceeds ${MAX_RESPONSE_BODY_BYTES}-byte limit`);
     this.name = "ResponseBodyTooLargeError";
+  }
+}
+
+class InvalidResponseEncodingError extends Error {
+  constructor() {
+    super("Response body is not valid UTF-8");
+    this.name = "InvalidResponseEncodingError";
   }
 }
 
@@ -727,7 +738,11 @@ function boundedInvalidFields(value: unknown): Record<string, string> | undefine
 
   const entries: [string, string][] = [];
   const retainedKeys = new Set<string>();
-  for (const [rawKey, rawValue] of Object.entries(value)) {
+  // Bound inspected entries as well as retained entries. A hostile envelope
+  // whose values all have the wrong type must not make diagnostics scan every
+  // key in the response body.
+  for (const rawKey of Object.keys(value).slice(0, MAX_INVALID_FIELD_ENTRIES)) {
+    const rawValue = (value as Record<string, unknown>)[rawKey];
     const key = boundedErrorSnippet(rawKey);
     const fieldDetail = boundedErrorSnippet(rawValue);
     if (key !== undefined && fieldDetail !== undefined && !retainedKeys.has(key)) {
@@ -855,7 +870,11 @@ async function readBoundedResponseBody(response: Response): Promise<string> {
     bytes.set(chunk, offset);
     offset += chunk.byteLength;
   }
-  return TEXT_DECODER.decode(bytes);
+  try {
+    return TEXT_DECODER.decode(bytes);
+  } catch {
+    throw new InvalidResponseEncodingError();
+  }
 }
 
 // ---- Spec-derived validation helpers ------------------------------------
@@ -3623,9 +3642,9 @@ export class QURLClient {
     // Reads may retry transient statuses and transport failures. POST/PATCH
     // keep status-code retries limited to rate limits and reuse the same
     // Idempotency-Key for fetch-level failures. DELETE is deliberately never
-    // replayed: endpoint semantics differ (individual revoke returns 409 on a
-    // repeat, while resource deletion can require lifecycle reconciliation),
-    // so the HTTP verb alone cannot prove a retry safe.
+    // replayed: a transport failure after dispatch makes the mutation outcome
+    // unknown, and the HTTP verb alone cannot prove a replay safe. The caller
+    // must reconcile resource state before it issues another delete.
     const idempotencyKeyBackedRetry = MUTATING_RETRY_METHODS.has(method);
     const retryFetchFailure = method === "GET" || idempotencyKeyBackedRetry;
     const retryable =
@@ -3707,7 +3726,9 @@ export class QURLClient {
           this.log(`rejected oversized response body from ${response.status}`, {
             status: response.status,
           });
-          const detail = `Response body exceeds ${MAX_RESPONSE_BODY_BYTES}-byte limit on HTTP ${response.status}`;
+          const detail =
+            `Response body exceeds ${MAX_RESPONSE_BODY_BYTES}-byte limit on HTTP ${response.status}; ` +
+            "request a smaller page when listing collections";
           if (response.ok) {
             throw httpResponseContractError(response, detail);
           }
@@ -3730,6 +3751,31 @@ export class QURLClient {
             continue;
           }
           throw bodyError;
+        }
+        if (err instanceof InvalidResponseEncodingError) {
+          this.log(`rejected malformed UTF-8 response body from ${response.status}`, {
+            status: response.status,
+          });
+          const detail = `Response body is not valid UTF-8 on HTTP ${response.status}`;
+          if (response.ok) {
+            // A successful status with an invalid wire body is a deterministic
+            // response-contract failure. Do not replay a GET or a mutation.
+            throw httpResponseContractError(response, detail);
+          }
+          const encodingError = createError({
+            status: response.status,
+            code: ERROR_CODE_UNKNOWN,
+            title: boundedErrorSnippet(response.statusText) || `HTTP ${response.status}`,
+            detail,
+            retry_after: this.parseRetryAfter(response),
+          });
+          // For an explicit error status, the HTTP classification remains
+          // authoritative even when its body encoding is invalid.
+          if (retryable.has(response.status) && attempt < this.maxRetries) {
+            lastError = encodingError;
+            continue;
+          }
+          throw encodingError;
         }
         await cancelResponseBody(response.body);
         this.log(`failed to read response body from ${response.status}`, {
@@ -3810,7 +3856,7 @@ export class QURLClient {
           throw createError({
             status: response.status,
             code: ERROR_CODE_UNEXPECTED_RESPONSE,
-            title: response.statusText || `HTTP ${response.status}`,
+            title: boundedErrorSnippet(response.statusText) || `HTTP ${response.status}`,
             detail: `Expected JSON response body on HTTP ${response.status} but received non-JSON content`,
           });
         }
@@ -3859,7 +3905,7 @@ export class QURLClient {
         // The transport status is authoritative for error classification. A
         // conflicting or malformed RFC 7807 body must not turn a real 5xx into
         // a NotFoundError (or vice versa) in caller reconciliation logic.
-        const status = err.status === response.status ? err.status : response.status;
+        const status = response.status;
         return {
           status,
           code: boundedErrorCode(err.code) ?? ERROR_CODE_UNKNOWN,
