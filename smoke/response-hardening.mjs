@@ -22,6 +22,7 @@ for (const [name, sdk] of builds) {
   let redirectCalls = 0;
   let targetCalls = 0;
   const redirectTarget = "https://redirect-target.invalid/collect";
+  const redirectMarker = "redirect-response-secret";
   const redirectFetch = async (url, init) => {
     redirectCalls++;
     if (url === redirectTarget) {
@@ -29,7 +30,7 @@ for (const [name, sdk] of builds) {
       return new Response(null, { status: 204 });
     }
     assert.equal(init.redirect, "manual");
-    return new Response("redirect refused", {
+    return new Response(redirectMarker, {
       status: 302,
       headers: { location: redirectTarget },
     });
@@ -40,18 +41,43 @@ for (const [name, sdk] of builds) {
     fetch: redirectFetch,
     maxRetries: 2,
   });
-  await assert.rejects(
-    redirectClient.create(
-      { target_url: "https://example.com" },
-      { idempotencyKey: "smoke-idempotency-key" },
-    ),
-    (error) =>
-      error instanceof sdk.QURLError &&
-      error.status === 302 &&
-      error.code === sdk.ERROR_CODE_UNEXPECTED_RESPONSE,
+  const redirectError = await redirectClient
+    .create({ target_url: "https://example.com" }, { idempotencyKey: "smoke-idempotency-key" })
+    .catch((error) => error);
+  assert.ok(redirectError instanceof sdk.QURLError);
+  assert.equal(redirectError.status, 302);
+  assert.equal(redirectError.code, sdk.ERROR_CODE_UNEXPECTED_RESPONSE);
+  assert.equal(
+    redirectError.message,
+    "Unexpected Response (302): Refused HTTP 302 redirect response for POST",
   );
+  assert.equal(redirectError.detail, "Refused HTTP 302 redirect response for POST");
+  assert.equal(String(redirectError.message).includes(redirectMarker), false);
+  assert.equal(String(redirectError.detail).includes(redirectMarker), false);
   assert.equal(redirectCalls, 1, `${name} redirect response was retried or followed`);
   assert.equal(targetCalls, 0, `${name} requested the redirect target`);
+
+  let oversizedSuccessCalls = 0;
+  const oversizedSuccessMarker = "success-response-secret-must-not-be-reflected";
+  const oversizedSuccessClient = new sdk.QURLClient({
+    apiKey: "smoke-secret-key",
+    baseUrl: "https://api.test.layerv.ai",
+    maxRetries: 2,
+    fetch: async () => {
+      oversizedSuccessCalls++;
+      return new Response(`${oversizedSuccessMarker}${"x".repeat(RESPONSE_LIMIT)}`, {
+        status: 200,
+        headers: { "content-length": "1", "content-type": "application/json" },
+      });
+    },
+  });
+  const oversizedSuccessError = await oversizedSuccessClient.getQuota().catch((error) => error);
+  assert.ok(oversizedSuccessError instanceof sdk.QURLError);
+  assert.equal(oversizedSuccessError.status, 200);
+  assert.equal(oversizedSuccessError.code, sdk.ERROR_CODE_UNEXPECTED_RESPONSE);
+  assert.equal(String(oversizedSuccessError.message).includes(oversizedSuccessMarker), false);
+  assert.equal(String(oversizedSuccessError.detail).includes(oversizedSuccessMarker), false);
+  assert.equal(oversizedSuccessCalls, 1, `${name} oversized HTTP 200 response was retried`);
 
   let oversizedCalls = 0;
   const oversizedMarker = "response-secret-must-not-be-reflected";

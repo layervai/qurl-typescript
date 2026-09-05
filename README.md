@@ -386,6 +386,8 @@ SDK-generated keys require `globalThis.crypto.getRandomValues`, which is availab
   matching qurl-go's security posture. The SDK checks `Content-Length` when
   present and independently counts streamed bytes, so missing or inaccurate
   headers cannot bypass the limit. Bodies exactly at the limit are accepted.
+  This fixed security limit has no override. Callers must request a smaller
+  page, and the SDKs must not independently widen the limit.
   A maximum-size list page can exceed the cap after JSON escaping; request a
   smaller page if a list call reports the body-limit error.
   Standards-compliant fetch implementations are bounded while streaming;
@@ -400,7 +402,8 @@ SDK-generated keys require `globalThis.crypto.getRandomValues`, which is availab
   Server-provided error code/title/detail/type/instance/request-id snippets and
   `invalidFields` keys/values have controls and bidirectional formatting
   characters removed, are normalized to one line, and are capped at 512 UTF-8
-  bytes. At most 100 `invalidFields` entries are retained.
+  bytes. At most 100 `invalidFields` entries are retained, and each retained
+  `invalidFields` or debug `body_keys` collection has an 8 KiB UTF-8 budget.
   Redirect/body-limit contract-error details do not include `Location` values
   or response-body snippets. Standard request debug logging includes the request
   URL, so do not place credentials in identifiers or enable debug output in a

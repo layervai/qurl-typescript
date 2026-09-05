@@ -47,6 +47,28 @@ function callHeaders(
 }
 
 describe("QURLClient", () => {
+  it("gives shared JSON mock responses the correct media type", async () => {
+    const response = await mockFetch({ status: 200, body: { data: {} } })("https://example.test");
+
+    expect(response.headers.get("content-type")).toBe("application/json");
+  });
+
+  it.each([204, 205, 304])("rejects a body-bearing HTTP %i shared mock", async (status) => {
+    const fetch = mockFetch({ status, body: { forbidden: true } });
+
+    await expect(fetch("https://example.test")).rejects.toThrow(
+      `mock response status ${status} forbids a response body`,
+    );
+  });
+
+  it("rejects unsupported informational statuses in the shared mock", async () => {
+    const fetch = mockFetch({ status: 199 });
+
+    await expect(fetch("https://example.test")).rejects.toThrow(
+      "mock response status 199 is unsupported",
+    );
+  });
+
   it("creates a qURL", async () => {
     const fetch = mockFetch({
       status: 201,
@@ -5527,14 +5549,56 @@ describe("QURLClient", () => {
       .catch((caught: unknown) => caught as ValidationError);
 
     expect(error).toBeInstanceOf(ValidationError);
-    expect(Object.keys(error.invalidFields ?? {})).toHaveLength(100);
+    expect(Object.keys(error.invalidFields ?? {}).length).toBeLessThan(100);
+    let aggregateBytes = 0;
     for (const [key, value] of Object.entries(error.invalidFields ?? {})) {
       expect(key).not.toMatch(/[\p{Cc}\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/u);
       expect(value).not.toMatch(/[\p{Cc}\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/u);
       expect(new TextEncoder().encode(key).byteLength).toBeLessThanOrEqual(512);
       expect(new TextEncoder().encode(value).byteLength).toBeLessThanOrEqual(512);
       expect(value).not.toContain("secret-tail");
+      aggregateBytes +=
+        new TextEncoder().encode(key).byteLength + new TextEncoder().encode(value).byteLength;
     }
+    expect(aggregateBytes).toBeLessThanOrEqual(8 << 10);
+  });
+
+  it("retains invalid-field diagnostics at the 8 KiB aggregate boundary", async () => {
+    const fixedValue = "v".repeat(512);
+    const invalidFields = Object.fromEntries([
+      ...Array.from({ length: 8 }, (_, index) => [
+        `${String(index).padStart(3, "0")}${"k".repeat(509)}`,
+        fixedValue,
+      ]),
+      ["over-budget", "must not be retained"],
+    ]);
+    const fetch = mockFetch({
+      status: 400,
+      body: {
+        error: {
+          title: "Bad Request",
+          status: 400,
+          detail: "Invalid input",
+          code: "validation_error",
+          invalid_fields: invalidFields,
+        },
+      },
+    });
+
+    const error = await createClient(fetch)
+      .create({ target_url: "https://example.com" })
+      .catch((caught: unknown) => caught as ValidationError);
+
+    expect(Object.keys(error.invalidFields ?? {})).toHaveLength(8);
+    expect(error.invalidFields).not.toHaveProperty("over-budget");
+    const aggregateBytes = Object.entries(error.invalidFields ?? {}).reduce(
+      (total, [key, value]) =>
+        total +
+        new TextEncoder().encode(key).byteLength +
+        new TextEncoder().encode(value).byteLength,
+      0,
+    );
+    expect(aggregateBytes).toBe(8 << 10);
   });
 
   it("bounds inspected invalid-field entries when early values have the wrong type", async () => {
@@ -6403,6 +6467,39 @@ describe("QURLClient", () => {
       expect(key).not.toMatch(/[\p{Cc}\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/u);
       expect(key).not.toContain("secret-tail");
     }
+  });
+
+  it("retains debug body keys at the 8 KiB aggregate boundary", async () => {
+    const debugFn = vi.fn();
+    const body = Object.fromEntries([
+      ...Array.from({ length: 16 }, (_, index) => [
+        `${String(index).padStart(3, "0")}${"k".repeat(509)}`,
+        true,
+      ]),
+      ["over-budget", true],
+    ]);
+    const fetch = mockFetch({ status: 500, body });
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch,
+      maxRetries: 0,
+      debug: debugFn,
+    });
+
+    await client.getQuota().catch(() => {});
+
+    const metadata = debugFn.mock.calls.find(([message]) =>
+      String(message).includes("unexpected error response shape"),
+    )?.[1] as { body_keys?: string[] };
+    expect(metadata.body_keys).toHaveLength(16);
+    expect(metadata.body_keys).not.toContain("over-budget");
+    expect(
+      (metadata.body_keys ?? []).reduce(
+        (total, key) => total + new TextEncoder().encode(key).byteLength,
+        0,
+      ),
+    ).toBe(8 << 10);
   });
 
   it("5xx with JSON body but missing `error` envelope surfaces as ServerError with .code === 'unknown'", async () => {

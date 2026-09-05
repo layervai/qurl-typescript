@@ -15,17 +15,29 @@ type MockResponse = {
 };
 
 function buildResponse(response: MockResponse): Response {
+  if (response.status < 200) {
+    throw new Error(
+      `mock response status ${response.status} is unsupported; use a custom Response-like fixture for informational responses`,
+    );
+  }
   const ok = response.status >= 200 && response.status < 300;
   const bodyForbidden =
     response.status === 204 || response.status === 205 || response.status === 304;
-  const body = bodyForbidden || response.body === undefined ? null : JSON.stringify(response.body);
+  if (bodyForbidden && response.body !== undefined) {
+    throw new Error(`mock response status ${response.status} forbids a response body`);
+  }
+  const body = response.body === undefined ? null : JSON.stringify(response.body);
+  const headers = new Headers(response.headers);
+  if (response.body !== undefined && !headers.has("content-type")) {
+    headers.set("content-type", "application/json");
+  }
   return new Response(body, {
     status: response.status,
     // Default mirrors `ok` (not just status === 200) so 201/204
     // successes don't render as "Error" to assertions that inspect it.
     // Tests can pass `statusText: ""` to simulate HTTP/2.
     statusText: response.statusText ?? (ok ? "OK" : "Error"),
-    headers: response.headers,
+    headers,
   });
 }
 

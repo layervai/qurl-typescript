@@ -99,13 +99,18 @@ const DEFAULT_TIMEOUT = 30_000;
 // Match qurl-go c4f2f98's exact API response cap. Current qurl-service list
 // routes cap pages at 100 items. A caller can still exceed this cap with a
 // large, heavily escaped webhook-delivery page, so list callers must request a
-// smaller page if the service reports the body-limit error. Keep the default
-// aligned with Go rather than widening one SDK independently.
+// smaller page if the service reports the body-limit error. This cap is fixed:
+// do not add an override or widen one SDK independently from the other.
 // The limit is enforced from Content-Length when usable and again while
 // consuming the response stream.
 const MAX_RESPONSE_BODY_BYTES = 1 << 20;
 const MAX_ERROR_SNIPPET_BYTES = 512;
 const MAX_INVALID_FIELD_ENTRIES = 100;
+// Bound each retained diagnostic collection as well as each string. Without
+// this aggregate cap, 100 valid 512-byte keys and values could turn a small
+// server error into a large caller-visible object. This is a diagnostic budget,
+// not part of the API wire contract.
+const MAX_DIAGNOSTIC_COLLECTION_BYTES = 8 << 10;
 const TEXT_ENCODER = new TextEncoder();
 // RFC 8259 JSON exchanged between systems must be valid UTF-8. A non-fatal
 // decoder would replace malformed bytes with U+FFFD before JSON.parse and hide
@@ -672,6 +677,9 @@ function fillRandomBytes(bytes: Uint8Array<ArrayBuffer>): void {
  * just on success/passthrough returns.
  */
 function unexpectedResponseError(detail: string, request_id?: string): ValidationError {
+  // Every detail passed here is an SDK-authored contract message whose dynamic
+  // inputs were validated by the caller-side shape guards. Do not pass raw
+  // server strings to this helper. Server diagnostics use boundedErrorSnippet.
   const safeRequestId = boundedErrorSnippet(request_id);
   return new ValidationError({
     status: 0,
@@ -761,6 +769,7 @@ function boundedInvalidFields(value: unknown): Record<string, string> | undefine
 
   const entries: [string, string][] = [];
   const retainedKeys = new Set<string>();
+  let retainedBytes = 0;
   // Bound inspected entries as well as retained entries. A hostile envelope
   // whose values all have the wrong type must not make diagnostics scan every
   // key in the response body.
@@ -769,8 +778,12 @@ function boundedInvalidFields(value: unknown): Record<string, string> | undefine
     const key = boundedErrorSnippet(rawKey);
     const fieldDetail = boundedErrorSnippet(rawValue);
     if (key !== undefined && fieldDetail !== undefined && !retainedKeys.has(key)) {
+      const entryBytes =
+        TEXT_ENCODER.encode(key).byteLength + TEXT_ENCODER.encode(fieldDetail).byteLength;
+      if (retainedBytes + entryBytes > MAX_DIAGNOSTIC_COLLECTION_BYTES) break;
       retainedKeys.add(key);
       entries.push([key, fieldDetail]);
+      retainedBytes += entryBytes;
     }
   }
   return entries.length > 0 ? Object.fromEntries(entries) : undefined;
@@ -781,9 +794,17 @@ function boundedObjectKeys(value: object): string[] {
   // Stop before normalization so a hostile envelope cannot force work over
   // every enumerable own key. Some early keys may normalize away; bounded
   // diagnostics are more important here than filling every available slot.
-  return firstEnumerableOwnKeys(value, MAX_INVALID_FIELD_ENTRIES)
-    .map((key) => boundedErrorSnippet(key))
-    .filter((key): key is string => key !== undefined);
+  const retained: string[] = [];
+  let retainedBytes = 0;
+  for (const rawKey of firstEnumerableOwnKeys(value, MAX_INVALID_FIELD_ENTRIES)) {
+    const key = boundedErrorSnippet(rawKey);
+    if (key === undefined) continue;
+    const keyBytes = TEXT_ENCODER.encode(key).byteLength;
+    if (retainedBytes + keyBytes > MAX_DIAGNOSTIC_COLLECTION_BYTES) break;
+    retained.push(key);
+    retainedBytes += keyBytes;
+  }
+  return retained;
 }
 
 async function cancelResponseBody(body: Response["body"]): Promise<void> {
@@ -804,6 +825,7 @@ function contentLengthExceedsLimit(response: Response): boolean {
 /** Detect a followed redirect from fetch implementations that expose only the final URL. */
 function responseUrlDiffers(responseUrl: unknown, requestUrl: string): boolean {
   if (typeof responseUrl !== "string" || responseUrl === "") return false;
+  if (responseUrl === requestUrl) return false;
   try {
     // URL serialization normalizes equivalent spellings such as host case and
     // an explicit default port, so they do not create false redirect reports.
@@ -3757,13 +3779,14 @@ export class QURLClient {
         response.type === "opaqueredirect"
       ) {
         await cancelResponseBody(response.body);
-        const redirectKind = response.redirected
-          ? "followed"
-          : changedResponseUrl
-            ? "changed response URL"
-            : REDIRECT_RESPONSE_STATUSES.has(response.status)
-              ? `HTTP ${response.status}`
-              : "opaque browser";
+        const redirectKind =
+          response.redirected === true
+            ? "followed"
+            : changedResponseUrl
+              ? "changed response URL"
+              : REDIRECT_RESPONSE_STATUSES.has(response.status)
+                ? `HTTP ${response.status}`
+                : "opaque browser";
         throw httpResponseContractError(
           response,
           `Refused ${redirectKind} redirect response for ${method}`,
