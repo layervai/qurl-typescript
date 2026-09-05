@@ -702,18 +702,29 @@ function unexpectedResponseError(
 }
 
 function withErrorCause<T extends Error>(error: T, cause: unknown): T {
-  error.cause = cause;
+  // Match the native Error `cause` descriptor. In particular, do not leak a
+  // transport object through Object.keys(), object spread, or JSON logging.
+  Object.defineProperty(error, "cause", {
+    value: cause,
+    writable: true,
+    configurable: true,
+  });
   return error;
 }
 
 function isIndependentAbort(error: unknown, requestSignal: AbortSignal): boolean {
-  return error instanceof Error && error.name === "AbortError" && !requestSignal.aborted;
+  return (
+    error instanceof Error &&
+    (error.name === "AbortError" || error.name === "TimeoutError") &&
+    !requestSignal.aborted
+  );
 }
 
 function isSdkTimeout(error: unknown, requestSignal: AbortSignal): boolean {
   return (
     error instanceof Error &&
-    (error.name === "TimeoutError" || (error.name === "AbortError" && requestSignal.aborted))
+    requestSignal.aborted &&
+    (error.name === "TimeoutError" || error.name === "AbortError")
   );
 }
 
@@ -844,6 +855,16 @@ async function cancelResponseBody(body: Response["body"]): Promise<void> {
   }
 }
 
+function materializedResponseBodyExceedsLimit(value: string): boolean {
+  if (value.length > MAX_RESPONSE_BODY_BYTES) return true;
+  // Encoding creates another buffer. UTF-8 uses at most three bytes per
+  // UTF-16 code unit, so shorter strings are provably safe without that copy.
+  return (
+    value.length * 3 > MAX_RESPONSE_BODY_BYTES &&
+    TEXT_ENCODER.encode(value).byteLength > MAX_RESPONSE_BODY_BYTES
+  );
+}
+
 function contentLengthExceedsLimit(response: Response): boolean {
   // 204/205 never carry content, and a 304 Content-Length describes the
   // selected representation rather than a response body. Do not reject those
@@ -913,10 +934,7 @@ async function readBoundedResponseBody(response: Response): Promise<string> {
       }
     }
     const text = typeof materializedText === "string" ? materializedText : "";
-    if (
-      text.length > MAX_RESPONSE_BODY_BYTES ||
-      TEXT_ENCODER.encode(text).byteLength > MAX_RESPONSE_BODY_BYTES
-    ) {
+    if (materializedResponseBodyExceedsLimit(text)) {
       throw new ResponseBodyTooLargeError();
     }
     if (
@@ -945,10 +963,7 @@ async function readBoundedResponseBody(response: Response): Promise<string> {
       throw new ResponseBodyMaterializationError();
     }
     if (serialized === undefined) return "";
-    if (
-      serialized.length > MAX_RESPONSE_BODY_BYTES ||
-      TEXT_ENCODER.encode(serialized).byteLength > MAX_RESPONSE_BODY_BYTES
-    ) {
+    if (materializedResponseBodyExceedsLimit(serialized)) {
       throw new ResponseBodyTooLargeError();
     }
     return serialized;
@@ -3826,8 +3841,9 @@ export class QURLClient {
             error: boundedErrorSnippet(lastError.message),
           },
         );
-        // An injected fetch can abort for its own reason. That is not this
-        // SDK's timeout and replaying it can defeat caller-side cancellation.
+        // An injected fetch can abort or impose a deadline for its own reason.
+        // That is not this SDK's timeout. Replaying it can defeat caller-side
+        // cancellation or deadline policy.
         if (
           retryFetchFailure &&
           !isIndependentAbort(err, requestSignal) &&
@@ -4200,9 +4216,9 @@ export class QURLClient {
     err: unknown,
     requestSignal: AbortSignal,
   ): TimeoutError | NetworkError {
-    // AbortSignal.timeout is the only abort source accepted by this SDK. If a
-    // later API accepts caller cancellation, keep this check tied to the SDK's
-    // own signal instead of classifying every AbortError as a timeout.
+    // AbortSignal.timeout is the only timeout source owned by this SDK. Keep
+    // this check tied to that signal instead of trusting an injected fetch's
+    // AbortError or TimeoutError name.
     if (isSdkTimeout(err, requestSignal)) {
       return new TimeoutError("Request timed out", { cause: err });
     }

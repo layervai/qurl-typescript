@@ -36,6 +36,18 @@ function sizedJSON(prefix: string, suffix: string, size: number): string {
   return body;
 }
 
+function sizedMultibyteJSON(prefix: string, suffix: string, size: number): string {
+  const framingBytes =
+    new TextEncoder().encode(prefix).byteLength + new TextEncoder().encode(suffix).byteLength;
+  const paddingBytes = size - framingBytes;
+  if (paddingBytes < 0) throw new Error("JSON framing exceeds requested test size");
+  const body = `${prefix}${"€".repeat(Math.floor(paddingBytes / 3))}${"x".repeat(
+    paddingBytes % 3,
+  )}${suffix}`;
+  expect(new TextEncoder().encode(body).byteLength).toBe(size);
+  return body;
+}
+
 function callHeaders(
   fetch: typeof globalThis.fetch | ReturnType<typeof vi.fn>,
   callIndex = 0,
@@ -4325,7 +4337,7 @@ describe("QURLClient", () => {
     expect(secondKey).toBe(firstKey);
   });
 
-  it("reuses Idempotency-Key across POST timeout retries", async () => {
+  it("does not replay a mutation for an injected fetch TimeoutError", async () => {
     const successResponse = {
       ok: true,
       status: 201,
@@ -4352,14 +4364,15 @@ describe("QURLClient", () => {
       maxRetries: 1,
     });
 
-    const result = await client.create({ target_url: "https://example.com" });
+    const error = await client
+      .create({ target_url: "https://example.com" })
+      .catch((caught: unknown) => caught as QURLError);
 
-    expect(result.resource_id).toBe("r_after_timeout");
-    expect(fetch).toHaveBeenCalledTimes(2);
-    const firstKey = callHeaders(fetch, 0)["Idempotency-Key"];
-    const secondKey = callHeaders(fetch, 1)["Idempotency-Key"];
-    expect(firstKey).toMatch(UUID_V7_RE);
-    expect(secondKey).toBe(firstKey);
+    expect(error).toBeInstanceOf(NetworkError);
+    expect(error).not.toBeInstanceOf(TimeoutError);
+    expect(error).toMatchObject({ status: 0, code: ERROR_CODE_NETWORK });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(callHeaders(fetch)["Idempotency-Key"]).toMatch(UUID_V7_RE);
   });
 
   it("returns quota response shape", async () => {
@@ -4825,6 +4838,63 @@ describe("QURLClient", () => {
     expect(error).toBeInstanceOf(ServerError);
     expect(error).toMatchObject({ status: 503, code: ERROR_CODE_UNKNOWN });
     expect(error.message).not.toContain("response-secret");
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["text", "ASCII", sizedJSON('{"data":{"padding":"', '"}}', RESPONSE_BODY_LIMIT), false],
+    [
+      "text",
+      "multibyte",
+      sizedMultibyteJSON('{"data":{"padding":"', '"}}', RESPONSE_BODY_LIMIT),
+      false,
+    ],
+    ["json", "ASCII", sizedJSON('{"data":{"padding":"', '"}}', RESPONSE_BODY_LIMIT), false],
+    [
+      "json",
+      "multibyte",
+      sizedMultibyteJSON('{"data":{"padding":"', '"}}', RESPONSE_BODY_LIMIT),
+      false,
+    ],
+    [
+      "text",
+      "multibyte max+1",
+      sizedMultibyteJSON('{"data":{"padding":"', '"}}', RESPONSE_BODY_LIMIT + 1),
+      true,
+    ],
+    [
+      "json",
+      "multibyte max+1",
+      sizedMultibyteJSON('{"data":{"padding":"', '"}}', RESPONSE_BODY_LIMIT + 1),
+      true,
+    ],
+  ] as const)("bounds %s shim %s response bytes", async (source, _kind, body, wantReject) => {
+    const parsed = source === "json" ? (JSON.parse(body) as unknown) : undefined;
+    const fetch = vi.fn(
+      async () =>
+        ({
+          ok: true,
+          redirected: false,
+          status: 200,
+          statusText: "OK",
+          type: "basic",
+          headers: new Headers(),
+          body: undefined,
+          text: async () => (source === "text" ? body : ""),
+          json: async () => parsed,
+        }) satisfies Partial<Response> as Response,
+    );
+
+    const result = await createClient(fetch as typeof globalThis.fetch)
+      .getQuota()
+      .catch((caught: unknown) => caught as QURLError);
+
+    if (wantReject) {
+      expect(result).toBeInstanceOf(ValidationError);
+      expect(result).toMatchObject({ status: 200, code: ERROR_CODE_UNEXPECTED_RESPONSE });
+    } else {
+      expect((result as unknown as { padding: string }).padding.length).toBeGreaterThan(0);
+    }
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
@@ -6053,13 +6123,50 @@ describe("QURLClient", () => {
     expect((err as NetworkError).message).toContain("fetch failed");
   });
 
-  it("wraps DOMException timeout into TimeoutError", async () => {
-    const fetch = vi.fn().mockRejectedValue(new DOMException("signal timed out", "TimeoutError"));
-    const client = createClient(fetch);
+  it("does not retry or mislabel an injected fetch TimeoutError", async () => {
+    const injectedSignal = AbortSignal.timeout(1);
+    await new Promise<void>((resolve) => {
+      injectedSignal.addEventListener("abort", () => resolve(), { once: true });
+    });
+    const fetch = vi.fn().mockRejectedValue(injectedSignal.reason);
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 2,
+    });
 
     const err = await client.getQuota().catch((e: unknown) => e);
-    expect(err).toBeInstanceOf(TimeoutError);
-    expect((err as TimeoutError).message).toContain("timed out");
+    expect(err).toBeInstanceOf(NetworkError);
+    expect(err).not.toBeInstanceOf(TimeoutError);
+    expect(err).toMatchObject({ status: 0, code: ERROR_CODE_NETWORK });
+    expect((err as NetworkError).cause).toMatchObject({ name: "TimeoutError" });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("classifies only the SDK-owned fetch deadline as TimeoutError", async () => {
+    const fetch = vi.fn(
+      async (_url: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), {
+            once: true,
+          });
+        }),
+    );
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 0,
+      timeout: 5,
+    });
+
+    const error = await client.getQuota().catch((caught: unknown) => caught as QURLError);
+
+    expect(error).toBeInstanceOf(TimeoutError);
+    expect(error).toMatchObject({ status: 0, code: ERROR_CODE_TIMEOUT });
+    expect(error.cause).toMatchObject({ name: "TimeoutError" });
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   it("does not retry or mislabel an injected fetch AbortError", async () => {
@@ -6339,6 +6446,14 @@ describe("QURLClient", () => {
     expect(serverError.message).toContain("HTTP 503");
     expect(serverError.retryAfter).toBeUndefined();
     expect(serverError.cause).toBeInstanceOf(TypeError);
+    expect(Object.keys(serverError)).not.toContain("cause");
+    expect({ ...serverError }).not.toHaveProperty("cause");
+    expect(Object.getOwnPropertyDescriptor(serverError, "cause")).toEqual({
+      value: serverError.cause,
+      writable: true,
+      enumerable: false,
+      configurable: true,
+    });
 
     const rateLimitError = await new QURLClient({
       apiKey: "test-api-key",
@@ -6377,27 +6492,30 @@ describe("QURLClient", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
-  it("does not retry or mislabel an independent response-body AbortError", async () => {
-    const brokenBody = new globalThis.ReadableStream<Uint8Array>({
-      pull(controller) {
-        controller.error(new DOMException("wrapper cancelled body", "AbortError"));
-      },
-    });
-    const fetch = vi.fn(async () => new Response(brokenBody, { status: 200, statusText: "OK" }));
-    const client = new QURLClient({
-      apiKey: "test-api-key",
-      baseUrl: "https://api.test.layerv.ai",
-      fetch: fetch as typeof globalThis.fetch,
-      maxRetries: 2,
-    });
+  it.each(["AbortError", "TimeoutError"])(
+    "does not retry or mislabel an independent response-body %s",
+    async (errorName) => {
+      const brokenBody = new globalThis.ReadableStream<Uint8Array>({
+        pull(controller) {
+          controller.error(new DOMException("wrapper cancelled body", errorName));
+        },
+      });
+      const fetch = vi.fn(async () => new Response(brokenBody, { status: 200, statusText: "OK" }));
+      const client = new QURLClient({
+        apiKey: "test-api-key",
+        baseUrl: "https://api.test.layerv.ai",
+        fetch: fetch as typeof globalThis.fetch,
+        maxRetries: 2,
+      });
 
-    const error = await client.getQuota().catch((caught: unknown) => caught as QURLError);
+      const error = await client.getQuota().catch((caught: unknown) => caught as QURLError);
 
-    expect(error).toBeInstanceOf(NetworkError);
-    expect(error).not.toBeInstanceOf(TimeoutError);
-    expect(error).toMatchObject({ status: 0, code: ERROR_CODE_NETWORK });
-    expect(fetch).toHaveBeenCalledTimes(1);
-  });
+      expect(error).toBeInstanceOf(NetworkError);
+      expect(error).not.toBeInstanceOf(TimeoutError);
+      expect(error).toMatchObject({ status: 0, code: ERROR_CODE_NETWORK });
+      expect(fetch).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it("keeps the observed non-success class for an independent body AbortError", async () => {
     const brokenBody = new globalThis.ReadableStream<Uint8Array>({

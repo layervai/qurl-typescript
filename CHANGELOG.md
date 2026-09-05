@@ -42,9 +42,10 @@
   and 503 responses whose body is unreadable or is not a valid API error
   envelope; unreadable bodies retain the transport failure as `cause`.
 - **client:** classify an injected fetch failure or successful response body's
-  independent `AbortError` as a non-retried `NetworkError`; after non-success
-  headers, preserve the status-derived class and attach the abort as its cause.
-  Only the SDK timeout signal produces `TimeoutError`. Deterministic
+  independent `AbortError` or `TimeoutError` as a non-retried `NetworkError`;
+  after non-success headers, preserve the status-derived class and attach the
+  failure as its cause. Only the SDK timeout signal produces `TimeoutError`.
+  Deterministic
   Response-like materialization failures retain their SDK-authored detail and
   cause and are not retried.
 
