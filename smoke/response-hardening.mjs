@@ -127,10 +127,16 @@ for (const [name, sdk] of builds) {
     maxRetries: 2,
     fetch: async () => {
       oversizedSuccessCalls++;
-      return new Response(`${oversizedSuccessMarker}${"x".repeat(RESPONSE_LIMIT)}`, {
+      const response = new Response(`${oversizedSuccessMarker}${"x".repeat(RESPONSE_LIMIT)}`, {
         status: 200,
         headers: { "content-length": "1", "content-type": "application/json" },
       });
+      assert.equal(
+        response.headers.get("content-length"),
+        "1",
+        `${name} stub no longer exercises false Content-Length`,
+      );
+      return response;
     },
   });
   const oversizedSuccessError = await oversizedSuccessClient.getQuota().catch((error) => error);
@@ -158,11 +164,17 @@ for (const [name, sdk] of builds) {
           { status: 200, headers: { "content-type": "application/json" } },
         );
       }
-      return new Response(`${oversizedMarker}${"x".repeat(RESPONSE_LIMIT)}`, {
+      const response = new Response(`${oversizedMarker}${"x".repeat(RESPONSE_LIMIT)}`, {
         status: 503,
         // Deliberately inaccurate: streamed-byte accounting must still reject.
         headers: { "content-length": "1", "content-type": "application/json" },
       });
+      assert.equal(
+        response.headers.get("content-length"),
+        "1",
+        `${name} stub no longer exercises false Content-Length`,
+      );
+      return response;
     },
   });
   const recovered = await oversizedClient.getQuota();
