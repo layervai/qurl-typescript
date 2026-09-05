@@ -319,22 +319,34 @@ The client retries only requests whose replay contract is explicit:
 
 - **GET**: Retries on 429, 502, 503, 504 and transport failures, including a
   dropped response body after successful headers arrive
-- **POST/PATCH**: Retries status responses only on 429
-- **POST/PATCH network errors**: Retried with the `Idempotency-Key` generated on the first attempt
+- **POST/PATCH**: Retries complete status responses only on 429. A transport
+  failure while reading a response body is not replayed because the mutation
+  may have applied.
+- **POST/PATCH fetch failures**: Retried with the `Idempotency-Key` generated on
+  the first attempt when no response is available
 - **DELETE**: Never replayed automatically, including on 429. A transport
   failure after dispatch makes the mutation outcome unknown, and the HTTP verb
   alone cannot prove a replay safe. Reconcile resource state before you issue
   a deliberate retry. This matches qurl-go's explicit-caller-retry model.
-- **`Retry-After` header**: Honored on 429 and 503 responses (RFC 7231 §7.1.3). Currently the SDK only parses **delta-seconds** values (e.g. `Retry-After: 30`); HTTP-date values (`Retry-After: Wed, 21 Oct 2026 07:28:00 GMT`) silently fall back to exponential backoff. Tracked in [#61](https://github.com/layervai/qurl-typescript/issues/61).
+- **`Retry-After` header**: Preserved on 429 and 503 responses, including when
+  a mid-body transport failure produces a status-derived error (RFC 7231
+  §7.1.3), and honored by automatic GET retries. Currently the SDK only parses
+  **delta-seconds** values (e.g.
+  `Retry-After: 30`); HTTP-date values (`Retry-After: Wed, 21 Oct 2026 07:28:00 GMT`)
+  silently fall back to exponential backoff. Tracked in
+  [#61](https://github.com/layervai/qurl-typescript/issues/61).
 - **Response failures**: Redirects, oversized successful bodies, and malformed
   UTF-8 successful bodies are not retried. Retryable error statuses remain
   retryable when an intermediary returns HTML, an empty body, malformed UTF-8,
-  a mid-stream read failure, or another non-envelope error response.
+  or another complete non-envelope error response. A mid-stream transport
+  failure is retried for a successful GET or a GET with a retryable status.
+  A hard 4xx GET is not retried. Mutations require reconciliation.
 
 All documented no-content DELETE operations require exactly HTTP 204 with an
 empty response body. Alternate success statuses or response bytes fail closed
 as `unexpected_response` contract errors whose `.status` preserves the
-observed HTTP status.
+observed HTTP status. The delete may already have applied; reconcile resource
+state before retrying.
 
 Configure with `maxRetries` (default: 3). Set to `0` to disable.
 
@@ -366,9 +378,10 @@ SDK-generated keys require `globalThis.crypto.getRandomValues`, which is availab
   a typed `QURLError` (`code: "unexpected_response"`) without requesting the
   `Location` target. This prevents forwarding `Authorization` and
   `Idempotency-Key` when the fetch implementation honors `redirect: "manual"`
-  and accurately exposes `Response.redirected`; injected shims must uphold that
-  contract. A non-redirecting 304 is handled as an ordinary unsuccessful API
-  response rather than mislabeled as a redirect.
+  and accurately exposes `Response.redirected`. A shim must also leave
+  `Response.url` empty or report the normalized request URL when it did not
+  follow a redirect. A non-redirecting 304 is handled as an ordinary
+  unsuccessful API response rather than mislabeled as a redirect.
 - API success and error bodies are limited to **1 MiB (1,048,576 bytes)**,
   matching qurl-go's security posture. The SDK checks `Content-Length` when
   present and independently counts streamed bytes, so missing or inaccurate

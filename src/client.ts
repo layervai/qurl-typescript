@@ -697,6 +697,11 @@ function httpStatusContractError(status: number, detail: string): ValidationErro
   });
 }
 
+function withErrorCause<T extends Error>(error: T, cause: unknown): T {
+  error.cause = cause;
+  return error;
+}
+
 /**
  * Normalize a server-provided problem title/detail into a single-line,
  * UTF-8-safe snippet. Error messages must stay bounded even when a proxy or
@@ -739,6 +744,17 @@ function boundedErrorCode(value: unknown): string | undefined {
   return normalized;
 }
 
+/** Collect at most the first N enumerable own string keys without a full key-array copy. */
+function firstEnumerableOwnKeys(value: object, limit: number): string[] {
+  const keys: string[] = [];
+  for (const key in value) {
+    if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
+    keys.push(key);
+    if (keys.length === limit) break;
+  }
+  return keys;
+}
+
 /** Bound the structured per-field diagnostics exposed on ValidationError. */
 function boundedInvalidFields(value: unknown): Record<string, string> | undefined {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
@@ -748,7 +764,7 @@ function boundedInvalidFields(value: unknown): Record<string, string> | undefine
   // Bound inspected entries as well as retained entries. A hostile envelope
   // whose values all have the wrong type must not make diagnostics scan every
   // key in the response body.
-  for (const rawKey of Object.keys(value).slice(0, MAX_INVALID_FIELD_ENTRIES)) {
+  for (const rawKey of firstEnumerableOwnKeys(value, MAX_INVALID_FIELD_ENTRIES)) {
     const rawValue = (value as Record<string, unknown>)[rawKey];
     const key = boundedErrorSnippet(rawKey);
     const fieldDetail = boundedErrorSnippet(rawValue);
@@ -762,11 +778,10 @@ function boundedInvalidFields(value: unknown): Record<string, string> | undefine
 
 /** Bound server-controlled object keys before forwarding them to a debug sink. */
 function boundedObjectKeys(value: object): string[] {
-  // Slice before normalization so a hostile envelope cannot force work over
-  // every own key. Some early keys may normalize away; bounded diagnostics are
-  // more important here than filling every available debug slot.
-  return Object.keys(value)
-    .slice(0, MAX_INVALID_FIELD_ENTRIES)
+  // Stop before normalization so a hostile envelope cannot force work over
+  // every enumerable own key. Some early keys may normalize away; bounded
+  // diagnostics are more important here than filling every available slot.
+  return firstEnumerableOwnKeys(value, MAX_INVALID_FIELD_ENTRIES)
     .map((key) => boundedErrorSnippet(key))
     .filter((key): key is string => key !== undefined);
 }
@@ -3821,10 +3836,15 @@ export class QURLClient {
             status: response.status,
             error: transportReadError.code,
           });
-          // Headers do not make a mutation replay safe when the response body
-          // transport failed. Reads may retry; callers must reconcile a
-          // mutation before they choose to retry it.
-          if (method === "GET" && attempt < this.maxRetries) {
+          // A successful GET can be replayed when its success body is lost. A
+          // non-success GET retries only the status set that the normal error
+          // path retries. Mutations are never replayed after a body transport
+          // failure because the operation may have applied.
+          if (
+            method === "GET" &&
+            (response.ok || retryable.has(response.status)) &&
+            attempt < this.maxRetries
+          ) {
             lastError = transportReadError;
             continue;
           }
@@ -3845,14 +3865,9 @@ export class QURLClient {
               detail: `Failed to read response body on HTTP ${response.status}`,
               retry_after: this.parseRetryAfter(response),
             });
-        // A failed body read is a transport failure after headers arrived.
-        // GET is safe to replay regardless of the observed 2xx/4xx/5xx status;
-        // mutations retain the stricter status-based policy so a lost success
-        // body cannot silently replay a committed operation.
-        if ((method === "GET" || retryable.has(response.status)) && attempt < this.maxRetries) {
-          lastError = readError;
-          continue;
-        }
+        // This arm contains deterministic Response-like shim failures (for
+        // example a BigInt returned by json()) and non-Error throws. Do not
+        // replay them: another attempt will see the same local contract bug.
         throw readError;
       }
 
@@ -4073,12 +4088,22 @@ export class QURLClient {
     return new NetworkError(cause?.message ?? String(err), { cause });
   }
 
-  private classifyResponseReadError(
-    err: unknown,
-    response: Response,
-  ): TimeoutError | NetworkError | undefined {
+  private classifyResponseReadError(err: unknown, response: Response): QURLError | undefined {
     if (err instanceof ResponseBodyMaterializationError) return undefined;
     if (!(err instanceof Error)) return undefined;
+    if (!response.ok) {
+      const statusText = boundedErrorSnippet(response.statusText) || `HTTP ${response.status}`;
+      return withErrorCause(
+        createError({
+          status: response.status,
+          code: ERROR_CODE_UNKNOWN,
+          title: statusText,
+          detail: `Failed to read response body after HTTP ${response.status}`,
+          retry_after: this.parseRetryAfter(response),
+        }),
+        err,
+      );
+    }
     if (err.name === "TimeoutError" || err.name === "AbortError") {
       return new TimeoutError(
         `Request timed out while reading response body after HTTP ${response.status}`,

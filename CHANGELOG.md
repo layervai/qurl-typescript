@@ -20,18 +20,22 @@
 - **client:** API response bodies larger than 1 MiB and successful JSON bodies
   with malformed UTF-8 are rejected before JSON parsing. The size limit also
   applies to streamed bodies without a trustworthy Content-Length.
-- **client:** GET requests now retry transport failures that occur while reading
-  a response body regardless of the observed HTTP status; GET replay remains
-  safe while mutations retain status- and idempotency-specific retry rules.
-- **client:** remove the released legacy HTTP bootstrap method and the
-  not-yet-released relay registration implementation. Native qURL Connector
-  assignment and registration are UDP-only and belong in the Go runtime; the
-  TypeScript package remains focused on browser and management-plane qURL APIs.
+- **client:** GET requests now retry transport failures from successful response
+  bodies and from the normal retryable error statuses. Hard 4xx responses are
+  not replayed. Mutations require reconciliation and are not replayed after a
+  response-body transport failure.
+- **client:** the observed HTTP status now controls server-error classification;
+  a conflicting RFC 7807 `error.status` value can no longer change the typed
+  error class.
+- **client:** remove the unsafe legacy HTTP bootstrap method and the incomplete
+  relay registration implementation. Native NHP 1.1 assignment, registration,
+  and proactive opener parity replace them under the program tracked in #248.
 
 ### Bug Fixes
 
-- **client:** preserve `Retry-After` on status-only 429 and 503 errors whose
-  response body is not a valid API error envelope.
+- **client:** preserve the status-derived error class and `Retry-After` on 429
+  and 503 responses whose body is unreadable or is not a valid API error
+  envelope; unreadable bodies retain the transport failure as `cause`.
 
 ## [0.3.1](https://github.com/layervai/qurl-typescript/compare/qurl-v0.3.0...qurl-v0.3.1) (2026-07-05)
 

@@ -957,7 +957,9 @@ export interface ClientOptions {
   baseUrl?: string;
   /**
    * Custom fetch implementation. Redirect-safety requires it to honor
-   * `redirect: "manual"` and accurately expose `Response.redirected`.
+   * `redirect: "manual"`, accurately expose `Response.redirected`, and leave
+   * `Response.url` empty or set it to the normalized request URL when no
+   * redirect was followed.
    */
   fetch?: typeof globalThis.fetch;
   /** Maximum retry attempts for transient errors (429, 5xx). Default: 3. */

@@ -4636,7 +4636,7 @@ describe("QURLClient", () => {
       apiKey: "test-api-key",
       baseUrl: "https://api.test.layerv.ai",
       fetch: fetch as typeof globalThis.fetch,
-      maxRetries: 0,
+      maxRetries: 2,
     })
       .getQuota()
       .catch((caught: unknown) => caught as QURLError);
@@ -4644,6 +4644,7 @@ describe("QURLClient", () => {
     expect(error).toMatchObject({ status: 200, code: ERROR_CODE_UNEXPECTED_RESPONSE });
     expect(error.detail).toContain("Failed to read response body");
     expect(error.detail).not.toContain("non-JSON");
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   it("parses success and error JSON bodies exactly at the response limit", async () => {
@@ -5873,20 +5874,14 @@ describe("QURLClient", () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
-  it("retries GET when a hard-4xx response body fails mid-stream", async () => {
+  it("does not retry GET when a 404 response body fails mid-stream", async () => {
     const brokenBody = new globalThis.ReadableStream<Uint8Array>({
       pull(controller) {
         controller.error(new TypeError("not-found response reset mid-body"));
       },
     });
     const failure = new Response(brokenBody, { status: 404, statusText: "Not Found" });
-    const success = new Response(
-      JSON.stringify({
-        data: { plan: "growth", period_start: "2026-03-01", period_end: "2026-04-01" },
-      }),
-      { status: 200, headers: { "content-type": "application/json" } },
-    );
-    const fetch = vi.fn().mockResolvedValueOnce(failure).mockResolvedValueOnce(success);
+    const fetch = vi.fn().mockResolvedValue(failure);
     const client = new QURLClient({
       apiKey: "test-api-key",
       baseUrl: "https://api.test.layerv.ai",
@@ -5894,8 +5889,11 @@ describe("QURLClient", () => {
       maxRetries: 1,
     });
 
-    await expect(client.getQuota()).resolves.toMatchObject({ plan: "growth" });
-    expect(fetch).toHaveBeenCalledTimes(2);
+    const error = await client.getQuota().catch((caught: unknown) => caught as QURLError);
+    expect(error).toBeInstanceOf(NotFoundError);
+    expect(error).toMatchObject({ status: 404, code: ERROR_CODE_UNKNOWN });
+    expect(error.cause).toBeInstanceOf(TypeError);
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   it("does not replay POST after a retryable 429 response body transport failure", async () => {
@@ -5916,15 +5914,16 @@ describe("QURLClient", () => {
       maxRetries: 1,
     });
 
-    await expect(client.create({ target_url: "https://example.com" })).rejects.toMatchObject({
-      status: 0,
-      code: ERROR_CODE_NETWORK,
-      message: expect.stringContaining("HTTP 429"),
-    });
+    const error = await client
+      .create({ target_url: "https://example.com" })
+      .catch((caught: unknown) => caught as QURLError);
+    expect(error).toBeInstanceOf(RateLimitError);
+    expect(error).toMatchObject({ status: 429, code: ERROR_CODE_UNKNOWN, retryAfter: 0 });
+    expect(error.cause).toBeInstanceOf(TypeError);
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
-  it("preserves typed transport failures and observed status diagnostics on body-read errors", async () => {
+  it("preserves status-derived errors and Retry-After on non-success body failures", async () => {
     const brokenResponse = (status: number, retryAfter?: string): Response =>
       new Response(
         new globalThis.ReadableStream<Uint8Array>({
@@ -5946,9 +5945,11 @@ describe("QURLClient", () => {
     })
       .getQuota()
       .catch((caught: unknown) => caught as QURLError);
-    expect(serverError).toBeInstanceOf(NetworkError);
-    expect(serverError).toMatchObject({ status: 0, code: ERROR_CODE_NETWORK });
+    expect(serverError).toBeInstanceOf(ServerError);
+    expect(serverError).toMatchObject({ status: 503, code: ERROR_CODE_UNKNOWN });
     expect(serverError.message).toContain("HTTP 503");
+    expect(serverError.retryAfter).toBeUndefined();
+    expect(serverError.cause).toBeInstanceOf(TypeError);
 
     const rateLimitError = await new QURLClient({
       apiKey: "test-api-key",
@@ -5958,9 +5959,33 @@ describe("QURLClient", () => {
     })
       .getQuota()
       .catch((caught: unknown) => caught as QURLError);
-    expect(rateLimitError).toBeInstanceOf(NetworkError);
-    expect(rateLimitError).toMatchObject({ status: 0, code: ERROR_CODE_NETWORK });
+    expect(rateLimitError).toBeInstanceOf(RateLimitError);
+    expect(rateLimitError).toMatchObject({ status: 429, code: ERROR_CODE_UNKNOWN });
     expect(rateLimitError.message).toContain("HTTP 429");
+    expect(rateLimitError.retryAfter).toBe(7);
+    expect(rateLimitError.cause).toBeInstanceOf(TypeError);
+  });
+
+  it("reports a successful response body reset as a typed network failure", async () => {
+    const brokenBody = new globalThis.ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.error(new TypeError("successful response reset mid-body"));
+      },
+    });
+    const fetch = vi.fn(async () => new Response(brokenBody, { status: 200, statusText: "OK" }));
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 0,
+    });
+
+    const error = await client.getQuota().catch((caught: unknown) => caught as QURLError);
+    expect(error).toBeInstanceOf(NetworkError);
+    expect(error).toMatchObject({ status: 0, code: ERROR_CODE_NETWORK });
+    expect(error.message).toContain("HTTP 200");
+    expect(error.cause).toBeInstanceOf(TypeError);
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   it("reports a successful mutation body timeout without replaying the mutation", async () => {
@@ -6017,9 +6042,10 @@ describe("QURLClient", () => {
       .create({ target_url: "https://example.com" })
       .catch((caught: unknown) => caught as QURLError);
 
-    expect(error).toBeInstanceOf(NetworkError);
-    expect(error).toMatchObject({ status: 0, code: ERROR_CODE_NETWORK });
+    expect(error).toBeInstanceOf(ServerError);
+    expect(error).toMatchObject({ status: 503, code: ERROR_CODE_UNKNOWN });
     expect(error.message).toContain("HTTP 503");
+    expect(error.cause).toBeInstanceOf(TypeError);
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
@@ -6055,7 +6081,7 @@ describe("QURLClient", () => {
         fetch: fetch as typeof globalThis.fetch,
         maxRetries: 0,
       }).getQuota(),
-    ).rejects.toBeInstanceOf(NetworkError);
+    ).rejects.toBeInstanceOf(ServerError);
     expect(releaseLock).toHaveBeenCalledTimes(1);
     expect(cancel).toHaveBeenCalledTimes(1);
   });
