@@ -412,10 +412,12 @@ SDK-generated keys require `globalThis.crypto.getRandomValues`, which is availab
   idempotency-key-backed mutations; oversized successful responses and DELETE
   responses are not retried.
   Successful JSON bodies with malformed UTF-8 are rejected without replay.
-  Server-provided error code/title/detail/type/instance/request-id snippets and
-  `invalidFields` keys/values have controls and bidirectional formatting
-  characters removed, are normalized to one line, and are capped at 512 UTF-8
-  bytes. At most 100 `invalidFields` entries are retained, and each retained
+  Server-provided error title/detail snippets and `invalidFields` keys/values
+  have controls and bidirectional formatting characters removed, are
+  normalized to one line, and are capped at 512 UTF-8 bytes. Machine-readable
+  error codes, RFC 7807 type/instance values, and request IDs are kept only
+  when they need no normalization and fit the same limit. At most 100
+  `invalidFields` entries are retained, and each retained
   `invalidFields` or debug `body_keys` collection has an 8 KiB UTF-8 budget.
   Redirect/body-limit contract-error details do not include `Location` values
   or response-body snippets. Standard request debug logging includes the request

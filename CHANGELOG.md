@@ -9,15 +9,15 @@
   pacing, and requires the caller to use `retryAfter` and reconcile state before
   a deliberate retry. Documented no-content DELETE endpoints now require an
   exact empty HTTP 204 response.
-- **client:** server-provided error titles, details, request IDs, and up to 100
+- **client:** server-provided error titles, details, and up to 100
   invalid-field entries have controls and bidirectional formatting characters
   removed, are normalized to one line, and are capped at 512 UTF-8 bytes per
   key/value and 8 KiB per retained collection so error objects and debug paths
-  stay bounded. Exact machine identifiers (`code`, RFC 7807 `type`, and
-  `instance`) are not truncated into false identifiers: overlong values are
-  dropped, and an overlong code becomes `unknown`. Non-string invalid-field
-  values are omitted, and normalized-key collisions retain the first
-  diagnostic.
+  stay bounded. Exact machine identifiers (`code`, RFC 7807 `type` and
+  `instance`, and request IDs) are not normalized or truncated into false
+  identifiers: changed or overlong values are dropped, and an invalid code
+  becomes `unknown`. Non-string invalid-field values are omitted, and
+  normalized-key collisions retain the first diagnostic.
 - **client:** API redirects are refused instead of followed, including when an
   injected fetch implementation follows one before returning a response.
 - **client:** API response bodies larger than 1 MiB and successful JSON bodies

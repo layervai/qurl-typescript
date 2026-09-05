@@ -691,7 +691,7 @@ function unexpectedResponseError(
   // Every detail passed here is an SDK-authored contract message whose dynamic
   // inputs were validated by the caller-side shape guards. Do not pass raw
   // server strings to this helper. Server diagnostics use boundedErrorSnippet.
-  const safeRequestId = boundedErrorSnippet(options.requestId);
+  const safeRequestId = boundedErrorIdentifier(options.requestId);
   return new ValidationError({
     status: options.status ?? 0,
     code: ERROR_CODE_UNEXPECTED_RESPONSE,
@@ -770,11 +770,12 @@ function boundedErrorIdentifier(value: unknown): string | undefined {
   const normalized = normalizedErrorSnippet(value);
   if (
     normalized === undefined ||
-    TEXT_ENCODER.encode(normalized).byteLength > MAX_ERROR_SNIPPET_BYTES
+    normalized !== value ||
+    TEXT_ENCODER.encode(value).byteLength > MAX_ERROR_SNIPPET_BYTES
   ) {
     return undefined;
   }
-  return normalized;
+  return value;
 }
 
 /** Collect at most the first N enumerable own string keys without a full key-array copy. */
@@ -2138,7 +2139,7 @@ export class QURLClient {
     // .requestId property AND the message string so a stack trace
     // pasted into a support ticket carries the correlation handle
     // without a follow-up round-trip.
-    const requestId = boundedErrorSnippet(envelope.meta?.request_id);
+    const requestId = boundedErrorIdentifier(envelope.meta?.request_id);
     const requestIdSuffix = requestId !== undefined ? ` [request_id=${requestId}]` : "";
 
     // `Number.isInteger` rejects NaN, Infinity, and floats. Combined
@@ -4092,7 +4093,7 @@ export class QURLClient {
           type: boundedErrorIdentifier(err.type),
           instance: boundedErrorIdentifier(err.instance),
           invalid_fields: boundedInvalidFields(err.invalid_fields),
-          request_id: boundedErrorSnippet(json.meta?.request_id),
+          request_id: boundedErrorIdentifier(json.meta?.request_id),
           retry_after: this.parseRetryAfter(response),
         };
       }

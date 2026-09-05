@@ -4963,7 +4963,7 @@ describe("QURLClient", () => {
     expect(error.code).toBe(ERROR_CODE_UNKNOWN);
   });
 
-  it("drops oversized exact API identifiers and bounds the request id", async () => {
+  it("drops oversized exact API identifiers and request IDs", async () => {
     const long = `${"€".repeat(300)}\n\u202Ecredential-tail`;
     const fetch = mockFetch({
       status: 400,
@@ -4984,11 +4984,43 @@ describe("QURLClient", () => {
 
     expect(error.type).toBeUndefined();
     expect(error.instance).toBeUndefined();
-    expect(error.requestId).toBeDefined();
-    expect(new TextEncoder().encode(error.requestId!).byteLength).toBeLessThanOrEqual(512);
-    expect(error.requestId).not.toMatch(/[\p{Cc}\u202A-\u202E\u2066-\u2069]/u);
-    expect(error.requestId).not.toContain("credential-tail");
-    expect(error.requestId).not.toContain("\uFFFD");
+    expect(error.requestId).toBeUndefined();
+  });
+
+  it.each([
+    ["code", " bad_request "],
+    ["code", "bad\nrequest"],
+    ["type", " https://errors.example/bad-request"],
+    ["type", "https://errors.example/bad\u202Erequest"],
+    ["instance", "/v1/resources/r_test "],
+    ["instance", "/v1/resources/\u0000r_test"],
+    ["request_id", " req_test"],
+    ["request_id", "req\ttest"],
+  ] as const)("drops %s when normalization would change its exact value", async (field, value) => {
+    const body = {
+      error: {
+        title: "Bad Request",
+        code: "bad_request",
+        detail: "Invalid request",
+        type: "https://errors.example/bad-request",
+        instance: "/v1/resources/r_test",
+      },
+      meta: { request_id: "req_test" },
+    };
+    if (field === "request_id") {
+      body.meta.request_id = value;
+    } else {
+      body.error[field] = value;
+    }
+    const fetch = mockFetch({ status: 400, body });
+    const error = await createClient(fetch)
+      .getQuota()
+      .catch((caught: unknown) => caught as QURLError);
+
+    if (field === "code") expect(error.code).toBe(ERROR_CODE_UNKNOWN);
+    if (field === "type") expect(error.type).toBeUndefined();
+    if (field === "instance") expect(error.instance).toBeUndefined();
+    if (field === "request_id") expect(error.requestId).toBeUndefined();
   });
 
   it("bounds source work before normalizing a server diagnostic", async () => {
@@ -8433,7 +8465,7 @@ describe("QURLClient", () => {
     expect((error as ValidationError).detail).toContain("[request_id=req_shape_guard_correlation]");
   });
 
-  it("sanitizes and bounds batch shape-guard request IDs", async () => {
+  it("drops batch shape-guard request IDs that cannot be preserved exactly", async () => {
     const requestId = `${"€".repeat(300)}\n\u202Esecret-tail`;
     const fetch = mockFetch({
       status: 400,
@@ -8447,10 +8479,8 @@ describe("QURLClient", () => {
       .batchCreate({ items: [{ target_url: "https://example.com" }] })
       .catch((caught: unknown) => caught as ValidationError);
 
-    expect(new TextEncoder().encode(error.requestId ?? "").byteLength).toBeLessThanOrEqual(512);
-    expect(error.requestId).not.toMatch(/[\p{Cc}\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/u);
-    expect(error.requestId).not.toContain("secret-tail");
-    expect(error.detail).not.toContain("secret-tail");
+    expect(error.requestId).toBeUndefined();
+    expect(error.detail).not.toContain("[request_id=");
   });
 
   it("batch create shape-guard error has undefined requestId when meta is absent", async () => {
