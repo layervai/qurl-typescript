@@ -3911,6 +3911,38 @@ describe("QURLClient", () => {
     await expect(createClient(fetch).getQuota()).resolves.toMatchObject({ plan: "growth" });
   });
 
+  it("does not replay a Response-like shim that omits headers.get", async () => {
+    const response = {
+      ok: true,
+      redirected: false,
+      status: 200,
+      statusText: "OK",
+      type: "basic",
+      body: undefined,
+      text: () =>
+        Promise.resolve(
+          JSON.stringify({
+            data: { plan: "growth", period_start: "2026-03-01", period_end: "2026-04-01" },
+          }),
+        ),
+    } satisfies Partial<Response> as Response;
+    const fetch = vi.fn().mockResolvedValue(response);
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 2,
+    });
+
+    const error = await client.getQuota().catch((caught: unknown) => caught as QURLError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error).not.toBeInstanceOf(NetworkError);
+    expect(error).toMatchObject({ status: 200, code: ERROR_CODE_UNEXPECTED_RESPONSE });
+    expect(error.detail).toBe("Failed to read response body on HTTP 200");
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
   it("rejects invalid Idempotency-Key overrides before making a request", async () => {
     const fetch = mockFetch({
       status: 201,

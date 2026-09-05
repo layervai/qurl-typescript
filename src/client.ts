@@ -160,8 +160,8 @@ class InvalidResponseEncodingError extends Error {
 }
 
 class ResponseBodyMaterializationError extends Error {
-  constructor() {
-    super("Response-like fetch returned a value that cannot be serialized as JSON");
+  constructor(message = "Response-like fetch returned a value that cannot be serialized as JSON") {
+    super(message);
     this.name = "ResponseBodyMaterializationError";
   }
 }
@@ -850,6 +850,14 @@ function responseUrlState(responseUrl: unknown, requestUrl: string): ResponseUrl
  * that header may be absent or false.
  */
 async function readBoundedResponseBody(response: Response): Promise<string> {
+  // `headers.get` is part of the documented injected-fetch contract. Detect a
+  // malformed local shim before it can be mistaken for a retryable body-stream
+  // failure and replay an otherwise deterministic GET programming error.
+  if (typeof response.headers?.get !== "function") {
+    throw new ResponseBodyMaterializationError(
+      "Response-like fetch must provide headers.get(name)",
+    );
+  }
   if (contentLengthExceedsLimit(response)) {
     await cancelResponseBody(response.body);
     throw new ResponseBodyTooLargeError();
