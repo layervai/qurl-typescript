@@ -3843,7 +3843,14 @@ describe("QURLClient", () => {
 
   it("does not mislabel HTTP 304 as a redirect", async () => {
     const fetch = vi.fn(
-      async () => new Response(null, { status: 304, statusText: "Not Modified" }),
+      async () =>
+        new Response(null, {
+          status: 304,
+          statusText: "Not Modified",
+          // RFC 9110 permits this to describe the selected 200 representation.
+          // It is not the byte length of a body on this 304 response.
+          headers: { "content-length": String(RESPONSE_BODY_LIMIT + 1) },
+        }),
     );
     const client = new QURLClient({
       apiKey: "test-api-key",
@@ -3858,6 +3865,7 @@ describe("QURLClient", () => {
     expect(error.status).toBe(304);
     expect(error.detail).toBe("Not Modified");
     expect(error.detail).not.toContain("redirect");
+    expect(error.detail).not.toContain("body exceeds");
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
@@ -3941,6 +3949,65 @@ describe("QURLClient", () => {
     expect(error).toMatchObject({ status: 200, code: ERROR_CODE_UNEXPECTED_RESPONSE });
     expect(error.detail).toBe("Failed to read response body on HTTP 200");
     expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a typed HTTP 503 error when a Response-like shim omits headers.get", async () => {
+    const response = {
+      ok: false,
+      redirected: false,
+      status: 503,
+      statusText: "Service Unavailable",
+      type: "basic",
+      body: undefined,
+      text: () => Promise.resolve(""),
+    } satisfies Partial<Response> as Response;
+    const fetch = vi.fn().mockResolvedValue(response);
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 2,
+    });
+
+    const error = await client.getQuota().catch((caught: unknown) => caught as QURLError);
+
+    expect(error).toBeInstanceOf(ServerError);
+    expect(error).toMatchObject({ status: 503, code: ERROR_CODE_UNKNOWN });
+    expect(error.detail).toBe("Failed to read response body on HTTP 503");
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not replay a Response-like stream that yields a non-byte chunk", async () => {
+    const reader = {
+      read: vi.fn().mockResolvedValue({ done: false, value: "not bytes" }),
+      cancel: vi.fn().mockResolvedValue(undefined),
+      releaseLock: vi.fn(),
+    };
+    const response = {
+      ok: true,
+      redirected: false,
+      status: 200,
+      statusText: "OK",
+      type: "basic",
+      headers: new Headers(),
+      body: { getReader: () => reader },
+    } satisfies Partial<Response> as Response;
+    const fetch = vi.fn().mockResolvedValue(response);
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 2,
+    });
+
+    const error = await client.getQuota().catch((caught: unknown) => caught as QURLError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error).not.toBeInstanceOf(NetworkError);
+    expect(error).toMatchObject({ status: 200, code: ERROR_CODE_UNEXPECTED_RESPONSE });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(reader.read).toHaveBeenCalledTimes(1);
+    expect(reader.releaseLock).toHaveBeenCalledTimes(1);
   });
 
   it("rejects invalid Idempotency-Key overrides before making a request", async () => {

@@ -818,6 +818,10 @@ async function cancelResponseBody(body: Response["body"]): Promise<void> {
 }
 
 function contentLengthExceedsLimit(response: Response): boolean {
+  // 204/205 never carry content, and a 304 Content-Length describes the
+  // selected representation rather than a response body. Do not reject those
+  // statuses for metadata about bytes that fetch will not deliver.
+  if (response.status === 204 || response.status === 205 || response.status === 304) return false;
   const value = response.headers.get("content-length");
   if (value === null || !/^\d+$/.test(value.trim())) return false;
   return Number(value) > MAX_RESPONSE_BODY_BYTES;
@@ -922,6 +926,11 @@ async function readBoundedResponseBody(response: Response): Promise<string> {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
+      if (!(value instanceof Uint8Array)) {
+        throw new ResponseBodyMaterializationError(
+          "Response-like fetch body stream must yield Uint8Array chunks",
+        );
+      }
       const nextTotal = total + value.byteLength;
       if (nextTotal > MAX_RESPONSE_BODY_BYTES) {
         try {
@@ -3944,7 +3953,7 @@ export class QURLClient {
         // Exact no-content helpers must inspect both axes of the success
         // contract. Let only those callers observe an empty non-204 response;
         // body-returning methods still reject it as non-JSON below.
-        if (allowEmptySuccessBody && responseBody.length === 0) {
+        if (response.ok && allowEmptySuccessBody && responseBody.length === 0) {
           return {
             data: undefined as unknown as T,
             __http_status: response.status,
@@ -4070,6 +4079,10 @@ export class QURLClient {
     // also permits it on 3xx responses, rawRequest now refuses redirects
     // as deterministic errors before retry parsing, so only 429/503 apply.
     if (response.status !== 429 && response.status !== 503) return undefined;
+    // This fallback can run after the body reader rejects a malformed injected
+    // Response-like shim. Preserve the typed, non-retryable SDK error instead
+    // of dereferencing the same missing method and leaking a raw TypeError.
+    if (typeof response.headers?.get !== "function") return undefined;
     const header = response.headers.get("Retry-After");
     if (!header) return undefined;
     // TODO: parse HTTP-date format per RFC 7231 §7.1.3 — currently only
