@@ -9,13 +9,15 @@
   pacing, and requires the caller to use `retryAfter` and reconcile state before
   a deliberate retry. Documented no-content DELETE endpoints now require an
   exact empty HTTP 204 response.
-- **client:** server-provided error codes, titles, details, problem identifiers,
-  request IDs, and up to 100 invalid-field entries have controls and
-  bidirectional formatting characters removed, are normalized to one line,
-  and are capped at 512 UTF-8 bytes per key/value and 8 KiB per retained
-  collection so error objects and debug paths stay bounded. Non-string
-  invalid-field values are omitted, and normalized-key collisions retain the
-  first diagnostic.
+- **client:** server-provided error titles, details, request IDs, and up to 100
+  invalid-field entries have controls and bidirectional formatting characters
+  removed, are normalized to one line, and are capped at 512 UTF-8 bytes per
+  key/value and 8 KiB per retained collection so error objects and debug paths
+  stay bounded. Exact machine identifiers (`code`, RFC 7807 `type`, and
+  `instance`) are not truncated into false identifiers: overlong values are
+  dropped, and an overlong code becomes `unknown`. Non-string invalid-field
+  values are omitted, and normalized-key collisions retain the first
+  diagnostic.
 - **client:** API redirects are refused instead of followed, including when an
   injected fetch implementation follows one before returning a response.
 - **client:** API response bodies larger than 1 MiB and successful JSON bodies
@@ -39,10 +41,12 @@
 - **client:** preserve the status-derived error class and `Retry-After` on 429
   and 503 responses whose body is unreadable or is not a valid API error
   envelope; unreadable bodies retain the transport failure as `cause`.
-- **client:** classify an injected fetch or response body's independent
-  `AbortError` as a non-retried `NetworkError`; only the SDK timeout signal
-  produces `TimeoutError`. Deterministic Response-like `text()` failures are
-  also not retried.
+- **client:** classify an injected fetch failure or successful response body's
+  independent `AbortError` as a non-retried `NetworkError`; after non-success
+  headers, preserve the status-derived class and attach the abort as its cause.
+  Only the SDK timeout signal produces `TimeoutError`. Deterministic
+  Response-like materialization failures retain their SDK-authored detail and
+  cause and are not retried.
 
 ## [0.3.1](https://github.com/layervai/qurl-typescript/compare/qurl-v0.3.0...qurl-v0.3.1) (2026-07-05)
 

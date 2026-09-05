@@ -105,7 +105,11 @@ const DEFAULT_TIMEOUT = 30_000;
 // consuming the response stream.
 const MAX_RESPONSE_BODY_BYTES = 1 << 20;
 const MAX_ERROR_SNIPPET_BYTES = 512;
+// UTF-8 uses at least one byte per UTF-16 code unit. Reading more source units
+// cannot add a byte that fits in a 512-byte retained diagnostic.
+const MAX_ERROR_SNIPPET_SOURCE_CODE_UNITS = MAX_ERROR_SNIPPET_BYTES;
 const MAX_INVALID_FIELD_ENTRIES = 100;
+const MAX_DEBUG_BODY_KEYS = 100;
 // Bound each retained diagnostic collection as well as each string. Without
 // this aggregate cap, 100 valid 512-byte keys and values could turn a small
 // server error into a large caller-visible object. This is a diagnostic budget,
@@ -671,21 +675,25 @@ function fillRandomBytes(bytes: Uint8Array<ArrayBuffer>): void {
  * Distinct from {@link clientValidationError} so callers can `.code`-branch
  * between "I passed bad input locally" (`"client_validation"`) and "the
  * server returned a body I can't interpret" (`"unexpected_response"`).
- * Uses `status: 0` because the offending HTTP status (400/207/etc.) isn't
- * the thing being reported — the shape mismatch is.
+ * Uses `status: 0` by default because a logical shape mismatch is not tied to
+ * the HTTP classification. Callers that enforce an observed HTTP contract
+ * pass that status explicitly.
  *
  * Threads `request_id` through to {@link QURLError.requestId} when the
  * server-side correlation ID is available — operators debugging
  * "unexpected response" tickets need it on the *error* path too, not
  * just on success/passthrough returns.
  */
-function unexpectedResponseError(detail: string, request_id?: string): ValidationError {
+function unexpectedResponseError(
+  detail: string,
+  options: { status?: number; requestId?: string } = {},
+): ValidationError {
   // Every detail passed here is an SDK-authored contract message whose dynamic
   // inputs were validated by the caller-side shape guards. Do not pass raw
   // server strings to this helper. Server diagnostics use boundedErrorSnippet.
-  const safeRequestId = boundedErrorSnippet(request_id);
+  const safeRequestId = boundedErrorSnippet(options.requestId);
   return new ValidationError({
-    status: 0,
+    status: options.status ?? 0,
     code: ERROR_CODE_UNEXPECTED_RESPONSE,
     title: "Unexpected Response",
     detail,
@@ -693,24 +701,20 @@ function unexpectedResponseError(detail: string, request_id?: string): Validatio
   });
 }
 
-/** Construct an unexpected-response error while preserving the observed HTTP status. */
-function httpResponseContractError(response: Response, detail: string): ValidationError {
-  return httpStatusContractError(response.status, detail);
-}
-
-/** Construct an unexpected-response error from SDK-retained HTTP metadata. */
-function httpStatusContractError(status: number, detail: string): ValidationError {
-  return new ValidationError({
-    status,
-    code: ERROR_CODE_UNEXPECTED_RESPONSE,
-    title: "Unexpected Response",
-    detail,
-  });
-}
-
 function withErrorCause<T extends Error>(error: T, cause: unknown): T {
   error.cause = cause;
   return error;
+}
+
+function isIndependentAbort(error: unknown, requestSignal: AbortSignal): boolean {
+  return error instanceof Error && error.name === "AbortError" && !requestSignal.aborted;
+}
+
+function isSdkTimeout(error: unknown, requestSignal: AbortSignal): boolean {
+  return (
+    error instanceof Error &&
+    (error.name === "TimeoutError" || (error.name === "AbortError" && requestSignal.aborted))
+  );
 }
 
 /**
@@ -720,7 +724,11 @@ function withErrorCause<T extends Error>(error: T, cause: unknown): T {
  */
 function normalizedErrorSnippet(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
+  // Bound source work before the Unicode regular expressions allocate
+  // normalized copies. The response body cap is much larger than one retained
+  // diagnostic, so processing the full server string would waste memory.
   const normalized = value
+    .slice(0, MAX_ERROR_SNIPPET_SOURCE_CODE_UNITS)
     // Strip control characters plus bidi override/isolate controls that can
     // visually reorder diagnostics. Preserve other formatting characters
     // such as ZWJ/ZWNJ, which are required by legitimate scripts and emoji.
@@ -731,13 +739,22 @@ function normalizedErrorSnippet(value: unknown): string | undefined {
 }
 
 function boundedErrorSnippet(value: unknown): string | undefined {
+  const sourceTruncated =
+    typeof value === "string" && value.length > MAX_ERROR_SNIPPET_SOURCE_CODE_UNITS;
   const normalized = normalizedErrorSnippet(value);
   if (normalized === undefined) return undefined;
+  const contentLimit = sourceTruncated
+    ? MAX_ERROR_SNIPPET_BYTES - ERROR_SNIPPET_ELLIPSIS_BYTES
+    : MAX_ERROR_SNIPPET_BYTES;
   // UTF-8 uses at most three bytes per UTF-16 code unit. Most diagnostics are
   // short ASCII, so avoid an allocation only to prove they fit.
-  if (normalized.length * 3 <= MAX_ERROR_SNIPPET_BYTES) return normalized;
+  if (normalized.length * 3 <= contentLimit) {
+    return sourceTruncated ? `${normalized}${ERROR_SNIPPET_ELLIPSIS}` : normalized;
+  }
   const encoded = TEXT_ENCODER.encode(normalized);
-  if (encoded.byteLength <= MAX_ERROR_SNIPPET_BYTES) return normalized;
+  if (encoded.byteLength <= contentLimit) {
+    return sourceTruncated ? `${normalized}${ERROR_SNIPPET_ELLIPSIS}` : normalized;
+  }
 
   let end = MAX_ERROR_SNIPPET_BYTES - ERROR_SNIPPET_ELLIPSIS_BYTES;
   // Do not split a multi-byte UTF-8 sequence at the cap.
@@ -745,8 +762,11 @@ function boundedErrorSnippet(value: unknown): string | undefined {
   return `${TEXT_DECODER.decode(encoded.subarray(0, end))}${ERROR_SNIPPET_ELLIPSIS}`;
 }
 
-/** Keep server error codes useful as exact machine-readable discriminants. */
-function boundedErrorCode(value: unknown): string | undefined {
+/** Keep server identifiers useful as exact machine-readable discriminants. */
+function boundedErrorIdentifier(value: unknown): string | undefined {
+  if (typeof value !== "string" || value.length > MAX_ERROR_SNIPPET_SOURCE_CODE_UNITS) {
+    return undefined;
+  }
   const normalized = normalizedErrorSnippet(value);
   if (
     normalized === undefined ||
@@ -802,7 +822,7 @@ function boundedObjectKeys(value: object): string[] {
   // diagnostics are more important here than filling every available slot.
   const retained: string[] = [];
   let retainedBytes = 0;
-  for (const rawKey of firstEnumerableOwnKeys(value, MAX_INVALID_FIELD_ENTRIES)) {
+  for (const rawKey of firstEnumerableOwnKeys(value, MAX_DEBUG_BODY_KEYS)) {
     const key = boundedErrorSnippet(rawKey);
     if (key === undefined) continue;
     const keyBytes = TEXT_ENCODER.encode(key).byteLength;
@@ -2136,7 +2156,7 @@ export class QURLClient {
     ) {
       throw unexpectedResponseError(
         `Unexpected response shape from POST /v1/qurls/batch${statusSuffix}${requestIdSuffix}`,
-        requestId,
+        { requestId },
       );
     }
 
@@ -2145,7 +2165,7 @@ export class QURLClient {
         `Unexpected response shape from POST /v1/qurls/batch${statusSuffix}: ` +
           `counts/results length mismatch (succeeded=${result.succeeded}, ` +
           `failed=${result.failed}, results.length=${result.results.length})${requestIdSuffix}`,
-        requestId,
+        { requestId },
       );
     }
 
@@ -2160,7 +2180,7 @@ export class QURLClient {
       throw unexpectedResponseError(
         `Unexpected response shape from POST /v1/qurls/batch${statusSuffix}: ` +
           `results.length (${result.results.length}) does not match request item count (${requestItemCount})${requestIdSuffix}`,
-        requestId,
+        { requestId },
       );
     }
 
@@ -2176,20 +2196,20 @@ export class QURLClient {
       if (reason !== null) {
         throw unexpectedResponseError(
           `Unexpected response shape from POST /v1/qurls/batch${statusSuffix}: results[${i}] ${reason}${requestIdSuffix}`,
-          requestId,
+          { requestId },
         );
       }
       const entry = result.results[i] as { index: number };
       if (entry.index >= requestItemCount) {
         throw unexpectedResponseError(
           `Unexpected response shape from POST /v1/qurls/batch${statusSuffix}: results[${i}] index out of range (sent ${requestItemCount} items)${requestIdSuffix}`,
-          requestId,
+          { requestId },
         );
       }
       if (seenIndices.has(entry.index)) {
         throw unexpectedResponseError(
           `Unexpected response shape from POST /v1/qurls/batch${statusSuffix}: results[${i}] duplicate index${requestIdSuffix}`,
-          requestId,
+          { requestId },
         );
       }
       seenIndices.add(entry.index);
@@ -2229,14 +2249,14 @@ export class QURLClient {
       if (seenCursors.has(cursor)) {
         throw unexpectedResponseError(
           `${methodName}: server returned repeated cursor after ${pageCount} auto-pagination pages`,
-          page.request_id,
+          { requestId: page.request_id },
         );
       }
       seenCursors.add(cursor);
       if (pageCount >= MAX_AUTO_PAGINATION_PAGES) {
         throw unexpectedResponseError(
           `${methodName}: exceeded ${MAX_AUTO_PAGINATION_PAGES} auto-pagination pages without termination`,
-          page.request_id,
+          { requestId: page.request_id },
         );
       }
     } while (cursor);
@@ -3698,7 +3718,11 @@ export class QURLClient {
     return data;
   }
 
-  /** Require the service's exact 204 response with no response bytes. */
+  /**
+   * Require the service's exact 204 response with no response bytes exposed by
+   * Fetch. A standards-compliant Fetch implementation discards any forbidden
+   * wire body on 204, so the SDK cannot detect bytes that Fetch did not expose.
+   */
   private async requestNoContent(path: string): Promise<void> {
     const response = await this.rawRequest<never>("DELETE", path, undefined, {
       allowEmptySuccessBody: true,
@@ -3706,10 +3730,10 @@ export class QURLClient {
     if (response.__http_status !== 204 || response.__http_body_empty !== true) {
       const status = response.__http_status ?? 0;
       const bodyShape = response.__http_body_empty ? "with an empty body" : "with response bytes";
-      throw httpStatusContractError(
-        status,
+      throw unexpectedResponseError(
         `Unexpected response from DELETE; expected empty HTTP 204, received HTTP ${status} ${bodyShape}. ` +
           "The delete may already have been applied; reconcile resource state before retrying.",
+        { status },
       );
     }
   }
@@ -3803,9 +3827,11 @@ export class QURLClient {
         );
         // An injected fetch can abort for its own reason. That is not this
         // SDK's timeout and replaying it can defeat caller-side cancellation.
-        const independentlyAborted =
-          err instanceof Error && err.name === "AbortError" && !requestSignal.aborted;
-        if (retryFetchFailure && !independentlyAborted && attempt < this.maxRetries) {
+        if (
+          retryFetchFailure &&
+          !isIndependentAbort(err, requestSignal) &&
+          attempt < this.maxRetries
+        ) {
           continue;
         }
         throw lastError;
@@ -3834,10 +3860,9 @@ export class QURLClient {
                 : REDIRECT_RESPONSE_STATUSES.has(response.status)
                   ? `HTTP ${response.status}`
                   : "opaque";
-        throw httpResponseContractError(
-          response,
-          `Refused ${redirectKind} redirect response for ${method}`,
-        );
+        throw unexpectedResponseError(`Refused ${redirectKind} redirect response for ${method}`, {
+          status: response.status,
+        });
       }
 
       let responseBody: string;
@@ -3852,7 +3877,7 @@ export class QURLClient {
             `Response body exceeds ${MAX_RESPONSE_BODY_BYTES}-byte limit on HTTP ${response.status}; ` +
             "request a smaller page when listing collections";
           if (response.ok) {
-            throw httpResponseContractError(response, detail);
+            throw unexpectedResponseError(detail, { status: response.status });
           }
           const bodyError = createError({
             status: response.status,
@@ -3882,7 +3907,7 @@ export class QURLClient {
           if (response.ok) {
             // A successful status with an invalid wire body is a deterministic
             // response-contract failure. Do not replay a GET or a mutation.
-            throw httpResponseContractError(response, detail);
+            throw unexpectedResponseError(detail, { status: response.status });
           }
           const encodingError = createError({
             status: response.status,
@@ -3910,11 +3935,9 @@ export class QURLClient {
           // non-success GET retries only the status set that the normal error
           // path retries. Mutations are never replayed after a body transport
           // failure because the operation may have applied.
-          const independentlyAborted =
-            err instanceof Error && err.name === "AbortError" && !requestSignal.aborted;
           if (
             method === "GET" &&
-            !independentlyAborted &&
+            !isIndependentAbort(err, requestSignal) &&
             (response.ok || retryable.has(response.status)) &&
             attempt < this.maxRetries
           ) {
@@ -3926,22 +3949,27 @@ export class QURLClient {
         this.log(`failed to read response body from ${response.status}`, {
           status: response.status,
         });
+        // ResponseBodyMaterializationError messages are fixed SDK-authored
+        // contract text. The underlying shim rejection is never interpolated.
+        const detail =
+          err instanceof ResponseBodyMaterializationError
+            ? err.message
+            : `Failed to read response body on HTTP ${response.status}`;
         const readError = response.ok
-          ? httpResponseContractError(
-              response,
-              `Failed to read response body on HTTP ${response.status}`,
-            )
+          ? unexpectedResponseError(detail, { status: response.status })
           : createError({
               status: response.status,
               code: ERROR_CODE_UNKNOWN,
               title: boundedErrorSnippet(response.statusText) || `HTTP ${response.status}`,
-              detail: `Failed to read response body on HTTP ${response.status}`,
+              detail,
               retry_after: this.parseRetryAfter(response),
             });
         // This arm contains deterministic Response-like shim failures (for
         // example a BigInt returned by json()) and non-Error throws. Do not
         // replay them: another attempt will see the same local contract bug.
-        throw readError;
+        throw err instanceof ResponseBodyMaterializationError
+          ? withErrorCause(readError, err)
+          : readError;
       }
 
       // `response.ok` is true for the entire 200-299 range, so partial-
@@ -4058,11 +4086,11 @@ export class QURLClient {
         const status = response.status;
         return {
           status,
-          code: boundedErrorCode(err.code) ?? ERROR_CODE_UNKNOWN,
+          code: boundedErrorIdentifier(err.code) ?? ERROR_CODE_UNKNOWN,
           title,
           detail,
-          type: boundedErrorSnippet(err.type),
-          instance: boundedErrorSnippet(err.instance),
+          type: boundedErrorIdentifier(err.type),
+          instance: boundedErrorIdentifier(err.instance),
           invalid_fields: boundedInvalidFields(err.invalid_fields),
           request_id: boundedErrorSnippet(json.meta?.request_id),
           retry_after: this.parseRetryAfter(response),
@@ -4174,10 +4202,7 @@ export class QURLClient {
     // AbortSignal.timeout is the only abort source accepted by this SDK. If a
     // later API accepts caller cancellation, keep this check tied to the SDK's
     // own signal instead of classifying every AbortError as a timeout.
-    if (
-      err instanceof Error &&
-      (err.name === "TimeoutError" || (err.name === "AbortError" && requestSignal.aborted))
-    ) {
+    if (isSdkTimeout(err, requestSignal)) {
       return new TimeoutError("Request timed out", { cause: err });
     }
     const cause = err instanceof Error ? err : undefined;
@@ -4204,7 +4229,7 @@ export class QURLClient {
         err,
       );
     }
-    if (err.name === "TimeoutError" || (err.name === "AbortError" && requestSignal.aborted)) {
+    if (isSdkTimeout(err, requestSignal)) {
       return new TimeoutError(
         `Request timed out while reading response body after HTTP ${response.status}`,
         { cause: err },

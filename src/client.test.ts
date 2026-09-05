@@ -3943,6 +3943,12 @@ describe("QURLClient", () => {
     expect(error).toBeInstanceOf(ValidationError);
     expect(error).not.toBeInstanceOf(NetworkError);
     expect(error).toMatchObject({ status: 200, code: ERROR_CODE_UNEXPECTED_RESPONSE });
+    expect(error.detail).toBe("Response-like fetch text() failed");
+    expect(error.cause).toMatchObject({
+      name: "ResponseBodyMaterializationError",
+      message: "Response-like fetch text() failed",
+    });
+    expect(error.message).not.toContain("local response shim failed");
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
@@ -3974,7 +3980,11 @@ describe("QURLClient", () => {
     expect(error).toBeInstanceOf(ValidationError);
     expect(error).not.toBeInstanceOf(NetworkError);
     expect(error).toMatchObject({ status: 200, code: ERROR_CODE_UNEXPECTED_RESPONSE });
-    expect(error.detail).toBe("Failed to read response body on HTTP 200");
+    expect(error.detail).toBe("Response-like fetch must provide headers.get(name)");
+    expect(error.cause).toMatchObject({
+      name: "ResponseBodyMaterializationError",
+      message: "Response-like fetch must provide headers.get(name)",
+    });
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
@@ -4000,7 +4010,11 @@ describe("QURLClient", () => {
 
     expect(error).toBeInstanceOf(ServerError);
     expect(error).toMatchObject({ status: 503, code: ERROR_CODE_UNKNOWN });
-    expect(error.detail).toBe("Failed to read response body on HTTP 503");
+    expect(error.detail).toBe("Response-like fetch must provide headers.get(name)");
+    expect(error.cause).toMatchObject({
+      name: "ResponseBodyMaterializationError",
+      message: "Response-like fetch must provide headers.get(name)",
+    });
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
@@ -4032,6 +4046,8 @@ describe("QURLClient", () => {
     expect(error).toBeInstanceOf(ValidationError);
     expect(error).not.toBeInstanceOf(NetworkError);
     expect(error).toMatchObject({ status: 200, code: ERROR_CODE_UNEXPECTED_RESPONSE });
+    expect(error.detail).toBe("Response-like fetch body stream must yield Uint8Array chunks");
+    expect(error.cause).toMatchObject({ name: "ResponseBodyMaterializationError" });
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(reader.read).toHaveBeenCalledTimes(1);
     expect(reader.releaseLock).toHaveBeenCalledTimes(1);
@@ -4860,7 +4876,10 @@ describe("QURLClient", () => {
       .catch((caught: unknown) => caught as QURLError);
 
     expect(error).toMatchObject({ status: 200, code: ERROR_CODE_UNEXPECTED_RESPONSE });
-    expect(error.detail).toContain("Failed to read response body");
+    expect(error.detail).toBe(
+      "Response-like fetch returned a value that cannot be serialized as JSON",
+    );
+    expect(error.cause).toMatchObject({ name: "ResponseBodyMaterializationError" });
     expect(error.detail).not.toContain("non-JSON");
     expect(fetch).toHaveBeenCalledTimes(1);
   });
@@ -4944,7 +4963,7 @@ describe("QURLClient", () => {
     expect(error.code).toBe(ERROR_CODE_UNKNOWN);
   });
 
-  it("bounds and sanitizes all structured API error identifiers", async () => {
+  it("drops oversized exact API identifiers and bounds the request id", async () => {
     const long = `${"€".repeat(300)}\n\u202Ecredential-tail`;
     const fetch = mockFetch({
       status: 400,
@@ -4963,13 +4982,33 @@ describe("QURLClient", () => {
       .getQuota()
       .catch((caught: unknown) => caught as QURLError);
 
-    for (const value of [error.type, error.instance, error.requestId]) {
-      expect(value).toBeDefined();
-      expect(new TextEncoder().encode(value!).byteLength).toBeLessThanOrEqual(512);
-      expect(value).not.toMatch(/[\p{Cc}\u202A-\u202E\u2066-\u2069]/u);
-      expect(value).not.toContain("credential-tail");
-      expect(value).not.toContain("\uFFFD");
-    }
+    expect(error.type).toBeUndefined();
+    expect(error.instance).toBeUndefined();
+    expect(error.requestId).toBeDefined();
+    expect(new TextEncoder().encode(error.requestId!).byteLength).toBeLessThanOrEqual(512);
+    expect(error.requestId).not.toMatch(/[\p{Cc}\u202A-\u202E\u2066-\u2069]/u);
+    expect(error.requestId).not.toContain("credential-tail");
+    expect(error.requestId).not.toContain("\uFFFD");
+  });
+
+  it("bounds source work before normalizing a server diagnostic", async () => {
+    const fetch = mockFetch({
+      status: 400,
+      body: {
+        error: {
+          title: "Bad Request",
+          code: "bad_request",
+          detail: `${"\0".repeat(512)}late server diagnostic`,
+        },
+      },
+    });
+
+    const error = await createClient(fetch)
+      .getQuota()
+      .catch((caught: unknown) => caught as QURLError);
+
+    expect(error.detail).toBe("Bad Request");
+    expect(error.message).not.toContain("late server diagnostic");
   });
 
   it("preserves the status error class and Retry-After for an oversized 429 body", async () => {
@@ -6325,6 +6364,30 @@ describe("QURLClient", () => {
     expect(error).toBeInstanceOf(NetworkError);
     expect(error).not.toBeInstanceOf(TimeoutError);
     expect(error).toMatchObject({ status: 0, code: ERROR_CODE_NETWORK });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the observed non-success class for an independent body AbortError", async () => {
+    const brokenBody = new globalThis.ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.error(new DOMException("wrapper cancelled error body", "AbortError"));
+      },
+    });
+    const fetch = vi.fn(
+      async () => new Response(brokenBody, { status: 404, statusText: "Not Found" }),
+    );
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 2,
+    });
+
+    const error = await client.getQuota().catch((caught: unknown) => caught as QURLError);
+
+    expect(error).toBeInstanceOf(NotFoundError);
+    expect(error).toMatchObject({ status: 404, code: ERROR_CODE_UNKNOWN });
+    expect(error.cause).toMatchObject({ name: "AbortError" });
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
