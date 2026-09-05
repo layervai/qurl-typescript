@@ -7080,6 +7080,39 @@ describe("QURLClient", () => {
     expect(new ServerError(data)).toBeInstanceOf(QURLError);
     expect(new NetworkError("fail")).toBeInstanceOf(QURLError);
     expect(new TimeoutError()).toBeInstanceOf(QURLError);
+    expect(new RuntimeError("unsupported")).toBeInstanceOf(QURLError);
+  });
+
+  it.each([
+    ["NetworkError", (cause: unknown) => new NetworkError("fail", { cause })],
+    ["TimeoutError", (cause: unknown) => new TimeoutError("timed out", { cause })],
+    ["RuntimeError", (cause: unknown) => new RuntimeError("unsupported", { cause })],
+  ] as const)("attaches %s cause with the native non-enumerable descriptor", (_name, makeError) => {
+    const cause = new TypeError("transport detail");
+    const error = makeError(cause);
+
+    expect(error.cause).toBe(cause);
+    expect(Object.keys(error)).not.toContain("cause");
+    expect({ ...error }).not.toHaveProperty("cause");
+    expect(Object.getOwnPropertyDescriptor(error, "cause")).toEqual({
+      value: cause,
+      writable: true,
+      enumerable: false,
+      configurable: true,
+    });
+  });
+
+  it("distinguishes an omitted cause from an explicitly undefined cause", () => {
+    const omitted = new NetworkError("fail");
+    const explicit = new NetworkError("fail", { cause: undefined });
+
+    expect(Object.hasOwn(omitted, "cause")).toBe(false);
+    expect(Object.getOwnPropertyDescriptor(explicit, "cause")).toEqual({
+      value: undefined,
+      writable: true,
+      enumerable: false,
+      configurable: true,
+    });
   });
 
   // --- edge cases ---

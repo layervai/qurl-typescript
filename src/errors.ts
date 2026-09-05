@@ -150,14 +150,23 @@ export class ServerError extends QURLError {
   }
 }
 
+function attachErrorCause(error: Error, options?: { cause?: unknown }): void {
+  if (!options || !("cause" in options)) return;
+  // Match the native Error `cause` descriptor. In particular, keep transport
+  // objects out of Object.keys(), object spread, and JSON logging.
+  Object.defineProperty(error, "cause", {
+    value: options.cause,
+    writable: true,
+    configurable: true,
+  });
+}
+
 /** Transport-level error — DNS failure, connection refused, etc. */
 export class NetworkError extends QURLError {
   constructor(message: string, options?: { cause?: unknown }) {
     super({ status: 0, code: ERROR_CODE_NETWORK, title: "Network Error", detail: message });
     this.name = "NetworkError";
-    if (options?.cause) {
-      this.cause = options.cause;
-    }
+    attachErrorCause(this, options);
   }
 }
 
@@ -166,9 +175,7 @@ export class TimeoutError extends QURLError {
   constructor(message: string = "Request timed out", options?: { cause?: unknown }) {
     super({ status: 0, code: ERROR_CODE_TIMEOUT, title: "Timeout", detail: message });
     this.name = "TimeoutError";
-    if (options?.cause) {
-      this.cause = options.cause;
-    }
+    attachErrorCause(this, options);
   }
 }
 
@@ -177,9 +184,7 @@ export class RuntimeError extends QURLError {
   constructor(message: string, options?: { cause?: unknown }) {
     super({ status: 0, code: ERROR_CODE_RUNTIME, title: "Runtime Error", detail: message });
     this.name = "RuntimeError";
-    if (options && "cause" in options) {
-      this.cause = options.cause;
-    }
+    attachErrorCause(this, options);
   }
 }
 
