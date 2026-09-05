@@ -20,7 +20,9 @@
   injected fetch implementation follows one before returning a response.
 - **client:** API response bodies larger than 1 MiB and successful JSON bodies
   with malformed UTF-8 are rejected before JSON parsing. The size limit also
-  applies to streamed bodies without a trustworthy Content-Length.
+  applies to streamed bodies without a trustworthy Content-Length. Resume
+  collection reads from the last successful cursor with a smaller page. The
+  fixed shared-cap decision is tracked in #249.
 - **client:** GET requests now retry transport failures from successful response
   bodies and from the normal retryable error statuses. Hard 4xx responses are
   not replayed. Mutations require reconciliation and are not replayed after a

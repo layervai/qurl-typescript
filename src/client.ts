@@ -142,6 +142,7 @@ const UUID_HEX = Array.from({ length: 256 }, (_, i) => i.toString(16).padStart(2
 type RawRequestOptions = {
   passthroughStatuses?: readonly number[];
   requestOptions?: RequestOptions;
+  allowEmptySuccessBody?: boolean;
 };
 
 class ResponseBodyTooLargeError extends Error {
@@ -822,18 +823,20 @@ function contentLengthExceedsLimit(response: Response): boolean {
   return Number(value) > MAX_RESPONSE_BODY_BYTES;
 }
 
+type ResponseUrlState = "same" | "changed" | "invalid";
+
 /** Detect a followed redirect from fetch implementations that expose only the final URL. */
-function responseUrlDiffers(responseUrl: unknown, requestUrl: string): boolean {
-  if (typeof responseUrl !== "string" || responseUrl === "") return false;
-  if (responseUrl === requestUrl) return false;
+function responseUrlState(responseUrl: unknown, requestUrl: string): ResponseUrlState {
+  if (typeof responseUrl !== "string" || responseUrl === "") return "same";
+  if (responseUrl === requestUrl) return "same";
   try {
     // URL serialization normalizes equivalent spellings such as host case and
     // an explicit default port, so they do not create false redirect reports.
-    return new URL(responseUrl).href !== new URL(requestUrl).href;
+    return new URL(responseUrl).href === new URL(requestUrl).href ? "same" : "changed";
   } catch {
     // A non-empty invalid response URL cannot prove that credentials stayed on
     // the requested endpoint. Fail closed without reflecting it in diagnostics.
-    return true;
+    return "invalid";
   }
 }
 
@@ -3666,7 +3669,9 @@ export class QURLClient {
 
   /** Require the service's exact 204 response with no response bytes. */
   private async requestNoContent(path: string): Promise<void> {
-    const response = await this.rawRequest<never>("DELETE", path);
+    const response = await this.rawRequest<never>("DELETE", path, undefined, {
+      allowEmptySuccessBody: true,
+    });
     if (response.__http_status !== 204 || response.__http_body_empty !== true) {
       const status = response.__http_status ?? 0;
       const bodyShape = response.__http_body_empty ? "with an empty body" : "with response bytes";
@@ -3694,7 +3699,11 @@ export class QURLClient {
     rawOptions: RawRequestOptions = {},
   ): Promise<ApiResponse<T>> {
     const url = `${this.baseUrl}${path}`;
-    const { passthroughStatuses = NO_PASSTHROUGH_STATUSES, requestOptions } = rawOptions;
+    const {
+      passthroughStatuses = NO_PASSTHROUGH_STATUSES,
+      requestOptions,
+      allowEmptySuccessBody = false,
+    } = rawOptions;
     const idempotencyKey = idempotencyKeyForRequest(method, requestOptions);
     const headers: Record<string, string> = {
       Authorization: `Bearer ${this.apiKey}`,
@@ -3771,10 +3780,10 @@ export class QURLClient {
       // Redirects are deterministic protocol violations for SDK API calls.
       // Refuse them before reading Location or entering retry handling so
       // Authorization and Idempotency-Key can never reach a follow-up target.
-      const changedResponseUrl = responseUrlDiffers(response.url, url);
+      const responseUrlStateValue = responseUrlState(response.url, url);
       if (
         response.redirected === true ||
-        changedResponseUrl ||
+        responseUrlStateValue !== "same" ||
         REDIRECT_RESPONSE_STATUSES.has(response.status) ||
         response.type === "opaqueredirect"
       ) {
@@ -3782,11 +3791,13 @@ export class QURLClient {
         const redirectKind =
           response.redirected === true
             ? "followed"
-            : changedResponseUrl
-              ? "changed response URL"
-              : REDIRECT_RESPONSE_STATUSES.has(response.status)
-                ? `HTTP ${response.status}`
-                : "opaque browser";
+            : responseUrlStateValue === "invalid"
+              ? "invalid custom Response.url"
+              : responseUrlStateValue === "changed"
+                ? "changed Response.url"
+                : REDIRECT_RESPONSE_STATUSES.has(response.status)
+                  ? `HTTP ${response.status}`
+                  : "opaque";
         throw httpResponseContractError(
           response,
           `Refused ${redirectKind} redirect response for ${method}`,
@@ -3920,6 +3931,16 @@ export class QURLClient {
             data: undefined as unknown as T,
             __http_status: response.status,
             __http_body_empty: responseBody.length === 0,
+          };
+        }
+        // Exact no-content helpers must inspect both axes of the success
+        // contract. Let only those callers observe an empty non-204 response;
+        // body-returning methods still reject it as non-JSON below.
+        if (allowEmptySuccessBody && responseBody.length === 0) {
+          return {
+            data: undefined as unknown as T,
+            __http_status: response.status,
+            __http_body_empty: true,
           };
         }
         try {
@@ -4104,6 +4125,9 @@ export class QURLClient {
   }
 
   private classifyFetchError(err: unknown): TimeoutError | NetworkError {
+    // AbortSignal.timeout is the only abort source accepted by this SDK. If a
+    // later API accepts caller cancellation, it must not classify that signal
+    // as a timeout only because the runtime reports AbortError.
     if (err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError")) {
       return new TimeoutError("Request timed out", { cause: err });
     }

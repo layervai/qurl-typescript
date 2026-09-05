@@ -2052,6 +2052,18 @@ describe("QURLClient", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
+  it("rejects an empty HTTP 200 for a no-content DELETE contract", async () => {
+    const fetch = mockFetch({ status: 200 });
+
+    await expect(createClient(fetch).delete("r_abc123def45")).rejects.toMatchObject({
+      status: 200,
+      code: ERROR_CODE_UNEXPECTED_RESPONSE,
+      detail: expect.stringContaining("received HTTP 200 with an empty body"),
+      message: expect.stringContaining("may already have been applied"),
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
   it("rejects a non-empty body on a nominal 204 mutation response", async () => {
     const response = {
       ok: true,
@@ -3656,7 +3668,35 @@ describe("QURLClient", () => {
     },
   );
 
-  it("refuses browser-filtered opaque redirects as unexpected responses", async () => {
+  it.each([
+    { method: "GET", invoke: (client: QURLClient) => client.getQuota() },
+    {
+      method: "POST",
+      invoke: (client: QURLClient) =>
+        client.create({ target_url: "https://example.com" }, { idempotencyKey: "redirect-post" }),
+    },
+    {
+      method: "PATCH",
+      invoke: (client: QURLClient) =>
+        client.update(
+          "r_abc123def45",
+          { description: "updated" },
+          { idempotencyKey: "redirect-patch" },
+        ),
+    },
+    { method: "DELETE", invoke: (client: QURLClient) => client.delete("r_abc123def45") },
+  ])("uses manual redirect handling and refuses a redirect for $method", async ({ invoke }) => {
+    const fetch = vi.fn(async () => new Response(null, { status: 302 }));
+
+    await expect(invoke(createClient(fetch))).rejects.toMatchObject({
+      status: 302,
+      code: ERROR_CODE_UNEXPECTED_RESPONSE,
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(fetch).mock.calls[0][1]?.redirect).toBe("manual");
+  });
+
+  it("refuses filtered opaque redirects as unexpected responses", async () => {
     const fetch = vi.fn(async () => {
       return {
         ok: false,
@@ -3679,7 +3719,7 @@ describe("QURLClient", () => {
     expect(error).toBeInstanceOf(ValidationError);
     expect(error.status).toBe(0);
     expect(error.code).toBe(ERROR_CODE_UNEXPECTED_RESPONSE);
-    expect(error.detail).toContain("opaque browser redirect");
+    expect(error.detail).toBe("Refused opaque redirect response for GET");
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
@@ -3734,6 +3774,36 @@ describe("QURLClient", () => {
         maxRetries: 2,
       }).getQuota(),
     ).rejects.toMatchObject({ status: 200, code: ERROR_CODE_UNEXPECTED_RESPONSE });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("names an invalid custom Response.url without reflecting its value", async () => {
+    const invalidResponseUrl = "/relative-response-url";
+    const fetch = vi.fn(
+      async () =>
+        ({
+          ok: true,
+          redirected: false,
+          url: invalidResponseUrl,
+          status: 200,
+          statusText: "OK",
+          type: "basic",
+          headers: new Headers(),
+          body: null,
+        }) satisfies Partial<Response> as Response,
+    );
+
+    const error = await createClient(fetch)
+      .getQuota()
+      .catch((caught: unknown) => caught as QURLError);
+
+    expect(error).toMatchObject({
+      status: 200,
+      code: ERROR_CODE_UNEXPECTED_RESPONSE,
+      detail: "Refused invalid custom Response.url redirect response for GET",
+      message:
+        "Unexpected Response (200): Refused invalid custom Response.url redirect response for GET",
+    });
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 

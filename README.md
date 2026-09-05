@@ -374,14 +374,19 @@ SDK-generated keys require `globalThis.crypto.getRandomValues`, which is availab
 
 - Treat API keys and qURL links like credentials. Do not log them.
 - SDK API requests use manual redirect handling. Redirect-capable HTTP statuses
-  (300, 301, 302, 303, 305, 307, 308), browser `opaqueredirect` responses, and responses a custom fetch reports as already redirected are rejected as
-  a typed `QURLError` (`code: "unexpected_response"`) without requesting the
-  `Location` target. This prevents forwarding `Authorization` and
+  (300, 301, 302, 303, 305, 307, 308), filtered `opaqueredirect` responses in
+  browsers and Node native fetch, and responses a custom fetch reports as
+  already redirected are rejected as a typed `QURLError`
+  (`code: "unexpected_response"`) without requesting the `Location` target.
+  This prevents forwarding `Authorization` and
   `Idempotency-Key` when the fetch implementation honors `redirect: "manual"`
   and accurately exposes `Response.redirected`. A shim must also leave
   `Response.url` empty or report the normalized request URL when it did not
-  follow a redirect. A non-redirecting 304 is handled as an ordinary
-  unsuccessful API response rather than mislabeled as a redirect.
+  follow a redirect. Every Response-like shim must provide `headers.get(name)`.
+  A non-empty invalid `Response.url` fails closed with an SDK-authored error
+  that names this shim requirement but does not reflect the invalid value. A
+  non-redirecting 304 is handled as an ordinary unsuccessful API response
+  rather than mislabeled as a redirect.
 - API success and error bodies are limited to **1 MiB (1,048,576 bytes)**,
   matching qurl-go's security posture. The SDK checks `Content-Length` when
   present and independently counts streamed bytes, so missing or inaccurate
@@ -389,7 +394,10 @@ SDK-generated keys require `globalThis.crypto.getRandomValues`, which is availab
   This fixed security limit has no override. Callers must request a smaller
   page, and the SDKs must not independently widen the limit.
   A maximum-size list page can exceed the cap after JSON escaping; request a
-  smaller page if a list call reports the body-limit error.
+  smaller page if a list call reports the body-limit error. For resumable list
+  reads, use the page method, save each successful `next_cursor`, and resume
+  from that cursor with a smaller `limit`. A shared configurable-cap decision
+  is tracked in [#249](https://github.com/layervai/qurl-typescript/issues/249).
   Standards-compliant fetch implementations are bounded while streaming;
   custom Response-like shims that omit `body` are validated after their
   `text()`/`json()` result has already been materialized by that shim.
