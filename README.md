@@ -340,7 +340,9 @@ The client retries only requests whose replay contract is explicit:
   retryable when an intermediary returns HTML, an empty body, malformed UTF-8,
   or another complete non-envelope error response. A mid-stream transport
   failure is retried for a successful GET or a GET with a retryable status.
-  A hard 4xx GET is not retried. Mutations require reconciliation.
+  A hard 4xx GET is not retried. An injected fetch or response body's
+  independent `AbortError` is a non-retried `NetworkError`; only the SDK's
+  timeout signal produces a `TimeoutError`. Mutations require reconciliation.
 
 All documented no-content DELETE operations require exactly HTTP 204 with an
 empty response body. Alternate success statuses or response bytes fail closed

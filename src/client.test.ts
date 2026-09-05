@@ -3919,6 +3919,33 @@ describe("QURLClient", () => {
     await expect(createClient(fetch).getQuota()).resolves.toMatchObject({ plan: "growth" });
   });
 
+  it("does not replay a Response-like shim whose text() method rejects", async () => {
+    const response = {
+      ok: true,
+      redirected: false,
+      status: 200,
+      statusText: "OK",
+      type: "basic",
+      headers: new Headers(),
+      body: undefined,
+      text: () => Promise.reject(new Error("local response shim failed")),
+    } satisfies Partial<Response> as Response;
+    const fetch = vi.fn().mockResolvedValue(response);
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 2,
+    });
+
+    const error = await client.getQuota().catch((caught: unknown) => caught as QURLError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error).not.toBeInstanceOf(NetworkError);
+    expect(error).toMatchObject({ status: 200, code: ERROR_CODE_UNEXPECTED_RESPONSE });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
   it("does not replay a Response-like shim that omits headers.get", async () => {
     const response = {
       ok: true,
@@ -5770,6 +5797,47 @@ describe("QURLClient", () => {
     expect(aggregateBytes).toBe(8 << 10);
   });
 
+  it("skips an over-budget invalid field and retains a later field that fits", async () => {
+    const skippedKey = "s".repeat(200);
+    const retainedKey = "keep";
+    const invalidFields = Object.fromEntries([
+      ...Array.from({ length: 7 }, (_, index) => [
+        `${String(index).padStart(3, "0")}${"k".repeat(509)}`,
+        "v".repeat(512),
+      ]),
+      ["n".repeat(400), "v".repeat(512)],
+      [skippedKey, "v".repeat(200)],
+      [retainedKey, "v".repeat(100)],
+    ]);
+    const fetch = mockFetch({
+      status: 400,
+      body: {
+        error: {
+          title: "Bad Request",
+          status: 400,
+          detail: "Invalid input",
+          code: "validation_error",
+          invalid_fields: invalidFields,
+        },
+      },
+    });
+
+    const error = await createClient(fetch)
+      .create({ target_url: "https://example.com" })
+      .catch((caught: unknown) => caught as ValidationError);
+
+    expect(error.invalidFields).not.toHaveProperty(skippedKey);
+    expect(error.invalidFields).toHaveProperty(retainedKey, "v".repeat(100));
+    const aggregateBytes = Object.entries(error.invalidFields ?? {}).reduce(
+      (total, [key, value]) =>
+        total +
+        new TextEncoder().encode(key).byteLength +
+        new TextEncoder().encode(value).byteLength,
+      0,
+    );
+    expect(aggregateBytes).toBeLessThanOrEqual(8 << 10);
+  });
+
   it("bounds inspected invalid-field entries when early values have the wrong type", async () => {
     const invalidFields = Object.fromEntries([
       ...Array.from({ length: 100 }, (_, index) => [`ignored-${index}`, index]),
@@ -5921,6 +5989,23 @@ describe("QURLClient", () => {
     const err = await client.getQuota().catch((e: unknown) => e);
     expect(err).toBeInstanceOf(TimeoutError);
     expect((err as TimeoutError).message).toContain("timed out");
+  });
+
+  it("does not retry or mislabel an injected fetch AbortError", async () => {
+    const fetch = vi.fn().mockRejectedValue(new DOMException("wrapper cancelled", "AbortError"));
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 2,
+    });
+
+    const error = await client.getQuota().catch((caught: unknown) => caught as QURLError);
+
+    expect(error).toBeInstanceOf(NetworkError);
+    expect(error).not.toBeInstanceOf(TimeoutError);
+    expect(error).toMatchObject({ status: 0, code: ERROR_CODE_NETWORK });
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   // --- Mutating-safe retry ---
@@ -6218,6 +6303,28 @@ describe("QURLClient", () => {
     expect(error).toMatchObject({ status: 0, code: ERROR_CODE_NETWORK });
     expect(error.message).toContain("HTTP 200");
     expect(error.cause).toBeInstanceOf(TypeError);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry or mislabel an independent response-body AbortError", async () => {
+    const brokenBody = new globalThis.ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.error(new DOMException("wrapper cancelled body", "AbortError"));
+      },
+    });
+    const fetch = vi.fn(async () => new Response(brokenBody, { status: 200, statusText: "OK" }));
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 2,
+    });
+
+    const error = await client.getQuota().catch((caught: unknown) => caught as QURLError);
+
+    expect(error).toBeInstanceOf(NetworkError);
+    expect(error).not.toBeInstanceOf(TimeoutError);
+    expect(error).toMatchObject({ status: 0, code: ERROR_CODE_NETWORK });
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
@@ -6669,6 +6776,43 @@ describe("QURLClient", () => {
         0,
       ),
     ).toBe(8 << 10);
+  });
+
+  it("skips an over-budget debug key and retains a later key that fits", async () => {
+    const skippedKey = "s".repeat(200);
+    const retainedKey = "z".repeat(100);
+    const body = Object.fromEntries([
+      ...Array.from({ length: 15 }, (_, index) => [
+        `${String(index).padStart(3, "0")}${"k".repeat(509)}`,
+        true,
+      ]),
+      ["n".repeat(400), true],
+      [skippedKey, true],
+      [retainedKey, true],
+    ]);
+    const debugFn = vi.fn();
+    const fetch = mockFetch({ status: 500, body });
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch,
+      maxRetries: 0,
+      debug: debugFn,
+    });
+
+    await client.getQuota().catch(() => {});
+
+    const metadata = debugFn.mock.calls.find(([message]) =>
+      String(message).includes("unexpected error response shape"),
+    )?.[1] as { body_keys?: string[] };
+    expect(metadata.body_keys).not.toContain(skippedKey);
+    expect(metadata.body_keys).toContain(retainedKey);
+    expect(
+      (metadata.body_keys ?? []).reduce(
+        (total, key) => total + new TextEncoder().encode(key).byteLength,
+        0,
+      ),
+    ).toBeLessThanOrEqual(8 << 10);
   });
 
   it("5xx with JSON body but missing `error` envelope surfaces as ServerError with .code === 'unknown'", async () => {

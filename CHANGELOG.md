@@ -39,6 +39,10 @@
 - **client:** preserve the status-derived error class and `Retry-After` on 429
   and 503 responses whose body is unreadable or is not a valid API error
   envelope; unreadable bodies retain the transport failure as `cause`.
+- **client:** classify an injected fetch or response body's independent
+  `AbortError` as a non-retried `NetworkError`; only the SDK timeout signal
+  produces `TimeoutError`. Deterministic Response-like `text()` failures are
+  also not retried.
 
 ## [0.3.1](https://github.com/layervai/qurl-typescript/compare/qurl-v0.3.0...qurl-v0.3.1) (2026-07-05)
 

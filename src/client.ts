@@ -112,6 +112,8 @@ const MAX_INVALID_FIELD_ENTRIES = 100;
 // not part of the API wire contract.
 const MAX_DIAGNOSTIC_COLLECTION_BYTES = 8 << 10;
 const TEXT_ENCODER = new TextEncoder();
+const ERROR_SNIPPET_ELLIPSIS = "...";
+const ERROR_SNIPPET_ELLIPSIS_BYTES = 3;
 // RFC 8259 JSON exchanged between systems must be valid UTF-8. A non-fatal
 // decoder would replace malformed bytes with U+FFFD before JSON.parse and hide
 // the producer's exact contract violation.
@@ -731,14 +733,16 @@ function normalizedErrorSnippet(value: unknown): string | undefined {
 function boundedErrorSnippet(value: unknown): string | undefined {
   const normalized = normalizedErrorSnippet(value);
   if (normalized === undefined) return undefined;
+  // UTF-8 uses at most three bytes per UTF-16 code unit. Most diagnostics are
+  // short ASCII, so avoid an allocation only to prove they fit.
+  if (normalized.length * 3 <= MAX_ERROR_SNIPPET_BYTES) return normalized;
   const encoded = TEXT_ENCODER.encode(normalized);
   if (encoded.byteLength <= MAX_ERROR_SNIPPET_BYTES) return normalized;
 
-  const ellipsis = "...";
-  let end = MAX_ERROR_SNIPPET_BYTES - TEXT_ENCODER.encode(ellipsis).byteLength;
+  let end = MAX_ERROR_SNIPPET_BYTES - ERROR_SNIPPET_ELLIPSIS_BYTES;
   // Do not split a multi-byte UTF-8 sequence at the cap.
   while (end > 0 && (encoded[end] & 0xc0) === 0x80) end--;
-  return `${TEXT_DECODER.decode(encoded.subarray(0, end))}${ellipsis}`;
+  return `${TEXT_DECODER.decode(encoded.subarray(0, end))}${ERROR_SNIPPET_ELLIPSIS}`;
 }
 
 /** Keep server error codes useful as exact machine-readable discriminants. */
@@ -781,7 +785,8 @@ function boundedInvalidFields(value: unknown): Record<string, string> | undefine
     if (key !== undefined && fieldDetail !== undefined && !retainedKeys.has(key)) {
       const entryBytes =
         TEXT_ENCODER.encode(key).byteLength + TEXT_ENCODER.encode(fieldDetail).byteLength;
-      if (retainedBytes + entryBytes > MAX_DIAGNOSTIC_COLLECTION_BYTES) break;
+      // A later, smaller entry can still fit even when this one cannot.
+      if (retainedBytes + entryBytes > MAX_DIAGNOSTIC_COLLECTION_BYTES) continue;
       retainedKeys.add(key);
       entries.push([key, fieldDetail]);
       retainedBytes += entryBytes;
@@ -801,7 +806,8 @@ function boundedObjectKeys(value: object): string[] {
     const key = boundedErrorSnippet(rawKey);
     if (key === undefined) continue;
     const keyBytes = TEXT_ENCODER.encode(key).byteLength;
-    if (retainedBytes + keyBytes > MAX_DIAGNOSTIC_COLLECTION_BYTES) break;
+    // A later, smaller key can still fit even when this one cannot.
+    if (retainedBytes + keyBytes > MAX_DIAGNOSTIC_COLLECTION_BYTES) continue;
     retained.push(key);
     retainedBytes += keyBytes;
   }
@@ -875,8 +881,16 @@ async function readBoundedResponseBody(response: Response): Promise<string> {
   // fetch implementations while still checking their materialized text before
   // this SDK parses it as JSON.
   if (body === undefined || typeof body.getReader !== "function") {
-    const materializedText: unknown =
-      typeof response.text === "function" ? await response.text() : "";
+    let materializedText: unknown = "";
+    if (typeof response.text === "function") {
+      try {
+        materializedText = await response.text();
+      } catch {
+        // Native fetch exposes a body stream above. A failing text() here is a
+        // deterministic custom Response contract error, not a retryable reset.
+        throw new ResponseBodyMaterializationError("Response-like fetch text() failed");
+      }
+    }
     const text = typeof materializedText === "string" ? materializedText : "";
     if (
       text.length > MAX_RESPONSE_BODY_BYTES ||
@@ -3762,6 +3776,7 @@ export class QURLClient {
       this.log(`${method} ${url}`);
 
       let response: Response;
+      const requestSignal = AbortSignal.timeout(this.timeout);
       try {
         // `timeout` is intentionally a per-attempt budget, not a total-
         // request budget. With maxRetries=3 and timeout=30s, a slow
@@ -3776,17 +3791,21 @@ export class QURLClient {
           headers,
           body: serializedBody,
           redirect: "manual",
-          signal: AbortSignal.timeout(this.timeout),
+          signal: requestSignal,
         });
       } catch (err) {
-        lastError = this.classifyFetchError(err);
+        lastError = this.classifyFetchError(err, requestSignal);
         this.log(
           `${method} ${url} ${lastError instanceof TimeoutError ? "timed out" : "network error"}`,
           {
             error: boundedErrorSnippet(lastError.message),
           },
         );
-        if (retryFetchFailure && attempt < this.maxRetries) {
+        // An injected fetch can abort for its own reason. That is not this
+        // SDK's timeout and replaying it can defeat caller-side cancellation.
+        const independentlyAborted =
+          err instanceof Error && err.name === "AbortError" && !requestSignal.aborted;
+        if (retryFetchFailure && !independentlyAborted && attempt < this.maxRetries) {
           continue;
         }
         throw lastError;
@@ -3881,7 +3900,7 @@ export class QURLClient {
           throw encodingError;
         }
         await cancelResponseBody(response.body);
-        const transportReadError = this.classifyResponseReadError(err, response);
+        const transportReadError = this.classifyResponseReadError(err, response, requestSignal);
         if (transportReadError !== undefined) {
           this.log(`transport failure while reading response body from ${response.status}`, {
             status: response.status,
@@ -3891,8 +3910,11 @@ export class QURLClient {
           // non-success GET retries only the status set that the normal error
           // path retries. Mutations are never replayed after a body transport
           // failure because the operation may have applied.
+          const independentlyAborted =
+            err instanceof Error && err.name === "AbortError" && !requestSignal.aborted;
           if (
             method === "GET" &&
+            !independentlyAborted &&
             (response.ok || retryable.has(response.status)) &&
             attempt < this.maxRetries
           ) {
@@ -4145,18 +4167,28 @@ export class QURLClient {
     return Math.min(base + jitter, RETRY_MAX_DELAY_MS);
   }
 
-  private classifyFetchError(err: unknown): TimeoutError | NetworkError {
+  private classifyFetchError(
+    err: unknown,
+    requestSignal: AbortSignal,
+  ): TimeoutError | NetworkError {
     // AbortSignal.timeout is the only abort source accepted by this SDK. If a
-    // later API accepts caller cancellation, it must not classify that signal
-    // as a timeout only because the runtime reports AbortError.
-    if (err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError")) {
+    // later API accepts caller cancellation, keep this check tied to the SDK's
+    // own signal instead of classifying every AbortError as a timeout.
+    if (
+      err instanceof Error &&
+      (err.name === "TimeoutError" || (err.name === "AbortError" && requestSignal.aborted))
+    ) {
       return new TimeoutError("Request timed out", { cause: err });
     }
     const cause = err instanceof Error ? err : undefined;
     return new NetworkError(cause?.message ?? String(err), { cause });
   }
 
-  private classifyResponseReadError(err: unknown, response: Response): QURLError | undefined {
+  private classifyResponseReadError(
+    err: unknown,
+    response: Response,
+    requestSignal: AbortSignal,
+  ): QURLError | undefined {
     if (err instanceof ResponseBodyMaterializationError) return undefined;
     if (!(err instanceof Error)) return undefined;
     if (!response.ok) {
@@ -4172,7 +4204,7 @@ export class QURLClient {
         err,
       );
     }
-    if (err.name === "TimeoutError" || err.name === "AbortError") {
+    if (err.name === "TimeoutError" || (err.name === "AbortError" && requestSignal.aborted)) {
       return new TimeoutError(
         `Request timed out while reading response body after HTTP ${response.status}`,
         { cause: err },

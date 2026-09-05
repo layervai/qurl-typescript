@@ -57,6 +57,68 @@ for (const [name, sdk] of builds) {
   assert.equal(redirectCalls, 1, `${name} redirect response was retried or followed`);
   assert.equal(targetCalls, 0, `${name} requested the redirect target`);
 
+  let exactDeleteCalls = 0;
+  const exactDeleteClient = new sdk.QURLClient({
+    apiKey: "smoke-secret-key",
+    baseUrl: "https://api.test.layerv.ai",
+    maxRetries: 2,
+    fetch: async (_url, init) => {
+      exactDeleteCalls++;
+      assert.equal(init.method, "DELETE");
+      assert.equal(init.redirect, "manual");
+      return new Response(null, { status: 204 });
+    },
+  });
+  assert.equal(await exactDeleteClient.delete("r_smoke12345"), undefined);
+  assert.equal(exactDeleteCalls, 1, `${name} exact HTTP 204 DELETE was replayed`);
+
+  let rateLimitedDeleteCalls = 0;
+  const rateLimitedDeleteClient = new sdk.QURLClient({
+    apiKey: "smoke-secret-key",
+    baseUrl: "https://api.test.layerv.ai",
+    maxRetries: 2,
+    fetch: async () => {
+      rateLimitedDeleteCalls++;
+      return new Response(
+        JSON.stringify({
+          error: {
+            title: "Rate Limited",
+            status: 429,
+            detail: "Slow down",
+            code: "rate_limited",
+          },
+        }),
+        { status: 429, headers: { "content-type": "application/json", "Retry-After": "7" } },
+      );
+    },
+  });
+  const rateLimitedDeleteError = await rateLimitedDeleteClient
+    .delete("r_smoke12345")
+    .catch((error) => error);
+  assert.ok(rateLimitedDeleteError instanceof sdk.RateLimitError);
+  assert.equal(rateLimitedDeleteError.status, 429);
+  assert.equal(rateLimitedDeleteError.retryAfter, 7);
+  assert.equal(rateLimitedDeleteCalls, 1, `${name} rate-limited DELETE was replayed`);
+
+  let malformedUtf8Calls = 0;
+  const malformedUtf8Client = new sdk.QURLClient({
+    apiKey: "smoke-secret-key",
+    baseUrl: "https://api.test.layerv.ai",
+    maxRetries: 2,
+    fetch: async () => {
+      malformedUtf8Calls++;
+      return new Response(Uint8Array.from([0x7b, 0x22, 0xff, 0x22, 0x7d]), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
+  const malformedUtf8Error = await malformedUtf8Client.getQuota().catch((error) => error);
+  assert.ok(malformedUtf8Error instanceof sdk.QURLError);
+  assert.equal(malformedUtf8Error.status, 200);
+  assert.equal(malformedUtf8Error.code, sdk.ERROR_CODE_UNEXPECTED_RESPONSE);
+  assert.equal(malformedUtf8Calls, 1, `${name} malformed UTF-8 success was replayed`);
+
   let oversizedSuccessCalls = 0;
   const oversizedSuccessMarker = "success-response-secret-must-not-be-reflected";
   const oversizedSuccessClient = new sdk.QURLClient({
