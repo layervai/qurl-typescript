@@ -4,10 +4,50 @@
 
 ### ⚠ BREAKING CHANGES
 
-- **client:** remove the released legacy HTTP bootstrap method and the
-  not-yet-released relay registration implementation. Native qURL Connector
-  assignment and registration are UDP-only and belong in the Go runtime; the
-  TypeScript package remains focused on browser and management-plane qURL APIs.
+- **client:** DELETE operations are no longer retried after transport, 429, or 5xx
+  failures. This matches qurl-go's no-hidden-HTTP-retry rule, avoids request-path
+  pacing, and requires the caller to use `retryAfter` and reconcile state before
+  a deliberate retry. Documented no-content DELETE endpoints now require an
+  exact empty HTTP 204 response.
+- **client:** server-provided error titles, details, and up to 100
+  invalid-field entries have controls and bidirectional formatting characters
+  removed, are normalized to one line, and are capped at 512 UTF-8 bytes per
+  key/value and 8 KiB per retained collection so error objects and debug paths
+  stay bounded. Exact machine identifiers (`code`, RFC 7807 `type` and
+  `instance`, and request IDs) are not normalized or truncated into false
+  identifiers: changed or overlong values are dropped, and an invalid code
+  becomes `unknown`. Non-string invalid-field values are omitted, and
+  normalized-key collisions retain the first diagnostic.
+- **client:** API redirects are refused instead of followed, including when an
+  injected fetch implementation follows one before returning a response.
+- **client:** API response bodies larger than 1 MiB and successful JSON bodies
+  with malformed UTF-8 are rejected before JSON parsing. The size limit also
+  applies to streamed bodies without a trustworthy Content-Length. Resume
+  collection reads from the last successful cursor with a smaller page. The
+  fixed shared-cap decision is tracked in #249.
+- **client:** GET requests now retry transport failures from successful response
+  bodies and from the normal retryable error statuses. Hard 4xx responses are
+  not replayed. Mutations require reconciliation and are not replayed after a
+  response-body transport failure.
+- **client:** the observed HTTP status now controls server-error classification;
+  a conflicting RFC 7807 `error.status` value can no longer change the typed
+  error class.
+- **client:** remove the unsafe legacy HTTP bootstrap method and the incomplete
+  relay registration implementation. Native NHP 1.1 assignment, registration,
+  and proactive opener parity replace them under the program tracked in #248.
+
+### Bug Fixes
+
+- **client:** preserve the status-derived error class and `Retry-After` on 429
+  and 503 responses whose body is unreadable or is not a valid API error
+  envelope; unreadable bodies retain the transport failure as `cause`.
+- **client:** classify an injected fetch failure or successful response body's
+  independent `AbortError` or `TimeoutError` as a non-retried `NetworkError`;
+  after non-success headers, preserve the status-derived class and attach the
+  failure as its cause. Only the SDK timeout signal produces `TimeoutError`.
+  Deterministic
+  Response-like materialization failures retain their SDK-authored detail and
+  cause and are not retried.
 
 ## [0.3.1](https://github.com/layervai/qurl-typescript/compare/qurl-v0.3.0...qurl-v0.3.1) (2026-07-05)
 

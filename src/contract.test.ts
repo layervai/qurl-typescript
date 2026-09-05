@@ -130,10 +130,8 @@ function assertSdkCallMatches(
   }
 }
 
-const mockOk = (
-  body: unknown = { data: {}, meta: {} },
-  status: number = 200,
-): typeof globalThis.fetch => mockFetch({ status, body });
+const mockOk = (body: unknown, status: number = 200): typeof globalThis.fetch =>
+  mockFetch(body === undefined ? { status } : { status, body });
 
 // Single source of truth for the contract-covered methods. Each entry
 // is one SDK public method → the (verb, template) it must call + a
@@ -730,6 +728,7 @@ const NON_API_PROTOTYPE_METHODS: ReadonlySet<string> = new Set([
 // genuinely internal.
 const INTERNAL_HELPERS: ReadonlySet<string> = new Set([
   "request",
+  "requestNoContent",
   "rawRequest",
   "maskKey",
   "log",
@@ -738,6 +737,7 @@ const INTERNAL_HELPERS: ReadonlySet<string> = new Set([
   "paginateAll",
   "retryDelay",
   "classifyFetchError",
+  "classifyResponseReadError",
   "mapQurlsField",
   "validateBatchCreateResponse",
 ]);

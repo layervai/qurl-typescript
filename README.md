@@ -315,14 +315,49 @@ const clientWithLogger = new QURLClient({
 
 ## Retry Behavior
 
-The client automatically retries failed requests with exponential backoff:
+The client retries only requests whose replay contract is explicit:
 
-- **GET/DELETE**: Retries on 429, 502, 503, 504
-- **POST/PATCH**: Retries status responses only on 429
-- **Network errors**: Always retried; POST/PATCH requests send an `Idempotency-Key` on the first attempt and reuse it on retries
-- **`Retry-After` header**: Honored on 429 and 503 responses (RFC 7231 §7.1.3). Currently the SDK only parses **delta-seconds** values (e.g. `Retry-After: 30`); HTTP-date values (`Retry-After: Wed, 21 Oct 2026 07:28:00 GMT`) silently fall back to exponential backoff. Tracked in [#61](https://github.com/layervai/qurl-typescript/issues/61).
+- **GET**: Retries on 429, 502, 503, 504 and transport failures, including a
+  dropped response body after successful headers arrive
+- **POST/PATCH**: Retries complete status responses only on 429. A transport
+  failure while reading a response body is not replayed because the mutation
+  may have applied.
+- **POST/PATCH fetch failures**: Retried with the `Idempotency-Key` generated on
+  the first attempt when no response is available
+- **DELETE**: Never replayed automatically, including on 429. A transport
+  failure after dispatch makes the mutation outcome unknown, and the HTTP verb
+  alone cannot prove a replay safe. Reconcile resource state before you issue
+  a deliberate retry. This matches qurl-go's explicit-caller-retry model.
+- **`Retry-After` header**: Preserved on 429 and 503 responses, including when
+  a mid-body transport failure produces a status-derived error (RFC 7231
+  §7.1.3), and honored by automatic GET retries. Currently the SDK only parses
+  **delta-seconds** values (e.g.
+  `Retry-After: 30`); HTTP-date values (`Retry-After: Wed, 21 Oct 2026 07:28:00 GMT`)
+  silently fall back to exponential backoff. Tracked in
+  [#61](https://github.com/layervai/qurl-typescript/issues/61).
+- **Response failures**: Redirects, oversized successful bodies, and malformed
+  UTF-8 successful bodies are not retried. Retryable error statuses remain
+  retryable when an intermediary returns HTML, an empty body, malformed UTF-8,
+  or another complete non-envelope error response. A mid-stream transport
+  failure is retried for a successful GET or a GET with a retryable status.
+  A hard 4xx GET is not retried. An independent `AbortError` or `TimeoutError`
+  from an injected fetch, or while reading a successful response body, is a
+  non-retried `NetworkError`. After non-success headers arrive, the SDK
+  preserves the status-derived error class and attaches the independent
+  failure as its cause without retrying it. Only the SDK's timeout signal
+  produces a `TimeoutError`. Mutations require reconciliation.
+
+All documented no-content DELETE operations require exactly HTTP 204 with an
+empty response body. Alternate success statuses or response bytes fail closed
+as `unexpected_response` contract errors whose `.status` preserves the
+observed HTTP status. The delete may already have applied; reconcile resource
+state before retrying.
 
 Configure with `maxRetries` (default: 3). Set to `0` to disable.
+
+When DELETE returns `RateLimitError`, use `retryAfter` for scheduling but
+reconcile current resource state before issuing a deliberate retry; the SDK
+does not assume the rejected response proves the mutation never ran.
 
 > **Worst-case latency**: `timeout` is enforced per *attempt*, not for the whole request. Total worst-case latency is roughly `timeout × (maxRetries + 1) + sum(retry delays)`. Operators tuning `timeout` should account for this when sizing health-check budgets.
 
@@ -343,6 +378,51 @@ SDK-generated keys require `globalThis.crypto.getRandomValues`, which is availab
 ## Security Notes
 
 - Treat API keys and qURL links like credentials. Do not log them.
+- SDK API requests use manual redirect handling. Redirect-capable HTTP statuses
+  (300, 301, 302, 303, 305, 307, 308), filtered `opaqueredirect` responses in
+  browsers and Node native fetch, and responses a custom fetch reports as
+  already redirected are rejected as a typed `QURLError`
+  (`code: "unexpected_response"`) without requesting the `Location` target.
+  This prevents forwarding `Authorization` and
+  `Idempotency-Key` when the fetch implementation honors `redirect: "manual"`
+  and accurately exposes `Response.redirected`. A shim must also leave
+  `Response.url` empty or report the normalized request URL when it did not
+  follow a redirect. Every Response-like shim must provide `headers.get(name)`.
+  A non-empty invalid `Response.url` fails closed with an SDK-authored error
+  that names this shim requirement but does not reflect the invalid value. A
+  non-redirecting 304 is handled as an ordinary unsuccessful API response
+  rather than mislabeled as a redirect.
+- API success and error bodies are limited to **1 MiB (1,048,576 bytes)**,
+  matching qurl-go's security posture. The SDK checks `Content-Length` when
+  present and independently counts streamed bytes, so missing or inaccurate
+  headers cannot bypass the limit. Bodies exactly at the limit are accepted.
+  This fixed security limit has no override. Callers must request a smaller
+  page, and the SDKs must not independently widen the limit.
+  A maximum-size list page can exceed the cap after JSON escaping; request a
+  smaller page if a list call reports the body-limit error. For resumable list
+  reads, use the page method, save each successful `next_cursor`, and resume
+  from that cursor with a smaller `limit`. A shared configurable-cap decision
+  is tracked in [#249](https://github.com/layervai/qurl-typescript/issues/249).
+  Standards-compliant fetch implementations are bounded while streaming;
+  custom Response-like shims that omit `body` are validated after their
+  `text()`/`json()` result has already been materialized by that shim.
+  Oversized bodies fail with a typed error before JSON decoding while
+  preserving the observed status-derived error class and `Retry-After`.
+  Transient error statuses retain the normal retry policy for GET and
+  idempotency-key-backed mutations; oversized successful responses and DELETE
+  responses are not retried.
+  Successful JSON bodies with malformed UTF-8 are rejected without replay.
+  Server-provided error title/detail snippets and `invalidFields` keys/values
+  have controls and bidirectional formatting characters removed, are
+  normalized to one line, and are capped at 512 UTF-8 bytes. Machine-readable
+  error codes, RFC 7807 type/instance values, and request IDs are kept only
+  when they need no normalization and fit the same limit. At most 100
+  `invalidFields` entries are retained, and each retained
+  `invalidFields` or debug `body_keys` collection has an 8 KiB UTF-8 budget.
+  Redirect/body-limit contract-error details do not include `Location` values
+  or response-body snippets. Standard request debug logging includes the request
+  URL, so do not place credentials in identifiers or enable debug output in a
+  sensitive logging environment.
 - Prefer short portal lifetimes such as `validFor: '5m'`.
 - Do not ask portal recipients to handle credentials. Recipients only need
   the link.

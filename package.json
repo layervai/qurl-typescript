@@ -27,7 +27,7 @@
     "lint": "eslint src/",
     "format": "prettier --write 'src/**/*.ts' 'smoke/**/*.{cjs,mjs}' 'scripts/**/*.mjs'",
     "format:check": "prettier --check 'src/**/*.ts' 'smoke/**/*.{cjs,mjs}' 'scripts/**/*.mjs'",
-    "smoke:dist": "node smoke/cjs.cjs && node smoke/esm.mjs && node smoke/parity.mjs && node smoke/idempotency.mjs && node smoke/retired-agent-lifecycle.mjs",
+    "smoke:dist": "node smoke/cjs.cjs && node smoke/esm.mjs && node smoke/parity.mjs && node smoke/idempotency.mjs && node smoke/response-hardening.mjs && node smoke/retired-agent-lifecycle.mjs",
     "prepublishOnly": "npm run build && npm run smoke:dist"
   },
   "keywords": [

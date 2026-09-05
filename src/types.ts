@@ -955,7 +955,13 @@ export interface ClientOptions {
   apiKey: string;
   /** Base URL. Defaults to https://api.layerv.ai */
   baseUrl?: string;
-  /** Custom fetch implementation. */
+  /**
+   * Custom fetch implementation. Redirect-safety requires it to honor
+   * `redirect: "manual"`, accurately expose `Response.redirected`, and leave
+   * `Response.url` empty or set it to the normalized request URL when no
+   * redirect was followed. Every Response-like result must also provide a
+   * `headers` object with a WHATWG-compatible `headers.get(name)` method.
+   */
   fetch?: typeof globalThis.fetch;
   /** Maximum retry attempts for transient errors (429, 5xx). Default: 3. */
   maxRetries?: number;
