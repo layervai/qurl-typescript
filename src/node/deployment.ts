@@ -27,7 +27,6 @@ export interface ValidatedDeployment {
 }
 
 export interface ValidatedCell {
-  readonly cellId?: string;
   readonly host: string;
   readonly port: 443;
   readonly serverPublicKey: Uint8Array;
@@ -37,6 +36,26 @@ const DEPLOYMENT_KEYS = new Set(["issuers", "cells", "relay_allowlist", "hub"]);
 const ISSUER_KEYS = new Set(["kid", "spki_der_b64"]);
 const CELL_KEYS = new Set(["cell_id", "host", "port", "server_public_key_b64"]);
 const MAX_DEPLOYMENT_BYTES = 1_048_576;
+
+interface DeploymentFileRuntime {
+  readonly open: (path: string, flags: number) => number;
+  readonly stat: (descriptor: number) => { readonly size: number; isFile(): boolean };
+  readonly read: (
+    descriptor: number,
+    buffer: Buffer,
+    offset: number,
+    length: number,
+    position: number,
+  ) => number;
+  readonly close: (descriptor: number) => void;
+}
+
+const defaultDeploymentFileRuntime: DeploymentFileRuntime = {
+  open: openSync,
+  stat: fstatSync,
+  read: readSync,
+  close: closeSync,
+};
 
 /** Load and validate deployment trust once, before an opener can do network I/O. */
 export function loadPortalDeployment(explicit?: PortalDeployment): ValidatedDeployment {
@@ -52,12 +71,15 @@ export function loadPortalDeployment(explicit?: PortalDeployment): ValidatedDepl
   return validateDeploymentValue(parseStrictJson(raw, MAX_DEPLOYMENT_BYTES));
 }
 
-function readBoundedDeploymentFile(path: string): Buffer {
+function readBoundedDeploymentFile(
+  path: string,
+  runtime: DeploymentFileRuntime = defaultDeploymentFileRuntime,
+): Buffer {
   // O_NONBLOCK prevents a FIFO or device path from hanging construction before
   // fstat can enforce the regular-file contract. It has no effect on files.
-  const descriptor = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK);
+  const descriptor = runtime.open(path, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK);
   try {
-    const metadata = fstatSync(descriptor);
+    const metadata = runtime.stat(descriptor);
     if (!metadata.isFile()) throw new Error("native qURL deployment path must be a regular file");
     if (!Number.isSafeInteger(metadata.size) || metadata.size > MAX_DEPLOYMENT_BYTES) {
       throw new Error("native qURL deployment file exceeds its 1 MiB limit");
@@ -65,17 +87,17 @@ function readBoundedDeploymentFile(path: string): Buffer {
     const bytes = Buffer.alloc(metadata.size);
     let offset = 0;
     while (offset < bytes.byteLength) {
-      const count = readSync(descriptor, bytes, offset, bytes.byteLength - offset, offset);
+      const count = runtime.read(descriptor, bytes, offset, bytes.byteLength - offset, offset);
       if (count === 0) break;
       offset += count;
     }
     const extra = Buffer.alloc(1);
-    if (readSync(descriptor, extra, 0, 1, offset) !== 0) {
+    if (runtime.read(descriptor, extra, 0, 1, offset) !== 0) {
       throw new Error("native qURL deployment file changed while it was read");
     }
     return bytes.subarray(0, offset);
   } finally {
-    closeSync(descriptor);
+    runtime.close(descriptor);
   }
 }
 
@@ -123,8 +145,8 @@ function validateDeploymentValue(value: StrictJsonValue): ValidatedDeployment {
     if (serverPublicKey.byteLength !== 32) throw new Error("cell public key must be 32 bytes");
     const fingerprint = fingerprintKey(serverPublicKey);
     if (cells.has(fingerprint)) throw new Error("deployment contains a duplicate cell public key");
-    const cellId = item.cell_id === undefined ? undefined : requireString(item.cell_id, "cell id");
-    cells.set(fingerprint, { cellId, host, port: 443, serverPublicKey });
+    if (item.cell_id !== undefined) requireString(item.cell_id, "cell id");
+    cells.set(fingerprint, { host, port: 443, serverPublicKey });
   }
   return { issuers, cells };
 }
@@ -185,3 +207,5 @@ function rejectUnknown(
     if (!allowed.has(key)) throw new Error(`${name} contains an unknown field`);
   }
 }
+
+export const deploymentTesting = { readBoundedDeploymentFile, decodeFlexibleBase64 };

@@ -133,8 +133,9 @@ back, it throws instead of returning an empty handle.
 Use the Node subpath when a service receives a qv2 link and must keep one NHP
 session ready for a low-latency private request. Construct and start one opener
 for that link during setup. `start()` sends the native UDP knock and schedules
-bounded background renewal before the admission expires. `fetch()` never opens
-or renews a session, and it never sleeps. It fails if the cached admission has
+bounded background renewal before the admission expires. Failed renewal tries
+are spread across the remaining valid grant window. `fetch()` never opens or
+renews a session, and it never sleeps. It fails if the cached admission has
 expired.
 
 ```javascript
@@ -180,9 +181,10 @@ serial address attempts. This matches qurl-go. Pass an abort signal to
 Native opening requires public deployment trust. Set `QURL_DEPLOYMENT` to one
 strict JSON object or to a path that contains that object. The object must have
 trusted P-256 issuer keys and native cell host, UDP port 443, and X25519 public
-key entries. The SDK loads and validates this value once when it constructs the
-opener. It does not perform discovery and it fails before DNS if the verified
-link names an unknown cell.
+key entries. A configured path must be a regular file no larger than 1 MiB. The
+SDK loads and validates this value once when it constructs the opener. It does
+not perform discovery and it fails before DNS if the verified link names an
+unknown cell.
 
 Use `opener.health()` for the local `idle`, `starting`, `healthy`, `renewing`,
 `degraded`, `expired`, or `closed` state. A degraded state includes a typed
@@ -199,6 +201,9 @@ request headers.
 Local qv2 verification checks the signed bytes, trust, and clock-free claim
 ordering. As in the Go SDK, it does not compare `nbf` or `exp` with the local
 clock. The authenticated NHP open is the authoritative live validity check.
+The opener also follows the Go NHP 1.1 COOKIE rule: an authenticated COOKIE is
+a busy result and does not use ACK counter correlation or local clock skew
+checks. Replaying it can only force another busy result; it cannot grant access.
 
 ## REST-Shaped API (Compatibility)
 

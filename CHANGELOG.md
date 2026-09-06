@@ -43,7 +43,9 @@
   uses strict deployment trust, opens through UDP with no relay fallback, keeps
   one admission ready through bounded background renewal, and starts each fetch
   at the exact authenticated ACK target. Default redirect handling stays within
-  that origin. Signed requests can reject all redirects.
+  that origin. Signed requests can reject all redirects. Legacy TypeScript
+  module resolution receives the Node subpath declarations through
+  `typesVersions`.
 
 ### Bug Fixes
 

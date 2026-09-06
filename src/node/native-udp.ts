@@ -278,7 +278,12 @@ function exchangeDatagram(
       } else finish(undefined, reply);
     });
     socket.connect(port, address, () => {
-      socket.send(packet, (error) => {
+      // dgram owns its input until this callback. Use an independent encrypted
+      // datagram so nativeKnock can wipe the builder's packet immediately when
+      // an abort settles this exchange while libuv still has a send queued.
+      const outbound = Buffer.from(packet);
+      socket.send(outbound, (error) => {
+        void outbound;
         if (error) finish(error);
       });
     });

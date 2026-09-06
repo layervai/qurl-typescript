@@ -32,7 +32,7 @@ function deployment() {
   } as const;
 }
 
-function ack(openSeconds = 900, errCode = "0"): NHPMessage {
+function ack(openSeconds = 900, errCode = "0", resourceUrl = RESOURCE_URL): NHPMessage {
   return {
     type: NHP_TYPE_ACK,
     flags: 0,
@@ -40,7 +40,7 @@ function ack(openSeconds = 900, errCode = "0"): NHPMessage {
     timestampNanos: 2n,
     body: Buffer.from(
       `{"errCode":"${errCode}","sessId":18446744073709551615,"opnTime":${openSeconds},` +
-        `"redirectUrl":"${RESOURCE_URL}","aspToken":"${TOKEN}"}`,
+        `"redirectUrl":"${resourceUrl}","aspToken":"${TOKEN}"}`,
     ),
   };
 }
@@ -64,6 +64,7 @@ function fixture(fetchImpl: typeof globalThis.fetch = vi.fn(async () => new Resp
     knock,
     fetch: fetchImpl,
     nowNanos: () => now,
+    randomFraction: () => 0.5,
     setTimer: (callback: () => void, delayMs: number) => {
       timers.push(callback);
       timerDelays.push(delayMs);
@@ -93,6 +94,7 @@ describe("native portal opener", () => {
         knock,
         fetch,
         nowNanos: () => 1_000_000_000n,
+        randomFraction: () => 0.5,
         setTimer: setTimeout,
         clearTimer: clearTimeout,
       },
@@ -124,6 +126,7 @@ describe("native portal opener", () => {
           knock: vi.fn(),
           fetch,
           nowNanos: () => 0n,
+          randomFraction: () => 0.5,
           setTimer: setTimeout,
           clearTimer: clearTimeout,
         },
@@ -136,6 +139,7 @@ describe("native portal opener", () => {
       knock: vi.fn(),
       fetch,
       nowNanos: () => 0n,
+      randomFraction: () => 0.5,
       setTimer: setTimeout,
       clearTimer: clearTimeout,
     };
@@ -171,6 +175,7 @@ describe("native portal opener", () => {
           knock,
           fetch,
           nowNanos: () => 0n,
+          randomFraction: () => 0.5,
           setTimer: setTimeout,
           clearTimer: clearTimeout,
         },
@@ -199,6 +204,7 @@ describe("native portal opener", () => {
           knock,
           fetch,
           nowNanos: () => 0n,
+          randomFraction: () => 0.5,
           setTimer: setTimeout,
           clearTimer: clearTimeout,
         },
@@ -228,6 +234,7 @@ describe("native portal opener", () => {
           knock,
           fetch,
           nowNanos: () => 0n,
+          randomFraction: () => 0.5,
           setTimer: setTimeout,
           clearTimer: clearTimeout,
         },
@@ -507,6 +514,76 @@ describe("native portal opener", () => {
     await opener.close();
   });
 
+  it("keeps the first authenticated target when a renewal reply changes it", async () => {
+    const sent: string[] = [];
+    const fetchImpl = vi.fn(async (target: string | URL | Request) => {
+      sent.push(String(target));
+      return new Response("ok");
+    }) as unknown as typeof globalThis.fetch;
+    const { opener, knock, timers } = fixture(fetchImpl);
+    knock
+      .mockResolvedValueOnce(ack(4))
+      .mockResolvedValueOnce(ack(4, "0", "https://private.example.test/changed"));
+    await opener.start();
+    timers.shift()!();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(opener.health()).toMatchObject({
+      state: "degraded",
+      renewalFailure: { kind: "invalid_reply" },
+    });
+    await opener.fetch();
+    expect(sent).toEqual([RESOURCE_URL]);
+    await opener.close();
+  });
+
+  it("spreads a long-grant retry across the remaining admission lifetime", async () => {
+    const { opener, knock, timers, timerDelays, setNow } = fixture();
+    knock.mockResolvedValueOnce(ack(900)).mockRejectedValueOnce(new Error("temporary UDP miss"));
+    await opener.start();
+    expect(timerDelays).toEqual([675_000]);
+
+    setNow(676_000_000_000n);
+    timers.shift()!();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(timerDelays).toEqual([675_000, 49_218]);
+    expect(opener.health()).toMatchObject({
+      state: "degraded",
+      backgroundAttempts: 1,
+      renewalFailure: { kind: "transport" },
+    });
+    await opener.close();
+  });
+
+  it("preserves all bounded retries inside a short remaining grant window", async () => {
+    const { opener, knock, timers, timerDelays, setNow } = fixture();
+    knock.mockResolvedValueOnce(ack(2)).mockRejectedValue(new Error("temporary UDP miss"));
+    await opener.start();
+
+    setNow(2_500_000_000n);
+    timers.shift()!();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(timerDelays).toEqual([1_500, 109]);
+
+    setNow(2_609_000_000n);
+    timers.shift()!();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(timerDelays).toEqual([1_500, 109, 113]);
+
+    setNow(2_722_000_000n);
+    timers.shift()!();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(timerDelays).toEqual([1_500, 109, 113, 121]);
+
+    setNow(2_843_000_000n);
+    timers.shift()!();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(timers).toHaveLength(0);
+    expect(knock).toHaveBeenCalledTimes(5);
+    expect(opener.health()).toMatchObject({ state: "degraded", backgroundAttempts: 4 });
+    await opener.close();
+  });
+
   it("classifies an authenticated COOKIE renewal as a busy session", async () => {
     const { opener, knock, timers } = fixture();
     knock.mockResolvedValueOnce(ack(4)).mockResolvedValueOnce({
@@ -522,6 +599,41 @@ describe("native portal opener", () => {
     expect(opener.health()).toMatchObject({
       state: "degraded",
       renewalFailure: { kind: "busy" },
+    });
+    await opener.close();
+  });
+
+  it("classifies a malformed authenticated renewal ACK as an invalid remote reply", async () => {
+    const { opener, knock, timers } = fixture();
+    knock.mockResolvedValueOnce(ack(4)).mockResolvedValueOnce({
+      type: NHP_TYPE_ACK,
+      flags: 0,
+      counter: 1n,
+      timestampNanos: 2n,
+      body: Buffer.from('{"errCode":"0","sessId":0,"opnTime":4}'),
+    });
+    await opener.start();
+    timers.shift()!();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(opener.health()).toMatchObject({
+      state: "degraded",
+      renewalFailure: { kind: "invalid_reply" },
+    });
+    await opener.close();
+  });
+
+  it("classifies a locally expired renewal result as a local state failure", async () => {
+    const { opener, knock, timers, setNow } = fixture();
+    knock.mockResolvedValueOnce(ack(10)).mockImplementationOnce(async () => {
+      setNow(3_000_000_000n);
+      return ack(1);
+    });
+    await opener.start();
+    timers.shift()!();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(opener.health()).toMatchObject({
+      state: "degraded",
+      renewalFailure: { kind: "local_state" },
     });
     await opener.close();
   });
@@ -558,6 +670,17 @@ describe("native portal opener", () => {
     await opener.start();
     expect(opener.health()).toMatchObject({ state: "healthy", expiresInMs: 1_000 });
     expect(timerDelays).toEqual([750]);
+    await opener.close();
+  });
+
+  it("rejects a grant that expires during the native exchange", async () => {
+    const { opener, knock, setNow } = fixture();
+    knock.mockImplementationOnce(async () => {
+      setNow(2_000_000_000n);
+      return ack(1);
+    });
+    await expect(opener.start()).rejects.toThrow("expired before it became usable");
+    expect(opener.health()).toEqual({ state: "idle" });
     await opener.close();
   });
 
@@ -639,7 +762,7 @@ describe("native portal opener", () => {
     });
     const start = opener.start();
     if (_name === "negative-zero deny") {
-      await expect(start).rejects.toThrow("success capability fields");
+      await expect(start).rejects.toThrow("opnTime must be canonical zero");
     } else if (_name === "deny") {
       await expect(start).rejects.toMatchObject<PortalDenyError>({
         name: "PortalDenyError",
@@ -649,6 +772,70 @@ describe("native portal opener", () => {
       await expect(start).rejects.toBeInstanceOf(Error);
     }
     expect([...body]).toEqual(new Array(body.byteLength).fill(0));
+    await opener.close();
+  });
+
+  it.each(["01", "-7", "busy", " 7"])(
+    "rejects noncanonical decimal deny errCode %j without reflecting it",
+    async (errCode) => {
+      const body = Buffer.from(JSON.stringify({ errCode, opnTime: 0 }));
+      const { opener, knock } = fixture();
+      knock.mockResolvedValueOnce({
+        type: NHP_TYPE_ACK,
+        flags: 0,
+        counter: 1n,
+        timestampNanos: 2n,
+        body,
+      });
+      await expect(opener.start()).rejects.toThrow("deny code is not canonical decimal");
+      expect([...body]).toEqual(new Array(body.byteLength).fill(0));
+      await opener.close();
+    },
+  );
+
+  it.each([
+    ["session id", '{"errCode":"7","sessId":1,"opnTime":0}'],
+    ["application token", '{"errCode":"7","opnTime":0,"aspToken":"secret"}'],
+  ])("reports a deny ACK %s as a forbidden success capability", async (_name, encoded) => {
+    const { opener, knock } = fixture();
+    knock.mockResolvedValueOnce({
+      type: NHP_TYPE_ACK,
+      flags: 0,
+      counter: 1n,
+      timestampNanos: 2n,
+      body: Buffer.from(encoded),
+    });
+    await expect(opener.start()).rejects.toThrow("contains success capability fields");
+    await opener.close();
+  });
+
+  it("matches Go by treating a deny redirect URL as non-authoritative metadata", async () => {
+    const { opener, knock } = fixture();
+    knock.mockResolvedValueOnce({
+      type: NHP_TYPE_ACK,
+      flags: 0,
+      counter: 1n,
+      timestampNanos: 2n,
+      body: Buffer.from('{"errCode":"7","opnTime":0,"redirectUrl":"https://ignored.example.test"}'),
+    });
+    await expect(opener.start()).rejects.toMatchObject({ name: "PortalDenyError", errCode: "7" });
+    await opener.close();
+  });
+
+  it("accepts an unrecognized canonical decimal deny errCode like Go", async () => {
+    const body = Buffer.from('{"errCode":"999999999999999999999999","opnTime":0}');
+    const { opener, knock } = fixture();
+    knock.mockResolvedValueOnce({
+      type: NHP_TYPE_ACK,
+      flags: 0,
+      counter: 1n,
+      timestampNanos: 2n,
+      body,
+    });
+    await expect(opener.start()).rejects.toMatchObject({
+      name: "PortalDenyError",
+      errCode: "999999999999999999999999",
+    });
     await opener.close();
   });
 

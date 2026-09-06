@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import conformancePackage from "@layervai/qurl-conformance";
-import { loadPortalDeployment } from "./deployment.js";
+import { deploymentTesting, loadPortalDeployment } from "./deployment.js";
 
 type Qv2Vectors = {
   classes: {
@@ -81,6 +81,47 @@ describe("native deployment loading", () => {
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
+  });
+
+  it("rejects a deployment file that grows after its bounded read", () => {
+    const close = vi.fn();
+    const read = vi
+      .fn()
+      .mockImplementationOnce(
+        (_descriptor: number, buffer: Buffer, offset: number, _length: number) => {
+          buffer[offset] = 0x7b;
+          return 1;
+        },
+      )
+      .mockImplementationOnce(
+        (_descriptor: number, buffer: Buffer, offset: number, _length: number) => {
+          buffer[offset] = 0x78;
+          return 1;
+        },
+      );
+    expect(() =>
+      deploymentTesting.readBoundedDeploymentFile("deployment.json", {
+        open: () => 17,
+        stat: () => ({ size: 1, isFile: () => true }),
+        read,
+        close,
+      }),
+    ).toThrow("changed while it was read");
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(close).toHaveBeenCalledWith(17);
+  });
+
+  it.each([
+    ["mixed alphabets", "+-", "mixes base64 alphabets"],
+    ["invalid shape", "a*", "not valid base64"],
+    ["noncanonical trailing bits", "AB", "not canonical base64"],
+  ])("rejects %s in deployment base64", (_name, value, message) => {
+    expect(() => deploymentTesting.decodeFlexibleBase64(value, "test key")).toThrow(message);
+  });
+
+  it("accepts canonical padded and raw deployment base64", () => {
+    expect(deploymentTesting.decodeFlexibleBase64("AQ==", "test key")).toEqual(new Uint8Array([1]));
+    expect(deploymentTesting.decodeFlexibleBase64("AQ", "test key")).toEqual(new Uint8Array([1]));
   });
 
   it("rejects unknown and duplicate trust fields", () => {

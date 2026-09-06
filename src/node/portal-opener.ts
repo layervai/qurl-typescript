@@ -49,7 +49,7 @@ export interface PortalFetchOptions {
 }
 
 export type PortalRenewalFailure = {
-  readonly kind: "transport" | "busy" | "denied" | "invalid_reply";
+  readonly kind: "transport" | "busy" | "denied" | "invalid_reply" | "local_state";
 };
 
 export type PortalSessionHealth =
@@ -110,6 +110,13 @@ class PortalBusyError extends PortalStateError {
   }
 }
 
+class PortalInvalidReplyError extends PortalStateError {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "PortalInvalidReplyError";
+  }
+}
+
 interface PortalRuntime {
   readonly knock: (
     cell: ValidatedCell,
@@ -119,6 +126,7 @@ interface PortalRuntime {
   ) => Promise<NHPMessage>;
   readonly fetch: typeof globalThis.fetch;
   readonly nowNanos: () => bigint;
+  readonly randomFraction: () => number;
   readonly setTimer: (callback: () => void, delayMs: number) => NodeJS.Timeout;
   readonly clearTimer: (timer: NodeJS.Timeout) => void;
 }
@@ -127,6 +135,7 @@ const defaultRuntime: PortalRuntime = {
   knock: nativeKnock,
   fetch: globalThis.fetch.bind(globalThis),
   nowNanos: () => process.hrtime.bigint(),
+  randomFraction: () => randomBytes(2).readUInt16BE(0) / 0xffff,
   setTimer: (callback, delayMs) => setTimeout(callback, delayMs),
   clearTimer: (timer) => clearTimeout(timer),
 };
@@ -210,7 +219,6 @@ function constructVerifiedPortalOpener(
 type ActiveGrant = {
   readonly resourceUrl: string;
   readonly origin: string;
-  readonly openSeconds: number;
   readonly expiresAtNanos: bigint;
   readonly token: Buffer;
 };
@@ -222,6 +230,7 @@ class NativePortalOpener implements PortalOpener {
   readonly #exchangeOptions: Omit<NativeExchangeOptions, "signal">;
   readonly #sessionSecret = randomBytes(32);
   #grant?: ActiveGrant;
+  #boundResourceUrl?: string;
   #openPromise?: Promise<void>;
   #openController?: AbortController;
   #closePromise?: Promise<void>;
@@ -394,6 +403,7 @@ class NativePortalOpener implements PortalOpener {
       } finally {
         this.#grant?.token.fill(0);
         this.#grant = undefined;
+        this.#boundResourceUrl = undefined;
         this.#link.devicePrivateKey.fill(0);
         this.#sessionSecret.fill(0);
         this.#renewalError = undefined;
@@ -444,11 +454,22 @@ class NativePortalOpener implements PortalOpener {
           throw new PortalBusyError();
         }
         if (reply.type !== NHP_TYPE_ACK) {
-          throw new PortalStateError("native NHP returned an unexpected reply type");
+          throw new PortalInvalidReplyError("native NHP returned an unexpected reply type");
         }
         const grant = parseGrant(reply.body, openedAtNanos);
+        if (this.#boundResourceUrl !== undefined && grant.resourceUrl !== this.#boundResourceUrl) {
+          grant.token.fill(0);
+          throw new PortalInvalidReplyError(
+            "native NHP renewal changed the authenticated resource URL",
+          );
+        }
+        if (this.#runtime.nowNanos() >= grant.expiresAtNanos) {
+          grant.token.fill(0);
+          throw new PortalStateError("native NHP admission expired before it became usable");
+        }
         const old = this.#grant;
         this.#grant = grant;
+        this.#boundResourceUrl ??= grant.resourceUrl;
         old?.token.fill(0);
         this.#renewalError = undefined;
         this.#renewalFailure = undefined;
@@ -493,13 +514,12 @@ class NativePortalOpener implements PortalOpener {
     if (this.#backgroundAttempts >= MAX_BACKGROUND_RENEWAL_ATTEMPTS) return;
     const grant = this.#grant;
     if (!grant) return;
-    const remainingMs = Number((grant.expiresAtNanos - this.#runtime.nowNanos()) / 1_000_000n);
-    if (remainingMs <= MIN_BACKGROUND_RETRY_MS * 2) return;
-    const exponent = Math.max(0, this.#backgroundAttempts - 1);
-    const base = MIN_BACKGROUND_RETRY_MS * 2 ** exponent;
-    const random = randomBytes(2).readUInt16BE(0) / 0xffff;
-    const jittered = Math.max(MIN_BACKGROUND_RETRY_MS, Math.floor(base * (0.75 + random * 0.5)));
-    const delayMs = Math.min(jittered, Math.floor(remainingMs / 2));
+    const delayMs = backgroundRetryDelay(
+      grant.expiresAtNanos - this.#runtime.nowNanos(),
+      MAX_BACKGROUND_RENEWAL_ATTEMPTS - this.#backgroundAttempts,
+      this.#runtime.randomFraction(),
+    );
+    if (delayMs === undefined) return;
     this.#renewalTimer = this.#runtime.setTimer(() => {
       this.#renewalTimer = undefined;
       if (this.#closed) return;
@@ -540,44 +560,61 @@ function parseGrant(body: Uint8Array, nowNanos: bigint): ActiveGrant {
   try {
     value = parseStrictJson(body, MAX_ACK_BODY_BYTES);
   } catch (error) {
-    throw new PortalStateError("native NHP ACK body is malformed", { cause: error });
+    throw new PortalInvalidReplyError("native NHP ACK body is malformed", { cause: error });
   }
-  if (!isStrictJsonObject(value)) throw new PortalStateError("native NHP ACK must be an object");
+  if (!isStrictJsonObject(value))
+    throw new PortalInvalidReplyError("native NHP ACK must be an object");
   const errCode =
     value.errCode === undefined ? "" : requirePossiblyEmptyString(value.errCode, "ACK errCode");
   if (errCode !== "" && errCode !== "0") {
+    // Match qurl-go's canonical knock-deny grammar: decimal digits, no leading
+    // zero, and no allowlist that could hide a new authenticated server code.
     if (!/^[1-9][0-9]*$/.test(errCode))
-      throw new PortalStateError("native NHP deny code is not canonical");
+      throw new PortalInvalidReplyError("native NHP deny code is not canonical decimal");
     // The native opener's deny profile deliberately requires an explicit
-    // canonical opnTime:0 and forbids every success capability field.
-    if ("sessId" in value || value.opnTime !== 0n || value.aspToken !== undefined) {
-      throw new PortalStateError("native NHP deny ACK contains success capability fields");
+    // canonical opnTime:0 and forbids the Go-defined success capabilities.
+    if ("sessId" in value) {
+      throw new PortalInvalidReplyError("native NHP deny ACK contains success capability fields");
+    }
+    if (value.opnTime !== 0n) {
+      throw new PortalInvalidReplyError("native NHP deny ACK opnTime must be canonical zero");
+    }
+    if (value.aspToken !== undefined) {
+      throw new PortalInvalidReplyError("native NHP deny ACK contains success capability fields");
     }
     throw new PortalDenyError(errCode);
   }
   const sessionId = requireUnsignedInteger(value.sessId, "ACK session id", UINT64_MAX);
-  if (sessionId === 0n) throw new PortalStateError("native NHP ACK session id must be positive");
+  if (sessionId === 0n)
+    throw new PortalInvalidReplyError("native NHP ACK session id must be positive");
   const openSecondsBig = requireUnsignedInteger(value.opnTime, "ACK open time", 0xffff_ffffn);
   if (openSecondsBig === 0n)
-    throw new PortalStateError("native NHP ACK open time must be positive");
+    throw new PortalInvalidReplyError("native NHP ACK open time must be positive");
   const openSeconds = Number(openSecondsBig);
   const resourceUrl = requireString(value.redirectUrl, "ACK resource URL");
   let parsed: URL;
   try {
     parsed = new URL(resourceUrl);
   } catch {
-    throw new PortalStateError("ACK resource URL is invalid");
+    throw new PortalInvalidReplyError("ACK resource URL is invalid");
   }
   if (parsed.hash !== "")
-    throw new PortalStateError("ACK resource URL must not contain a fragment");
-  const origin = normalizedHttpsOrigin(parsed);
+    throw new PortalInvalidReplyError("ACK resource URL must not contain a fragment");
+  let origin: string;
+  try {
+    origin = normalizedHttpsOrigin(parsed);
+  } catch (error) {
+    throw new PortalInvalidReplyError(
+      error instanceof Error ? error.message : "ACK resource URL has an invalid HTTPS origin",
+      { cause: error },
+    );
+  }
   const tokenString = requireString(value.aspToken, "ACK application token");
   validateSessionToken(tokenString);
   const token = Buffer.from(tokenString, "ascii");
   return {
     resourceUrl,
     origin,
-    openSeconds,
     expiresAtNanos: nowNanos + BigInt(openSeconds) * 1_000_000_000n,
     token,
   };
@@ -585,12 +622,12 @@ function parseGrant(body: Uint8Array, nowNanos: bigint): ActiveGrant {
 
 function requireString(value: StrictJsonValue | undefined, name: string): string {
   if (typeof value !== "string" || value === "")
-    throw new PortalStateError(`${name} is missing or invalid`);
+    throw new PortalInvalidReplyError(`${name} is missing or invalid`);
   return value;
 }
 
 function requirePossiblyEmptyString(value: StrictJsonValue | undefined, name: string): string {
-  if (typeof value !== "string") throw new PortalStateError(`${name} is missing or invalid`);
+  if (typeof value !== "string") throw new PortalInvalidReplyError(`${name} is missing or invalid`);
   return value;
 }
 
@@ -600,9 +637,10 @@ function requireUnsignedInteger(
   maximum: bigint,
 ): bigint {
   if (typeof value !== "bigint") {
-    throw new PortalStateError(`${name} must be an unsigned decimal integer`);
+    throw new PortalInvalidReplyError(`${name} must be an unsigned decimal integer`);
   }
-  if (value < 0n || value > maximum) throw new PortalStateError(`${name} is outside its range`);
+  if (value < 0n || value > maximum)
+    throw new PortalInvalidReplyError(`${name} is outside its range`);
   return value;
 }
 
@@ -627,11 +665,11 @@ function validateSessionToken(
   decode: (part: string) => Buffer = (part) => Buffer.from(part, "base64url"),
 ): void {
   if (value.length > 4_096 || value.trim() !== value || hasUnsafeTokenByte(value)) {
-    throw new PortalStateError("ACK application token has an invalid shape");
+    throw new PortalInvalidReplyError("ACK application token has an invalid shape");
   }
   const parts = value.split(".");
   if (parts.length !== 2 || parts.some((part) => part === "" || !/^[A-Za-z0-9_-]+$/.test(part))) {
-    throw new PortalStateError("ACK application token has an invalid shape");
+    throw new PortalInvalidReplyError("ACK application token has an invalid shape");
   }
   let signatureLength = 0;
   for (let index = 0; index < parts.length; index++) {
@@ -639,7 +677,7 @@ function validateSessionToken(
     const decoded = decode(part);
     try {
       if (decoded.toString("base64url") !== part) {
-        throw new PortalStateError("ACK application token is not canonical base64url");
+        throw new PortalInvalidReplyError("ACK application token is not canonical base64url");
       }
       if (index === 1) signatureLength = decoded.byteLength;
     } finally {
@@ -649,7 +687,7 @@ function validateSessionToken(
     }
   }
   if (signatureLength !== 32) {
-    throw new PortalStateError("ACK application token signature has an invalid length");
+    throw new PortalInvalidReplyError("ACK application token signature has an invalid length");
   }
 }
 
@@ -766,10 +804,35 @@ function waitForPromise(promise: Promise<void>, signal: AbortSignal | undefined)
 function classifyRenewalFailure(error: unknown): PortalRenewalFailure {
   if (error instanceof PortalDenyError) return { kind: "denied" };
   if (error instanceof PortalBusyError) return { kind: "busy" };
-  if (error instanceof PortalStateError) {
-    return { kind: "invalid_reply" };
-  }
+  if (error instanceof PortalInvalidReplyError) return { kind: "invalid_reply" };
+  if (
+    error instanceof PortalStateError ||
+    error instanceof PortalConfigurationError ||
+    error instanceof PortalVerificationError
+  )
+    return { kind: "local_state" };
   return { kind: "transport" };
 }
 
-export const portalOpenerTesting = { constructVerifiedPortalOpener, validateSessionToken };
+function backgroundRetryDelay(
+  remainingNanos: bigint,
+  remainingAttempts: number,
+  randomFraction: number,
+): number | undefined {
+  if (remainingNanos <= 0n || remainingAttempts < 1) return undefined;
+  const remainingMs = Number(remainingNanos / 1_000_000n);
+  if (remainingMs < 1) return undefined;
+  // Divide the current remaining lifetime into one slot per possible attempt
+  // plus a final expiry reserve. Recompute after every failed exchange so long
+  // grants retry over minutes while short grants retain several useful tries.
+  const slotMs = Math.floor(remainingMs / (remainingAttempts + 1));
+  if (slotMs < 1) return undefined;
+  const boundedRandom = Math.max(0, Math.min(1, randomFraction));
+  const jittered = Math.floor(slotMs * (0.75 + boundedRandom * 0.25));
+  return Math.min(slotMs, Math.max(Math.min(MIN_BACKGROUND_RETRY_MS, slotMs), jittered));
+}
+
+export const portalOpenerTesting = {
+  constructVerifiedPortalOpener,
+  validateSessionToken,
+};

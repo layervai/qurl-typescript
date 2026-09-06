@@ -20,6 +20,18 @@ async function replyServer(reply: Uint8Array): Promise<number> {
   return (server.address() as { port: number }).port;
 }
 
+async function silentServer(): Promise<{ port: number; received: Promise<void> }> {
+  const server = createSocket("udp4");
+  servers.push(server);
+  let markReceived!: () => void;
+  const received = new Promise<void>((resolve) => {
+    markReceived = resolve;
+  });
+  server.once("message", () => markReceived());
+  await new Promise<void>((resolve) => server.bind(0, "127.0.0.1", resolve));
+  return { port: (server.address() as { port: number }).port, received };
+}
+
 describe("native UDP DNS fence", () => {
   it.each([
     ["8.8.8.8", 4, true],
@@ -86,6 +98,23 @@ describe("native UDP exchange", () => {
         controller.signal,
       ),
     ).rejects.toBe(reason);
+  });
+
+  it("aborts a UDP exchange after its datagram is in flight", async () => {
+    const { port, received } = await silentServer();
+    const reason = new Error("stop in flight");
+    const controller = new AbortController();
+    const exchange = nativeUdpTesting.exchangeDatagram(
+      "127.0.0.1",
+      4,
+      port,
+      Buffer.from([9]),
+      1_000,
+      controller.signal,
+    );
+    await received;
+    controller.abort(reason);
+    await expect(exchange).rejects.toMatchObject({ cause: reason });
   });
 });
 
