@@ -2,13 +2,16 @@
 
 ## Unreleased
 
+## [0.4.0](https://github.com/layervai/qurl-typescript/compare/qurl-v0.3.1...qurl-v0.4.0) (2026-09-06)
+
 ### ⚠ BREAKING CHANGES
 
 - **client:** DELETE operations are no longer retried after transport, 429, or 5xx
   failures. This matches qurl-go's no-hidden-HTTP-retry rule, avoids request-path
   pacing, and requires the caller to use `retryAfter` and reconcile state before
   a deliberate retry. Documented no-content DELETE endpoints now require an
-  exact empty HTTP 204 response.
+  exact empty HTTP 204 response
+  ([#213](https://github.com/layervai/qurl-typescript/issues/213)).
 - **client:** server-provided error titles, details, and up to 100
   invalid-field entries have controls and bidirectional formatting characters
   removed, are normalized to one line, and are capped at 512 UTF-8 bytes per
@@ -32,9 +35,19 @@
 - **client:** the observed HTTP status now controls server-error classification;
   a conflicting RFC 7807 `error.status` value can no longer change the typed
   error class.
-- **client:** remove the unsafe legacy HTTP bootstrap method and the incomplete
-  relay registration implementation. Native NHP 1.1 assignment, registration,
-  and proactive opener parity replace them under the program tracked in #248.
+- **client:** remove the unsafe legacy HTTP bootstrap method
+  ([#209](https://github.com/layervai/qurl-typescript/issues/209)) and incomplete
+  relay registration implementation
+  ([#206](https://github.com/layervai/qurl-typescript/issues/206)). Native NHP 1.1
+  assignment, registration, and proactive opener parity replace them under the
+  program tracked in #248.
+
+### Features
+
+- Add the proactive native NHP portal opener
+  ([#250](https://github.com/layervai/qurl-typescript/issues/250)).
+- Add native NHP agent registration
+  ([#177](https://github.com/layervai/qurl-typescript/issues/177)).
 
 ### Bug Fixes
 
@@ -45,36 +58,10 @@
   independent `AbortError` or `TimeoutError` as a non-retried `NetworkError`;
   after non-success headers, preserve the status-derived class and attach the
   failure as its cause. Only the SDK timeout signal produces `TimeoutError`.
-  Deterministic
-  Response-like materialization failures retain their SDK-authored detail and
-  cause and are not retried.
-
-## [0.4.0](https://github.com/layervai/qurl-typescript/compare/qurl-v0.3.1...qurl-v0.4.0) (2026-09-06)
-
-
-### ⚠ BREAKING CHANGES
-
-* harden responses and stop replaying deletes ([#213](https://github.com/layervai/qurl-typescript/issues/213))
-* **api:** drop the retired agent bootstrap route ([#209](https://github.com/layervai/qurl-typescript/issues/209))
-* **client:** remove HTTP-era Connector enrollment ([#206](https://github.com/layervai/qurl-typescript/issues/206))
-* **client:** add NHP-native registerAgent and deprecate bootstrapAgent ([#177](https://github.com/layervai/qurl-typescript/issues/177))
-
-### Features
-
-* add proactive native NHP portal opener ([#250](https://github.com/layervai/qurl-typescript/issues/250)) ([3a366af](https://github.com/layervai/qurl-typescript/commit/3a366afcb210414be45999d4a9c2835f60969fb9))
-* **client:** add NHP-native registerAgent and deprecate bootstrapAgent ([#177](https://github.com/layervai/qurl-typescript/issues/177)) ([3d3612b](https://github.com/layervai/qurl-typescript/commit/3d3612bdc6fb0c7065208143a37a2a1618d6dd9a))
-
-
-### Bug Fixes
-
-* **ci:** assert the review origin's destination, not an exact URL ([#234](https://github.com/layervai/qurl-typescript/issues/234)) ([37aad2e](https://github.com/layervai/qurl-typescript/commit/37aad2e8ddd44538efd11269f8a8a49a10304240))
-* harden responses and stop replaying deletes ([#213](https://github.com/layervai/qurl-typescript/issues/213)) ([d6e973b](https://github.com/layervai/qurl-typescript/commit/d6e973b7ec37a486ad90277c92847186b482af24))
-
-
-### Code Refactoring
-
-* **api:** drop the retired agent bootstrap route ([#209](https://github.com/layervai/qurl-typescript/issues/209)) ([b9341b7](https://github.com/layervai/qurl-typescript/commit/b9341b78ba9d79ccf75b11b38e25d78e445f4732))
-* **client:** remove HTTP-era Connector enrollment ([#206](https://github.com/layervai/qurl-typescript/issues/206)) ([f064a45](https://github.com/layervai/qurl-typescript/commit/f064a4516084b411b662d8455b603b75fb51f2a7))
+  Deterministic Response-like materialization failures retain their SDK-authored
+  detail and cause and are not retried.
+- Make the review workflow validate the destination origin instead of one exact
+  URL ([#234](https://github.com/layervai/qurl-typescript/issues/234)).
 
 ## [0.3.1](https://github.com/layervai/qurl-typescript/compare/qurl-v0.3.0...qurl-v0.3.1) (2026-07-05)
 
