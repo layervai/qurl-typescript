@@ -54,7 +54,7 @@ export function verifyQv2Link(
   // precede signature/trust errors for an otherwise valid outer transport.
   const claims = parseClaims(decodeCanonicalBase64Url(claimsB64));
   const secret = parseAndWipeSecret(decodeCanonicalBase64Url(secretB64));
-  verifyParsedIssuerClaims(claims, claimsB64, signatureB64, issuers);
+  verifyIssuerClaims(claimsB64, signatureB64, issuers, claims);
   const privateKey = decodeCanonicalBase64Url(secret.qurlUserPrivateKeyB64);
   let retainPrivateKey = false;
   try {
@@ -242,8 +242,11 @@ function verifyIssuerClaims(
   claimsB64: string,
   signatureB64: string,
   issuers: ReadonlyMap<string, KeyObject>,
+  parsedClaims?: ParsedClaims,
 ): ParsedClaims {
-  const claims = parseClaims(decodeCanonicalBase64Url(claimsB64));
+  // Full-link verification supplies the claims it parsed before the secret so
+  // this shared verification path preserves Go's ParseFragment error order.
+  const claims = parsedClaims ?? parseClaims(decodeCanonicalBase64Url(claimsB64));
   verifyParsedIssuerClaims(claims, claimsB64, signatureB64, issuers);
   return claims;
 }

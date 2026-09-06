@@ -88,7 +88,9 @@ function readBoundedDeploymentFile(
     let offset = 0;
     while (offset < bytes.byteLength) {
       const count = runtime.read(descriptor, bytes, offset, bytes.byteLength - offset, offset);
-      if (count === 0) break;
+      if (count === 0) {
+        throw new Error("native qURL deployment file changed while it was read");
+      }
       offset += count;
     }
     const extra = Buffer.alloc(1);

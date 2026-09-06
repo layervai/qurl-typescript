@@ -1,7 +1,9 @@
 export {
   createPortalOpener,
+  PortalBusyError,
   PortalConfigurationError,
   PortalDenyError,
+  PortalInvalidReplyError,
   PortalStateError,
   PortalVerificationError,
 } from "./node/portal-opener.js";

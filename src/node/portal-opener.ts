@@ -111,14 +111,14 @@ export class PortalStateError extends Error {
   }
 }
 
-class PortalBusyError extends PortalStateError {
+export class PortalBusyError extends PortalStateError {
   constructor() {
     super("qURL platform is busy; retry start later");
     this.name = "PortalBusyError";
   }
 }
 
-class PortalInvalidReplyError extends PortalStateError {
+export class PortalInvalidReplyError extends PortalStateError {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
     this.name = "PortalInvalidReplyError";
@@ -305,11 +305,12 @@ class NativePortalOpener implements PortalOpener {
       await this.#openSingleFlight(options.signal);
     } catch (error) {
       // A caller waiting on an existing background open observes that open's
-      // own health update. An explicit recovery owner must replace stale
-      // background diagnostics, but it must not schedule request-path pacing.
+      // own health update. An explicit recovery owner replaces stale
+      // diagnostics and re-arms bounded background recovery while the old
+      // grant is usable. The timer is asynchronous; start never sleeps.
       if (!sharedOpen && this.#grant && !this.#closed) {
-        this.#recordRenewalFailure(error);
         this.#backgroundAttempts = 0;
+        this.#handleRenewalFailure(error);
       }
       throw error;
     }
@@ -781,7 +782,8 @@ function authorizeHeaders(input: Headers, token: string): Headers {
 }
 
 function isValidCookieValue(value: string): boolean {
-  const unquoted = value.startsWith('"') && value.endsWith('"') ? value.slice(1, -1) : value;
+  const unquoted =
+    value.length >= 2 && value.startsWith('"') && value.endsWith('"') ? value.slice(1, -1) : value;
   for (let index = 0; index < unquoted.length; index++) {
     const code = unquoted.charCodeAt(index);
     if (

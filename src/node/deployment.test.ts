@@ -111,6 +111,29 @@ describe("native deployment loading", () => {
     expect(close).toHaveBeenCalledWith(17);
   });
 
+  it("rejects a deployment file that shrinks during its bounded read", () => {
+    const close = vi.fn();
+    const read = vi
+      .fn()
+      .mockImplementationOnce(
+        (_descriptor: number, buffer: Buffer, offset: number, _length: number) => {
+          buffer[offset] = 0x7b;
+          return 1;
+        },
+      )
+      .mockReturnValueOnce(0);
+    expect(() =>
+      deploymentTesting.readBoundedDeploymentFile("deployment.json", {
+        open: () => 19,
+        stat: () => ({ size: 2, isFile: () => true }),
+        read,
+        close,
+      }),
+    ).toThrow("changed while it was read");
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(close).toHaveBeenCalledWith(19);
+  });
+
   it.each([
     ["mixed alphabets", "+-", "mixes base64 alphabets"],
     ["invalid shape", "a*", "not valid base64"],

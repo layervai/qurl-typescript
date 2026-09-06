@@ -4,8 +4,10 @@ import { fingerprintKey, loadPortalDeployment } from "./deployment.js";
 import {
   createPortalOpenerWithRuntime,
   portalOpenerTesting,
+  PortalBusyError,
   PortalConfigurationError,
   PortalDenyError,
+  PortalInvalidReplyError,
   PortalStateError,
   PortalVerificationError,
   type CreatePortalOpenerOptions,
@@ -370,6 +372,16 @@ describe("native portal opener", () => {
     });
     const sent = new Headers(vi.mocked(fetchImpl).mock.calls[0][1]?.headers);
     expect(sent.get("cookie")).toBe(`theme=dark; locale=en; qurl_vsession=${TOKEN}`);
+    await opener.close();
+  });
+
+  it("drops a lone-quote cookie value", async () => {
+    const fetchImpl = vi.fn(async () => new Response("ok")) as unknown as typeof globalThis.fetch;
+    const { opener } = fixture(fetchImpl);
+    await opener.start();
+    await opener.fetch({ headers: { cookie: 'odd="; theme=dark' } });
+    const sent = new Headers(vi.mocked(fetchImpl).mock.calls[0][1]?.headers);
+    expect(sent.get("cookie")).toBe(`theme=dark; qurl_vsession=${TOKEN}`);
     await opener.close();
   });
 
@@ -773,7 +785,7 @@ describe("native portal opener", () => {
     await opener.close();
   });
 
-  it("replaces stale health when an explicit recovery fails without scheduling a timer", async () => {
+  it("replaces stale health and re-arms recovery after an explicit start fails", async () => {
     const { opener, knock, timers, setNow } = fixture();
     knock
       .mockResolvedValueOnce(ack(10))
@@ -805,7 +817,7 @@ describe("native portal opener", () => {
       backgroundAttempts: 0,
       renewalFailure: { kind: "busy" },
     });
-    expect(timers).toHaveLength(0);
+    expect(timers).toHaveLength(1);
 
     setNow(12_000_000_000n);
     await expect(opener.fetch()).rejects.toMatchObject({
@@ -814,7 +826,7 @@ describe("native portal opener", () => {
     await opener.close();
   });
 
-  it("cancels a pending background retry before explicit recovery resets its budget", async () => {
+  it("re-arms bounded background recovery after an explicit start cancels a pending retry", async () => {
     const { opener, knock, timers } = fixture();
     knock.mockResolvedValueOnce(ack(10)).mockRejectedValueOnce(new Error("renewal failed"));
     await opener.start();
@@ -831,13 +843,19 @@ describe("native portal opener", () => {
       body: Buffer.from("busy"),
     });
     await expect(opener.start()).rejects.toThrow("platform is busy");
-    expect(timers).toHaveLength(0);
+    expect(timers).toHaveLength(1);
     expect(opener.health()).toMatchObject({
       state: "degraded",
       backgroundAttempts: 0,
       renewalFailure: { kind: "busy" },
     });
     expect(knock).toHaveBeenCalledTimes(3);
+
+    knock.mockResolvedValueOnce(ack(10));
+    timers.shift()!();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(opener.health()).toMatchObject({ state: "healthy", backgroundAttempts: 0 });
+    expect(knock).toHaveBeenCalledTimes(4);
     await opener.close();
   });
 
@@ -980,6 +998,34 @@ describe("native portal opener", () => {
       await expect(start).rejects.toBeInstanceOf(Error);
     }
     expect([...body]).toEqual(new Array(body.byteLength).fill(0));
+    await opener.close();
+  });
+
+  it("exposes a typed busy error for a cold start while health remains idle", async () => {
+    const { opener, knock } = fixture();
+    knock.mockResolvedValueOnce({
+      type: NHP_TYPE_COOKIE,
+      flags: 0,
+      counter: 99n,
+      timestampNanos: 2n,
+      body: Buffer.from("busy"),
+    });
+    await expect(opener.start()).rejects.toBeInstanceOf(PortalBusyError);
+    expect(opener.health()).toEqual({ state: "idle" });
+    await opener.close();
+  });
+
+  it("exposes a typed invalid-reply error for a cold start while health remains idle", async () => {
+    const { opener, knock } = fixture();
+    knock.mockResolvedValueOnce({
+      type: NHP_TYPE_ACK,
+      flags: 0,
+      counter: 1n,
+      timestampNanos: 2n,
+      body: Buffer.from("not-json"),
+    });
+    await expect(opener.start()).rejects.toBeInstanceOf(PortalInvalidReplyError);
+    expect(opener.health()).toEqual({ state: "idle" });
     await opener.close();
   });
 

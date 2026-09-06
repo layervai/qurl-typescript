@@ -184,6 +184,8 @@ serial address attempts. This matches qurl-go. Every open also has a whole-open
 deadline that covers DNS and UDP: at least 15 seconds, or the configured
 per-address budget times `maxAddresses + 1` when that is larger. Pass an abort
 signal to `start()` when lifecycle code needs a shorter deadline.
+Content requests use the caller's `RequestInit.signal`; `fetch()` does not add
+an independent application-request deadline.
 
 TypeScript consumers of `@layervai/qurl/node` must provide Node and Fetch API
 declarations, for example current `@types/node`, or a configuration that includes
@@ -201,15 +203,19 @@ Use `opener.health()` for the local `idle`, `starting`, `healthy`, `renewing`,
 `degraded`, `expired`, or `closed` state. A degraded state includes a typed
 renewal failure class but no raw session capability. After bounded background
 retries stop, `start()` makes one explicit recovery attempt and refreshes the
-health result. A failed explicit recovery does not schedule another timer; call
-`start()` again from lifecycle code when another attempt is required. This does
-not put an open on the `fetch()` path. Stop and await in-flight content requests
-before you call `await opener.close()` during shutdown. Close cancels and waits
-for an active NHP exchange, then wipes the mutable private-key, visitor-secret,
-and session-token buffers. JavaScript can create immutable string copies during
-JSON and HTTP processing, so the SDK cannot promise full memory zeroization
-before garbage collection. Never log the qURL, ACK body, request cookies, or
-request headers.
+health result. If that explicit attempt fails while the prior grant is still
+usable, the opener re-arms its bounded background attempts after it returns the
+error. This does not put an open or sleep on the `fetch()` path. Stop and await
+in-flight content requests before you call `await opener.close()` during
+shutdown. Close cancels and waits for an active NHP exchange, then wipes the
+mutable private-key, visitor-secret, and session-token buffers. JavaScript can
+create immutable string copies during JSON and HTTP processing, so the SDK
+cannot promise full memory zeroization before garbage collection. Never log the
+qURL, ACK body, request cookies, or request headers.
+
+A cold `start()` failure leaves health at `idle`. Catch `PortalBusyError` for an
+authenticated COOKIE busy response and `PortalInvalidReplyError` for a malformed
+authenticated reply. The thrown typed error is the cold-start diagnostic.
 
 Local qv2 verification checks the signed bytes, trust, and clock-free claim
 ordering. As in the Go SDK, it does not compare `nbf` or `exp` with the local
