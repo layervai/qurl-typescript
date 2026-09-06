@@ -155,6 +155,8 @@ async function nativeKnockWithRuntime(
           options.signal,
         );
         const reply = runtime.decryptReply(devicePrivateKey, cell.serverPublicKey, packet);
+        // NHP 1.1 COOKIE is a stateless busy response. Go intentionally does
+        // not bind its counter to the request; only an ACK must match it.
         if (reply.type === NHP_TYPE_COOKIE) return reply;
         if (reply.counter !== built.counter) {
           reply.body.fill(0);

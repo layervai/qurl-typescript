@@ -1,4 +1,10 @@
-import { createPublicKey, createPrivateKey, createHash, verify } from "node:crypto";
+import {
+  createPublicKey,
+  createPrivateKey,
+  createHash,
+  timingSafeEqual,
+  verify,
+} from "node:crypto";
 import type { KeyObject } from "node:crypto";
 import { isStrictJsonObject, parseStrictJson, type StrictJsonValue } from "./strict-json.js";
 
@@ -50,30 +56,31 @@ export function verifyQv2Link(
     throw new Error("invalid qURL credential fragment");
   }
   const [, claimsB64, secretB64, signatureB64] = parts;
-  const claims = parseClaims(decodeCanonicalBase64Url(claimsB64));
+  const claims = verifyIssuerClaims(claimsB64, signatureB64, issuers);
   const secret = parseSecret(decodeCanonicalBase64Url(secretB64));
-  const signature = decodeCanonicalBase64Url(signatureB64);
-  validateRawP256Signature(signature);
-
-  const issuer = issuers.get(claims.kid);
-  if (!issuer) throw new Error("qURL uses an unknown issuer key id");
-  const signingInput = Buffer.concat([SIGNING_DOMAIN, Buffer.from(claimsB64, "ascii")]);
-  if (!verify("sha256", signingInput, { key: issuer, dsaEncoding: "ieee-p1363" }, signature)) {
-    throw new Error("qURL issuer signature verification failed");
-  }
-
   const privateKey = decodeCanonicalBase64Url(secret.qurlUserPrivateKeyB64);
-  if (privateKey.byteLength !== 32) throw new Error("qURL private key has an invalid length");
-  return {
-    claimsB64,
-    signatureB64,
-    claims: {
-      kid: claims.kid,
-      cellPublicKey: decodeX25519(claims.cellPublicKeyB64, "cell public key"),
-      resourcePublicKeyB64: claims.resourcePublicKeyB64,
-    },
-    devicePrivateKey: privateKey,
-  };
+  let retainPrivateKey = false;
+  try {
+    if (privateKey.byteLength !== 32) throw new Error("qURL private key has an invalid length");
+    const derivedPublicKey = x25519PublicFromPrivate(privateKey);
+    const signedPublicKey = decodeX25519(claims.qurlUserPublicKeyB64, "qURL public key");
+    if (!timingSafeEqual(derivedPublicKey, signedPublicKey)) {
+      throw new Error("qURL private key does not match its signed public key");
+    }
+    retainPrivateKey = true;
+    return {
+      claimsB64,
+      signatureB64,
+      claims: {
+        kid: claims.kid,
+        cellPublicKey: decodeX25519(claims.cellPublicKeyB64, "cell public key"),
+        resourcePublicKeyB64: claims.resourcePublicKeyB64,
+      },
+      devicePrivateKey: privateKey,
+    };
+  } finally {
+    if (!retainPrivateKey) privateKey.fill(0);
+  }
 }
 
 export function issuerKeyFromSpki(spki: Uint8Array): KeyObject {
@@ -175,6 +182,7 @@ type ParsedClaims = {
   kid: string;
   cellPublicKeyB64: string;
   resourcePublicKeyB64: string;
+  qurlUserPublicKeyB64: string;
 };
 
 function parseClaims(raw: Uint8Array): ParsedClaims {
@@ -222,7 +230,29 @@ function parseClaims(raw: Uint8Array): ParsedClaims {
   if ("cell_id" in value && typeof value.cell_id !== "string") {
     throw new Error("qURL cell id must be a string");
   }
-  return { kid, cellPublicKeyB64, resourcePublicKeyB64 };
+  return {
+    kid,
+    cellPublicKeyB64,
+    resourcePublicKeyB64,
+    qurlUserPublicKeyB64: qurlPublic,
+  };
+}
+
+function verifyIssuerClaims(
+  claimsB64: string,
+  signatureB64: string,
+  issuers: ReadonlyMap<string, KeyObject>,
+): ParsedClaims {
+  const claims = parseClaims(decodeCanonicalBase64Url(claimsB64));
+  const signature = decodeCanonicalBase64Url(signatureB64);
+  validateRawP256Signature(signature);
+  const issuer = issuers.get(claims.kid);
+  if (!issuer) throw new Error("qURL uses an unknown issuer key id");
+  const signingInput = Buffer.concat([SIGNING_DOMAIN, Buffer.from(claimsB64, "ascii")]);
+  if (!verify("sha256", signingInput, { key: issuer, dsaEncoding: "ieee-p1363" }, signature)) {
+    throw new Error("qURL issuer signature verification failed");
+  }
+  return claims;
 }
 
 function parseSecret(raw: Uint8Array): { qurlUserPrivateKeyB64: string } {
@@ -271,4 +301,4 @@ export function qv2LinkIdentity(link: VerifiedQv2Link): Uint8Array {
     .digest();
 }
 
-export const qv2Testing = { decodeTransport, parseClaims, parseSecret };
+export const qv2Testing = { decodeTransport, parseClaims, parseSecret, verifyIssuerClaims };

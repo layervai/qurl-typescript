@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import type { NHPMessage } from "./nhp-wire.js";
-import { NHP_TYPE_ACK, NHP_TYPE_COOKIE } from "./nhp-wire.js";
+import { NHP_MAX_BODY_SIZE, NHP_TYPE_ACK, NHP_TYPE_COOKIE } from "./nhp-wire.js";
 import {
   fingerprintKey,
   loadPortalDeployment,
@@ -98,6 +98,13 @@ export class PortalStateError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
     this.name = "PortalStateError";
+  }
+}
+
+class PortalBusyError extends PortalStateError {
+  constructor() {
+    super("qURL platform is busy; retry start later");
+    this.name = "PortalBusyError";
   }
 }
 
@@ -412,7 +419,7 @@ class NativePortalOpener implements PortalOpener {
           throw new PortalStateError("portal opener was closed while start was in progress");
         }
         if (reply.type === NHP_TYPE_COOKIE) {
-          throw new PortalStateError("qURL platform is busy; retry start later");
+          throw new PortalBusyError();
         }
         if (reply.type !== NHP_TYPE_ACK) {
           throw new PortalStateError("native NHP returned an unexpected reply type");
@@ -491,7 +498,8 @@ class NativePortalOpener implements PortalOpener {
       },
     });
     const body = Buffer.from(encoded, "utf8");
-    if (body.byteLength > 3_840) throw new PortalStateError("native qURL knock body is too large");
+    if (body.byteLength > NHP_MAX_BODY_SIZE)
+      throw new PortalStateError("native qURL knock body is too large");
     return body;
   }
 
@@ -711,8 +719,8 @@ function waitForPromise(promise: Promise<void>, signal: AbortSignal | undefined)
 
 function classifyRenewalFailure(error: unknown): PortalRenewalFailure {
   if (error instanceof PortalDenyError) return { kind: "denied" };
+  if (error instanceof PortalBusyError) return { kind: "busy" };
   if (error instanceof PortalStateError) {
-    if (error.message === "qURL platform is busy; retry start later") return { kind: "busy" };
     return { kind: "invalid_reply" };
   }
   return { kind: "transport" };

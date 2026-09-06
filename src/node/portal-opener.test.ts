@@ -1,49 +1,29 @@
 import { describe, expect, it, vi } from "vitest";
-import conformancePackage from "@layervai/qurl-conformance";
+import { createMatchedQv2Fixture } from "../__tests__/matched-qv2-fixture.js";
 import {
   createPortalOpenerWithRuntime,
   PortalConfigurationError,
+  PortalDenyError,
   PortalStateError,
   PortalVerificationError,
   type CreatePortalOpenerOptions,
 } from "./portal-opener.js";
-import { NHP_TYPE_ACK, type NHPMessage } from "./nhp-wire.js";
+import { NHP_TYPE_ACK, NHP_TYPE_COOKIE, type NHPMessage } from "./nhp-wire.js";
 
-type Qv2Vectors = {
-  classes: {
-    transport: {
-      vectors: Array<{
-        name: string;
-        transport_fragment: string;
-        canonical_fragment?: string;
-      }>;
-    };
-  };
-};
-type IssuerVectors = { issuer: { kid: string; spki_der_b64: string } };
-
-const qv2 = conformancePackage.qv2Vectors() as Qv2Vectors;
-const issuer = (conformancePackage.issuerSignatureVectors() as IssuerVectors).issuer;
-const complete = qv2.classes.transport.vectors.find(
-  (vector) => vector.name === "accept_valid_qv2_round_trip",
-);
-if (!complete?.canonical_fragment) throw new Error("shared complete qv2 vector is missing");
-const claims = JSON.parse(
-  Buffer.from(complete.canonical_fragment.split(".")[1], "base64url").toString("utf8"),
-) as { cell_public_key_b64: string };
+const matched = createMatchedQv2Fixture();
 
 const TOKEN = `${Buffer.from("{}").toString("base64url")}.${Buffer.alloc(32).toString("base64url")}`;
 const RESOURCE_URL = "https://private.example.test/internal/v1/uploads";
 
 function deployment() {
   return {
-    issuers: [{ kid: issuer.kid, spki_der_b64: issuer.spki_der_b64 }],
+    issuers: [matched.issuer],
     cells: [
       {
         cell_id: "vector-cell",
         host: "cell.example.test",
         port: 443,
-        server_public_key_b64: claims.cell_public_key_b64,
+        server_public_key_b64: matched.cellPublicKeyB64,
       },
     ],
   } as const;
@@ -89,7 +69,7 @@ function fixture(fetchImpl: typeof globalThis.fetch = vi.fn(async () => new Resp
     clearTimer: () => undefined,
   };
   const options: CreatePortalOpenerOptions = {
-    qurl: `https://qurl.link/#${complete.transport_fragment}`,
+    qurl: matched.qurl,
     transport: "native-only",
     deployment: deployment(),
   };
@@ -103,7 +83,7 @@ describe("native portal opener", () => {
     const knock = vi.fn(async () => ack());
     const opener = createPortalOpenerWithRuntime(
       {
-        qurl: `https://qurl.link/#${complete.transport_fragment}`,
+        qurl: matched.qurl,
         transport: "native-only",
       },
       {
@@ -130,7 +110,7 @@ describe("native portal opener", () => {
     expect(() =>
       createPortalOpenerWithRuntime(
         {
-          qurl: `https://qurl.link/#${complete.transport_fragment}`,
+          qurl: matched.qurl,
           transport: "native-only",
           deployment: {
             ...invalid,
@@ -159,7 +139,7 @@ describe("native portal opener", () => {
     expect(() =>
       createPortalOpenerWithRuntime(
         {
-          qurl: `https://qurl.link/#${complete.transport_fragment}`,
+          qurl: matched.qurl,
           transport: "native-only",
           deployment: { ...deployment(), issuers: [] },
         },
@@ -175,6 +155,27 @@ describe("native portal opener", () => {
     expect(runtime.knock).not.toHaveBeenCalled();
   });
 
+  it("rejects a fragment private key that does not match the signed public key before I/O", () => {
+    const knock = vi.fn();
+    expect(() =>
+      createPortalOpenerWithRuntime(
+        {
+          qurl: matched.mismatchedPrivateKeyQurl,
+          transport: "native-only",
+          deployment: deployment(),
+        },
+        {
+          knock,
+          fetch,
+          nowNanos: () => 0n,
+          setTimer: setTimeout,
+          clearTimer: clearTimeout,
+        },
+      ),
+    ).toThrow(PortalVerificationError);
+    expect(knock).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["zero timeout", { timeoutMs: 0 }],
     ["large timeout", { timeoutMs: 60_001 }],
@@ -186,7 +187,7 @@ describe("native portal opener", () => {
     expect(() =>
       createPortalOpenerWithRuntime(
         {
-          qurl: `https://qurl.link/#${complete.transport_fragment}`,
+          qurl: matched.qurl,
           transport: "native-only",
           deployment: deployment(),
           ...invalid,
@@ -391,6 +392,25 @@ describe("native portal opener", () => {
     await opener.close();
   });
 
+  it("classifies an authenticated COOKIE renewal as a busy session", async () => {
+    const { opener, knock, timers } = fixture();
+    knock.mockResolvedValueOnce(ack(4)).mockResolvedValueOnce({
+      type: NHP_TYPE_COOKIE,
+      flags: 0,
+      counter: 99n,
+      timestampNanos: 2n,
+      body: Buffer.from("busy"),
+    });
+    await opener.start();
+    timers.shift()!();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(opener.health()).toMatchObject({
+      state: "degraded",
+      renewalFailure: { kind: "busy" },
+    });
+    await opener.close();
+  });
+
   it("lets start recover a degraded grant after bounded background retries stop", async () => {
     const { opener, knock, timers } = fixture();
     knock
@@ -493,6 +513,11 @@ describe("native portal opener", () => {
     const start = opener.start();
     if (_name === "negative-zero deny") {
       await expect(start).rejects.toThrow("success capability fields");
+    } else if (_name === "deny") {
+      await expect(start).rejects.toMatchObject<PortalDenyError>({
+        name: "PortalDenyError",
+        errCode: "7",
+      });
     } else {
       await expect(start).rejects.toBeInstanceOf(Error);
     }
