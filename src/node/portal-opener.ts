@@ -262,7 +262,19 @@ class NativePortalOpener implements PortalOpener {
     ) {
       return;
     }
-    return this.#openSingleFlight(options.signal);
+    const sharedOpen = this.#openPromise !== undefined;
+    try {
+      await this.#openSingleFlight(options.signal);
+    } catch (error) {
+      // A caller waiting on an existing background open observes that open's
+      // own health update. An explicit recovery owner must replace stale
+      // background diagnostics, but it must not schedule request-path pacing.
+      if (!sharedOpen && this.#grant && !this.#closed) {
+        this.#recordRenewalFailure(error);
+        this.#backgroundAttempts = 0;
+      }
+      throw error;
+    }
   }
 
   async fetch(
@@ -508,9 +520,7 @@ class NativePortalOpener implements PortalOpener {
 
   #handleRenewalFailure(error: unknown): void {
     if (this.#closed) return;
-    this.#renewing = false;
-    this.#renewalError = error;
-    this.#renewalFailure = classifyRenewalFailure(error);
+    this.#recordRenewalFailure(error);
     if (this.#backgroundAttempts >= MAX_BACKGROUND_RENEWAL_ATTEMPTS) return;
     const grant = this.#grant;
     if (!grant) return;
@@ -528,6 +538,12 @@ class NativePortalOpener implements PortalOpener {
       void this.#openSingleFlight().catch((next: unknown) => this.#handleRenewalFailure(next));
     }, delayMs);
     this.#renewalTimer.unref?.();
+  }
+
+  #recordRenewalFailure(error: unknown): void {
+    this.#renewing = false;
+    this.#renewalError = error;
+    this.#renewalFailure = classifyRenewalFailure(error);
   }
 
   #knockBody(): Uint8Array {
@@ -829,7 +845,11 @@ function backgroundRetryDelay(
   if (slotMs < 1) return undefined;
   const boundedRandom = Math.max(0, Math.min(1, randomFraction));
   const jittered = Math.floor(slotMs * (0.75 + boundedRandom * 0.25));
-  return Math.min(slotMs, Math.max(Math.min(MIN_BACKGROUND_RETRY_MS, slotMs), jittered));
+  return Math.min(
+    MAX_TIMER_DELAY_MS,
+    slotMs,
+    Math.max(Math.min(MIN_BACKGROUND_RETRY_MS, slotMs), jittered),
+  );
 }
 
 export const portalOpenerTesting = {

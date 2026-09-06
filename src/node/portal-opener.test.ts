@@ -661,6 +661,47 @@ describe("native portal opener", () => {
     await opener.close();
   });
 
+  it("replaces stale health when an explicit recovery fails without scheduling a timer", async () => {
+    const { opener, knock, timers, setNow } = fixture();
+    knock
+      .mockResolvedValueOnce(ack(10))
+      .mockRejectedValueOnce(new Error("renewal 1"))
+      .mockRejectedValueOnce(new Error("renewal 2"))
+      .mockRejectedValueOnce(new Error("renewal 3"))
+      .mockRejectedValueOnce(new Error("renewal 4"));
+    await opener.start();
+    for (let attempt = 0; attempt < 4; attempt++) {
+      timers.shift()!();
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    expect(opener.health()).toMatchObject({
+      state: "degraded",
+      backgroundAttempts: 4,
+      renewalFailure: { kind: "transport" },
+    });
+
+    knock.mockResolvedValueOnce({
+      type: NHP_TYPE_COOKIE,
+      flags: 0,
+      counter: 99n,
+      timestampNanos: 2n,
+      body: Buffer.from("busy"),
+    });
+    await expect(opener.start()).rejects.toThrow("platform is busy");
+    expect(opener.health()).toMatchObject({
+      state: "degraded",
+      backgroundAttempts: 0,
+      renewalFailure: { kind: "busy" },
+    });
+    expect(timers).toHaveLength(0);
+
+    setNow(12_000_000_000n);
+    await expect(opener.fetch()).rejects.toMatchObject({
+      cause: { name: "PortalBusyError" },
+    });
+    await opener.close();
+  });
+
   it("measures grant lifetime and renewal from before the native exchange", async () => {
     const { opener, knock, setNow, timerDelays } = fixture();
     knock.mockImplementationOnce(async () => {
@@ -892,10 +933,14 @@ describe("native portal opener", () => {
   });
 
   it("clamps a very long grant so Node cannot turn its renewal delay into a hot loop", async () => {
-    const { opener, knock, timerDelays } = fixture();
-    knock.mockResolvedValueOnce(ack(0xffff_ffff));
+    const { opener, knock, timers, timerDelays, setNow } = fixture();
+    knock.mockResolvedValueOnce(ack(0xffff_ffff)).mockRejectedValueOnce(new Error("temporary"));
     await opener.start();
     expect(timerDelays).toEqual([2_147_483_647]);
+    setNow(2_147_484_647_000_000n);
+    timers.shift()!();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(timerDelays).toEqual([2_147_483_647, 2_147_483_647]);
     await opener.close();
   });
 

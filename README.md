@@ -189,11 +189,13 @@ unknown cell.
 Use `opener.health()` for the local `idle`, `starting`, `healthy`, `renewing`,
 `degraded`, `expired`, or `closed` state. A degraded state includes a typed
 renewal failure class but no raw session capability. After bounded background
-retries stop, `start()` makes an explicit recovery attempt. This does not put an
-open on the `fetch()` path. Stop and await in-flight content requests before you
-call `await opener.close()` during shutdown. Close cancels and waits for an
-active NHP exchange, then wipes the mutable private-key, visitor-secret, and
-session-token buffers. JavaScript can create immutable string copies during
+retries stop, `start()` makes one explicit recovery attempt and refreshes the
+health result. A failed explicit recovery does not schedule another timer; call
+`start()` again from lifecycle code when another attempt is required. This does
+not put an open on the `fetch()` path. Stop and await in-flight content requests
+before you call `await opener.close()` during shutdown. Close cancels and waits
+for an active NHP exchange, then wipes the mutable private-key, visitor-secret,
+and session-token buffers. JavaScript can create immutable string copies during
 JSON and HTTP processing, so the SDK cannot promise full memory zeroization
 before garbage collection. Never log the qURL, ACK body, request cookies, or
 request headers.

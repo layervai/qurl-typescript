@@ -145,6 +145,8 @@ function validateDeploymentValue(value: StrictJsonValue): ValidatedDeployment {
     if (serverPublicKey.byteLength !== 32) throw new Error("cell public key must be 32 bytes");
     const fingerprint = fingerprintKey(serverPublicKey);
     if (cells.has(fingerprint)) throw new Error("deployment contains a duplicate cell public key");
+    // Validate cell_id for schema parity, but do not use it as identity. The
+    // full X25519 public key is the cryptographic cell binding.
     if (item.cell_id !== undefined) requireString(item.cell_id, "cell id");
     cells.set(fingerprint, { host, port: 443, serverPublicKey });
   }

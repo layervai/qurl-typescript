@@ -187,20 +187,8 @@ export function decryptNHPReply(
     const encodedTypeSize = (preamble ^ header.readUInt32BE(4)) >>> 0;
     const type = (encodedTypeSize >>> 16) & 0xffff;
     const flags = header.readUInt16BE(10);
-    if (
-      ![NHP_TYPE_ACK, NHP_TYPE_COOKIE].includes(type) ||
-      (flags !== 0 && flags !== FLAG_COMPRESS)
-    ) {
-      throw new Error("NHP reply type or flags are outside the reply profile");
-    }
-    if (body.byteLength > 0 && (flags & FLAG_COMPRESS) !== 0) {
-      const compressed = body;
-      try {
-        body = inflateSync(compressed, { maxOutputLength: NHP_PACKET_SIZE });
-      } finally {
-        compressed.fill(0);
-      }
-    }
+    validateReplyProfile(type, flags);
+    body = inflateReplyBody(body, flags);
     if (body.byteLength > NHP_PACKET_SIZE) {
       throw new Error("NHP reply body exceeds the post-inflate limit");
     }
@@ -217,6 +205,21 @@ export function decryptNHPReply(
   } finally {
     body?.fill(0);
     wipeBuffers(secrets);
+  }
+}
+
+function validateReplyProfile(type: number, flags: number): void {
+  if (![NHP_TYPE_ACK, NHP_TYPE_COOKIE].includes(type) || (flags !== 0 && flags !== FLAG_COMPRESS)) {
+    throw new Error("NHP reply type or flags are outside the reply profile");
+  }
+}
+
+function inflateReplyBody(body: Buffer, flags: number): Buffer {
+  if (body.byteLength === 0 || (flags & FLAG_COMPRESS) === 0) return body;
+  try {
+    return inflateSync(body, { maxOutputLength: NHP_PACKET_SIZE });
+  } finally {
+    body.fill(0);
   }
 }
 
@@ -316,3 +319,5 @@ function trackSecret<T extends Uint8Array>(secrets: Uint8Array[], value: T): T {
 function wipeBuffers(values: readonly Uint8Array[]): void {
   for (const value of values) value.fill(0);
 }
+
+export const nhpWireTesting = { validateReplyProfile, inflateReplyBody };

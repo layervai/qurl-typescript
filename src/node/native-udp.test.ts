@@ -106,6 +106,25 @@ describe("native UDP exchange", () => {
     expect(finish).toHaveBeenCalledWith(failure);
   });
 
+  it("wipes the Node-owned send copy after an asynchronous send error", () => {
+    const failure = new Error("send callback failed");
+    let owned: Buffer | undefined;
+    let sent!: (error: Error | null) => void;
+    const socket = {
+      send(packet: Buffer, callback: (error: Error | null) => void) {
+        owned = packet;
+        sent = callback;
+      },
+    } as unknown as Socket;
+    const finish = vi.fn();
+
+    nativeUdpTesting.sendOwnedDatagram(socket, Buffer.from([7, 8, 9]), finish);
+    expect(owned).toEqual(Buffer.from([7, 8, 9]));
+    sent(failure);
+    expect(owned).toEqual(Buffer.alloc(3));
+    expect(finish).toHaveBeenCalledWith(failure);
+  });
+
   it("sends and receives one bounded UDP datagram", async () => {
     const port = await replyServer(Buffer.from([1, 2, 3]));
     await expect(
