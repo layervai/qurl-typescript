@@ -527,14 +527,15 @@ describe("native portal opener", () => {
     await opener.close();
   });
 
-  it("measures grant lifetime from before the native exchange", async () => {
-    const { opener, knock, setNow } = fixture();
+  it("measures grant lifetime and renewal from before the native exchange", async () => {
+    const { opener, knock, setNow, timerDelays } = fixture();
     knock.mockImplementationOnce(async () => {
       setNow(2_000_000_000n);
       return ack(2);
     });
     await opener.start();
     expect(opener.health()).toMatchObject({ state: "healthy", expiresInMs: 1_000 });
+    expect(timerDelays).toEqual([750]);
     await opener.close();
   });
 

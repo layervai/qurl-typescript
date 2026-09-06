@@ -1,10 +1,4 @@
-import {
-  createPublicKey,
-  createPrivateKey,
-  createHash,
-  timingSafeEqual,
-  verify,
-} from "node:crypto";
+import { createPublicKey, createPrivateKey, timingSafeEqual, verify } from "node:crypto";
 import type { KeyObject } from "node:crypto";
 import { isStrictJsonObject, parseStrictJson, type StrictJsonValue } from "./strict-json.js";
 
@@ -59,7 +53,7 @@ export function verifyQv2Link(
   // Match Go ParseFragment -> Verify ordering: strict claims and secret parsing
   // precede signature/trust errors for an otherwise valid outer transport.
   const claims = parseClaims(decodeCanonicalBase64Url(claimsB64));
-  const secret = parseSecret(decodeCanonicalBase64Url(secretB64));
+  const secret = parseAndWipeSecret(decodeCanonicalBase64Url(secretB64));
   verifyParsedIssuerClaims(claims, claimsB64, signatureB64, issuers);
   const privateKey = decodeCanonicalBase64Url(secret.qurlUserPrivateKeyB64);
   let retainPrivateKey = false;
@@ -170,6 +164,7 @@ function decodeCanonicalBase64Url(value: string): Uint8Array {
   }
   const decoded = Buffer.from(value, "base64url");
   if (decoded.toString("base64url") !== value) {
+    decoded.fill(0);
     throw new Error("value is not canonical unpadded base64url");
   }
   return decoded;
@@ -287,6 +282,14 @@ function parseSecret(raw: Uint8Array): { qurlUserPrivateKeyB64: string } {
   return { qurlUserPrivateKeyB64 };
 }
 
+function parseAndWipeSecret(raw: Uint8Array): { qurlUserPrivateKeyB64: string } {
+  try {
+    return parseSecret(raw);
+  } finally {
+    raw.fill(0);
+  }
+}
+
 function requireNonEmptyString(value: StrictJsonValue | undefined, name: string): string {
   if (typeof value !== "string" || value === "")
     throw new Error(`${name} must be a non-empty string`);
@@ -307,12 +310,10 @@ function bytesToBigInt(value: Uint8Array): bigint {
   return BigInt(`0x${Buffer.from(value).toString("hex")}`);
 }
 
-export function qv2LinkIdentity(link: VerifiedQv2Link): Uint8Array {
-  return createHash("sha256")
-    .update(link.claimsB64, "ascii")
-    .update(".", "ascii")
-    .update(link.signatureB64, "ascii")
-    .digest();
-}
-
-export const qv2Testing = { decodeTransport, parseClaims, parseSecret, verifyIssuerClaims };
+export const qv2Testing = {
+  decodeTransport,
+  parseClaims,
+  parseSecret,
+  parseAndWipeSecret,
+  verifyIssuerClaims,
+};

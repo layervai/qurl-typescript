@@ -96,7 +96,9 @@ for (const [network, prefix] of [
 
 export interface NativeExchangeOptions {
   readonly signal?: AbortSignal;
+  /** Per-address timeout; serial fallback can use maxAddresses times this value. */
   readonly timeoutMs?: number;
+  /** Maximum number of resolved addresses tried serially. */
   readonly maxAddresses?: number;
 }
 

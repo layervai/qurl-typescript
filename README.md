@@ -173,6 +173,10 @@ can then move within the authenticated origin. It permits at most 10 requests,
 including the initial request, and uses the standard 301/302/303 method rewrite
 rules.
 
+`timeoutMs` bounds each resolved-address attempt, and `maxAddresses` caps the
+serial address attempts. This matches qurl-go. Pass an abort signal to
+`start()` when the whole open operation needs one wall-clock deadline.
+
 Native opening requires public deployment trust. Set `QURL_DEPLOYMENT` to one
 strict JSON object or to a path that contains that object. The object must have
 trusted P-256 issuer keys and native cell host, UDP port 443, and X25519 public

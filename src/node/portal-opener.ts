@@ -31,7 +31,9 @@ export interface CreatePortalOpenerOptions {
   readonly transport: "native-only";
   /** Public deployment trust. Omit to load QURL_DEPLOYMENT once at construction. */
   readonly deployment?: PortalDeployment;
+  /** Per-address UDP attempt timeout. Use start({ signal }) for one overall deadline. */
   readonly timeoutMs?: number;
+  /** Maximum serial address attempts for one native exchange. */
   readonly maxAddresses?: number;
 }
 
@@ -209,7 +211,6 @@ type ActiveGrant = {
   readonly resourceUrl: string;
   readonly origin: string;
   readonly openSeconds: number;
-  readonly sessionId: bigint;
   readonly expiresAtNanos: bigint;
   readonly token: Buffer;
 };
@@ -453,7 +454,7 @@ class NativePortalOpener implements PortalOpener {
         this.#renewalFailure = undefined;
         this.#backgroundAttempts = 0;
         this.#renewing = false;
-        this.#scheduleRenewal(grant.openSeconds);
+        this.#scheduleRenewal(grant);
       } finally {
         // ACK and deny bodies can contain a bearer. Wipe them on every parse path.
         reply.body.fill(0);
@@ -463,11 +464,16 @@ class NativePortalOpener implements PortalOpener {
     }
   }
 
-  #scheduleRenewal(openSeconds: number): void {
+  #scheduleRenewal(grant: ActiveGrant): void {
     if (this.#renewalTimer) this.#runtime.clearTimer(this.#renewalTimer);
+    // The grant lifetime starts before DNS and UDP I/O. Base renewal on the
+    // actual remaining lifetime so exchange latency cannot move renewal past
+    // the conservative local expiry boundary.
+    const remainingNanos = grant.expiresAtNanos - this.#runtime.nowNanos();
+    const remainingMs = remainingNanos <= 0n ? 0 : Number(remainingNanos / 1_000_000n);
     const delayMs = Math.min(
       MAX_TIMER_DELAY_MS,
-      Math.max(1, Math.floor((openSeconds * 1_000 * RENEWAL_NUMERATOR) / RENEWAL_DENOMINATOR)),
+      Math.max(1, Math.floor((remainingMs * RENEWAL_NUMERATOR) / RENEWAL_DENOMINATOR)),
     );
     this.#renewalTimer = this.#runtime.setTimer(() => {
       this.#renewalTimer = undefined;
@@ -542,6 +548,8 @@ function parseGrant(body: Uint8Array, nowNanos: bigint): ActiveGrant {
   if (errCode !== "" && errCode !== "0") {
     if (!/^[1-9][0-9]*$/.test(errCode))
       throw new PortalStateError("native NHP deny code is not canonical");
+    // The native opener's deny profile deliberately requires an explicit
+    // canonical opnTime:0 and forbids every success capability field.
     if ("sessId" in value || value.opnTime !== 0n || value.aspToken !== undefined) {
       throw new PortalStateError("native NHP deny ACK contains success capability fields");
     }
@@ -570,7 +578,6 @@ function parseGrant(body: Uint8Array, nowNanos: bigint): ActiveGrant {
     resourceUrl,
     origin,
     openSeconds,
-    sessionId,
     expiresAtNanos: nowNanos + BigInt(openSeconds) * 1_000_000_000n,
     token,
   };

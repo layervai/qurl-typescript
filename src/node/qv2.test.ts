@@ -74,6 +74,28 @@ describe("qv2t1 verifier", () => {
     else expect(action).toThrow();
   });
 
+  it.each([
+    [
+      "accepted secret",
+      Buffer.from(
+        JSON.stringify({
+          qurl_user_private_key_b64: Buffer.from(matched.devicePrivateKey).toString("base64url"),
+        }),
+      ),
+      false,
+    ],
+    ["rejected secret", Buffer.from("{}"), true],
+  ])("wipes decoded %s JSON bytes after parsing", (_name, raw, reject) => {
+    let error: unknown;
+    try {
+      qv2Testing.parseAndWipeSecret(raw);
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error !== undefined).toBe(reject);
+    expect(raw).toEqual(Buffer.alloc(raw.byteLength));
+  });
+
   it.each(qv2.classes.strict_base64.vectors)("matches base64 vector $name", (vector) => {
     const action = () => strictBase64Url(vector.value_b64);
     if (vector.expect === "accept") expect(action).not.toThrow();
