@@ -39,6 +39,11 @@ describe("native UDP DNS fence", () => {
     ["10.0.0.1", 4, false],
     ["169.254.169.254", 4, false],
     ["203.0.113.1", 4, false],
+    // qurl-go applies the same private/special-purpose denylist. These IANA
+    // global-unicast ranges are public endpoints, not private SSRF targets.
+    ["192.31.196.1", 4, true],
+    ["192.52.193.1", 4, true],
+    ["192.175.48.1", 4, true],
     ["2606:4700:4700::1111", 6, true],
     ["2001:4c00::1", 6, true],
     ["2001:4e00::1", 6, false],

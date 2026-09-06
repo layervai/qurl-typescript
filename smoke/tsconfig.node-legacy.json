@@ -6,8 +6,7 @@
     "lib": ["ES2022", "DOM"],
     "strict": true,
     "noEmit": true,
-    "types": [],
-    "skipLibCheck": true,
+    "types": ["node"],
     "ignoreDeprecations": "6.0"
   },
   "files": ["node-legacy-types.ts"]

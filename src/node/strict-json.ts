@@ -1,4 +1,5 @@
 const MAX_JSON_DEPTH = 32;
+const JSON_NUMBER = /-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/y;
 
 export type StrictJsonValue =
   | null
@@ -122,11 +123,13 @@ class StrictJsonParser {
   }
 
   private parseNumber(): number | bigint {
-    const rest = this.input.slice(this.#offset);
-    const match = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/.exec(rest);
+    // A sticky expression scans at the current offset without copying the
+    // remaining document for every number in a large deployment file.
+    JSON_NUMBER.lastIndex = this.#offset;
+    const match = JSON_NUMBER.exec(this.input);
     if (!match) throw new Error("invalid JSON number");
     const encoded = match[0];
-    this.#offset += encoded.length;
+    this.#offset = JSON_NUMBER.lastIndex;
     // Keep every syntactic JSON integer distinct from fractional or exponent
     // notation. NHP integer fields reject 1.0 and 1e0 even when Number would
     // reduce them to the same mathematical value as 1.

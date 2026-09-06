@@ -55,22 +55,49 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+function fakeTimerQueue() {
+  const callbacks: Array<() => void> = [];
+  const delays: number[] = [];
+  const pending = new Map<NodeJS.Timeout, () => void>();
+  return {
+    callbacks,
+    delays,
+    set(callback: () => void, delayMs: number): NodeJS.Timeout {
+      let handle!: NodeJS.Timeout;
+      const wrapped = () => {
+        pending.delete(handle);
+        callback();
+      };
+      handle = { unref: () => undefined } as unknown as NodeJS.Timeout;
+      pending.set(handle, wrapped);
+      callbacks.push(wrapped);
+      delays.push(delayMs);
+      return handle;
+    },
+    clear(handle: NodeJS.Timeout): void {
+      const callback = pending.get(handle);
+      pending.delete(handle);
+      if (!callback) return;
+      const index = callbacks.indexOf(callback);
+      if (index !== -1) callbacks.splice(index, 1);
+    },
+  };
+}
+
 function fixture(fetchImpl: typeof globalThis.fetch = vi.fn(async () => new Response("ok"))) {
   let now = 1_000_000_000n;
-  const timers: Array<() => void> = [];
-  const timerDelays: number[] = [];
+  const renewal = fakeTimerQueue();
+  const deadline = fakeTimerQueue();
   const knock = vi.fn(async () => ack());
   const runtime = {
     knock,
     fetch: fetchImpl,
     nowNanos: () => now,
     randomFraction: () => 0.5,
-    setTimer: (callback: () => void, delayMs: number) => {
-      timers.push(callback);
-      timerDelays.push(delayMs);
-      return { unref: () => undefined } as unknown as NodeJS.Timeout;
-    },
-    clearTimer: () => undefined,
+    setTimer: renewal.set,
+    clearTimer: renewal.clear,
+    setDeadlineTimer: deadline.set,
+    clearDeadlineTimer: deadline.clear,
   };
   const options: CreatePortalOpenerOptions = {
     qurl: matched.qurl,
@@ -78,7 +105,15 @@ function fixture(fetchImpl: typeof globalThis.fetch = vi.fn(async () => new Resp
     deployment: deployment(),
   };
   const opener = createPortalOpenerWithRuntime(options, runtime);
-  return { opener, knock, timers, timerDelays, setNow: (value: bigint) => (now = value) };
+  return {
+    opener,
+    knock,
+    timers: renewal.callbacks,
+    timerDelays: renewal.delays,
+    deadlineTimers: deadline.callbacks,
+    deadlineDelays: deadline.delays,
+    setNow: (value: bigint) => (now = value),
+  };
 }
 
 describe("native portal opener", () => {
@@ -97,6 +132,8 @@ describe("native portal opener", () => {
         randomFraction: () => 0.5,
         setTimer: setTimeout,
         clearTimer: clearTimeout,
+        setDeadlineTimer: setTimeout,
+        clearDeadlineTimer: clearTimeout,
       },
     );
     vi.stubEnv("QURL_DEPLOYMENT", "invalid after construction");
@@ -129,6 +166,8 @@ describe("native portal opener", () => {
           randomFraction: () => 0.5,
           setTimer: setTimeout,
           clearTimer: clearTimeout,
+          setDeadlineTimer: setTimeout,
+          clearDeadlineTimer: clearTimeout,
         },
       ),
     ).toThrow(PortalConfigurationError);
@@ -142,6 +181,8 @@ describe("native portal opener", () => {
       randomFraction: () => 0.5,
       setTimer: setTimeout,
       clearTimer: clearTimeout,
+      setDeadlineTimer: setTimeout,
+      clearDeadlineTimer: clearTimeout,
     };
     expect(() =>
       createPortalOpenerWithRuntime(
@@ -178,6 +219,8 @@ describe("native portal opener", () => {
           randomFraction: () => 0.5,
           setTimer: setTimeout,
           clearTimer: clearTimeout,
+          setDeadlineTimer: setTimeout,
+          clearDeadlineTimer: clearTimeout,
         },
       ),
     ).toThrow(PortalVerificationError);
@@ -207,9 +250,47 @@ describe("native portal opener", () => {
           randomFraction: () => 0.5,
           setTimer: setTimeout,
           clearTimer: clearTimeout,
+          setDeadlineTimer: setTimeout,
+          clearDeadlineTimer: clearTimeout,
         },
       ),
     ).toThrow("does not match the signed cell key");
+    expect(link.devicePrivateKey).toEqual(Buffer.alloc(32));
+    expect(knock).not.toHaveBeenCalled();
+  });
+
+  it("rejects and wipes a verified qv2 credential that cannot fit one NHP knock", () => {
+    const oversized = createMatchedQv2Fixture({ jti: "x".repeat(3_000) });
+    const oversizedDeployment = loadPortalDeployment({
+      issuers: [oversized.issuer],
+      cells: [
+        {
+          cell_id: "oversized-vector-cell",
+          host: "cell.example.test",
+          port: 443,
+          server_public_key_b64: oversized.cellPublicKeyB64,
+        },
+      ],
+    });
+    const link = verifyQv2Link(oversized.qurl, oversizedDeployment.issuers);
+    const knock = vi.fn();
+    expect(() =>
+      portalOpenerTesting.constructVerifiedPortalOpener(
+        { qurl: oversized.qurl, transport: "native-only", deployment: deployment() },
+        link,
+        oversizedDeployment,
+        {
+          knock,
+          fetch,
+          nowNanos: () => 0n,
+          randomFraction: () => 0.5,
+          setTimer: setTimeout,
+          clearTimer: clearTimeout,
+          setDeadlineTimer: setTimeout,
+          clearDeadlineTimer: clearTimeout,
+        },
+      ),
+    ).toThrow("cannot fit the native NHP knock envelope");
     expect(link.devicePrivateKey).toEqual(Buffer.alloc(32));
     expect(knock).not.toHaveBeenCalled();
   });
@@ -237,6 +318,8 @@ describe("native portal opener", () => {
           randomFraction: () => 0.5,
           setTimer: setTimeout,
           clearTimer: clearTimeout,
+          setDeadlineTimer: setTimeout,
+          clearDeadlineTimer: clearTimeout,
         },
       ),
     ).toThrow(PortalConfigurationError);
@@ -514,6 +597,35 @@ describe("native portal opener", () => {
     await opener.close();
   });
 
+  it("bounds a stalled background open and makes its transport failure observable", async () => {
+    const { opener, knock, timers, deadlineTimers, deadlineDelays } = fixture();
+    knock.mockResolvedValueOnce(ack(60)).mockImplementationOnce((_cell, _key, _body, options) => {
+      return new Promise<NHPMessage>((_resolve, reject) => {
+        options.signal?.addEventListener("abort", () => reject(options.signal?.reason), {
+          once: true,
+        });
+      });
+    });
+    await opener.start();
+    expect(deadlineDelays).toEqual([15_000]);
+    expect(deadlineTimers).toHaveLength(0);
+
+    timers.shift()!();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(deadlineDelays).toEqual([15_000, 15_000]);
+    expect(deadlineTimers).toHaveLength(1);
+    deadlineTimers.shift()!();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(opener.health()).toMatchObject({
+      state: "degraded",
+      backgroundAttempts: 1,
+      renewalFailure: { kind: "transport" },
+    });
+    expect(timers).toHaveLength(1);
+    await opener.close();
+  });
+
   it("keeps the first authenticated target when a renewal reply changes it", async () => {
     const sent: string[] = [];
     const fetchImpl = vi.fn(async (target: string | URL | Request) => {
@@ -699,6 +811,51 @@ describe("native portal opener", () => {
     await expect(opener.fetch()).rejects.toMatchObject({
       cause: { name: "PortalBusyError" },
     });
+    await opener.close();
+  });
+
+  it("cancels a pending background retry before explicit recovery resets its budget", async () => {
+    const { opener, knock, timers } = fixture();
+    knock.mockResolvedValueOnce(ack(10)).mockRejectedValueOnce(new Error("renewal failed"));
+    await opener.start();
+    timers.shift()!();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(timers).toHaveLength(1);
+    expect(opener.health()).toMatchObject({ state: "degraded", backgroundAttempts: 1 });
+
+    knock.mockResolvedValueOnce({
+      type: NHP_TYPE_COOKIE,
+      flags: 0,
+      counter: 99n,
+      timestampNanos: 2n,
+      body: Buffer.from("busy"),
+    });
+    await expect(opener.start()).rejects.toThrow("platform is busy");
+    expect(timers).toHaveLength(0);
+    expect(opener.health()).toMatchObject({
+      state: "degraded",
+      backgroundAttempts: 0,
+      renewalFailure: { kind: "busy" },
+    });
+    expect(knock).toHaveBeenCalledTimes(3);
+    await opener.close();
+  });
+
+  it("keeps a pending retry when an explicit recovery signal is already aborted", async () => {
+    const { opener, knock, timers } = fixture();
+    knock.mockResolvedValueOnce(ack(10)).mockRejectedValueOnce(new Error("renewal failed"));
+    await opener.start();
+    timers.shift()!();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(timers).toHaveLength(1);
+
+    const reason = new Error("lifecycle stopped");
+    const controller = new AbortController();
+    controller.abort(reason);
+    await expect(opener.start({ signal: controller.signal })).rejects.toBe(reason);
+    expect(timers).toHaveLength(1);
+    expect(opener.health()).toMatchObject({ state: "degraded", backgroundAttempts: 1 });
+    expect(knock).toHaveBeenCalledTimes(2);
     await opener.close();
   });
 

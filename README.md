@@ -172,11 +172,22 @@ whose signature binds its method, target, timestamp, or nonce. This mode closes
 a redirect response and does not replay the request. The default `follow` mode
 can then move within the authenticated origin. It permits at most 10 requests,
 including the initial request, and uses the standard 301/302/303 method rewrite
-rules.
+rules. As in Go, a 3xx response with no `Location` header, or a 307/308 response
+whose streaming body cannot be replayed, is returned to the caller without a
+follow-up request. The caller then owns that response body and must consume or
+cancel it. Local admission expiry is checked before the first request; the
+protected service remains authoritative while a permitted redirect chain is in
+progress.
 
 `timeoutMs` bounds each resolved-address attempt, and `maxAddresses` caps the
-serial address attempts. This matches qurl-go. Pass an abort signal to
-`start()` when the whole open operation needs one wall-clock deadline.
+serial address attempts. This matches qurl-go. Every open also has a whole-open
+deadline that covers DNS and UDP: at least 15 seconds, or the configured
+per-address budget times `maxAddresses + 1` when that is larger. Pass an abort
+signal to `start()` when lifecycle code needs a shorter deadline.
+
+TypeScript consumers of `@layervai/qurl/node` must provide Node and Fetch API
+declarations, for example current `@types/node`, or a configuration that includes
+the `DOM` library for Fetch types.
 
 Native opening requires public deployment trust. Set `QURL_DEPLOYMENT` to one
 strict JSON object or to a path that contains that object. The object must have

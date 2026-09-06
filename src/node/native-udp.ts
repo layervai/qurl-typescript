@@ -12,10 +12,14 @@ import {
 } from "./nhp-wire.js";
 import type { ValidatedCell } from "./deployment.js";
 
-const DEFAULT_TIMEOUT_MS = 3_000;
-const DEFAULT_MAX_ADDRESSES = 3;
+// Keep these defaults exported inside the Node implementation so the portal
+// lifecycle can derive one bounded whole-open deadline from the same values.
+export const NATIVE_DEFAULT_TIMEOUT_MS = 3_000;
+export const NATIVE_DEFAULT_MAX_ADDRESSES = 3;
 
 const ipv4Denied = new BlockList();
+// Keep this set in lockstep with qurl-go's nonRoutablePrefixes plus the
+// IsPrivate/IsLoopback/IsLinkLocal/IsMulticast predicates it applies first.
 for (const [network, prefix] of [
   ["0.0.0.0", 8],
   ["10.0.0.0", 8],
@@ -142,7 +146,7 @@ async function nativeKnockWithRuntime(
   try {
     const addresses = await runtime.resolveAddresses(
       cell.host,
-      options.maxAddresses ?? DEFAULT_MAX_ADDRESSES,
+      options.maxAddresses ?? NATIVE_DEFAULT_MAX_ADDRESSES,
       options.signal,
     );
     let lastError: unknown;
@@ -153,7 +157,7 @@ async function nativeKnockWithRuntime(
           address.family,
           cell.port,
           built.packet,
-          options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+          options.timeoutMs ?? NATIVE_DEFAULT_TIMEOUT_MS,
           options.signal,
         );
         const reply = runtime.decryptReply(devicePrivateKey, cell.serverPublicKey, packet);

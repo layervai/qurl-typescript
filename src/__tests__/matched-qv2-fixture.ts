@@ -32,7 +32,9 @@ export type MatchedQv2Fixture = {
   readonly devicePrivateKey: Uint8Array;
 };
 
-export function createMatchedQv2Fixture(): MatchedQv2Fixture {
+export function createMatchedQv2Fixture(
+  options: { readonly jti?: string } = {},
+): MatchedQv2Fixture {
   const issuerPair = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
   const resourcePair = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
   const issuerSpki = issuerPair.publicKey.export({ format: "der", type: "spki" });
@@ -50,7 +52,7 @@ export function createMatchedQv2Fixture(): MatchedQv2Fixture {
     iat: 2_000_000_000,
     nbf: 2_000_000_000,
     exp: 2_000_000_300,
-    jti: "qurl_typescript_matched_fixture",
+    jti: options.jti ?? "qurl_typescript_matched_fixture",
     cell_public_key_b64: Buffer.from(cellPublicKey).toString("base64url"),
     cell_id: "fixture-cell",
     relay_url: "https://relay.example.test",

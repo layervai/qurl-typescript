@@ -35,4 +35,12 @@ describe("strict native JSON", () => {
       "nesting",
     );
   });
+
+  it("scans numeric-heavy bounded documents without copying each remaining suffix", () => {
+    const encoded = Buffer.from(`[${new Array(4_096).fill("18446744073709551615").join(",")}]`);
+    const parsed = parseStrictJson(encoded, encoded.byteLength) as bigint[];
+    expect(parsed).toHaveLength(4_096);
+    expect(parsed[0]).toBe(18_446_744_073_709_551_615n);
+    expect(parsed.at(-1)).toBe(18_446_744_073_709_551_615n);
+  });
 });

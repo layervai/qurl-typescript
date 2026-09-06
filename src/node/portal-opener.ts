@@ -8,7 +8,12 @@ import {
   type ValidatedCell,
   type ValidatedDeployment,
 } from "./deployment.js";
-import { nativeKnock, type NativeExchangeOptions } from "./native-udp.js";
+import {
+  nativeKnock,
+  NATIVE_DEFAULT_MAX_ADDRESSES,
+  NATIVE_DEFAULT_TIMEOUT_MS,
+  type NativeExchangeOptions,
+} from "./native-udp.js";
 import { isStrictJsonObject, parseStrictJson, type StrictJsonValue } from "./strict-json.js";
 import { verifyQv2Link, type VerifiedQv2Link } from "./qv2.js";
 
@@ -18,6 +23,9 @@ const RENEWAL_NUMERATOR = 3;
 const RENEWAL_DENOMINATOR = 4;
 const MAX_BACKGROUND_RENEWAL_ATTEMPTS = 4;
 const MIN_BACKGROUND_RETRY_MS = 100;
+// qurl-go bounds the full portal open at 15 seconds. Larger caller-selected
+// per-address budgets remain usable, but every DNS plus UDP sequence is finite.
+const DEFAULT_OPEN_TIMEOUT_MS = 15_000;
 // Node changes a larger setTimeout delay to 1 ms. Clamp long grants so an
 // authenticated but unexpected lifetime cannot create a hot renewal loop.
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
@@ -129,6 +137,8 @@ interface PortalRuntime {
   readonly randomFraction: () => number;
   readonly setTimer: (callback: () => void, delayMs: number) => NodeJS.Timeout;
   readonly clearTimer: (timer: NodeJS.Timeout) => void;
+  readonly setDeadlineTimer: (callback: () => void, delayMs: number) => NodeJS.Timeout;
+  readonly clearDeadlineTimer: (timer: NodeJS.Timeout) => void;
 }
 
 const defaultRuntime: PortalRuntime = {
@@ -138,6 +148,8 @@ const defaultRuntime: PortalRuntime = {
   randomFraction: () => randomBytes(2).readUInt16BE(0) / 0xffff,
   setTimer: (callback, delayMs) => setTimeout(callback, delayMs),
   clearTimer: (timer) => clearTimeout(timer),
+  setDeadlineTimer: (callback, delayMs) => setTimeout(callback, delayMs),
+  clearDeadlineTimer: (timer) => clearTimeout(timer),
 };
 
 export function createPortalOpener(options: CreatePortalOpenerOptions): PortalOpener {
@@ -228,7 +240,8 @@ class NativePortalOpener implements PortalOpener {
   readonly #cell: ValidatedCell;
   readonly #runtime: PortalRuntime;
   readonly #exchangeOptions: Omit<NativeExchangeOptions, "signal">;
-  readonly #sessionSecret = randomBytes(32);
+  readonly #openTimeoutMs: number;
+  readonly #sessionSecret: Buffer;
   #grant?: ActiveGrant;
   #boundResourceUrl?: string;
   #openPromise?: Promise<void>;
@@ -251,10 +264,29 @@ class NativePortalOpener implements PortalOpener {
     this.#cell = cell;
     this.#runtime = runtime;
     this.#exchangeOptions = { timeoutMs: options.timeoutMs, maxAddresses: options.maxAddresses };
+    const attemptTimeoutMs = options.timeoutMs ?? NATIVE_DEFAULT_TIMEOUT_MS;
+    const maximumAddresses = options.maxAddresses ?? NATIVE_DEFAULT_MAX_ADDRESSES;
+    this.#openTimeoutMs = Math.max(
+      DEFAULT_OPEN_TIMEOUT_MS,
+      attemptTimeoutMs * (maximumAddresses + 1),
+    );
+    this.#sessionSecret = randomBytes(32);
+    try {
+      // A locally valid qv2 credential can still be too large for one native
+      // NHP packet. Reject it before start or DNS and wipe the sizing copy.
+      const probe = this.#knockBody();
+      probe.fill(0);
+    } catch (error) {
+      this.#sessionSecret.fill(0);
+      throw error;
+    }
   }
 
   async start(options: PortalStartOptions = {}): Promise<void> {
     this.#requireOpen();
+    if (options.signal?.aborted) {
+      throw options.signal.reason ?? new DOMException("Aborted", "AbortError");
+    }
     if (
       this.#grant &&
       this.#runtime.nowNanos() < this.#grant.expiresAtNanos &&
@@ -263,6 +295,12 @@ class NativePortalOpener implements PortalOpener {
       return;
     }
     const sharedOpen = this.#openPromise !== undefined;
+    if (!sharedOpen && this.#renewalTimer) {
+      // Explicit lifecycle recovery takes ownership from the pending retry.
+      // Cancel it before resetting the bounded background-attempt counter.
+      this.#runtime.clearTimer(this.#renewalTimer);
+      this.#renewalTimer = undefined;
+    }
     try {
       await this.#openSingleFlight(options.signal);
     } catch (error) {
@@ -435,7 +473,12 @@ class NativePortalOpener implements PortalOpener {
 
     const controller = new AbortController();
     const removeAbortListener = linkAbortSignal(signal, controller);
+    const deadline = this.#runtime.setDeadlineTimer(() => {
+      controller.abort(new Error("native NHP open exceeded its overall deadline"));
+    }, this.#openTimeoutMs);
+    deadline.unref?.();
     const current = this.#performOpen(controller.signal).finally(() => {
+      this.#runtime.clearDeadlineTimer(deadline);
       removeAbortListener();
       if (this.#openPromise === current) {
         this.#openPromise = undefined;
@@ -561,8 +604,10 @@ class NativePortalOpener implements PortalOpener {
       },
     });
     const body = Buffer.from(encoded, "utf8");
-    if (body.byteLength > NHP_MAX_BODY_SIZE)
-      throw new PortalStateError("native qURL knock body is too large");
+    if (body.byteLength > NHP_MAX_BODY_SIZE) {
+      body.fill(0);
+      throw new PortalVerificationError("verified qURL cannot fit the native NHP knock envelope");
+    }
     return body;
   }
 
