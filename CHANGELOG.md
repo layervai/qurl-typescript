@@ -2,13 +2,16 @@
 
 ## Unreleased
 
+## [0.4.0](https://github.com/layervai/qurl-typescript/compare/qurl-v0.3.1...qurl-v0.4.0) (2026-09-06)
+
 ### ⚠ BREAKING CHANGES
 
 - **client:** DELETE operations are no longer retried after transport, 429, or 5xx
   failures. This matches qurl-go's no-hidden-HTTP-retry rule, avoids request-path
   pacing, and requires the caller to use `retryAfter` and reconcile state before
   a deliberate retry. Documented no-content DELETE endpoints now require an
-  exact empty HTTP 204 response.
+  exact empty HTTP 204 response
+  ([#213](https://github.com/layervai/qurl-typescript/issues/213)).
 - **client:** server-provided error titles, details, and up to 100
   invalid-field entries have controls and bidirectional formatting characters
   removed, are normalized to one line, and are capped at 512 UTF-8 bytes per
@@ -32,9 +35,19 @@
 - **client:** the observed HTTP status now controls server-error classification;
   a conflicting RFC 7807 `error.status` value can no longer change the typed
   error class.
-- **client:** remove the unsafe legacy HTTP bootstrap method and the incomplete
-  relay registration implementation. Native NHP 1.1 assignment, registration,
-  and proactive opener parity replace them under the program tracked in #248.
+- **client:** remove the unsafe legacy HTTP bootstrap method
+  ([#209](https://github.com/layervai/qurl-typescript/issues/209)) and incomplete
+  relay registration implementation
+  ([#206](https://github.com/layervai/qurl-typescript/issues/206)). Native NHP 1.1
+  assignment, registration, and proactive opener parity replace them under the
+  program tracked in #248.
+
+### Features
+
+- Add the proactive native NHP portal opener
+  ([#250](https://github.com/layervai/qurl-typescript/issues/250)).
+- Add native NHP agent registration
+  ([#177](https://github.com/layervai/qurl-typescript/issues/177)).
 
 ### Bug Fixes
 
@@ -45,9 +58,10 @@
   independent `AbortError` or `TimeoutError` as a non-retried `NetworkError`;
   after non-success headers, preserve the status-derived class and attach the
   failure as its cause. Only the SDK timeout signal produces `TimeoutError`.
-  Deterministic
-  Response-like materialization failures retain their SDK-authored detail and
-  cause and are not retried.
+  Deterministic Response-like materialization failures retain their SDK-authored
+  detail and cause and are not retried.
+- Make the review workflow validate the destination origin instead of one exact
+  URL ([#234](https://github.com/layervai/qurl-typescript/issues/234)).
 
 ## [0.3.1](https://github.com/layervai/qurl-typescript/compare/qurl-v0.3.0...qurl-v0.3.1) (2026-07-05)
 
