@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { closeSync, constants as fsConstants, fstatSync, openSync, readSync } from "node:fs";
 import { createHash } from "node:crypto";
 import type { KeyObject } from "node:crypto";
 import { isStrictJsonObject, parseStrictJson, type StrictJsonValue } from "./strict-json.js";
@@ -36,6 +36,7 @@ export interface ValidatedCell {
 const DEPLOYMENT_KEYS = new Set(["issuers", "cells", "relay_allowlist", "hub"]);
 const ISSUER_KEYS = new Set(["kid", "spki_der_b64"]);
 const CELL_KEYS = new Set(["cell_id", "host", "port", "server_public_key_b64"]);
+const MAX_DEPLOYMENT_BYTES = 1_048_576;
 
 /** Load and validate deployment trust once, before an opener can do network I/O. */
 export function loadPortalDeployment(explicit?: PortalDeployment): ValidatedDeployment {
@@ -45,8 +46,37 @@ export function loadPortalDeployment(explicit?: PortalDeployment): ValidatedDepl
     throw new Error("native qURL opening requires deployment trust in QURL_DEPLOYMENT");
   }
   const trimmed = configured.trim();
-  const raw = trimmed.startsWith("{") ? Buffer.from(trimmed, "utf8") : readFileSync(trimmed);
-  return validateDeploymentValue(parseStrictJson(raw, 1_048_576));
+  const raw = trimmed.startsWith("{")
+    ? Buffer.from(trimmed, "utf8")
+    : readBoundedDeploymentFile(trimmed);
+  return validateDeploymentValue(parseStrictJson(raw, MAX_DEPLOYMENT_BYTES));
+}
+
+function readBoundedDeploymentFile(path: string): Buffer {
+  // O_NONBLOCK prevents a FIFO or device path from hanging construction before
+  // fstat can enforce the regular-file contract. It has no effect on files.
+  const descriptor = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK);
+  try {
+    const metadata = fstatSync(descriptor);
+    if (!metadata.isFile()) throw new Error("native qURL deployment path must be a regular file");
+    if (!Number.isSafeInteger(metadata.size) || metadata.size > MAX_DEPLOYMENT_BYTES) {
+      throw new Error("native qURL deployment file exceeds its 1 MiB limit");
+    }
+    const bytes = Buffer.alloc(metadata.size);
+    let offset = 0;
+    while (offset < bytes.byteLength) {
+      const count = readSync(descriptor, bytes, offset, bytes.byteLength - offset, offset);
+      if (count === 0) break;
+      offset += count;
+    }
+    const extra = Buffer.alloc(1);
+    if (readSync(descriptor, extra, 0, 1, offset) !== 0) {
+      throw new Error("native qURL deployment file changed while it was read");
+    }
+    return bytes.subarray(0, offset);
+  } finally {
+    closeSync(descriptor);
+  }
 }
 
 function validateDeployment(explicit: PortalDeployment): ValidatedDeployment {
@@ -60,7 +90,9 @@ function validateDeployment(explicit: PortalDeployment): ValidatedDeployment {
     throw new Error("native qURL deployment is not JSON serializable");
   }
   if (encoded === undefined) throw new Error("native qURL deployment is missing");
-  return validateDeploymentValue(parseStrictJson(Buffer.from(encoded, "utf8"), 1_048_576));
+  return validateDeploymentValue(
+    parseStrictJson(Buffer.from(encoded, "utf8"), MAX_DEPLOYMENT_BYTES),
+  );
 }
 
 function validateDeploymentValue(value: StrictJsonValue): ValidatedDeployment {

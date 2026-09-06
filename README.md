@@ -164,8 +164,9 @@ async function uploadPrivateObject(uploadBody) {
 The request builder receives a copy of the exact authenticated ACK target. The
 opener ignores mutations to that copy and sends the initial request only to the
 fixed ACK URL. It adds the private `qurl_vsession` cookie, replaces a
-caller-supplied cookie with that name, and preserves other valid cookies. It
-does not accept a caller URL or path. Use `redirects: 'error'` for a request
+caller-supplied cookie with that name, and preserves other valid cookies,
+including duplicate `Cookie` entries that Node joins with semicolons. It does
+not accept a caller URL or path. Use `redirects: 'error'` for a request
 whose signature binds its method, target, timestamp, or nonce. This mode closes
 a redirect response and does not replay the request. The default `follow` mode
 can then move within the authenticated origin. It permits at most 10 requests,

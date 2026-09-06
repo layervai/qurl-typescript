@@ -25,6 +25,7 @@ export type MatchedQv2Fixture = {
   readonly qurl: string;
   readonly mismatchedPrivateKeyQurl: string;
   readonly tamperedSignedPublicKeyQurl: string;
+  readonly invalidSecretQurl: string;
   readonly issuer: { readonly kid: string; readonly spki_der_b64: string };
   readonly issuerKeys: ReadonlyMap<string, KeyObject>;
   readonly cellPublicKeyB64: string;
@@ -73,6 +74,11 @@ export function createMatchedQv2Fixture(): MatchedQv2Fixture {
         qurl_user_public_key_b64: Buffer.alloc(32, 6).toString("base64url"),
       }),
       secretB64,
+      signatureB64,
+    ),
+    invalidSecretQurl: encodeQurl(
+      claimsB64,
+      Buffer.from("{}", "utf8").toString("base64url"),
       signatureB64,
     ),
     issuer,

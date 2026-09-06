@@ -56,8 +56,11 @@ export function verifyQv2Link(
     throw new Error("invalid qURL credential fragment");
   }
   const [, claimsB64, secretB64, signatureB64] = parts;
-  const claims = verifyIssuerClaims(claimsB64, signatureB64, issuers);
+  // Match Go ParseFragment -> Verify ordering: strict claims and secret parsing
+  // precede signature/trust errors for an otherwise valid outer transport.
+  const claims = parseClaims(decodeCanonicalBase64Url(claimsB64));
   const secret = parseSecret(decodeCanonicalBase64Url(secretB64));
+  verifyParsedIssuerClaims(claims, claimsB64, signatureB64, issuers);
   const privateKey = decodeCanonicalBase64Url(secret.qurlUserPrivateKeyB64);
   let retainPrivateKey = false;
   try {
@@ -244,15 +247,26 @@ function verifyIssuerClaims(
   issuers: ReadonlyMap<string, KeyObject>,
 ): ParsedClaims {
   const claims = parseClaims(decodeCanonicalBase64Url(claimsB64));
+  verifyParsedIssuerClaims(claims, claimsB64, signatureB64, issuers);
+  return claims;
+}
+
+function verifyParsedIssuerClaims(
+  claims: ParsedClaims,
+  claimsB64: string,
+  signatureB64: string,
+  issuers: ReadonlyMap<string, KeyObject>,
+): void {
   const signature = decodeCanonicalBase64Url(signatureB64);
-  validateRawP256Signature(signature);
   const issuer = issuers.get(claims.kid);
   if (!issuer) throw new Error("qURL uses an unknown issuer key id");
+  // Go resolves trust after base64 decoding but before raw signature shape
+  // validation. Preserve that error precedence for full-link verification.
+  validateRawP256Signature(signature);
   const signingInput = Buffer.concat([SIGNING_DOMAIN, Buffer.from(claimsB64, "ascii")]);
   if (!verify("sha256", signingInput, { key: issuer, dsaEncoding: "ieee-p1363" }, signature)) {
     throw new Error("qURL issuer signature verification failed");
   }
-  return claims;
 }
 
 function parseSecret(raw: Uint8Array): { qurlUserPrivateKeyB64: string } {

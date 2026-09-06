@@ -61,6 +61,28 @@ describe("native deployment loading", () => {
     }
   });
 
+  it("rejects a non-regular deployment path before reading it", () => {
+    const directory = mkdtempSync(join(tmpdir(), "qurl-typescript-deployment-"));
+    try {
+      vi.stubEnv("QURL_DEPLOYMENT", directory);
+      expect(() => loadPortalDeployment()).toThrow("regular file");
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects an oversized deployment file before materializing its contents", () => {
+    const directory = mkdtempSync(join(tmpdir(), "qurl-typescript-deployment-"));
+    const path = join(directory, "deployment.json");
+    try {
+      writeFileSync(path, Buffer.alloc(1_048_577));
+      vi.stubEnv("QURL_DEPLOYMENT", path);
+      expect(() => loadPortalDeployment()).toThrow("1 MiB limit");
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("rejects unknown and duplicate trust fields", () => {
     vi.stubEnv("QURL_DEPLOYMENT", deploymentJson().replace('{"issuers":', '{"extra":1,"issuers":'));
     expect(() => loadPortalDeployment()).toThrow("unknown field");

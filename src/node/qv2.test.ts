@@ -109,4 +109,18 @@ describe("qv2t1 verifier", () => {
   it("rejects an unknown issuer before any transport is selected", () => {
     expect(() => verifyQv2Link(matched.qurl, new Map())).toThrow("unknown issuer");
   });
+
+  it("matches Go by rejecting an invalid secret before an unknown issuer", () => {
+    expect(() => verifyQv2Link(matched.invalidSecretQurl, new Map())).toThrow(
+      "secret has an invalid object shape",
+    );
+  });
+
+  it("matches Go by resolving issuer trust before raw signature shape", () => {
+    const highS = signatureVectors.vectors.find((vector) => vector.name === "reject_high_s");
+    if (!highS) throw new Error("shared high-S signature vector is missing");
+    expect(() => qv2Testing.verifyIssuerClaims(highS.claims_b64, highS.sig_b64, new Map())).toThrow(
+      "unknown issuer",
+    );
+  });
 });

@@ -182,6 +182,7 @@ async function resolvePublicAddresses(
   host: string,
   maximum: number,
   signal?: AbortSignal,
+  lookupAddresses: typeof lookup = lookup,
 ): Promise<Array<{ address: string; family: 4 | 6 }>> {
   if (!Number.isInteger(maximum) || maximum < 1 || maximum > 16) {
     throw new Error("native NHP maxAddresses must be an integer from 1 to 16");
@@ -189,7 +190,7 @@ async function resolvePublicAddresses(
   if (signal?.aborted) throw signal.reason;
   let rows: LookupAddress[];
   try {
-    rows = await waitForAbort(lookup(host, { all: true, verbatim: true }), signal);
+    rows = await waitForAbort(lookupAddresses(host, { all: true, verbatim: true }), signal);
   } catch (error) {
     if (signal?.aborted) throw signal.reason;
     throw new Error("native NHP endpoint DNS resolution failed", { cause: error });
@@ -309,6 +310,7 @@ function waitForAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> 
 
 export const nativeUdpTesting = {
   isPublicAddress,
+  resolvePublicAddresses,
   nativeKnockWithRuntime,
   exchangeDatagram,
   socketExchangeError: (cause: unknown): Error => new SocketExchangeError(cause),

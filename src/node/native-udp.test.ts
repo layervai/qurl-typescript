@@ -1,4 +1,5 @@
 import { createSocket } from "node:dgram";
+import type { lookup } from "node:dns/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { nativeUdpTesting } from "./native-udp.js";
 import { NHP_PACKET_SIZE, NHP_TYPE_ACK, NHP_TYPE_COOKIE } from "./nhp-wire.js";
@@ -34,6 +35,25 @@ describe("native UDP DNS fence", () => {
     ["2001:db8::1", 6, false],
   ] as const)("classifies %s", (address, family, accepted) => {
     expect(nativeUdpTesting.isPublicAddress(address, family)).toBe(accepted);
+  });
+
+  it("reports a DNS lookup failure without opening a socket", async () => {
+    const lookupAddresses = vi.fn(async () => {
+      throw new Error("lookup failed");
+    }) as unknown as typeof lookup;
+    await expect(
+      nativeUdpTesting.resolvePublicAddresses("cell.example.test", 3, undefined, lookupAddresses),
+    ).rejects.toThrow("DNS resolution failed");
+  });
+
+  it("rejects a name that resolves only to private addresses", async () => {
+    const lookupAddresses = vi.fn(async () => [
+      { address: "127.0.0.1", family: 4 as const },
+      { address: "fc00::1", family: 6 as const },
+    ]) as unknown as typeof lookup;
+    await expect(
+      nativeUdpTesting.resolvePublicAddresses("cell.example.test", 3, undefined, lookupAddresses),
+    ).rejects.toThrow("no public address");
   });
 });
 

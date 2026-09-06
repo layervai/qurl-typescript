@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import type { NHPMessage } from "./nhp-wire.js";
 import { NHP_MAX_BODY_SIZE, NHP_TYPE_ACK, NHP_TYPE_COOKIE } from "./nhp-wire.js";
 import {
@@ -177,12 +177,32 @@ export function createPortalOpenerWithRuntime(
       cause: error,
     });
   }
-  const cell = deployment.cells.get(fingerprintKey(link.claims.cellPublicKey));
-  if (!cell) {
-    link.devicePrivateKey.fill(0);
-    throw new PortalConfigurationError("verified qURL names a cell outside the native catalog");
+  return constructVerifiedPortalOpener(options, link, deployment, runtime);
+}
+
+function constructVerifiedPortalOpener(
+  options: CreatePortalOpenerOptions,
+  link: VerifiedQv2Link,
+  deployment: ValidatedDeployment,
+  runtime: PortalRuntime,
+): PortalOpener {
+  let retainDevicePrivateKey = false;
+  try {
+    const cell = deployment.cells.get(fingerprintKey(link.claims.cellPublicKey));
+    if (!cell) {
+      throw new PortalConfigurationError("verified qURL names a cell outside the native catalog");
+    }
+    // The 64-bit fingerprint is only an efficient map index. The signed cell
+    // identity must still match the exact deployment key used by Noise.
+    if (!timingSafeEqual(cell.serverPublicKey, link.claims.cellPublicKey)) {
+      throw new PortalConfigurationError("deployment cell key does not match the signed cell key");
+    }
+    const opener = new NativePortalOpener(options, link, cell, runtime);
+    retainDevicePrivateKey = true;
+    return opener;
+  } finally {
+    if (!retainDevicePrivateKey) link.devicePrivateKey.fill(0);
   }
-  return new NativePortalOpener(options, link, cell, runtime);
 }
 
 type ActiveGrant = {
@@ -338,8 +358,8 @@ class NativePortalOpener implements PortalOpener {
     if (this.#openPromise && !this.#grant) return { state: "starting" };
     const grant = this.#grant;
     if (!grant) return { state: "idle" };
-    const expiresInMs = Number((grant.expiresAtNanos - this.#runtime.nowNanos()) / 1_000_000n);
-    if (expiresInMs <= 0) {
+    const remainingNanos = grant.expiresAtNanos - this.#runtime.nowNanos();
+    if (remainingNanos <= 0n) {
       return {
         state: "expired",
         expiresInMs: 0,
@@ -347,6 +367,7 @@ class NativePortalOpener implements PortalOpener {
         renewalFailure: this.#renewalFailure,
       };
     }
+    const expiresInMs = Number((remainingNanos + 999_999n) / 1_000_000n);
     return {
       state: this.#renewing ? "renewing" : this.#renewalFailure ? "degraded" : "healthy",
       expiresInMs,
@@ -516,7 +537,8 @@ function parseGrant(body: Uint8Array, nowNanos: bigint): ActiveGrant {
     throw new PortalStateError("native NHP ACK body is malformed", { cause: error });
   }
   if (!isStrictJsonObject(value)) throw new PortalStateError("native NHP ACK must be an object");
-  const errCode = value.errCode === undefined ? "" : requireString(value.errCode, "ACK errCode");
+  const errCode =
+    value.errCode === undefined ? "" : requirePossiblyEmptyString(value.errCode, "ACK errCode");
   if (errCode !== "" && errCode !== "0") {
     if (!/^[1-9][0-9]*$/.test(errCode))
       throw new PortalStateError("native NHP deny code is not canonical");
@@ -557,6 +579,11 @@ function parseGrant(body: Uint8Array, nowNanos: bigint): ActiveGrant {
 function requireString(value: StrictJsonValue | undefined, name: string): string {
   if (typeof value !== "string" || value === "")
     throw new PortalStateError(`${name} is missing or invalid`);
+  return value;
+}
+
+function requirePossiblyEmptyString(value: StrictJsonValue | undefined, name: string): string {
+  if (typeof value !== "string") throw new PortalStateError(`${name} is missing or invalid`);
   return value;
 }
 
@@ -725,3 +752,5 @@ function classifyRenewalFailure(error: unknown): PortalRenewalFailure {
   }
   return { kind: "transport" };
 }
+
+export const portalOpenerTesting = { constructVerifiedPortalOpener };

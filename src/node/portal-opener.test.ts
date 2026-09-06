@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { createMatchedQv2Fixture } from "../__tests__/matched-qv2-fixture.js";
+import { fingerprintKey, loadPortalDeployment } from "./deployment.js";
 import {
   createPortalOpenerWithRuntime,
+  portalOpenerTesting,
   PortalConfigurationError,
   PortalDenyError,
   PortalStateError,
@@ -9,6 +11,7 @@ import {
   type CreatePortalOpenerOptions,
 } from "./portal-opener.js";
 import { NHP_TYPE_ACK, NHP_TYPE_COOKIE, type NHPMessage } from "./nhp-wire.js";
+import { verifyQv2Link } from "./qv2.js";
 
 const matched = createMatchedQv2Fixture();
 
@@ -29,14 +32,14 @@ function deployment() {
   } as const;
 }
 
-function ack(openSeconds = 900): NHPMessage {
+function ack(openSeconds = 900, errCode = "0"): NHPMessage {
   return {
     type: NHP_TYPE_ACK,
     flags: 0,
     counter: 1n,
     timestampNanos: 2n,
     body: Buffer.from(
-      `{"errCode":"0","sessId":18446744073709551615,"opnTime":${openSeconds},` +
+      `{"errCode":"${errCode}","sessId":18446744073709551615,"opnTime":${openSeconds},` +
         `"redirectUrl":"${RESOURCE_URL}","aspToken":"${TOKEN}"}`,
     ),
   };
@@ -176,6 +179,35 @@ describe("native portal opener", () => {
     expect(knock).not.toHaveBeenCalled();
   });
 
+  it("rejects a fingerprint collision, wipes the device key, and performs no I/O", () => {
+    const validated = loadPortalDeployment(deployment());
+    const link = verifyQv2Link(matched.qurl, validated.issuers);
+    const signedFingerprint = fingerprintKey(link.claims.cellPublicKey);
+    const selected = validated.cells.get(signedFingerprint);
+    if (!selected) throw new Error("matched fixture cell is missing");
+    const collision = {
+      ...validated,
+      cells: new Map([[signedFingerprint, { ...selected, serverPublicKey: Buffer.alloc(32, 12) }]]),
+    };
+    const knock = vi.fn();
+    expect(() =>
+      portalOpenerTesting.constructVerifiedPortalOpener(
+        { qurl: matched.qurl, transport: "native-only", deployment: deployment() },
+        link,
+        collision,
+        {
+          knock,
+          fetch,
+          nowNanos: () => 0n,
+          setTimer: setTimeout,
+          clearTimer: clearTimeout,
+        },
+      ),
+    ).toThrow("does not match the signed cell key");
+    expect(link.devicePrivateKey).toEqual(Buffer.alloc(32));
+    expect(knock).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["zero timeout", { timeoutMs: 0 }],
     ["large timeout", { timeoutMs: 60_001 }],
@@ -233,6 +265,59 @@ describe("native portal opener", () => {
     expect(opener.health()).toMatchObject({ state: "healthy", backgroundAttempts: 0 });
     await opener.close();
     expect(opener.health()).toEqual({ state: "closed" });
+  });
+
+  it("preserves duplicate valid caller cookies after Node normalizes them", async () => {
+    const fetchImpl = vi.fn(async () => new Response("ok")) as unknown as typeof globalThis.fetch;
+    const { opener } = fixture(fetchImpl);
+    await opener.start();
+    await opener.fetch({
+      headers: [
+        ["cookie", "theme=dark"],
+        ["cookie", "locale=en"],
+        ["cookie", "qurl_vsession=stale"],
+      ],
+    });
+    const sent = new Headers(vi.mocked(fetchImpl).mock.calls[0][1]?.headers);
+    expect(sent.get("cookie")).toBe(`theme=dark; locale=en; qurl_vsession=${TOKEN}`);
+    await opener.close();
+  });
+
+  it("rejects fetch before start without content I/O", async () => {
+    const fetchImpl = vi.fn() as unknown as typeof globalThis.fetch;
+    const { opener } = fixture(fetchImpl);
+    await expect(opener.fetch()).rejects.toThrow("must be started");
+    expect(fetchImpl).not.toHaveBeenCalled();
+    await opener.close();
+  });
+
+  it("rejects an invalid redirect option without content I/O", async () => {
+    const fetchImpl = vi.fn() as unknown as typeof globalThis.fetch;
+    const { opener } = fixture(fetchImpl);
+    await opener.start();
+    await expect(opener.fetch({}, { redirects: "manual" as never })).rejects.toThrow(
+      "must be follow or error",
+    );
+    expect(fetchImpl).not.toHaveBeenCalled();
+    await opener.close();
+  });
+
+  it("makes close idempotent and rejects start and fetch after close", async () => {
+    const { opener, knock } = fixture();
+    const first = opener.close();
+    expect(opener.close()).toBe(first);
+    await first;
+    await expect(opener.start()).rejects.toThrow("portal opener is closed");
+    await expect(opener.fetch()).rejects.toThrow("portal opener is closed");
+    expect(knock).not.toHaveBeenCalled();
+  });
+
+  it("accepts an explicit empty success errCode like Go", async () => {
+    const { opener, knock } = fixture();
+    knock.mockResolvedValueOnce(ack(900, ""));
+    await expect(opener.start()).resolves.toBeUndefined();
+    expect(opener.health()).toMatchObject({ state: "healthy" });
+    await opener.close();
   });
 
   it("rejects caller redirect overrides and signed-request redirects without replay", async () => {
@@ -293,22 +378,30 @@ describe("native portal opener", () => {
     await opener.close();
   });
 
-  it("follows same-origin redirects with Go method rewriting and blocks another origin", async () => {
-    const fetchImpl = vi
-      .fn()
-      .mockResolvedValueOnce(new Response(null, { status: 302, headers: { location: "/done" } }))
-      .mockResolvedValueOnce(
-        new Response("done", { status: 200 }),
-      ) as unknown as typeof globalThis.fetch;
-    const { opener } = fixture(fetchImpl);
-    await opener.start();
-    await expect(opener.fetch({ method: "POST", body: "payload" })).resolves.toBeInstanceOf(
-      Response,
-    );
-    expect(vi.mocked(fetchImpl).mock.calls[1][0]).toBe("https://private.example.test/done");
-    expect(vi.mocked(fetchImpl).mock.calls[1][1]).toMatchObject({ method: "GET", body: undefined });
-    await opener.close();
+  it.each([301, 302, 303])(
+    "follows HTTP %i with Go method rewriting on the same origin",
+    async (status) => {
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValueOnce(new Response(null, { status, headers: { location: "/done" } }))
+        .mockResolvedValueOnce(
+          new Response("done", { status: 200 }),
+        ) as unknown as typeof globalThis.fetch;
+      const { opener } = fixture(fetchImpl);
+      await opener.start();
+      await expect(opener.fetch({ method: "POST", body: "payload" })).resolves.toBeInstanceOf(
+        Response,
+      );
+      expect(vi.mocked(fetchImpl).mock.calls[1][0]).toBe("https://private.example.test/done");
+      expect(vi.mocked(fetchImpl).mock.calls[1][1]).toMatchObject({
+        method: "GET",
+        body: undefined,
+      });
+      await opener.close();
+    },
+  );
 
+  it("blocks a redirect to another origin", async () => {
     const crossFetch = vi.fn(
       async () =>
         new Response(null, { status: 302, headers: { location: "https://evil.example/x" } }),
@@ -442,6 +535,17 @@ describe("native portal opener", () => {
     });
     await opener.start();
     expect(opener.health()).toMatchObject({ state: "healthy", expiresInMs: 1_000 });
+    await opener.close();
+  });
+
+  it("reports expiry from the exact nanosecond boundary and rounds only display", async () => {
+    const { opener, knock, setNow } = fixture();
+    knock.mockResolvedValueOnce(ack(1));
+    await opener.start();
+    setNow(1_999_999_999n);
+    expect(opener.health()).toMatchObject({ state: "healthy", expiresInMs: 1 });
+    setNow(2_000_000_000n);
+    expect(opener.health()).toMatchObject({ state: "expired", expiresInMs: 0 });
     await opener.close();
   });
 
