@@ -15,11 +15,18 @@ describe("strict native JSON", () => {
   });
 
   it("keeps integer token syntax distinct from fractional and exponent forms", () => {
-    const parsed = parseStrictJson(Buffer.from("[1,1.0,1e0]"), 100) as [bigint, number, number];
-    expect(parsed).toEqual([1n, 1, 1]);
+    const parsed = parseStrictJson(Buffer.from("[1,-0,1.0,1e0]"), 100) as [
+      bigint,
+      number,
+      number,
+      number,
+    ];
+    expect(parsed).toEqual([1n, -0, 1, 1]);
     expect(typeof parsed[0]).toBe("bigint");
     expect(typeof parsed[1]).toBe("number");
     expect(typeof parsed[2]).toBe("number");
+    expect(typeof parsed[3]).toBe("number");
+    expect(Object.is(parsed[1], -0)).toBe(true);
   });
 
   it("bounds bytes and nesting before materialization", () => {

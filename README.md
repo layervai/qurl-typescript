@@ -158,13 +158,14 @@ const response = await opener.fetch(
 ```
 
 The request builder receives a copy of the exact authenticated ACK target. The
-opener ignores mutations to that copy and sends only to the fixed ACK URL. It
-adds the private `qurl_vsession` cookie, replaces a caller-supplied cookie with
-that name, and preserves other valid cookies. It does not accept a caller URL or
-path. Use `redirects: 'error'` for a request whose signature binds its method,
-target, timestamp, or nonce. This mode closes a redirect response and does not
-replay the request. The default `follow` mode permits at most 10 same-origin
-redirects and uses the standard 301/302/303 method rewrite rules.
+opener ignores mutations to that copy and sends the initial request only to the
+fixed ACK URL. It adds the private `qurl_vsession` cookie, replaces a
+caller-supplied cookie with that name, and preserves other valid cookies. It
+does not accept a caller URL or path. Use `redirects: 'error'` for a request
+whose signature binds its method, target, timestamp, or nonce. This mode closes
+a redirect response and does not replay the request. The default `follow` mode
+can then move within the authenticated origin. It permits at most 10 redirects
+and uses the standard 301/302/303 method rewrite rules.
 
 Native opening requires public deployment trust. Set `QURL_DEPLOYMENT` to one
 strict JSON object or to a path that contains that object. The object must have

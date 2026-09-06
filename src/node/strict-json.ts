@@ -130,7 +130,12 @@ class StrictJsonParser {
     // Keep every syntactic JSON integer distinct from fractional or exponent
     // notation. NHP integer fields reject 1.0 and 1e0 even when Number would
     // reduce them to the same mathematical value as 1.
-    if (!encoded.includes(".") && !/[eE]/.test(encoded)) return BigInt(encoded);
+    if (!encoded.includes(".") && !/[eE]/.test(encoded)) {
+      // BigInt("-0") becomes 0n and loses the wire sign. Keep negative zero as
+      // a number so unsigned integer fields reject this noncanonical syntax.
+      if (encoded === "-0") return -0;
+      return BigInt(encoded);
+    }
     const value = Number(encoded);
     if (!Number.isFinite(value)) throw new Error("JSON number is outside the finite range");
     return value;

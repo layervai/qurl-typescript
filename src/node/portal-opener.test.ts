@@ -371,6 +371,7 @@ describe("native portal opener", () => {
   it.each([
     ["malformed", Buffer.from("not-json")],
     ["deny", Buffer.from('{"errCode":"7","opnTime":0}')],
+    ["negative-zero deny", Buffer.from('{"errCode":"7","opnTime":-0}')],
   ])("wipes the authenticated %s ACK body after rejection", async (_name, body) => {
     const { opener, knock } = fixture();
     knock.mockResolvedValueOnce({
@@ -380,7 +381,12 @@ describe("native portal opener", () => {
       timestampNanos: 2n,
       body,
     });
-    await expect(opener.start()).rejects.toBeInstanceOf(Error);
+    const start = opener.start();
+    if (_name === "negative-zero deny") {
+      await expect(start).rejects.toThrow("success capability fields");
+    } else {
+      await expect(start).rejects.toBeInstanceOf(Error);
+    }
     expect([...body]).toEqual(new Array(body.byteLength).fill(0));
     await opener.close();
   });

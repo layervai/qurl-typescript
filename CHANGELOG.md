@@ -41,8 +41,9 @@
 - **node:** add a Node-only native NHP 1.1 portal opener at
   `@layervai/qurl/node` for both ESM and CommonJS. It verifies qv2 links locally,
   uses strict deployment trust, opens through UDP with no relay fallback, keeps
-  one admission ready through bounded background renewal, and fetches only the
-  exact authenticated ACK target. Signed requests can reject all redirects.
+  one admission ready through bounded background renewal, and starts each fetch
+  at the exact authenticated ACK target. Default redirect handling stays within
+  that origin. Signed requests can reject all redirects.
 
 ### Bug Fixes
 

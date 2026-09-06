@@ -48,6 +48,16 @@ function encodeTransport(claims: string, secret: string, signature: string): str
 }
 
 describe("qv2t1 verifier", () => {
+  it.each([
+    ["one trailing byte", Buffer.from([0])],
+    ["one trailing DER value", Buffer.from([0x30, 0])],
+  ])("rejects an issuer SPKI with %s", (_name, trailing) => {
+    const spki = Buffer.from(issuer.spki_der_b64, "base64");
+    expect(() => issuerKeyFromSpki(Buffer.concat([spki, trailing]))).toThrow(
+      "exactly one canonical SPKI",
+    );
+  });
+
   it.each(qv2.classes.transport.vectors)("matches transport vector $name", (vector) => {
     if (vector.expect === "accept") {
       expect(qv2Testing.decodeTransport(vector.transport_fragment)).toBe(vector.canonical_fragment);

@@ -78,6 +78,14 @@ export function verifyQv2Link(
 
 export function issuerKeyFromSpki(spki: Uint8Array): KeyObject {
   const key = createPublicKey({ key: spki, format: "der", type: "spki" });
+  const canonical = key.export({ format: "der", type: "spki" });
+  const supplied = Buffer.from(spki.buffer, spki.byteOffset, spki.byteLength);
+  // Node accepts a valid SPKI followed by unrelated DER bytes. Go's
+  // x509.ParsePKIXPublicKey requires the complete input to contain one key, so
+  // require the same byte-exact consumption before this key becomes trust.
+  if (canonical.byteLength !== supplied.byteLength || !canonical.equals(supplied)) {
+    throw new Error("issuer key must contain exactly one canonical SPKI public key");
+  }
   if (key.asymmetricKeyType !== "ec" || key.asymmetricKeyDetails?.namedCurve !== "prime256v1") {
     throw new Error("issuer key must be a P-256 SPKI public key");
   }
