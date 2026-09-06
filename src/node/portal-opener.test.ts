@@ -822,6 +822,19 @@ describe("native portal opener", () => {
     await opener.close();
   });
 
+  it("matches Go by accepting an explicit empty deny application token", async () => {
+    const { opener, knock } = fixture();
+    knock.mockResolvedValueOnce({
+      type: NHP_TYPE_ACK,
+      flags: 0,
+      counter: 1n,
+      timestampNanos: 2n,
+      body: Buffer.from('{"errCode":"7","opnTime":0,"aspToken":""}'),
+    });
+    await expect(opener.start()).rejects.toMatchObject({ name: "PortalDenyError", errCode: "7" });
+    await opener.close();
+  });
+
   it("accepts an unrecognized canonical decimal deny errCode like Go", async () => {
     const body = Buffer.from('{"errCode":"999999999999999999999999","opnTime":0}');
     const { opener, knock } = fixture();

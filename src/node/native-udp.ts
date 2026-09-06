@@ -1,6 +1,6 @@
 import { lookup } from "node:dns/promises";
 import type { LookupAddress } from "node:dns";
-import { createSocket } from "node:dgram";
+import { createSocket, type Socket } from "node:dgram";
 import { BlockList, isIP } from "node:net";
 import {
   buildNHPMessage,
@@ -278,16 +278,32 @@ function exchangeDatagram(
       } else finish(undefined, reply);
     });
     socket.connect(port, address, () => {
-      // dgram owns its input until this callback. Use an independent encrypted
-      // datagram so nativeKnock can wipe the builder's packet immediately when
-      // an abort settles this exchange while libuv still has a send queued.
-      const outbound = Buffer.from(packet);
-      socket.send(outbound, (error) => {
-        void outbound;
-        if (error) finish(error);
-      });
+      sendOwnedDatagram(socket, packet, finish);
     });
   });
+}
+
+function sendOwnedDatagram(
+  socket: Socket,
+  packet: Uint8Array,
+  finish: (error: unknown) => void,
+): void {
+  // dgram owns its input until this callback. Use an independent encrypted
+  // datagram so nativeKnock can wipe the builder's packet immediately when an
+  // abort settles the exchange. Wipe this copy only after libuv releases it.
+  const outbound = Buffer.from(packet);
+  try {
+    socket.send(outbound, (error) => {
+      try {
+        if (error) finish(error);
+      } finally {
+        outbound.fill(0);
+      }
+    });
+  } catch (error) {
+    outbound.fill(0);
+    finish(error);
+  }
 }
 
 function waitForAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
@@ -320,5 +336,6 @@ export const nativeUdpTesting = {
   resolvePublicAddresses,
   nativeKnockWithRuntime,
   exchangeDatagram,
+  sendOwnedDatagram,
   socketExchangeError: (cause: unknown): Error => new SocketExchangeError(cause),
 };

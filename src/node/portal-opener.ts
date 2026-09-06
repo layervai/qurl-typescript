@@ -579,7 +579,7 @@ function parseGrant(body: Uint8Array, nowNanos: bigint): ActiveGrant {
     if (value.opnTime !== 0n) {
       throw new PortalInvalidReplyError("native NHP deny ACK opnTime must be canonical zero");
     }
-    if (value.aspToken !== undefined) {
+    if (value.aspToken !== undefined && value.aspToken !== "") {
       throw new PortalInvalidReplyError("native NHP deny ACK contains success capability fields");
     }
     throw new PortalDenyError(errCode);

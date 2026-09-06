@@ -1,4 +1,4 @@
-import { createSocket } from "node:dgram";
+import { createSocket, type Socket } from "node:dgram";
 import type { lookup } from "node:dns/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { nativeUdpTesting } from "./native-udp.js";
@@ -70,6 +70,42 @@ describe("native UDP DNS fence", () => {
 });
 
 describe("native UDP exchange", () => {
+  it("keeps the Node-owned send copy intact until its callback and then wipes it", () => {
+    let owned: Buffer | undefined;
+    let sent!: (error: Error | null) => void;
+    const socket = {
+      send(packet: Buffer, callback: (error: Error | null) => void) {
+        owned = packet;
+        sent = callback;
+      },
+    } as unknown as Socket;
+    const input = Buffer.from([7, 8, 9]);
+    const finish = vi.fn();
+
+    nativeUdpTesting.sendOwnedDatagram(socket, input, finish);
+    input.fill(0);
+    expect(owned).toEqual(Buffer.from([7, 8, 9]));
+    sent(null);
+    expect(owned).toEqual(Buffer.alloc(3));
+    expect(finish).not.toHaveBeenCalled();
+  });
+
+  it("wipes the Node-owned send copy when socket.send throws synchronously", () => {
+    const failure = new Error("send failed before queueing");
+    let owned: Buffer | undefined;
+    const socket = {
+      send(packet: Buffer) {
+        owned = packet;
+        throw failure;
+      },
+    } as unknown as Socket;
+    const finish = vi.fn();
+
+    nativeUdpTesting.sendOwnedDatagram(socket, Buffer.from([7, 8, 9]), finish);
+    expect(owned).toEqual(Buffer.alloc(3));
+    expect(finish).toHaveBeenCalledWith(failure);
+  });
+
   it("sends and receives one bounded UDP datagram", async () => {
     const port = await replyServer(Buffer.from([1, 2, 3]));
     await expect(
