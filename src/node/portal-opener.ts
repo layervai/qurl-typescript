@@ -284,15 +284,15 @@ class NativePortalOpener implements PortalOpener {
 
   async start(options: PortalStartOptions = {}): Promise<void> {
     this.#requireOpen();
-    if (options.signal?.aborted) {
-      throw options.signal.reason ?? new DOMException("Aborted", "AbortError");
-    }
     if (
       this.#grant &&
       this.#runtime.nowNanos() < this.#grant.expiresAtNanos &&
       !this.#renewalFailure
     ) {
       return;
+    }
+    if (options.signal?.aborted) {
+      throw options.signal.reason ?? new DOMException("Aborted", "AbortError");
     }
     const sharedOpen = this.#openPromise !== undefined;
     if (!sharedOpen && this.#renewalTimer) {

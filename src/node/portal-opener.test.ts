@@ -859,6 +859,16 @@ describe("native portal opener", () => {
     await opener.close();
   });
 
+  it("keeps Go idempotency when start receives an aborted signal for a healthy grant", async () => {
+    const { opener, knock } = fixture();
+    await opener.start();
+    const controller = new AbortController();
+    controller.abort(new Error("late lifecycle cancellation"));
+    await expect(opener.start({ signal: controller.signal })).resolves.toBeUndefined();
+    expect(knock).toHaveBeenCalledTimes(1);
+    await opener.close();
+  });
+
   it("measures grant lifetime and renewal from before the native exchange", async () => {
     const { opener, knock, setNow, timerDelays } = fixture();
     knock.mockImplementationOnce(async () => {
