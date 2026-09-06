@@ -6,13 +6,14 @@ import {
   loadPortalDeployment,
   type PortalDeployment,
   type ValidatedCell,
+  type ValidatedDeployment,
 } from "./deployment.js";
 import { nativeKnock, type NativeExchangeOptions } from "./native-udp.js";
 import { isStrictJsonObject, parseStrictJson, type StrictJsonValue } from "./strict-json.js";
 import { verifyQv2Link, type VerifiedQv2Link } from "./qv2.js";
 
 const SESSION_COOKIE = "qurl_vsession";
-const MAX_REDIRECTS = 10;
+const MAX_REDIRECT_REQUESTS = 10;
 const RENEWAL_NUMERATOR = 3;
 const RENEWAL_DENOMINATOR = 4;
 const MAX_BACKGROUND_RENEWAL_ATTEMPTS = 4;
@@ -61,7 +62,7 @@ export type PortalSessionHealth =
 export interface PortalOpener {
   /** Open now and schedule renewal before the admission expires. */
   start(options?: PortalStartOptions): Promise<void>;
-  /** Fetch the exact authenticated ACK resource URL. No URL or path is accepted. */
+  /** Start a fetch at the exact ACK URL. Same-origin redirects follow only when allowed. */
   fetch(init?: RequestInit | PortalRequestBuilder, options?: PortalFetchOptions): Promise<Response>;
   /** Read local session state. This method does no I/O and exposes no capability. */
   health(): PortalSessionHealth;
@@ -153,13 +154,19 @@ export function createPortalOpenerWithRuntime(
     throw new PortalConfigurationError("native portal opener maxAddresses must be from 1 to 16");
   }
 
-  let deployment;
-  let link: VerifiedQv2Link;
+  let deployment: ValidatedDeployment;
   try {
     deployment = loadPortalDeployment(options.deployment);
+  } catch (error) {
+    throw new PortalConfigurationError("native qURL deployment trust is invalid", {
+      cause: error,
+    });
+  }
+  let link: VerifiedQv2Link;
+  try {
     link = verifyQv2Link(options.qurl, deployment.issuers);
   } catch (error) {
-    throw new PortalVerificationError("native qURL trust or credential validation failed", {
+    throw new PortalVerificationError("native qURL credential validation failed", {
       cause: error,
     });
   }
@@ -211,7 +218,13 @@ class NativePortalOpener implements PortalOpener {
 
   async start(options: PortalStartOptions = {}): Promise<void> {
     this.#requireOpen();
-    if (this.#grant && this.#runtime.nowNanos() < this.#grant.expiresAtNanos) return;
+    if (
+      this.#grant &&
+      this.#runtime.nowNanos() < this.#grant.expiresAtNanos &&
+      !this.#renewalFailure
+    ) {
+      return;
+    }
     return this.#openSingleFlight(options.signal);
   }
 
@@ -234,6 +247,10 @@ class NativePortalOpener implements PortalOpener {
         cause: this.#renewalError,
       });
     }
+    // A successful renewal or close wipes the mutable grant token. Keep the
+    // unavoidable request string local to this fetch so every redirect leg has
+    // one stable credential snapshot.
+    const sessionToken = grant.token.toString("ascii");
     const init = typeof input === "function" ? input(new URL(grant.resourceUrl)) : input;
     if (!init || typeof init !== "object") {
       throw new PortalStateError("portal request builder must return RequestInit");
@@ -247,8 +264,9 @@ class NativePortalOpener implements PortalOpener {
     let method = (init.method ?? "GET").toUpperCase();
     let body = init.body;
     let headers = new Headers(init.headers);
-    for (let redirects = 0; ; redirects++) {
-      const requestHeaders = authorizeHeaders(headers, grant.token);
+    for (let requestCount = 1; ; requestCount++) {
+      this.#requireOpen();
+      const requestHeaders = authorizeHeaders(headers, sessionToken);
       const response = await this.#runtime.fetch(currentUrl, {
         ...init,
         method,
@@ -269,9 +287,9 @@ class NativePortalOpener implements PortalOpener {
       }
       const location = response.headers.get("location");
       if (!location) return response;
-      if (redirects >= MAX_REDIRECTS) {
+      if (requestCount >= MAX_REDIRECT_REQUESTS) {
         await discardResponseBody(response);
-        throw new PortalStateError("portal fetch stopped after 10 redirects");
+        throw new PortalStateError("portal fetch stopped at the 10-request redirect limit");
       }
       let next: URL;
       try {
@@ -382,6 +400,9 @@ class NativePortalOpener implements PortalOpener {
     this.#requireOpen();
     const body = this.#knockBody();
     try {
+      // Start the local validity bound before DNS and UDP I/O. The cell starts
+      // its grant no earlier than this, so this client never assumes extra RTT.
+      const openedAtNanos = this.#runtime.nowNanos();
       const reply = await this.#runtime.knock(this.#cell, this.#link.devicePrivateKey, body, {
         ...this.#exchangeOptions,
         signal,
@@ -396,7 +417,7 @@ class NativePortalOpener implements PortalOpener {
         if (reply.type !== NHP_TYPE_ACK) {
           throw new PortalStateError("native NHP returned an unexpected reply type");
         }
-        const grant = parseGrant(reply.body, this.#runtime.nowNanos());
+        const grant = parseGrant(reply.body, openedAtNanos);
         const old = this.#grant;
         this.#grant = grant;
         old?.token.fill(0);
@@ -586,7 +607,7 @@ function hasUnsafeTokenByte(value: string): boolean {
   return false;
 }
 
-function authorizeHeaders(input: Headers, token: Buffer): Headers {
+function authorizeHeaders(input: Headers, token: string): Headers {
   const headers = new Headers(input);
   const preserved: string[] = [];
   for (const raw of (headers.get("cookie") ?? "").split(";")) {
@@ -601,7 +622,7 @@ function authorizeHeaders(input: Headers, token: Buffer): Headers {
     if (!isValidCookieValue(value)) continue;
     preserved.push(`${name}=${value}`);
   }
-  preserved.push(`${SESSION_COOKIE}=${token.toString("ascii")}`);
+  preserved.push(`${SESSION_COOKIE}=${token}`);
   headers.set("cookie", preserved.join("; "));
   return headers;
 }

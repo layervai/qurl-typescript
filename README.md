@@ -140,21 +140,25 @@ expired.
 ```javascript
 const { createPortalOpener } = require('@layervai/qurl/node');
 
-const opener = createPortalOpener({
-  qurl: process.env.PRIVATE_UPLOAD_QURL,
-  transport: 'native-only',
-});
-
-await opener.start();
-
-const response = await opener.fetch(
-  (authenticatedTarget) => ({
-    method: 'POST',
-    headers: signUploadForExactTarget(authenticatedTarget),
-    body: uploadBody,
-  }),
-  { redirects: 'error' },
-);
+async function uploadPrivateObject(uploadBody) {
+  const opener = createPortalOpener({
+    qurl: process.env.PRIVATE_UPLOAD_QURL,
+    transport: 'native-only',
+  });
+  try {
+    await opener.start();
+    return await opener.fetch(
+      (authenticatedTarget) => ({
+        method: 'POST',
+        headers: signUploadForExactTarget(authenticatedTarget),
+        body: uploadBody,
+      }),
+      { redirects: 'error' },
+    );
+  } finally {
+    await opener.close();
+  }
+}
 ```
 
 The request builder receives a copy of the exact authenticated ACK target. The
@@ -164,8 +168,9 @@ caller-supplied cookie with that name, and preserves other valid cookies. It
 does not accept a caller URL or path. Use `redirects: 'error'` for a request
 whose signature binds its method, target, timestamp, or nonce. This mode closes
 a redirect response and does not replay the request. The default `follow` mode
-can then move within the authenticated origin. It permits at most 10 redirects
-and uses the standard 301/302/303 method rewrite rules.
+can then move within the authenticated origin. It permits at most 10 requests,
+including the initial request, and uses the standard 301/302/303 method rewrite
+rules.
 
 Native opening requires public deployment trust. Set `QURL_DEPLOYMENT` to one
 strict JSON object or to a path that contains that object. The object must have
@@ -176,12 +181,19 @@ link names an unknown cell.
 
 Use `opener.health()` for the local `idle`, `starting`, `healthy`, `renewing`,
 `degraded`, `expired`, or `closed` state. A degraded state includes a typed
-renewal failure class but no raw session capability. Call `await opener.close()`
-during shutdown. Close cancels and waits for an active NHP exchange, then wipes
-the mutable private-key, visitor-secret, and session-token buffers. JavaScript
-can create immutable string copies during JSON and HTTP processing, so the SDK
-cannot promise full memory zeroization before garbage collection. Never log the
-qURL, ACK body, request cookies, or request headers.
+renewal failure class but no raw session capability. After bounded background
+retries stop, `start()` makes an explicit recovery attempt. This does not put an
+open on the `fetch()` path. Stop and await in-flight content requests before you
+call `await opener.close()` during shutdown. Close cancels and waits for an
+active NHP exchange, then wipes the mutable private-key, visitor-secret, and
+session-token buffers. JavaScript can create immutable string copies during
+JSON and HTTP processing, so the SDK cannot promise full memory zeroization
+before garbage collection. Never log the qURL, ACK body, request cookies, or
+request headers.
+
+Local qv2 verification checks the signed bytes, trust, and clock-free claim
+ordering. As in the Go SDK, it does not compare `nbf` or `exp` with the local
+clock. The authenticated NHP open is the authoritative live validity check.
 
 ## REST-Shaped API (Compatibility)
 

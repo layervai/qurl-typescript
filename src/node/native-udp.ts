@@ -100,21 +100,45 @@ export interface NativeExchangeOptions {
   readonly maxAddresses?: number;
 }
 
+interface NativeKnockRuntime {
+  readonly buildMessage: typeof buildNHPMessage;
+  readonly resolveAddresses: typeof resolvePublicAddresses;
+  readonly exchange: typeof exchangeDatagram;
+  readonly decryptReply: typeof decryptNHPReply;
+}
+
+const defaultNativeKnockRuntime: NativeKnockRuntime = {
+  buildMessage: buildNHPMessage,
+  resolveAddresses: resolvePublicAddresses,
+  exchange: exchangeDatagram,
+  decryptReply: decryptNHPReply,
+};
+
 export async function nativeKnock(
   cell: ValidatedCell,
   devicePrivateKey: Uint8Array,
   body: Uint8Array,
   options: NativeExchangeOptions = {},
 ): Promise<NHPMessage> {
+  return nativeKnockWithRuntime(cell, devicePrivateKey, body, options, defaultNativeKnockRuntime);
+}
+
+async function nativeKnockWithRuntime(
+  cell: ValidatedCell,
+  devicePrivateKey: Uint8Array,
+  body: Uint8Array,
+  options: NativeExchangeOptions,
+  runtime: NativeKnockRuntime,
+): Promise<NHPMessage> {
   if (options.signal?.aborted) throw options.signal.reason;
-  const built = buildNHPMessage({
+  const built = runtime.buildMessage({
     type: NHP_TYPE_KNOCK,
     devicePrivateKey,
     serverPublicKey: cell.serverPublicKey,
     body,
   });
   try {
-    const addresses = await resolvePublicAddresses(
+    const addresses = await runtime.resolveAddresses(
       cell.host,
       options.maxAddresses ?? DEFAULT_MAX_ADDRESSES,
       options.signal,
@@ -122,7 +146,7 @@ export async function nativeKnock(
     let lastError: unknown;
     for (const address of addresses) {
       try {
-        const packet = await exchangeDatagram(
+        const packet = await runtime.exchange(
           address.address,
           address.family,
           cell.port,
@@ -130,7 +154,7 @@ export async function nativeKnock(
           options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
           options.signal,
         );
-        const reply = decryptNHPReply(devicePrivateKey, cell.serverPublicKey, packet);
+        const reply = runtime.decryptReply(devicePrivateKey, cell.serverPublicKey, packet);
         if (reply.type === NHP_TYPE_COOKIE) return reply;
         if (reply.counter !== built.counter) {
           reply.body.fill(0);
@@ -226,6 +250,9 @@ function exchangeDatagram(
       settled = true;
       clearTimeout(timer);
       signal?.removeEventListener("abort", abort);
+      // An error that arrives while close settles must not become an unhandled
+      // EventEmitter error after the one-shot operational listener ran.
+      socket.on("error", () => undefined);
       try {
         socket.close();
       } catch {
@@ -278,4 +305,9 @@ function waitForAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> 
   });
 }
 
-export const nativeUdpTesting = { isPublicAddress };
+export const nativeUdpTesting = {
+  isPublicAddress,
+  nativeKnockWithRuntime,
+  exchangeDatagram,
+  socketExchangeError: (cause: unknown): Error => new SocketExchangeError(cause),
+};

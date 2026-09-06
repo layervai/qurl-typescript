@@ -4,6 +4,7 @@ import {
   createPortalOpenerWithRuntime,
   PortalConfigurationError,
   PortalStateError,
+  PortalVerificationError,
   type CreatePortalOpenerOptions,
 } from "./portal-opener.js";
 import { NHP_TYPE_ACK, type NHPMessage } from "./nhp-wire.js";
@@ -145,6 +146,33 @@ describe("native portal opener", () => {
         },
       ),
     ).toThrow(PortalConfigurationError);
+  });
+
+  it("separates deployment configuration failures from qURL verification failures", () => {
+    const runtime = {
+      knock: vi.fn(),
+      fetch,
+      nowNanos: () => 0n,
+      setTimer: setTimeout,
+      clearTimer: clearTimeout,
+    };
+    expect(() =>
+      createPortalOpenerWithRuntime(
+        {
+          qurl: `https://qurl.link/#${complete.transport_fragment}`,
+          transport: "native-only",
+          deployment: { ...deployment(), issuers: [] },
+        },
+        runtime,
+      ),
+    ).toThrow(PortalConfigurationError);
+    expect(() =>
+      createPortalOpenerWithRuntime(
+        { qurl: "https://qurl.link/#invalid", transport: "native-only", deployment: deployment() },
+        runtime,
+      ),
+    ).toThrow(PortalVerificationError);
+    expect(runtime.knock).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -291,6 +319,53 @@ describe("native portal opener", () => {
     await cross.close();
   });
 
+  it("uses the Go-compatible 10-request redirect limit", async () => {
+    const fetchImpl = vi.fn(
+      async () => new Response(null, { status: 302, headers: { location: "/again" } }),
+    ) as unknown as typeof globalThis.fetch;
+    const { opener } = fixture(fetchImpl);
+    await opener.start();
+    await expect(opener.fetch()).rejects.toThrow("10-request redirect limit");
+    expect(fetchImpl).toHaveBeenCalledTimes(10);
+    await opener.close();
+  });
+
+  it.each([307, 308])(
+    "returns HTTP %i when its request body cannot be replayed",
+    async (status) => {
+      const fetchImpl = vi.fn(
+        async () => new Response(null, { status, headers: { location: "/again" } }),
+      ) as unknown as typeof globalThis.fetch;
+      const { opener } = fixture(fetchImpl);
+      await opener.start();
+      const body = new ReadableStream();
+      await expect(opener.fetch({ method: "POST", body })).resolves.toMatchObject({ status });
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      await opener.close();
+    },
+  );
+
+  it("keeps one token snapshot when renewal completes during a redirect chain", async () => {
+    let runRenewal: (() => void) | undefined;
+    const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      if (vi.mocked(fetchImpl).mock.calls.length === 1) {
+        runRenewal?.();
+        await new Promise((resolve) => setImmediate(resolve));
+        return new Response(null, { status: 302, headers: { location: "/done" } });
+      }
+      expect(new Headers(init?.headers).get("cookie")).toBe(`qurl_vsession=${TOKEN}`);
+      return new Response("done", { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+    const { opener, knock, timers } = fixture(fetchImpl);
+    knock.mockResolvedValueOnce(ack(4)).mockResolvedValueOnce(ack(4));
+    await opener.start();
+    runRenewal = timers.shift();
+    await expect(opener.fetch()).resolves.toBeInstanceOf(Response);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(knock).toHaveBeenCalledTimes(2);
+    await opener.close();
+  });
+
   it("retries renewal only in the background and keeps the valid prior grant", async () => {
     const fetchImpl = vi.fn(async () => new Response("ok")) as unknown as typeof globalThis.fetch;
     const { opener, knock, timers } = fixture(fetchImpl);
@@ -313,6 +388,40 @@ describe("native portal opener", () => {
     await new Promise((resolve) => setImmediate(resolve));
     expect(opener.health()).toMatchObject({ state: "healthy", backgroundAttempts: 0 });
     expect(knock).toHaveBeenCalledTimes(3);
+    await opener.close();
+  });
+
+  it("lets start recover a degraded grant after bounded background retries stop", async () => {
+    const { opener, knock, timers } = fixture();
+    knock
+      .mockResolvedValueOnce(ack(10))
+      .mockRejectedValueOnce(new Error("renewal 1"))
+      .mockRejectedValueOnce(new Error("renewal 2"))
+      .mockRejectedValueOnce(new Error("renewal 3"))
+      .mockRejectedValueOnce(new Error("renewal 4"))
+      .mockResolvedValueOnce(ack(10));
+    await opener.start();
+    for (let attempt = 0; attempt < 4; attempt++) {
+      expect(timers).toHaveLength(1);
+      timers.shift()!();
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    expect(timers).toHaveLength(0);
+    expect(opener.health()).toMatchObject({ state: "degraded", backgroundAttempts: 4 });
+    await opener.start();
+    expect(knock).toHaveBeenCalledTimes(6);
+    expect(opener.health()).toMatchObject({ state: "healthy", backgroundAttempts: 0 });
+    await opener.close();
+  });
+
+  it("measures grant lifetime from before the native exchange", async () => {
+    const { opener, knock, setNow } = fixture();
+    knock.mockImplementationOnce(async () => {
+      setNow(2_000_000_000n);
+      return ack(2);
+    });
+    await opener.start();
+    expect(opener.health()).toMatchObject({ state: "healthy", expiresInMs: 1_000 });
     await opener.close();
   });
 
