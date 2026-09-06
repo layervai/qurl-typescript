@@ -320,6 +320,28 @@ describe("native portal opener", () => {
     await opener.close();
   });
 
+  it("wipes mutable token validation bytes on success and rejection", () => {
+    const decoded: Buffer[] = [];
+    const decode = (part: string) => {
+      const value = Buffer.from(part, "base64url");
+      decoded.push(value);
+      return value;
+    };
+    expect(() => portalOpenerTesting.validateSessionToken(TOKEN, decode)).not.toThrow();
+    expect(decoded).toHaveLength(2);
+    expect(decoded.every((value) => value.equals(Buffer.alloc(value.byteLength)))).toBe(true);
+
+    decoded.length = 0;
+    expect(() =>
+      portalOpenerTesting.validateSessionToken(
+        `A.${Buffer.alloc(32).toString("base64url")}`,
+        decode,
+      ),
+    ).toThrow("not canonical base64url");
+    expect(decoded).toHaveLength(1);
+    expect(decoded[0]).toEqual(Buffer.alloc(decoded[0].byteLength));
+  });
+
   it("rejects caller redirect overrides and signed-request redirects without replay", async () => {
     const fetchImpl = vi.fn(
       async () => new Response(null, { status: 307, headers: { location: "/other" } }),

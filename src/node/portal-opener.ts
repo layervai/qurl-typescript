@@ -622,7 +622,10 @@ function normalizedHttpsOrigin(url: URL): string {
   return `https://${url.hostname.toLowerCase()}:${Number(port)}`;
 }
 
-function validateSessionToken(value: string): void {
+function validateSessionToken(
+  value: string,
+  decode: (part: string) => Buffer = (part) => Buffer.from(part, "base64url"),
+): void {
   if (value.length > 4_096 || value.trim() !== value || hasUnsafeTokenByte(value)) {
     throw new PortalStateError("ACK application token has an invalid shape");
   }
@@ -630,13 +633,22 @@ function validateSessionToken(value: string): void {
   if (parts.length !== 2 || parts.some((part) => part === "" || !/^[A-Za-z0-9_-]+$/.test(part))) {
     throw new PortalStateError("ACK application token has an invalid shape");
   }
-  for (const part of parts) {
-    const decoded = Buffer.from(part, "base64url");
-    if (decoded.toString("base64url") !== part) {
-      throw new PortalStateError("ACK application token is not canonical base64url");
+  let signatureLength = 0;
+  for (let index = 0; index < parts.length; index++) {
+    const part = parts[index];
+    const decoded = decode(part);
+    try {
+      if (decoded.toString("base64url") !== part) {
+        throw new PortalStateError("ACK application token is not canonical base64url");
+      }
+      if (index === 1) signatureLength = decoded.byteLength;
+    } finally {
+      // The token is a bearer capability. Wipe mutable validation copies even
+      // though its unavoidable parsed string cannot be zeroized in JavaScript.
+      decoded.fill(0);
     }
   }
-  if (Buffer.from(parts[1], "base64url").byteLength !== 32) {
+  if (signatureLength !== 32) {
     throw new PortalStateError("ACK application token signature has an invalid length");
   }
 }
@@ -760,4 +772,4 @@ function classifyRenewalFailure(error: unknown): PortalRenewalFailure {
   return { kind: "transport" };
 }
 
-export const portalOpenerTesting = { constructVerifiedPortalOpener };
+export const portalOpenerTesting = { constructVerifiedPortalOpener, validateSessionToken };
