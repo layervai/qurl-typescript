@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import conformancePackage from "@layervai/qurl-conformance";
 import { getEventListeners } from "node:events";
+import { Readable } from "node:stream";
 import { createMatchedQv2Fixture } from "../__tests__/matched-qv2-fixture.js";
 import { fingerprintKey, loadPortalDeployment } from "./deployment.js";
 import {
@@ -906,6 +907,24 @@ describe("native portal opener", () => {
       opener.fetch({ method: "POST", body: request.body, ...invalid }),
     ).rejects.toBeInstanceOf(TypeError);
     expect(request.wasCanceled()).toBe(true);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    await opener.close();
+  });
+
+  it("destroys a Node Readable when request preparation throws", async () => {
+    const body = Readable.from(["payload"]);
+    const fetchImpl = vi.fn() as unknown as typeof globalThis.fetch;
+    const { opener } = fixture(fetchImpl);
+    await opener.start();
+
+    await expect(
+      opener.fetch({
+        method: "POST",
+        body: body as unknown as RequestInit["body"],
+        headers: [["bad header name", "value"]],
+      }),
+    ).rejects.toBeInstanceOf(TypeError);
+    expect(body.destroyed).toBe(true);
     expect(fetchImpl).not.toHaveBeenCalled();
     await opener.close();
   });

@@ -1051,9 +1051,28 @@ async function discardResponseBody(response: Response): Promise<void> {
 }
 
 async function discardRequestBody(body: RequestInit["body"]): Promise<void> {
-  if (!(body instanceof ReadableStream)) return;
   try {
-    await body.cancel();
+    if (body instanceof ReadableStream) {
+      await body.cancel();
+      return;
+    }
+    if (!body || typeof body !== "object") return;
+    const destroy = Reflect.get(body, "destroy");
+    if (typeof destroy === "function") {
+      Reflect.apply(destroy, body, []);
+      return;
+    }
+    const asyncIterator = Reflect.get(body, Symbol.asyncIterator);
+    if (typeof asyncIterator === "function") {
+      const iterator = Reflect.apply(asyncIterator, body, []) as AsyncIterator<unknown>;
+      await iterator.return?.();
+      return;
+    }
+    const iteratorFactory = Reflect.get(body, Symbol.iterator);
+    if (typeof iteratorFactory === "function") {
+      const iterator = Reflect.apply(iteratorFactory, body, []) as Iterator<unknown>;
+      iterator.return?.();
+    }
   } catch {
     // Invalid request handling must keep its stable error for a broken stream.
   }
