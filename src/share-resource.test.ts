@@ -174,7 +174,7 @@ describe("shareResource", () => {
   it("posts an empty object for platform defaults and maps the one-time response", async () => {
     const fetch = mockFetch({ status: 200, body: shareResponse() });
 
-    const share = await createClient(fetch).shareResource("resource/public+id");
+    const share = await createClient(fetch).shareResource(matching.expected_crid);
 
     expect(share).toBeInstanceOf(ShareLink);
     expect(share.link).toBe("https://qurl.link/#qv2t1.example");
@@ -185,7 +185,7 @@ describe("shareResource", () => {
     expect(share.expiresInSeconds).toBe(300);
     expect(share.singleUse).toBe(false);
     expect(fetch).toHaveBeenCalledWith(
-      "https://api.test.layerv.ai/v1/resources/resource%2Fpublic%2Bid/share",
+      `https://api.test.layerv.ai/v1/resources/${matching.expected_crid}/share`,
       expect.objectContaining({ method: "POST", body: "{}" }),
     );
   });
@@ -193,7 +193,7 @@ describe("shareResource", () => {
   it("redacts the one-time credential from serialization, inspection, and object spread", async () => {
     const share = await createClient(
       mockFetch({ status: 200, body: shareResponse() }),
-    ).shareResource("resource-id");
+    ).shareResource(matching.expected_crid);
 
     expect(JSON.stringify(share)).not.toContain(share.link);
     expect(JSON.parse(JSON.stringify(share))).toMatchObject({
@@ -248,7 +248,7 @@ describe("shareResource", () => {
     const fetch = mockFetch({ status: 200, body: shareResponse() });
 
     await createClient(fetch).shareResource(
-      "resource-id",
+      matching.expected_crid,
       { ttlSeconds: 90 },
       { idempotencyKey: "share-job-1" },
     );
@@ -258,7 +258,7 @@ describe("shareResource", () => {
     expect((init.headers as Record<string, string>)["Idempotency-Key"]).toBe("share-job-1");
   });
 
-  it.each(["", "   "])(
+  it.each(["", "   ", matching.der_spki_b64url, "r_private"])(
     "rejects the empty resource ID %j before the request",
     async (resourceId) => {
       const fetch = mockFetch({ status: 200, body: shareResponse() });
@@ -281,7 +281,7 @@ describe("shareResource", () => {
     const fetch = mockFetch({ status: 200, body: shareResponse() });
 
     await expect(
-      createClient(fetch).shareResource("resource-id", { ttlSeconds }),
+      createClient(fetch).shareResource(matching.expected_crid, { ttlSeconds }),
     ).rejects.toBeInstanceOf(ValidationError);
     expect(fetch).not.toHaveBeenCalled();
   });
@@ -290,7 +290,7 @@ describe("shareResource", () => {
     const fetch = mockFetch({ status: 200, body: shareResponse() });
 
     await expect(
-      createClient(fetch).shareResource("resource-id", { ttlSeconds: 0 }),
+      createClient(fetch).shareResource(matching.expected_crid, { ttlSeconds: 0 }),
     ).rejects.toMatchObject({
       code: "client_validation",
       detail: "shareResource: ttlSeconds must be a positive safe integer",
@@ -303,7 +303,7 @@ describe("shareResource", () => {
     const fetch = mockFetch({ status: 200, body: shareResponse() });
 
     await expect(
-      createClient(fetch).shareResource("resource-id", { ttl_seconds: 90 } as never),
+      createClient(fetch).shareResource(matching.expected_crid, { ttl_seconds: 90 } as never),
     ).rejects.toBeInstanceOf(ValidationError);
     expect(fetch).not.toHaveBeenCalled();
   });
@@ -312,7 +312,7 @@ describe("shareResource", () => {
     const fetch = mockFetch({ status: 200, body: shareResponse() });
 
     await expect(
-      createClient(fetch).shareResource("resource-id", input as never),
+      createClient(fetch).shareResource(matching.expected_crid, input as never),
     ).rejects.toBeInstanceOf(ValidationError);
     expect(fetch).not.toHaveBeenCalled();
   });
@@ -320,7 +320,7 @@ describe("shareResource", () => {
   it("fails closed when the response omits the share link", async () => {
     const fetch = mockFetch({ status: 200, body: shareResponse({ qurl: "" }) });
 
-    await expect(createClient(fetch).shareResource("resource-id")).rejects.toMatchObject({
+    await expect(createClient(fetch).shareResource(matching.expected_crid)).rejects.toMatchObject({
       code: "unexpected_response",
     });
   });
@@ -328,7 +328,7 @@ describe("shareResource", () => {
   it("fails closed when the response omits the data envelope", async () => {
     const fetch = mockFetch({ status: 200, body: { meta: { request_id: "req_share" } } });
 
-    await expect(createClient(fetch).shareResource("resource-id")).rejects.toMatchObject({
+    await expect(createClient(fetch).shareResource(matching.expected_crid)).rejects.toMatchObject({
       code: "unexpected_response",
     });
   });
@@ -336,7 +336,7 @@ describe("shareResource", () => {
   it("tolerates an omitted qurl_id from an older server", async () => {
     const fetch = mockFetch({ status: 200, body: shareResponse({ qurl_id: undefined }) });
 
-    await expect(createClient(fetch).shareResource("resource-id")).resolves.toMatchObject({
+    await expect(createClient(fetch).shareResource(matching.expected_crid)).resolves.toMatchObject({
       qurlId: undefined,
     });
   });
@@ -347,7 +347,7 @@ describe("shareResource", () => {
       body: shareResponse({ single_use: true, expires_at: undefined }),
     });
 
-    await expect(createClient(fetch).shareResource("resource-id")).resolves.toMatchObject({
+    await expect(createClient(fetch).shareResource(matching.expected_crid)).resolves.toMatchObject({
       expiresAt: undefined,
       singleUse: true,
     });
@@ -363,7 +363,7 @@ describe("shareResource", () => {
   ])("fails closed when response field %s has the wrong type", async (field, value) => {
     const fetch = mockFetch({ status: 200, body: shareResponse({ [field]: value }) });
 
-    await expect(createClient(fetch).shareResource("resource-id")).rejects.toMatchObject({
+    await expect(createClient(fetch).shareResource(matching.expected_crid)).rejects.toMatchObject({
       code: "unexpected_response",
     });
   });
@@ -372,9 +372,11 @@ describe("shareResource", () => {
     for (const value of ["", "   "]) {
       const fetch = mockFetch({ status: 200, body: shareResponse({ [field]: value }) });
 
-      await expect(createClient(fetch).shareResource("resource-id")).rejects.toMatchObject({
-        code: "unexpected_response",
-      });
+      await expect(createClient(fetch).shareResource(matching.expected_crid)).rejects.toMatchObject(
+        {
+          code: "unexpected_response",
+        },
+      );
     }
   });
 
@@ -384,7 +386,7 @@ describe("shareResource", () => {
   ])("fails closed when response field %s is padded", async (field, value) => {
     const fetch = mockFetch({ status: 200, body: shareResponse({ [field]: value }) });
 
-    await expect(createClient(fetch).shareResource("resource-id")).rejects.toMatchObject({
+    await expect(createClient(fetch).shareResource(matching.expected_crid)).rejects.toMatchObject({
       code: "unexpected_response",
     });
   });
@@ -392,7 +394,7 @@ describe("shareResource", () => {
   it("fails closed when expires_at is not an RFC 3339 timestamp", async () => {
     const fetch = mockFetch({ status: 200, body: shareResponse({ expires_at: "not-a-date" }) });
 
-    await expect(createClient(fetch).shareResource("resource-id")).rejects.toMatchObject({
+    await expect(createClient(fetch).shareResource(matching.expected_crid)).rejects.toMatchObject({
       code: "unexpected_response",
     });
   });
@@ -400,7 +402,7 @@ describe("shareResource", () => {
   it("fails closed when expires_at is an explicit empty string", async () => {
     const fetch = mockFetch({ status: 200, body: shareResponse({ expires_at: "" }) });
 
-    await expect(createClient(fetch).shareResource("resource-id")).rejects.toMatchObject({
+    await expect(createClient(fetch).shareResource(matching.expected_crid)).rejects.toMatchObject({
       code: "unexpected_response",
     });
   });
@@ -411,7 +413,7 @@ describe("shareResource", () => {
       body: shareResponse({ expires_in_seconds: -1 }),
     });
 
-    await expect(createClient(fetch).shareResource("resource-id")).rejects.toMatchObject({
+    await expect(createClient(fetch).shareResource(matching.expected_crid)).rejects.toMatchObject({
       code: "unexpected_response",
     });
   });
@@ -419,7 +421,7 @@ describe("shareResource", () => {
   it("preserves an explicit zero expires_in_seconds from the service", async () => {
     const fetch = mockFetch({ status: 200, body: shareResponse({ expires_in_seconds: 0 }) });
 
-    await expect(createClient(fetch).shareResource("resource-id")).resolves.toMatchObject({
+    await expect(createClient(fetch).shareResource(matching.expected_crid)).resolves.toMatchObject({
       expiresInSeconds: 0,
     });
   });
@@ -427,7 +429,7 @@ describe("shareResource", () => {
   it("sends an SDK-generated idempotency key when minting a share", async () => {
     const fetch = mockFetch({ status: 200, body: shareResponse() });
 
-    await createClient(fetch).shareResource("resource-id");
+    await createClient(fetch).shareResource(matching.expected_crid);
 
     expect(
       (vi.mocked(fetch).mock.calls[0][1]?.headers as Record<string, string>)["Idempotency-Key"],
@@ -442,41 +444,34 @@ describe("shareResource", () => {
         body: shareResponse({ expires_in_seconds: expiresInSeconds }),
       });
 
-      await expect(createClient(fetch).shareResource("resource-id")).rejects.toMatchObject({
-        code: "unexpected_response",
-      });
-    },
-  );
-
-  it.each(["qurl_id", "crid", "type", "expires_at", "expires_in_seconds", "single_use"])(
-    "treats a null optional response field %s as omitted",
-    async (field) => {
-      const fetch = mockFetch({ status: 200, body: shareResponse({ [field]: null }) });
-
-      await expect(createClient(fetch).shareResource("resource-id")).resolves.toBeInstanceOf(
-        ShareLink,
+      await expect(createClient(fetch).shareResource(matching.expected_crid)).rejects.toMatchObject(
+        {
+          code: "unexpected_response",
+        },
       );
     },
   );
 
-  it("preserves an explicit empty CRID as malformed rather than missing", async () => {
-    const fetch = mockFetch({ status: 200, body: shareResponse({ crid: "" }) });
-    const share = await createClient(fetch).shareResource("resource-id");
+  it.each(["qurl_id", "type", "expires_at", "expires_in_seconds", "single_use"])(
+    "treats a null optional response field %s as omitted",
+    async (field) => {
+      const fetch = mockFetch({ status: 200, body: shareResponse({ [field]: null }) });
 
-    await expect(share.verifyCrid(b64url(matching.der_spki_b64url))).rejects.toMatchObject({
-      code: ERROR_CODE_INVALID_CRID,
-    });
-  });
+      await expect(
+        createClient(fetch).shareResource(matching.expected_crid),
+      ).resolves.toBeInstanceOf(ShareLink);
+    },
+  );
 
-  it("preserves an omitted response CRID as a typed missing-CRID verification failure", async () => {
-    const share = await createClient(
-      mockFetch({ status: 200, body: shareResponse({ crid: undefined }) }),
-    ).shareResource("resource-id");
-
-    await expect(share.verifyCrid(b64url(matching.der_spki_b64url))).rejects.toMatchObject({
-      code: ERROR_CODE_MISSING_CRID,
-    });
-  });
+  it.each([undefined, null, "", foreign.expected_crid])(
+    "rejects a missing or different response CRID %j",
+    async (crid) => {
+      const fetch = mockFetch({ status: 200, body: shareResponse({ crid }) });
+      await expect(createClient(fetch).shareResource(matching.expected_crid)).rejects.toMatchObject(
+        { code: "unexpected_response" },
+      );
+    },
+  );
 
   it("trims transport whitespace from the returned secret link", async () => {
     const fetch = mockFetch({
@@ -484,7 +479,7 @@ describe("shareResource", () => {
       body: shareResponse({ qurl: "  https://qurl.link/#qv2t1.example  " }),
     });
 
-    await expect(createClient(fetch).shareResource("resource-id")).resolves.toMatchObject({
+    await expect(createClient(fetch).shareResource(matching.expected_crid)).resolves.toMatchObject({
       link: "https://qurl.link/#qv2t1.example",
     });
   });
@@ -492,7 +487,7 @@ describe("shareResource", () => {
   it("can verify a freshly shared response against a trusted resource key", async () => {
     const fetch = mockFetch({ status: 200, body: shareResponse() });
 
-    const share = await createClient(fetch).shareResource("resource-id");
+    const share = await createClient(fetch).shareResource(matching.expected_crid);
 
     await expect(share.verifyCrid(b64url(matching.der_spki_b64url))).resolves.toBeUndefined();
   });
@@ -504,11 +499,13 @@ describe("shareResource", () => {
         body: { error: { status: 503, title: "Unavailable", detail: "retry later", code } },
       });
 
-      await expect(createClient(fetch).shareResource("resource-id")).rejects.toMatchObject({
-        constructor: ServerError,
-        status: 503,
-        code,
-      });
+      await expect(createClient(fetch).shareResource(matching.expected_crid)).rejects.toMatchObject(
+        {
+          constructor: ServerError,
+          status: 503,
+          code,
+        },
+      );
     }
   });
 });

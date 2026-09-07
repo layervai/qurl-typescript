@@ -4,7 +4,13 @@
 // happy-path surface — full-surface drift between the two builds is
 // caught by smoke/parity.mjs, and end-to-end client behavior is covered
 // by the vitest suite. Don't pad this out.
-const { QURLClient, QURLError, ValidationError, VERSION } = require("@layervai/qurl");
+const {
+  isApiKeyRequestScope,
+  QURLClient,
+  QURLError,
+  ValidationError,
+  VERSION,
+} = require("@layervai/qurl");
 
 if (typeof QURLClient !== "function") {
   throw new Error("QURLClient is not a constructor");
@@ -14,6 +20,9 @@ if (typeof QURLError !== "function" || typeof ValidationError !== "function") {
 }
 if (typeof VERSION !== "string") {
   throw new Error("VERSION not exported");
+}
+if (!isApiKeyRequestScope("qurl:read") || isApiKeyRequestScope("future:scope")) {
+  throw new Error("request scope guard did not load");
 }
 
 const client = new QURLClient({ apiKey: "test-api-key" });

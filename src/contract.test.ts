@@ -134,6 +134,7 @@ const mockOk = (body: unknown, status: number = 200): typeof globalThis.fetch =>
   mockFetch(body === undefined ? { status } : { status, body });
 
 const CONNECTOR_RESOURCE_CONTRACT_DATA = {
+  crid: "ahpviqz46qwcvx56glfatm3p3ooccwfcf2it4sdgjervwdkapykw3o3qdq2a",
   resource_id:
     "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE2cTVv5_3eeYCcLLq5ROYCqcmY50HiKZ9ATglIkPnCji1E_S63UMtXba1moR8-Q6EV7oM6zwwh9_j2CDujzXvLA",
   connector_routing_id: "c-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -193,7 +194,7 @@ const METHOD_CASES: MethodCase[] = [
     verb: "GET",
     template: "/v1/resources/{id}",
     mockBody: { data: { resource: CONNECTOR_RESOURCE_CONTRACT_DATA } },
-    invoke: (c) => c.getConnectorResource(CONNECTOR_RESOURCE_CONTRACT_DATA.resource_id),
+    invoke: (c) => c.getConnectorResource(CONNECTOR_RESOURCE_CONTRACT_DATA.crid),
   },
   {
     method: "getConnectorResourceBySlug",
@@ -208,7 +209,7 @@ const METHOD_CASES: MethodCase[] = [
     template: "/v1/resources/{id}",
     mockStatus: 204,
     mockBody: undefined,
-    invoke: (c) => c.deleteConnectorResource(CONNECTOR_RESOURCE_CONTRACT_DATA.resource_id),
+    invoke: (c) => c.deleteConnectorResource(CONNECTOR_RESOURCE_CONTRACT_DATA.crid),
   },
   {
     method: "createPortal",
@@ -408,6 +409,7 @@ const METHOD_CASES: MethodCase[] = [
     template: "/v1/resources/{id}/share",
     mockBody: {
       data: {
+        crid: CONNECTOR_RESOURCE_CONTRACT_DATA.crid,
         qurl_id: "q_y",
         qurl: "https://qurl.link/#qv2t1.example",
         type: "url",
@@ -416,7 +418,7 @@ const METHOD_CASES: MethodCase[] = [
         single_use: false,
       },
     },
-    invoke: (c) => c.shareResource("r_x"),
+    invoke: (c) => c.shareResource(CONNECTOR_RESOURCE_CONTRACT_DATA.crid),
   },
   {
     method: "revokeResourceQurl",

@@ -4,6 +4,33 @@
 
 ### ⚠ BREAKING CHANGES
 
+- **client:** Connector get/delete and handle-based portal minting now use
+  CRIDs only. Connector management responses must include a CRID that matches
+  the returned public key. Public-key arguments and CRID-less responses are
+  rejected; there is no backward-compatibility fallback.
+
+- **client:** `delete()` no longer requires a legacy `r_...` resource ID. It
+  accepts current opaque public resource IDs and CRIDs, leaving identifier
+  grammar to qurl-service, while rejecting qURL display IDs before the legacy
+  whole-resource DELETE endpoint can be called accidentally.
+- **client:** path identifiers now reject raw or repeatedly encoded `.` / `..`
+  segments, URL-shaped values, and embedded qURL
+  access-token credentials before making a request. Resource/qURL identifier
+  parameters additionally reject bare `at_...` access tokens. These inputs
+  previously reached the service and normally returned an HTTP error; callers
+  now receive a synchronous `ValidationError`.
+- **client:** adopt qurl-service's kind-first credential API. Retired
+  `purpose`/`tunnel_slug` fields are removed; durable API keys and one-shot
+  enrollment tokens now enforce their distinct scopes, targets, claims, and
+  expiry contracts before dispatch. In particular, durable keys no longer
+  accept `expires_in`; only enrollment tokens may carry a lifetime. Requires a
+  qurl-service deployment with the kind-first credential contract at or after
+  `047cf31e1cdf545e3060e0f9294d738a19fb997b`.
+- **client:** create/update API-key request scopes now use the service's closed
+  `qurl:read`, `qurl:write`, `qurl:resolve`, and `qurl:agent` vocabulary. API-key
+  response scopes remain forward-compatible with future server values, but
+  callers must validate/narrow response values before writing them back through
+  the closed request type.
 - **client:** replace alias-based `connectorResource(connectorId)` with the
   explicit Connector lifecycle methods below.
 
