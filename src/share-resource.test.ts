@@ -259,7 +259,7 @@ describe("shareResource", () => {
   });
 
   it.each(["", "   ", matching.der_spki_b64url, "r_private"])(
-    "rejects the empty resource ID %j before the request",
+    "rejects the non-CRID identifier %j before the request",
     async (resourceId) => {
       const fetch = mockFetch({ status: 200, body: shareResponse() });
 
@@ -762,4 +762,8 @@ describe("ShareLink.verifyCrid", () => {
       }
     },
   );
+});
+
+it.each([undefined, null, 42, "", "   "])("ShareLink rejects invalid link %j", (link) => {
+  expect(() => new ShareLink({ link } as never)).toThrow(TypeError);
 });

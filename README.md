@@ -213,6 +213,9 @@ platform default. TypeScript additionally rejects an explicit zero so a
 computed countdown cannot silently become a longer-lived default credential.
 A response can report `expiresInSeconds: 0`; do not reuse that value as a
 request TTL. Expiry parsing uses the SDK's shared API date parser.
+
+The service chooses single-use policy; this matches the Go SDK options.
+
 qURL Connector assignment and registration use native UDP through
 `qurl-connector` and `qurl-go`. This package does not expose an HTTP enrollment API.
 Like the Go SDK, credential minting uses HTTPS and token consumption uses

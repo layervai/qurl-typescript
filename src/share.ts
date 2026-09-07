@@ -56,16 +56,19 @@ export class ShareLink {
    * non-enumerable: read it directly instead of spreading or cloning the object.
    */
   readonly link: string;
-  /** Token ID when supplied by the service; older deployments may omit it. */
+  /** Token ID when supplied by the service. */
   readonly qurlId?: string;
   readonly crid?: string;
   readonly type?: string;
   readonly #expiresAtEpochMs?: number;
   readonly expiresInSeconds?: number;
-  /** Whether the link is single-use; undefined when an older service omits the field. */
+  /** Whether the link is single-use; undefined when the service omits the field. */
   readonly singleUse?: boolean;
 
   constructor(init: ShareLinkInit) {
+    if (typeof init?.link !== "string" || init.link.trim() === "") {
+      throw new TypeError("ShareLink: link must be a non-empty string");
+    }
     this.link = init.link;
     // Keep accidental object spread/structured logging from copying the
     // one-time-returned credential. Callers can still read `.link` explicitly.
