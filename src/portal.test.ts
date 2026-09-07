@@ -194,6 +194,7 @@ describe("createPortal", () => {
       label: "Alice from Acme",
       oneTimeUse: true,
       maxSessions: 0,
+      targetPath: "/api/detect/eib_example",
     });
 
     const { url } = callRequest(fetch, 1);
@@ -204,6 +205,7 @@ describe("createPortal", () => {
       one_time_use: true,
       // Explicit 0 means unlimited and must survive body construction.
       max_sessions: 0,
+      target_path: "/api/detect/eib_example",
     });
     expect(portal.resourceId).toBe("r_abc123def45");
     expect(portal.link).toBe("https://qurl.link/#at_portal1");
@@ -262,6 +264,8 @@ describe("createPortal", () => {
     [{ label: "" }, "label: must not be empty"],
     [{ label: "   " }, "label: must not be empty"],
     [{ oneTimeUse: "yes" as unknown as boolean }, "oneTimeUse: must be a boolean"],
+    [{ targetPath: "" }, "targetPath: must not be an empty string"],
+    [{ targetPath: 42 as unknown as string }, "targetPath: must be a string"],
   ])("option guardrails reject %j before any request", async (options, message) => {
     const fetch = mockFetch({ status: 201, body: { data: PORTAL_DATA } });
     const client = createClient(fetch);
@@ -290,6 +294,24 @@ describe("createPortal", () => {
     const fetch = mockFetch({ status: 201, body: { data: PORTAL_DATA } });
     await createClient(fetch).createPortal("r_abc123def45", { sessionDuration: 90_000 });
     expect(callBody(fetch)).toEqual({ session_duration: "90s" });
+  });
+
+  it("uses the same 2048-byte targetPath boundary as qurl-go", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: PORTAL_DATA } });
+    const targetPath = `/${"é".repeat(1023)}a`;
+    expect(new TextEncoder().encode(targetPath)).toHaveLength(2048);
+
+    await createClient(fetch).createPortal("r_abc123def45", { targetPath });
+    expect(callBody(fetch)).toEqual({ target_path: targetPath });
+
+    const overlong = `/${"é".repeat(1024)}`;
+    await expect(
+      createClient(fetch).createPortal("r_abc123def45", { targetPath: overlong }),
+    ).rejects.toMatchObject({
+      code: "client_validation",
+      detail: expect.stringContaining("targetPath: must be 2048 UTF-8 bytes or fewer"),
+    });
+    expect(vi.mocked(fetch).mock.calls).toHaveLength(1);
   });
 
   it("rejects unknown option fields, catching REST-shaped spellings", async () => {
@@ -432,6 +454,19 @@ describe("createPortalForUrl", () => {
     const fetch = mockFetch({ status: 201, body: { data: PORTAL_DATA } });
     await createClient(fetch).createPortalForUrl("https://internal.example.com/dashboard");
     expect(callBody(fetch)).toEqual({ target_url: "https://internal.example.com/dashboard" });
+  });
+
+  it("rejects targetPath because URL resources do not address an existing resource", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: PORTAL_DATA } });
+    await expect(
+      createClient(fetch).createPortalForUrl("https://internal.example.com/dashboard", {
+        targetPath: "/api/detect",
+      }),
+    ).rejects.toMatchObject({
+      code: "client_validation",
+      detail: expect.stringContaining("targetPath: requires an existing resource"),
+    });
+    expect(fetch).not.toHaveBeenCalled();
   });
 });
 

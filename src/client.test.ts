@@ -1215,15 +1215,16 @@ describe("QURLClient", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("createQurlForResource accepts target_path at the service length boundary", async () => {
+  it("createQurlForResource accepts target_path at the 2048-byte boundary", async () => {
     const fetch = mockFetch({
       status: 201,
       body: { data: { qurl_link: "https://qurl.link/#at_x" } },
     });
     const client = createClient(fetch);
-    // The service cap applies to the complete target_path string, including
-    // the leading slash.
-    const maxLengthTargetPath = `/${"x".repeat(TARGET_PATH_MAX_LENGTH - 1)}`;
+    // The cap applies to the complete UTF-8 value, including the leading
+    // slash. Use a multibyte character so this catches code-unit checks.
+    const maxLengthTargetPath = `/${"é".repeat(1023)}a`;
+    expect(new TextEncoder().encode(maxLengthTargetPath)).toHaveLength(TARGET_PATH_MAX_LENGTH);
 
     await client.createQurlForResource("r_x", { target_path: maxLengthTargetPath });
 
@@ -1231,11 +1232,11 @@ describe("QURLClient", () => {
     expect(body).toEqual({ target_path: maxLengthTargetPath });
   });
 
-  it("createQurlForResource rejects an overlong target_path before making requests", async () => {
+  it("createQurlForResource rejects target_path over 2048 UTF-8 bytes before requests", async () => {
     const fetch = mockFetch({ status: 201, body: { data: {} } });
     const client = createClient(fetch);
-    // Leading "/" makes this one character over the complete-string service cap.
-    const overlongTargetPath = `/${"x".repeat(TARGET_PATH_MAX_LENGTH)}`;
+    const overlongTargetPath = `/${"é".repeat(1024)}`;
+    expect(new TextEncoder().encode(overlongTargetPath)).toHaveLength(TARGET_PATH_MAX_LENGTH + 1);
 
     const error = await client
       .createQurlForResource("r_x", { target_path: overlongTargetPath })
@@ -1243,7 +1244,7 @@ describe("QURLClient", () => {
 
     expect(error).toBeInstanceOf(ValidationError);
     expect(error.detail).toContain(
-      `target_path: must be ${TARGET_PATH_MAX_LENGTH} characters or fewer`,
+      `target_path: must be ${TARGET_PATH_MAX_LENGTH} UTF-8 bytes or fewer`,
     );
     expect(fetch).not.toHaveBeenCalled();
   });

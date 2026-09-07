@@ -17,6 +17,7 @@ const options: CreatePortalOpenerOptions = {
   fetch,
 };
 const opener: PortalOpener = createPortalOpener(options);
+const descendant: Promise<Response> = opener.fetchDescendant(["eib_example"], { method: "POST" });
 const busy: Error = new PortalBusyError();
 const invalidReply: Error = new PortalInvalidReplyError("invalid reply");
 const openTimeout: Error = new PortalOpenTimeoutError();
@@ -25,7 +26,11 @@ const targetChanged: Error = new PortalTargetChangedError();
 const health: PortalOpenerHealth = opener.health();
 const state: PortalOpenerState = opener.health().state;
 const client: QURLClient = new QURLClient({ apiKey: "test" });
+const portal: ReturnType<QURLClient["createPortal"]> = client.createPortal("r_example", {
+  targetPath: "/api/detect/eib_example",
+});
 void opener;
+void descendant;
 void busy;
 void invalidReply;
 void openTimeout;
@@ -34,3 +39,4 @@ void targetChanged;
 void health;
 void state;
 void client;
+void portal;

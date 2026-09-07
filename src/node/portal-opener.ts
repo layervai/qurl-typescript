@@ -43,6 +43,11 @@ export interface PortalStartOptions {
   readonly signal?: AbortSignal;
 }
 
+/**
+ * Build one request for the exact target selected by `fetch` or
+ * `fetchDescendant`. The URL is a disposable copy; the opener pins the final
+ * request URL and Host to its SDK-owned target after this function returns.
+ */
 export type PortalRequestBuilder = (authenticatedTarget: URL) => RequestInit;
 
 export interface PortalFetchOptions {
@@ -70,6 +75,16 @@ export interface PortalOpener {
   start(options?: PortalStartOptions): Promise<void>;
   /** Start a fetch at the exact ACK URL. Same-origin redirects follow only when allowed. */
   fetch(init?: RequestInit | PortalRequestBuilder, options?: PortalFetchOptions): Promise<Response>;
+  /**
+   * Start a fetch below the ACK URL. Each caller value is one raw path segment;
+   * the opener validates and escapes each segment before use. The ACK target's
+   * query is preserved.
+   */
+  fetchDescendant(
+    pathSegments: readonly string[],
+    init?: RequestInit | PortalRequestBuilder,
+    options?: PortalFetchOptions,
+  ): Promise<Response>;
   /** Read local session state. This method does no I/O and exposes no capability. */
   health(): PortalOpenerHealth;
   /** Stop renewal and wipe mutable private-key, visitor-secret, and token buffers. */
@@ -339,9 +354,26 @@ class NativePortalOpener implements PortalOpener {
     }
   }
 
-  async fetch(
+  fetch(
     input: RequestInit | PortalRequestBuilder = {},
     options: PortalFetchOptions = {},
+  ): Promise<Response> {
+    return this.#dispatch([], false, input, options);
+  }
+
+  fetchDescendant(
+    pathSegments: readonly string[],
+    input: RequestInit | PortalRequestBuilder = {},
+    options: PortalFetchOptions = {},
+  ): Promise<Response> {
+    return this.#dispatch(pathSegments, true, input, options);
+  }
+
+  async #dispatch(
+    pathSegments: unknown,
+    descendant: boolean,
+    input: RequestInit | PortalRequestBuilder,
+    options: PortalFetchOptions,
   ): Promise<Response> {
     let body: RequestInit["body"] = undefined;
     try {
@@ -351,6 +383,11 @@ class NativePortalOpener implements PortalOpener {
       // ready and therefore have no body to release on earlier exits.
       if (typeof input !== "function" && input && typeof input === "object") {
         body = input.body;
+      }
+      let descendantSegments: readonly string[] | undefined;
+      if (descendant) {
+        validatePortalDescendantSegments(pathSegments);
+        descendantSegments = pathSegments;
       }
       if (this.#state === "closed") throw new PortalOpenerClosedError();
       if (
@@ -371,7 +408,11 @@ class NativePortalOpener implements PortalOpener {
       // unavoidable request string local to this fetch so every redirect leg has
       // one stable credential snapshot.
       const sessionToken = grant.token.toString("ascii");
-      const init = typeof input === "function" ? input(new URL(grant.resourceUrl)) : input;
+      const requestTarget = descendantSegments
+        ? appendPortalDescendantSegments(new URL(grant.resourceUrl), descendantSegments)
+        : new URL(grant.resourceUrl);
+      const requestTargetRaw = requestTarget.href;
+      const init = typeof input === "function" ? input(new URL(requestTargetRaw)) : input;
       if (!init || typeof init !== "object") {
         throw new PortalConfigurationError("portal request builder must return RequestInit");
       }
@@ -381,7 +422,9 @@ class NativePortalOpener implements PortalOpener {
           "portal fetch owns redirect handling; redirect overrides are not allowed",
         );
       }
-      let currentUrl = grant.resourceUrl;
+      // The builder receives a disposable URL copy. Pin the actual request URL
+      // and its Fetch-derived Host to the trusted value after the builder runs.
+      let currentUrl = requestTargetRaw;
       let method = (init.method ?? "GET").toUpperCase();
       let headers = new Headers(init.headers);
       if (headers.has("host")) {
@@ -796,6 +839,59 @@ class NativePortalOpener implements PortalOpener {
   #isClosed(): boolean {
     return this.#state === "closed";
   }
+}
+
+function validatePortalDescendantSegments(value: unknown): asserts value is readonly string[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new PortalConfigurationError(
+      "portal descendant fetch requires at least one path segment",
+    );
+  }
+  for (let index = 0; index < value.length; index++) {
+    const segment: unknown = value[index];
+    if (typeof segment !== "string") {
+      throw new PortalConfigurationError(
+        `portal descendant path segment ${index} must be a string`,
+      );
+    }
+    if (segment === "") {
+      throw new PortalConfigurationError(`portal descendant path segment ${index} is empty`);
+    }
+    if (segment === "." || segment === "..") {
+      throw new PortalConfigurationError(
+        `portal descendant path segment ${index} is a dot segment`,
+      );
+    }
+    if (/[\\/?#]/u.test(segment)) {
+      throw new PortalConfigurationError(
+        `portal descendant path segment ${index} contains a reserved delimiter`,
+      );
+    }
+  }
+}
+
+function appendPortalDescendantSegments(target: URL, pathSegments: readonly string[]): URL {
+  const separator = target.pathname.endsWith("/") ? "" : "/";
+  target.pathname += separator + pathSegments.map(escapePortalDescendantSegment).join("/");
+  return target;
+}
+
+function escapePortalDescendantSegment(segment: string): string {
+  const escaped: string[] = [];
+  for (const byte of Buffer.from(segment, "utf8")) {
+    const character = String.fromCharCode(byte);
+    if (
+      (byte >= 0x41 && byte <= 0x5a) ||
+      (byte >= 0x61 && byte <= 0x7a) ||
+      (byte >= 0x30 && byte <= 0x39) ||
+      "-._~$&+:=@".includes(character)
+    ) {
+      escaped.push(character);
+    } else {
+      escaped.push(`%${byte.toString(16).toUpperCase().padStart(2, "0")}`);
+    }
+  }
+  return escaped.join("");
 }
 
 function parseGrant(

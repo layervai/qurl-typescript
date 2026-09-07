@@ -760,6 +760,111 @@ describe("native portal opener", () => {
     expect(opener.health()).toMatchObject({ state: "closed", ready: false });
   });
 
+  it("fetches escaped descendants from the cached session and preserves base URL state", async () => {
+    const sent: Array<{ url: string; init: RequestInit }> = [];
+    const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      sent.push({ url: String(url), init: init ?? {} });
+      return new Response(null, { status: 204 });
+    }) as unknown as typeof globalThis.fetch;
+    const { opener, knock } = fixture(fetchImpl);
+    knock.mockResolvedValueOnce(
+      ack(900, "0", "https://private.example.test/api/detect/?tenant=example"),
+    );
+    await opener.start();
+
+    const response = await opener.fetchDescendant(
+      ["eib_example", "team alpha%beta", "%2e%2e"],
+      (target) => {
+        expect(target.href).toBe(
+          "https://private.example.test/api/detect/eib_example/team%20alpha%25beta/%252e%252e?tenant=example",
+        );
+        // The builder can mutate only its disposable copy.
+        target.hostname = "attacker-controlled.example.test";
+        target.pathname = "/changed";
+        return { method: "POST" };
+      },
+      { redirects: "error" },
+    );
+
+    expect(response.status).toBe(204);
+    expect(sent).toHaveLength(1);
+    expect(sent[0].url).toBe(
+      "https://private.example.test/api/detect/eib_example/team%20alpha%25beta/%252e%252e?tenant=example",
+    );
+    expect(new URL(sent[0].url).host).toBe("private.example.test");
+    expect(knock).toHaveBeenCalledTimes(1);
+
+    await expect(
+      opener.fetchDescendant(["eib_example"], () => ({
+        headers: { host: "attacker-controlled.example.test" },
+      })),
+    ).rejects.toBeInstanceOf(PortalConfigurationError);
+    expect(sent).toHaveLength(1);
+    expect(knock).toHaveBeenCalledTimes(1);
+    await opener.close();
+  });
+
+  it("inserts one separator when the ACK base path has no trailing slash", async () => {
+    const fetchImpl = vi.fn(
+      async () => new Response(null, { status: 204 }),
+    ) as unknown as typeof fetch;
+    const { opener, knock } = fixture(fetchImpl);
+    knock.mockResolvedValueOnce(ack(900, "0", "https://private.example.test/api/detect"));
+    await opener.start();
+
+    await opener.fetchDescendant(["eib_example"]);
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(String(vi.mocked(fetchImpl).mock.calls[0][0])).toBe(
+      "https://private.example.test/api/detect/eib_example",
+    );
+    expect(knock).toHaveBeenCalledTimes(1);
+    await opener.close();
+  });
+
+  it.each([
+    ["missing list", undefined],
+    ["null list", null],
+    ["empty list", []],
+    ["null segment", [null]],
+    ["empty segment", [""]],
+    ["dot segment", ["."]],
+    ["dot-dot segment", [".."]],
+    ["authority", ["//evil.example"]],
+    ["URL", ["https://evil.example"]],
+    ["query", ["binding?admin=true"]],
+    ["fragment", ["binding#fragment"]],
+    ["backslash", ["binding\\admin"]],
+    ["path delimiter", ["binding/admin"]],
+  ])("rejects unsafe descendant %s before the builder or transport", async (_name, segments) => {
+    const fetchImpl = vi.fn() as unknown as typeof globalThis.fetch;
+    const { opener, knock } = fixture(fetchImpl);
+    await opener.start();
+    const builder = vi.fn(() => ({ method: "POST" }));
+
+    await expect(opener.fetchDescendant(segments as never, builder)).rejects.toBeInstanceOf(
+      PortalConfigurationError,
+    );
+    expect(builder).not.toHaveBeenCalled();
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(knock).toHaveBeenCalledTimes(1);
+    await opener.close();
+  });
+
+  it("releases a direct request body when descendant validation rejects", async () => {
+    const request = trackedRequestBody();
+    const fetchImpl = vi.fn() as unknown as typeof globalThis.fetch;
+    const { opener } = fixture(fetchImpl);
+    await opener.start();
+
+    await expect(
+      opener.fetchDescendant([], { method: "POST", body: request.body }),
+    ).rejects.toBeInstanceOf(PortalConfigurationError);
+    expect(request.wasCanceled()).toBe(true);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    await opener.close();
+  });
+
   it("uses the configured content fetch without putting HTTP on the NHP open path", async () => {
     const runtimeFetch = vi.fn(async () => new Response("runtime")) as unknown as typeof fetch;
     const contentFetch = vi.fn(async () => new Response("configured")) as unknown as typeof fetch;

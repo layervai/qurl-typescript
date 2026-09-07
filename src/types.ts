@@ -310,6 +310,13 @@ export interface CreatePortalOptions {
    * server default; zero is rejected rather than treated as default.
    */
   sessionDuration?: string | number;
+  /**
+   * Scope a qURL for an existing tunnel resource to one path and its
+   * descendants. The SDK rejects only empty values and values over 2048 UTF-8
+   * bytes; the API remains authoritative for the path grammar and resource
+   * type. This option is invalid with `createPortalForUrl`.
+   */
+  targetPath?: string;
 }
 
 /**
@@ -515,8 +522,9 @@ export type CreateQurlForResourceInput = Omit<
    * Path this resource qURL resolves to (e.g. "/api/detect").
    *
    * Creation-only and valid only for tunnel resources. The SDK rejects empty
-   * or overlong values before sending a request; server validation rejects
-   * invalid path grammar, including paths missing a leading "/".
+   * values and values over 2048 UTF-8 bytes before sending a request; server
+   * validation rejects invalid path grammar, including paths missing a
+   * leading "/".
    */
   target_path?: string;
 };
