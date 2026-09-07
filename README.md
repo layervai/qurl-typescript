@@ -88,12 +88,16 @@ checks the non-empty 2048-byte boundary; the API remains authoritative for the
 path grammar and the tunnel-only resource gate. `createPortalForUrl` rejects
 this option because it creates a URL resource.
 
+`resource.crid` is the required management identifier. Connector lookup, delete,
+and portal minting use it with no public-key or private-ID fallback. The SDK
+checks that the returned public key matches the CRID.
+
 `resource.resourceId`, `resource.connectorRoutingId`, and
 `resource.knockResourceId` are three distinct server-issued values for public
 identity, reverse routing, and NHP admission. Consume each verbatim; never
-derive or substitute one for another. Use `getConnectorResource(resourceId)`
+derive or substitute one for another. Use `getConnectorResource(crid)`
 or `getConnectorResourceBySlug(slug)` for read-only lookup and
-`deleteConnectorResource(resourceId)` to revoke it. This replaces the old
+`deleteConnectorResource(crid)` to revoke it. This replaces the old
 alias-based `connectorResource(connectorId)` method.
 `ConnectorResource` instances cannot be constructed directly; the client
 returns them only after validating the complete response contract.
@@ -117,7 +121,7 @@ is terminal: do not retry it. Obtain a new bootstrap key and use normal
 owner-authenticated lookup by immutable slug to reconcile the resource first.
 
 The API does not apply idempotency replay to DELETE, so after an outcome-unknown
-`deleteConnectorResource` call, reconcile by resource ID before issuing a
+`deleteConnectorResource` call, reconcile by CRID before issuing a
 deliberate retry. A valid exact-201 resource missing only `meta.found_existing`
 is known to have selected that row but still fails as an unwrapped
 `unexpected_response` because required ensure metadata is absent.
@@ -126,8 +130,11 @@ If you persist the resource id, future calls do not need to recreate the
 handle (no API call is made until you mint):
 
 ```typescript
-const resource = client.resourceById('r_demo1234567');
-const portal = await resource.createPortal({ validFor: '1h' });
+async function createPortalForStoredResource(storedResourceId: string) {
+  // Pass the exact opaque resource_id previously returned by the API.
+  const resource = client.resourceById(storedResourceId);
+  return resource.createPortal({ validFor: '1h' });
+}
 ```
 
 For one-off scripts, `client.createPortalForUrl` combines the two API calls
@@ -421,8 +428,8 @@ console.log(`Access granted to ${access.target_url} for ${access.access_grant?.e
 | `resource.createPortal(opts?)` / `createPortal(resourceOrId, opts?)` | Mint a short-lived portal link; existing resources can set `targetPath` |
 | `createPortalForUrl(targetUrl, opts?)` | Protect + mint a URL resource; rejects `targetPath` |
 | `ensureConnectorResource(slug, requestOptions?)` | Find or create an active Connector resource by immutable slug |
-| `getConnectorResource(resourceId)` / `getConnectorResourceBySlug(slug)` | Load a validated Connector resource by immutable identity |
-| `deleteConnectorResource(resourceId)` | Revoke a Connector resource by immutable public resource ID |
+| `getConnectorResource(crid)` / `getConnectorResourceBySlug(slug)` | Load a validated Connector resource by immutable identity |
+| `deleteConnectorResource(crid)` | Revoke a Connector resource by CRID |
 | `resourceById(id)` | Handle from a stored resource id (no API call) |
 | `enterPortal(linkOrToken)` | Open a qURL link programmatically → `ResourceHandle` |
 
@@ -631,6 +638,10 @@ SDK-generated keys require `globalThis.crypto.getRandomValues`, which is availab
 ## Security Notes
 
 - Treat API keys and qURL links like credentials. Do not log them.
+- Resource/qURL path arguments reject pasted access tokens and full URLs before
+  dispatch without echoing the caller input. Pass the opaque identifier returned
+  by the API (public resource key or CRID); never derive it from a secret qURL
+  link. Private `r_` storage IDs are not public API identifiers.
 - SDK API requests use manual redirect handling. Redirect-capable HTTP statuses
   (300, 301, 302, 303, 305, 307, 308), filtered `opaqueredirect` responses in
   browsers and Node native fetch, and responses a custom fetch reports as

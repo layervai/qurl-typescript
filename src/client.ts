@@ -1,3 +1,4 @@
+import { parseCrid, cridKeyMatches } from "./crid.js";
 import {
   ConnectorResourceOutcomeUnknownError,
   createError,
@@ -1111,7 +1112,6 @@ const CONNECTOR_ROUTING_ID_PATTERN = /^c-[a-z2-7]{51}[aq]$/;
 // CreateQurlRequest.target_url pattern is loose (just a URI) but
 // UpdateQurlRequest.tags pattern is specific — enforce it here.
 const TAG_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9 _-]*$/;
-const RESOURCE_ID_PREFIX = "r_";
 
 function requireMaxLength(value: string | undefined, field: string, max: number): void {
   if (value === undefined) return;
@@ -1243,17 +1243,95 @@ function pageFromMeta<T extends Record<string, unknown>>(
   };
 }
 
+// Best-effort defence-in-depth against today's access-token grammar. The
+// service remains authoritative because resource IDs and credentials are both
+// opaque and future credential formats may not retain the `at_` prefix. The
+// delimiter requirement cannot collide with current base64url public keys,
+// standard-base64 keys, or base32 CRIDs.
+const PATH_EMBEDDED_ACCESS_TOKEN_RE = /[?&#=:\s]at_/i;
+const PATH_PREFIXED_ACCESS_TOKEN_RE = /\/at_/i;
+const QURL_LINK_URL_RE = /^(?:https?:\/\/)?(?:[a-z0-9-]+\.)*qurl\.link(?::\d{1,5})?(?:\/|[?#])/i;
+// ponytail: today's 22-character token suffix only improves URL-paste diagnostics;
+// other lengths are still rejected as URLs without echoing the input.
+const URL_EMBEDDED_ACCESS_TOKEN_RE = /[?&#=:/]at_[a-z0-9_-]{22}(?:$|[?&#:/])/i;
+// A host without a slash can be a legitimate domain identifier. Require the
+// path boundary so shared validation does not break the domain namespace.
+const PATH_SCHEMELESS_URL_RE = /^[a-z0-9-]+(?:\.[a-z0-9-]+)+(?::\d{1,5})?\//i;
+const QURL_DISPLAY_ID_PREFIX_RE = /^q_/i;
+const MAX_PATH_ID_DECODE_PASSES = 3;
+const MAX_PATH_ID_LENGTH = 4096;
+
+function isUrlLikePathId(value: string): boolean {
+  return /^https?:\/\//i.test(value) || PATH_SCHEMELESS_URL_RE.test(value);
+}
+
+interface PathIdValidationOptions {
+  /** Reject a bare access token in namespaces that accept resource/qURL IDs. */
+  rejectBareAccessToken?: boolean;
+  /** Safe, non-secret recovery guidance appended to an access-token error. */
+  accessTokenRecovery?: string;
+  /** Reject qURL display IDs where the operation requires a parent resource. */
+  rejectQurlDisplayId?: boolean;
+}
+
+const REVOKE_INDIVIDUAL_QURL_RECOVERY =
+  "revoke individual tokens with revokeResourceQurl(resourceId, qurlId)";
+const DELETE_RESOURCE_RECOVERY =
+  "pass a resource ID returned by the API; to revoke one qURL, call revokeResourceQurl(resourceId, qurlId)";
+
+const RESOURCE_ID_PATH_OPTIONS: PathIdValidationOptions = {
+  // Today's resource forms (P-256 SPKI and CRID) cannot collide
+  // with lowercase `at_` because they have fixed structural prefixes. This is
+  // credential-leak defense in depth, not a general resource-ID grammar;
+  // ponytail: fixed current prefixes; revisit this guard if resource keys or
+  // credentials change format. Do not infer a general opaque-ID grammar.
+  rejectBareAccessToken: true,
+  accessTokenRecovery: "pass a resource ID returned by the API",
+};
+
+const RESOURCE_OR_QURL_ID_PATH_OPTIONS: PathIdValidationOptions = {
+  rejectBareAccessToken: true,
+  accessTokenRecovery: "pass a resource or qURL display ID returned by the API",
+};
+
+const QURL_ID_PATH_OPTIONS: PathIdValidationOptions = {
+  rejectBareAccessToken: true,
+  accessTokenRecovery: "pass the qURL display ID, not its access token",
+};
+
+const DELETE_QURL_RESOURCE_ID_PATH_OPTIONS: PathIdValidationOptions = {
+  rejectBareAccessToken: true,
+  accessTokenRecovery: DELETE_RESOURCE_RECOVERY,
+  // Current resource IDs have fixed public-key/CRID prefixes, so q_ is an
+  // unambiguous display-ID mix-up. Guard the reserved prefix rather than the
+  // current display-ID suffix grammar: a future display-ID extension must not
+  // silently turn an individual revoke into whole-resource deletion. This is
+  // applied to both whole-resource DELETE routes. The service also rejects
+  // display IDs there; read routes can resolve them to a parent resource.
+  rejectQurlDisplayId: true,
+};
+
 /**
  * Validates that a path-parameter argument is a non-empty string. Some callers
  * pass resource/qURL display IDs, while newer endpoints also pass domains,
  * session IDs, webhook IDs, and API-key IDs, so this intentionally enforces
- * only basic shape and leaves endpoint-specific grammar to the service.
+ * only basic shape plus transport-safety rules and leaves endpoint-specific
+ * identifier grammar to the service.
  */
-function requireNonEmptyId(id: string, method: string, field = "id"): void {
+function validatePathId(
+  id: string,
+  method: string,
+  field = "id",
+  options: PathIdValidationOptions = {},
+): void {
   // `.trim()` catches whitespace-only and padded IDs before they round-trip as
   // `%20...%20` paths that the server can only reject with a less useful 404.
   // The pre-flight error is more actionable than the 404.
-  if (typeof id !== "string" || id.trim() === "") {
+  if (typeof id !== "string") {
+    const observedType = id === null ? "null" : typeof id;
+    throw clientValidationError(`${method}: ${field} is required (got ${observedType})`);
+  }
+  if (id.trim() === "") {
     throw clientValidationError(`${method}: ${field} is required`);
   }
   if (id.trim() !== id) {
@@ -1261,6 +1339,84 @@ function requireNonEmptyId(id: string, method: string, field = "id"): void {
       `${method}: ${field} must not include leading or trailing whitespace`,
     );
   }
+  if (id.length > MAX_PATH_ID_LENGTH) {
+    throw clientValidationError(
+      `${method}: ${field} must be ${MAX_PATH_ID_LENGTH} characters or fewer`,
+    );
+  }
+  const decodedIds = decodedPathIdForms(id);
+  // URL resolvers and intermediaries can normalize raw or pre-encoded dot
+  // segments before routing. Reject every decoded form we inspected so an
+  // item operation cannot be retargeted to a collection endpoint. Embedded
+  // `a/../b` remains an opaque single segment because the later URL builder
+  // percent-encodes its slash.
+  if (decodedIds.some((value) => value === "." || value === "..")) {
+    throw clientValidationError(`${method}: ${field} is an invalid URL path segment`);
+  }
+  // `/` is deliberately outside the general delimiter class so a URL path
+  // such as `/at_a_glance` is not misread as a credential. For non-URL input,
+  // `/at_` remains a strong pasted-path signal. Fragment, query, header, and
+  // pasted `Bearer at_...` / `token:at_...` forms are also strong signals.
+  // Bare `at_...` values are rejected only for resource/qURL identifiers:
+  // those current formats have fixed non-colliding prefixes, while domain,
+  // webhook, session, and API-key IDs are deliberately opaque/open contracts.
+  // Full URLs and delimiter/path-prefixed credentials remain rejected in
+  // every namespace.
+  const containsUrl = decodedIds.some(isUrlLikePathId);
+  const containsAccessToken = decodedIds.some((value) => {
+    const valueIsUrl = isUrlLikePathId(value);
+    return (
+      (QURL_LINK_URL_RE.test(value) &&
+        (PATH_EMBEDDED_ACCESS_TOKEN_RE.test(value) || PATH_PREFIXED_ACCESS_TOKEN_RE.test(value))) ||
+      (valueIsUrl
+        ? URL_EMBEDDED_ACCESS_TOKEN_RE.test(value)
+        : PATH_EMBEDDED_ACCESS_TOKEN_RE.test(value) || PATH_PREFIXED_ACCESS_TOKEN_RE.test(value)) ||
+      (options.rejectBareAccessToken === true && value.slice(0, 3).toLowerCase() === "at_")
+    );
+  });
+  if (containsAccessToken) {
+    const recovery = options.accessTokenRecovery ?? "pass the identifier returned by the API";
+    throw clientValidationError(
+      `${method}: ${field} must not contain an access token; ${recovery}`,
+    );
+  }
+  // A full target/qURL is a common argument mix-up, but it is distinct from
+  // passing an access-token credential. Diagnose it accurately without
+  // echoing the URL, which may itself contain sensitive query parameters.
+  if (containsUrl) {
+    throw clientValidationError(`${method}: ${field} must be an identifier, not a URL`);
+  }
+  if (
+    options.rejectQurlDisplayId === true &&
+    decodedIds.some((value) => QURL_DISPLAY_ID_PREFIX_RE.test(value))
+  ) {
+    throw clientValidationError(
+      `${method}: ${field} must not be a qURL display ID; ${REVOKE_INDIVIDUAL_QURL_RECOVERY}`,
+    );
+  }
+}
+
+function decodedPathIdForms(id: string): string[] {
+  // Probe repeatedly encoded input too. Callers sometimes pre-encode a copied
+  // link before passing it through a URL builder that encodes it again. Three
+  // passes cover the common accidental cases without allowing hostile input
+  // to create unbounded work. More deeply encoded or malformed-percent input
+  // deliberately fails open to the authoritative service after safe segment
+  // encoding; this heuristic is not an identifier parser.
+  const decodedIds = [id];
+  let decodedId = id;
+  for (let pass = 0; pass < MAX_PATH_ID_DECODE_PASSES; pass += 1) {
+    try {
+      const next = decodeURIComponent(decodedId);
+      if (next === decodedId) break;
+      decodedIds.push(next);
+      decodedId = next;
+    } catch {
+      // Malformed percent escapes remain opaque and are left to the service.
+      break;
+    }
+  }
+  return decodedIds;
 }
 
 function requireConnectorSlug(slug: string, method: string): void {
@@ -1316,36 +1472,19 @@ function decodeCanonicalBase64Url(value: string): Uint8Array | undefined {
   }
 }
 
-async function isValidConnectorResourceId(value: string): Promise<boolean> {
-  const der = decodeCanonicalBase64Url(value);
-  if (!der) return false;
-  if (!globalThis.crypto?.subtle) {
-    throw new RuntimeError(
-      "qURL Connector resource validation requires the Web Crypto SubtleCrypto API",
-    );
-  }
-  return importsAsConnectorPublicKey(der);
-}
-
 function requireConnectorSubtleCrypto(method: string): void {
   if (!globalThis.crypto?.subtle) {
     throw new RuntimeError(`${method}: requires the Web Crypto SubtleCrypto API`);
   }
 }
 
-async function requireConnectorResourceId(resourceId: string, method: string): Promise<void> {
-  const der = decodeCanonicalBase64Url(resourceId);
-  if (!der) {
+function requireConnectorCrid(crid: string, method: string): void {
+  if (typeof crid !== "string") {
     throw clientValidationError(
-      `${method}: resource id must be a canonical unpadded base64url P-256 DER SPKI public key`,
+      `${method}: crid is required (got ${crid === null ? "null" : typeof crid})`,
     );
   }
-  requireConnectorSubtleCrypto(method);
-  if (!(await importsAsConnectorPublicKey(der))) {
-    throw clientValidationError(
-      `${method}: resource id must be a canonical unpadded base64url P-256 DER SPKI public key`,
-    );
-  }
+  if (!parseCrid(crid)) throw clientValidationError(`${method}: requires a valid CRID`);
 }
 
 async function importsAsConnectorPublicKey(der: Uint8Array): Promise<boolean> {
@@ -1367,7 +1506,7 @@ async function importsAsConnectorPublicKey(der: Uint8Array): Promise<boolean> {
 
 type ConnectorResourceExpectation = {
   slug?: string;
-  resourceId?: string;
+  crid?: string;
   revokedIsLifecycleError?: boolean;
 };
 
@@ -1391,16 +1530,18 @@ async function parseConnectorResource(
   if (typeof resource.resource_id !== "string") {
     throw unexpectedResponseError(`${method}: response has missing or invalid resource_id`);
   }
-  if (expectation.resourceId !== undefined && resource.resource_id !== expectation.resourceId) {
-    throw unexpectedResponseError(`${method}: response resource_id does not match the request`);
-  }
-  // A by-ID request already validated its requested resource key and matched
-  // this response byte-for-byte, so do not repeat the async key import.
-  if (
-    expectation.resourceId === undefined &&
-    !(await isValidConnectorResourceId(resource.resource_id))
-  ) {
+  const resourceKey = decodeCanonicalBase64Url(resource.resource_id);
+  requireConnectorSubtleCrypto(method);
+  if (!resourceKey || !(await importsAsConnectorPublicKey(resourceKey))) {
     throw unexpectedResponseError(`${method}: response has missing or invalid resource_id`);
+  }
+  if (expectation.crid !== undefined && resource.crid !== expectation.crid) {
+    throw unexpectedResponseError(`${method}: response crid does not match the request`);
+  }
+  if (!(await cridKeyMatches(resource.crid, resourceKey))) {
+    throw unexpectedResponseError(
+      `${method}: response has missing, invalid, or public-key-mismatched crid`,
+    );
   }
   if (
     typeof resource.connector_routing_id !== "string" ||
@@ -1446,12 +1587,6 @@ async function parseConnectorResource(
     // could not create or update.
     throw unexpectedResponseError(`${method}: response has invalid alias`);
   }
-  if (resource.crid !== undefined && typeof resource.crid !== "string") {
-    throw unexpectedResponseError(`${method}: response has invalid crid`);
-  }
-  // Match qurl-go: ConnectorResource carries an optional producer CRID
-  // verbatim. Consumers that possess a trusted delivered key can verify the
-  // binding separately; this management-plane row is not itself a trust root.
   if (resource.status === "revoked") {
     if (expectation.revokedIsLifecycleError !== true) {
       throw unexpectedResponseError(
@@ -2701,7 +2836,7 @@ export class QURLClient {
    * portals for it (qurl-go: `Client.ResourceByID`):
    *
    * ```ts
-   * const resource = client.resourceById("r_demo1234567");
+   * const resource = client.resourceById(storedResourceId);
    * const portal = await resource.createPortal({ validFor: "1h" });
    * ```
    *
@@ -2709,7 +2844,7 @@ export class QURLClient {
    * need the full resource details.
    */
   resourceById(id: string): ProtectedResource {
-    requireNonEmptyId(id, "resourceById");
+    validatePathId(id, "resourceById", "id", RESOURCE_ID_PATH_OPTIONS);
     return new ProtectedResource(this, id);
   }
 
@@ -2780,12 +2915,13 @@ export class QURLClient {
     return { resource, foundExisting };
   }
 
-  /** Fetch a qURL Connector resource by its immutable public resource ID. */
-  async getConnectorResource(resourceId: string): Promise<ConnectorResource> {
-    await requireConnectorResourceId(resourceId, "getConnectorResource");
+  /** Fetch a qURL Connector resource by its CRID. */
+  async getConnectorResource(crid: string): Promise<ConnectorResource> {
+    requireConnectorCrid(crid, "getConnectorResource");
+    requireConnectorSubtleCrypto("getConnectorResource");
     const { data, __http_status } = await this.rawRequest<ResourceDetail>(
       "GET",
-      `/v1/resources/${encodeURIComponent(resourceId)}`,
+      `/v1/resources/${encodeURIComponent(crid)}`,
       undefined,
       { retry: false },
     );
@@ -2795,7 +2931,7 @@ export class QURLClient {
       );
     }
     return parseConnectorResource(this, data?.resource, "getConnectorResource", {
-      resourceId,
+      crid,
       revokedIsLifecycleError: true,
     });
   }
@@ -2844,15 +2980,15 @@ export class QURLClient {
   }
 
   /**
-   * Revoke a qURL Connector resource by immutable public resource ID.
+   * Revoke a qURL Connector resource by CRID.
    *
    * The API does not apply Idempotency-Key replay to DELETE. After an
    * outcome-unknown failure, reconcile by ID before issuing a deliberate retry.
    */
-  async deleteConnectorResource(resourceId: string): Promise<void> {
-    await requireConnectorResourceId(resourceId, "deleteConnectorResource");
+  async deleteConnectorResource(crid: string): Promise<void> {
+    requireConnectorCrid(crid, "deleteConnectorResource");
     try {
-      await this.requestNoContent(`/v1/resources/${encodeURIComponent(resourceId)}`);
+      await this.requestNoContent(`/v1/resources/${encodeURIComponent(crid)}`);
     } catch (error) {
       classifyConnectorMutationFailure("delete", error);
     }
@@ -2893,7 +3029,7 @@ export class QURLClient {
         `createPortal: resource must be a ProtectedResource handle or a resource id string (got ${describeShape(resource)})`,
       );
     }
-    requireNonEmptyId(resourceId, "createPortal", "resource id");
+    validatePathId(resourceId, "createPortal", "resource id", RESOURCE_ID_PATH_OPTIONS);
     const body = buildCreatePortalBody(opts, "createPortal");
     const data = await this.request<PortalWireResponse>(
       "POST",
@@ -3135,11 +3271,12 @@ export class QURLClient {
   /**
    * Get a qURL resource and its access tokens.
    *
-   * Accepts either a resource ID (`r_` prefix) or a qURL display ID (`q_`
-   * prefix); the API resolves `q_` IDs to the parent resource automatically.
+   * Accepts a current public resource ID, CRID, or qURL
+   * display ID (`q_` prefix); the API resolves display IDs to the parent
+   * resource automatically.
    */
   async get(id: string): Promise<QURL> {
-    requireNonEmptyId(id, "get");
+    validatePathId(id, "get", "id", RESOURCE_OR_QURL_ID_PATH_OPTIONS);
     const raw = await this.request<QURL & { qurls?: AccessToken[] }>(
       "GET",
       `/v1/qurls/${encodeURIComponent(id)}`,
@@ -3201,56 +3338,31 @@ export class QURLClient {
   /**
    * Delete (revoke) a qURL resource and all its access tokens.
    *
-   * Only accepts a resource ID (`r_` prefix), not a qURL display ID (`q_`
-   * prefix). Per the OpenAPI spec: *"Requires a resource ID (r_ prefix).
-   * To revoke a single token, use DELETE /v1/resources/:id/qurls/:qurl_id"*.
-   * A client-side prefix check catches the mistake before the API round-trip.
+   * Accepts the public resource ID or CRID returned
+   * by the API. The service owns identifier grammar so the SDK remains
+   * compatible when public resource identifiers evolve.
+   * Consequently, even an implausibly short non-secret ID is sent for the
+   * service to classify rather than rejected using a stale client grammar.
+   *
+   * qURL display IDs are rejected because this legacy endpoint deletes the
+   * whole parent resource; use {@link revokeResourceQurl} for one qURL.
+   *
+   * @throws {ValidationError} If `id` is blank, padded with whitespace, too
+   * long, a URL dot segment, URL-shaped, contains an access token, or is a qURL
+   * display ID. URL dot-segment and credential checks inspect at most three
+   * rounds of percent decoding; more deeply encoded input is left to the
+   * authoritative service after safe single-segment encoding.
    */
   async delete(id: string): Promise<void> {
-    // Type guard for untyped-JS callers — without it, `(undefined).length`
-    // is a raw TypeError instead of the structured ValidationError the
-    // rest of the surface produces.
-    if (typeof id !== "string") {
-      throw clientValidationError(
-        `delete: requires a resource ID (${RESOURCE_ID_PREFIX} prefix + suffix) — got ${id === null ? "null" : typeof id}`,
-      );
-    }
-    if (id.trim() !== id) {
-      throw clientValidationError("delete: id must not include leading or trailing whitespace");
-    }
-    // Too-short check runs BEFORE the prefix check so it catches
-    // bare-prefix inputs like `"r_"` (right prefix, no suffix) in
-    // addition to `""` / `"x"` / `"ab"` / `"q_"`. Without this
-    // ordering, an exact `"r_"` would pass the startsWith check and
-    // the SDK would send `DELETE /v1/qurls/r_` to the server —
-    // rejected server-side, but this catches it client-side without
-    // a round-trip.
-    if (id.length <= RESOURCE_ID_PREFIX.length) {
-      throw clientValidationError(
-        `delete: requires a resource ID (${RESOURCE_ID_PREFIX} prefix + suffix) — got ${id.length} character${id.length === 1 ? "" : "s"}`,
-      );
-    }
-    if (!id.startsWith(RESOURCE_ID_PREFIX)) {
-      // Wrong-prefix branch: the input is long enough to plausibly be
-      // an ID but has the wrong prefix (e.g. `q_3a7f2c8e91b`).
-      // Echo only the 2-char prefix — never the raw ID
-      // — so observability pipelines don't end up with caller-supplied
-      // identifiers in error logs.
-      const observedPrefix = id.slice(0, RESOURCE_ID_PREFIX.length);
-      throw clientValidationError(
-        `delete: only resource IDs (${RESOURCE_ID_PREFIX} prefix) are accepted — ` +
-          `got an ID starting with "${observedPrefix}". ` +
-          "To revoke a single access token, use the resource-scoped token endpoint.",
-      );
-    }
+    validatePathId(id, "delete", "id", DELETE_QURL_RESOURCE_ID_PATH_OPTIONS);
     await this.requestNoContent(`/v1/qurls/${encodeURIComponent(id)}`);
   }
 
   /**
    * Extend a qURL's expiration.
    *
-   * Accepts either a resource ID (`r_` prefix) or a qURL display ID (`q_`
-   * prefix). Convenience method — delegates to {@link update} with only the
+   * Accepts a current public resource ID, CRID, or qURL
+   * display ID (`q_` prefix). Delegates to {@link update} with only the
    * expiration fields. `ExtendInput` shares its `extend_by` / `expires_at`
    * fields with `UpdateInput` but is *narrower in two ways*: (1) exactly
    * one of the two must be present (XOR via `?: never`), where `UpdateInput`
@@ -3262,7 +3374,7 @@ export class QURLClient {
    * enforced separately by the runtime check inside `update()`.
    */
   async extend(id: string, input: ExtendInput, options?: RequestOptions): Promise<QURL> {
-    requireNonEmptyId(id, "extend");
+    validatePathId(id, "extend", "id", RESOURCE_OR_QURL_ID_PATH_OPTIONS);
     requireObjectInput(input, "extend");
     const { extend_by, expires_at } = input;
     if (extend_by === undefined && expires_at === undefined) {
@@ -3279,11 +3391,12 @@ export class QURLClient {
   /**
    * Update a qURL — extend expiration, change description, rename tags.
    *
-   * Accepts either a resource ID (`r_` prefix) or a qURL display ID (`q_`
-   * prefix); the API resolves `q_` IDs to the parent resource automatically.
+   * Accepts a current public resource ID, CRID, or qURL
+   * display ID (`q_` prefix); the API resolves display IDs to the parent
+   * resource automatically.
    */
   async update(id: string, input: UpdateInput, options?: RequestOptions): Promise<QURL> {
-    requireNonEmptyId(id, "update");
+    validatePathId(id, "update", "id", RESOURCE_OR_QURL_ID_PATH_OPTIONS);
     requireObjectInput(input, "update");
     requireNoUnknownFields(input, UPDATE_FIELD_KEYS, "update");
     // Normalize null → undefined so untyped-JS callers passing
@@ -3323,15 +3436,16 @@ export class QURLClient {
    *
    * Portal-flow equivalent: {@link createPortal}.
    *
-   * Accepts either a resource ID (`r_` prefix) or a qURL display ID (`q_`
-   * prefix); the API resolves `q_` IDs to the parent resource automatically.
+   * Accepts a current public resource ID, CRID, or qURL
+   * display ID (`q_` prefix); the API resolves display IDs to the parent
+   * resource automatically.
    *
    * Passing `{}` or an object with all fields `null`/`undefined` is
    * equivalent to omitting the second argument: no body is sent, and the
    * server applies its 24h default expiration.
    */
   async mintLink(id: string, input?: MintInput, options?: RequestOptions): Promise<MintOutput> {
-    requireNonEmptyId(id, "mintLink");
+    validatePathId(id, "mintLink", "id", RESOURCE_OR_QURL_ID_PATH_OPTIONS);
     // Normalize null → omitted so untyped-JS callers passing
     // `{ expires_in: null, expires_at: "..." }` don't leak null into
     // the wire body via JSON.stringify and don't bypass the XOR check
@@ -3480,7 +3594,7 @@ export class QURLClient {
 
   /** Get one resource plus its bounded qURL preview. */
   async getResource(id: string): Promise<ResourceDetail> {
-    requireNonEmptyId(id, "getResource");
+    validatePathId(id, "getResource", "id", RESOURCE_ID_PATH_OPTIONS);
     return this.request<ResourceDetail>("GET", `/v1/resources/${encodeURIComponent(id)}`);
   }
 
@@ -3490,7 +3604,7 @@ export class QURLClient {
     input: UpdateResourceInput,
     options?: RequestOptions,
   ): Promise<Resource> {
-    requireNonEmptyId(id, "updateResource");
+    validatePathId(id, "updateResource", "id", RESOURCE_ID_PATH_OPTIONS);
     requireObjectInput(input, "updateResource");
     requireNoUnknownFields(input, UPDATE_RESOURCE_FIELD_KEYS, "updateResource");
     const validationInput = normalizePatchFields(
@@ -3518,7 +3632,7 @@ export class QURLClient {
 
   /** Revoke a resource and all of its qURLs. */
   async deleteResource(id: string): Promise<void> {
-    requireNonEmptyId(id, "deleteResource");
+    validatePathId(id, "deleteResource", "id", DELETE_QURL_RESOURCE_ID_PATH_OPTIONS);
     await this.requestNoContent(`/v1/resources/${encodeURIComponent(id)}`);
   }
 
@@ -3532,7 +3646,7 @@ export class QURLClient {
     input?: CreateQurlForResourceInput,
     options?: RequestOptions,
   ): Promise<CreateOutput> {
-    requireNonEmptyId(id, "createQurlForResource");
+    validatePathId(id, "createQurlForResource", "id", RESOURCE_ID_PATH_OPTIONS);
     let normalized: CreateQurlForResourceInput | undefined = input;
     if (input !== undefined) {
       requireObjectInput(input, "createQurlForResource");
@@ -3554,8 +3668,8 @@ export class QURLClient {
 
   /** Revoke a specific qURL token on a resource. */
   async revokeResourceQurl(id: string, qurlId: string): Promise<void> {
-    requireNonEmptyId(id, "revokeResourceQurl");
-    requireNonEmptyId(qurlId, "revokeResourceQurl");
+    validatePathId(id, "revokeResourceQurl", "id", RESOURCE_ID_PATH_OPTIONS);
+    validatePathId(qurlId, "revokeResourceQurl", "qurl id", QURL_ID_PATH_OPTIONS);
     await this.requestNoContent(
       `/v1/resources/${encodeURIComponent(id)}/qurls/${encodeURIComponent(qurlId)}`,
     );
@@ -3568,8 +3682,8 @@ export class QURLClient {
     input: UpdateResourceQurlInput,
     options?: RequestOptions,
   ): Promise<QurlSummary> {
-    requireNonEmptyId(id, "updateResourceQurl");
-    requireNonEmptyId(qurlId, "updateResourceQurl");
+    validatePathId(id, "updateResourceQurl", "id", RESOURCE_ID_PATH_OPTIONS);
+    validatePathId(qurlId, "updateResourceQurl", "qurl id", QURL_ID_PATH_OPTIONS);
     requireObjectInput(input, "updateResourceQurl");
     requireNoUnknownFields(input, UPDATE_RESOURCE_QURL_FIELD_KEYS, "updateResourceQurl");
     const normalized = normalizePatchFields(
@@ -3598,7 +3712,7 @@ export class QURLClient {
    * this page and emits a debug log rather than pretending it fetched all pages.
    */
   async listResourceSessions(id: string): Promise<SessionListOutput> {
-    requireNonEmptyId(id, "listResourceSessions");
+    validatePathId(id, "listResourceSessions", "id", RESOURCE_ID_PATH_OPTIONS);
     const { data, meta } = await this.rawRequest<Session[]>(
       "GET",
       `/v1/resources/${encodeURIComponent(id)}/sessions`,
@@ -3619,7 +3733,7 @@ export class QURLClient {
 
   /** Terminate all active sessions for a resource and return the server count. */
   async terminateAllResourceSessions(id: string): Promise<SessionTerminateOutput> {
-    requireNonEmptyId(id, "terminateAllResourceSessions");
+    validatePathId(id, "terminateAllResourceSessions", "id", RESOURCE_ID_PATH_OPTIONS);
     const path = `/v1/resources/${encodeURIComponent(id)}/sessions`;
     const { data, meta, __http_status } = await this.rawRequest<{ terminated?: number }>(
       "DELETE",
@@ -3640,8 +3754,8 @@ export class QURLClient {
 
   /** Terminate a specific resource session. */
   async terminateResourceSession(id: string, sessionId: string): Promise<void> {
-    requireNonEmptyId(id, "terminateResourceSession");
-    requireNonEmptyId(sessionId, "terminateResourceSession");
+    validatePathId(id, "terminateResourceSession", "id", RESOURCE_ID_PATH_OPTIONS);
+    validatePathId(sessionId, "terminateResourceSession", "session id");
     await this.requestNoContent(
       `/v1/resources/${encodeURIComponent(id)}/sessions/${encodeURIComponent(sessionId)}`,
     );
@@ -3840,19 +3954,19 @@ export class QURLClient {
 
   /** Get custom domain status. */
   async getDomain(domain: string): Promise<Domain> {
-    requireNonEmptyId(domain, "getDomain", "domain");
+    validatePathId(domain, "getDomain", "domain");
     return this.request<Domain>("GET", `/v1/domains/${encodeURIComponent(domain)}`);
   }
 
   /** Remove a custom domain. */
   async deleteDomain(domain: string): Promise<void> {
-    requireNonEmptyId(domain, "deleteDomain", "domain");
+    validatePathId(domain, "deleteDomain", "domain");
     await this.requestNoContent(`/v1/domains/${encodeURIComponent(domain)}`);
   }
 
   /** Trigger DNS verification for a custom domain. */
   async verifyDomain(domain: string, options?: RequestOptions): Promise<DomainVerifyResult> {
-    requireNonEmptyId(domain, "verifyDomain", "domain");
+    validatePathId(domain, "verifyDomain", "domain");
     return this.request<DomainVerifyResult>(
       "POST",
       `/v1/domains/${encodeURIComponent(domain)}/verify`,
@@ -3863,7 +3977,7 @@ export class QURLClient {
 
   /** Regenerate a domain verification token. */
   async regenerateDomainToken(domain: string, options?: RequestOptions): Promise<Domain> {
-    requireNonEmptyId(domain, "regenerateDomainToken", "domain");
+    validatePathId(domain, "regenerateDomainToken", "domain");
     return this.request<Domain>(
       "POST",
       `/v1/domains/${encodeURIComponent(domain)}/regenerate-token`,
@@ -3934,7 +4048,7 @@ export class QURLClient {
 
   /** Get a webhook. */
   async getWebhook(id: string): Promise<Webhook> {
-    requireNonEmptyId(id, "getWebhook");
+    validatePathId(id, "getWebhook");
     return this.request<Webhook>("GET", `/v1/webhooks/${encodeURIComponent(id)}`);
   }
 
@@ -3944,7 +4058,7 @@ export class QURLClient {
     input: UpdateWebhookInput,
     options?: RequestOptions,
   ): Promise<Webhook> {
-    requireNonEmptyId(id, "updateWebhook");
+    validatePathId(id, "updateWebhook");
     requireObjectInput(input, "updateWebhook");
     requireNoUnknownFields(input, UPDATE_WEBHOOK_FIELD_KEYS, "updateWebhook");
     const normalized = normalizePatchFields(
@@ -3967,13 +4081,13 @@ export class QURLClient {
 
   /** Delete a webhook. */
   async deleteWebhook(id: string): Promise<void> {
-    requireNonEmptyId(id, "deleteWebhook");
+    validatePathId(id, "deleteWebhook");
     await this.requestNoContent(`/v1/webhooks/${encodeURIComponent(id)}`);
   }
 
   /** Regenerate a webhook signing secret. */
   async regenerateWebhookSecret(id: string, options?: RequestOptions): Promise<WebhookWithSecret> {
-    requireNonEmptyId(id, "regenerateWebhookSecret");
+    validatePathId(id, "regenerateWebhookSecret");
     return this.request<WebhookWithSecret>(
       "POST",
       `/v1/webhooks/${encodeURIComponent(id)}/secret`,
@@ -3987,7 +4101,7 @@ export class QURLClient {
     id: string,
     input: ListWebhookDeliveriesInput = {},
   ): Promise<WebhookDeliveryListOutput> {
-    requireNonEmptyId(id, "listWebhookDeliveries");
+    validatePathId(id, "listWebhookDeliveries");
     const { data, meta } = await this.rawRequest<WebhookDelivery[]>(
       "GET",
       appendQuery(
@@ -4010,7 +4124,7 @@ export class QURLClient {
     id: string,
     input: Omit<ListWebhookDeliveriesInput, "cursor"> = {},
   ): AsyncGenerator<WebhookDelivery, void, undefined> {
-    requireNonEmptyId(id, "listAllWebhookDeliveries");
+    validatePathId(id, "listAllWebhookDeliveries");
     validateListAllInput(
       input as Record<string, unknown>,
       WEBHOOK_DELIVERY_LIST_PARAM_KEYS,
@@ -4112,7 +4226,7 @@ export class QURLClient {
     input: UpdateApiKeyInput,
     options?: RequestOptions,
   ): Promise<ApiKey> {
-    requireNonEmptyId(keyId, "updateApiKey");
+    validatePathId(keyId, "updateApiKey");
     requireObjectInput(input, "updateApiKey");
     requireNoUnknownFields(input, UPDATE_API_KEY_FIELD_KEYS, "updateApiKey");
     const normalized = normalizePatchFields(
@@ -4135,7 +4249,7 @@ export class QURLClient {
 
   /** Revoke an API key. */
   async revokeApiKey(keyId: string): Promise<void> {
-    requireNonEmptyId(keyId, "revokeApiKey");
+    validatePathId(keyId, "revokeApiKey");
     await this.requestNoContent(`/v1/api-keys/${encodeURIComponent(keyId)}`);
   }
 
@@ -4201,7 +4315,7 @@ export class QURLClient {
 
   /** Revoke an access code. */
   async revokeAccessCode(id: string): Promise<void> {
-    requireNonEmptyId(id, "revokeAccessCode");
+    validatePathId(id, "revokeAccessCode");
     await this.requestNoContent(`/v1/access-codes/${encodeURIComponent(id)}`);
   }
 
@@ -4824,8 +4938,8 @@ const CONNECTOR_RESOURCE_CONSTRUCTOR_TOKEN = Symbol("validated ConnectorResource
 export class ConnectorResource {
   readonly #client: QURLClient;
   readonly resourceId: string;
-  /** Producer-supplied CRID carried verbatim; verify it against a trusted key before trust. */
-  readonly crid?: string;
+  /** Required public identifier, verified against the returned resource key. */
+  readonly crid: string;
   readonly connectorRoutingId: string;
   readonly knockResourceId: string;
   readonly slug: string;
@@ -4844,7 +4958,7 @@ export class ConnectorResource {
     }
     this.#client = client;
     this.resourceId = details.resource_id;
-    this.crid = details.crid;
+    this.crid = details.crid!;
     this.connectorRoutingId = details.connector_routing_id as string;
     this.knockResourceId = details.knock_resource_id as string;
     this.slug = details.slug as string;
@@ -4856,6 +4970,6 @@ export class ConnectorResource {
     opts: CreatePortalOptions = {},
     requestOptions?: RequestOptions,
   ): Promise<Portal> {
-    return this.#client.createPortal(this.resourceId, opts, requestOptions);
+    return this.#client.createPortal(this.crid, opts, requestOptions);
   }
 }
