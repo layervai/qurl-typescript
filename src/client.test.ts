@@ -1,10 +1,16 @@
 import { describe, it, expect, expectTypeOf, vi } from "vitest";
-import { isApiKeyRequestScope, QURLClient } from "./client.js";
+import { ConnectorResource, isApiKeyRequestScope, QURLClient } from "./client.js";
 import {
   AuthenticationError,
   AuthorizationError,
+  ConnectorResourceOutcomeUnknownError,
+  ERROR_CODE_AMBIGUOUS_RESOURCE,
   ERROR_CODE_CLIENT_VALIDATION,
+  ERROR_CODE_NETWORK,
+  ERROR_CODE_CONNECTOR_RESOURCE_OUTCOME_UNKNOWN,
+  ERROR_CODE_CONNECTOR_RESOURCE_REVOKED,
   ERROR_CODE_RUNTIME,
+  ERROR_CODE_TIMEOUT,
   ERROR_CODE_UNEXPECTED_RESPONSE,
   ERROR_CODE_UNKNOWN,
   NetworkError,
@@ -28,6 +34,56 @@ import { mockFetch, mockFetches, createClient } from "./__tests__/test-helpers.j
 
 const UUID_V7_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const TARGET_PATH_MAX_LENGTH = 2048;
+const RESPONSE_BODY_LIMIT = 1 << 20;
+
+function sizedJSON(prefix: string, suffix: string, size: number): string {
+  const paddingLength =
+    size -
+    new TextEncoder().encode(prefix).byteLength -
+    new TextEncoder().encode(suffix).byteLength;
+  if (paddingLength < 0) throw new Error("JSON framing exceeds requested test size");
+  const body = `${prefix}${"x".repeat(paddingLength)}${suffix}`;
+  expect(new TextEncoder().encode(body).byteLength).toBe(size);
+  return body;
+}
+
+function sizedMultibyteJSON(prefix: string, suffix: string, size: number): string {
+  const framingBytes =
+    new TextEncoder().encode(prefix).byteLength + new TextEncoder().encode(suffix).byteLength;
+  const paddingBytes = size - framingBytes;
+  if (paddingBytes < 0) throw new Error("JSON framing exceeds requested test size");
+  const body = `${prefix}${"€".repeat(Math.floor(paddingBytes / 3))}${"x".repeat(
+    paddingBytes % 3,
+  )}${suffix}`;
+  expect(new TextEncoder().encode(body).byteLength).toBe(size);
+  return body;
+}
+
+const CONNECTOR_RESOURCE_ID =
+  "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE2cTVv5_3eeYCcLLq5ROYCqcmY50HiKZ9ATglIkPnCji1E_S63UMtXba1moR8-Q6EV7oM6zwwh9_j2CDujzXvLA";
+const NON_P256_CONNECTOR_RESOURCE_ID = btoa(String.fromCharCode(...new Uint8Array(91)))
+  .replace(/\+/g, "-")
+  .replace(/\//g, "_")
+  .replace(/=+$/, "");
+const OFF_CURVE_CONNECTOR_RESOURCE_ID =
+  "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE7VDGkLaZfQLKvxScAKGCA1Y3p6jNG6d0f66a4Wib8NP8CRZJoEm1jRQej5f0aRzejaH5N7ChvQkiISohN2KVOQ";
+const CONNECTOR_ROUTING_ID = "c-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+function connectorResourceData(overrides: Record<string, unknown> = {}) {
+  return {
+    resource_id: CONNECTOR_RESOURCE_ID,
+    crid: "ahpviqz46qwcvx56glfatm3p3ooccwfcf2it4sdgjervwdkapykw3o3qdq2a",
+    connector_routing_id: CONNECTOR_ROUTING_ID,
+    knock_resource_id: "asp-resource-1",
+    type: "tunnel",
+    status: "active",
+    slug: "prod-dashboard",
+    alias: "dashboard-display-name",
+    desired_state: "on",
+    serving_epoch: 7,
+    ...overrides,
+  };
+}
 
 function callHeaders(
   fetch: typeof globalThis.fetch | ReturnType<typeof vi.fn>,
@@ -40,6 +96,28 @@ function callHeaders(
 }
 
 describe("QURLClient", () => {
+  it("gives shared JSON mock responses the correct media type", async () => {
+    const response = await mockFetch({ status: 200, body: { data: {} } })("https://example.test");
+
+    expect(response.headers.get("content-type")).toBe("application/json");
+  });
+
+  it.each([204, 205, 304])("rejects a body-bearing HTTP %i shared mock", async (status) => {
+    const fetch = mockFetch({ status, body: { forbidden: true } });
+
+    await expect(fetch("https://example.test")).rejects.toThrow(
+      `mock response status ${status} forbids a response body`,
+    );
+  });
+
+  it("rejects unsupported informational statuses in the shared mock", async () => {
+    const fetch = mockFetch({ status: 199 });
+
+    await expect(fetch("https://example.test")).rejects.toThrow(
+      "mock response status 199 is unsupported",
+    );
+  });
+
   it("creates a qURL", async () => {
     const fetch = mockFetch({
       status: 201,
@@ -1174,15 +1252,16 @@ describe("QURLClient", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("createQurlForResource accepts target_path at the service length boundary", async () => {
+  it("createQurlForResource accepts target_path at the 2048-byte boundary", async () => {
     const fetch = mockFetch({
       status: 201,
       body: { data: { qurl_link: "https://qurl.link/#at_x" } },
     });
     const client = createClient(fetch);
-    // The service cap applies to the complete target_path string, including
-    // the leading slash.
-    const maxLengthTargetPath = `/${"x".repeat(TARGET_PATH_MAX_LENGTH - 1)}`;
+    // The cap applies to the complete UTF-8 value, including the leading
+    // slash. Use a multibyte character so this catches code-unit checks.
+    const maxLengthTargetPath = `/${"é".repeat(1023)}a`;
+    expect(new TextEncoder().encode(maxLengthTargetPath)).toHaveLength(TARGET_PATH_MAX_LENGTH);
 
     await client.createQurlForResource("r_x", { target_path: maxLengthTargetPath });
 
@@ -1190,11 +1269,11 @@ describe("QURLClient", () => {
     expect(body).toEqual({ target_path: maxLengthTargetPath });
   });
 
-  it("createQurlForResource rejects an overlong target_path before making requests", async () => {
+  it("createQurlForResource rejects target_path over 2048 UTF-8 bytes before requests", async () => {
     const fetch = mockFetch({ status: 201, body: { data: {} } });
     const client = createClient(fetch);
-    // Leading "/" makes this one character over the complete-string service cap.
-    const overlongTargetPath = `/${"x".repeat(TARGET_PATH_MAX_LENGTH)}`;
+    const overlongTargetPath = `/${"é".repeat(1024)}`;
+    expect(new TextEncoder().encode(overlongTargetPath)).toHaveLength(TARGET_PATH_MAX_LENGTH + 1);
 
     const error = await client
       .createQurlForResource("r_x", { target_path: overlongTargetPath })
@@ -1202,7 +1281,7 @@ describe("QURLClient", () => {
 
     expect(error).toBeInstanceOf(ValidationError);
     expect(error.detail).toContain(
-      `target_path: must be ${TARGET_PATH_MAX_LENGTH} characters or fewer`,
+      `target_path: must be ${TARGET_PATH_MAX_LENGTH} UTF-8 bytes or fewer`,
     );
     expect(fetch).not.toHaveBeenCalled();
   });
@@ -2013,6 +2092,17 @@ describe("QURLClient", () => {
   });
 
   it.each([
+    ["missing durable scopes", { name: "bad" }, "scopes"],
+    [
+      "a null claim",
+      { kind: "enrollment_token", name: "bad", claims: [null] },
+      "must be an object",
+    ],
+    [
+      "an array claim",
+      { kind: "enrollment_token", name: "bad", claims: [[]] },
+      "must be an object",
+    ],
     ["an unknown kind", { kind: "future", name: "bad", scopes: ["qurl:read"] }, "kind must be"],
     [
       "the system-only device kind",
@@ -2410,11 +2500,928 @@ describe("QURLClient", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
+  it("ensures a connector resource with the exact kind-first wire contract", async () => {
+    const fetch = mockFetch({
+      status: 201,
+      body: {
+        data: connectorResourceData(),
+        meta: { found_existing: true },
+      },
+    });
+    const client = createClient(fetch);
+
+    const result = await client.ensureConnectorResource("prod-dashboard");
+
+    expect(result.foundExisting).toBe(true);
+    expect(result.resource).toBeInstanceOf(ConnectorResource);
+    expect(result.resource.resourceId).toBe(CONNECTOR_RESOURCE_ID);
+    expect(result.resource.connectorRoutingId).toBe(CONNECTOR_ROUTING_ID);
+    expect(result.resource.knockResourceId).toBe("asp-resource-1");
+    expect(result.resource.slug).toBe("prod-dashboard");
+    expect(result.resource.alias).toBe("dashboard-display-name");
+    expect(result.resource.crid).toBe(connectorResourceData().crid);
+    expect(fetch).toHaveBeenCalledWith(
+      "https://api.test.layerv.ai/v1/resources",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ type: "tunnel", slug: "prod-dashboard", find_or_create: true }),
+      }),
+    );
+  });
+
+  it("mints a portal from the validated Connector handle", async () => {
+    const fetch = mockFetches([
+      {
+        status: 201,
+        body: { data: connectorResourceData(), meta: { found_existing: false } },
+      },
+      {
+        status: 201,
+        body: {
+          data: {
+            resource_id: CONNECTOR_RESOURCE_ID,
+            qurl_link: "https://qurl.link/#at_connector",
+          },
+        },
+      },
+    ]);
+    const client = createClient(fetch);
+
+    const { resource } = await client.ensureConnectorResource("prod-dashboard");
+    const portal = await resource.createPortal({ validFor: "5m", targetPath: "/api/detect" });
+
+    expect(portal.resourceId).toBe(CONNECTOR_RESOURCE_ID);
+    expect(fetch).toHaveBeenNthCalledWith(
+      2,
+      `https://api.test.layerv.ai/v1/resources/${CONNECTOR_RESOURCE_ID}/qurls`,
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("preflights SubtleCrypto before connector ensure can dispatch", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: connectorResourceData() } });
+    vi.stubGlobal("crypto", undefined);
+    try {
+      await expect(
+        createClient(fetch).ensureConnectorResource("prod-dashboard"),
+      ).rejects.toMatchObject({
+        constructor: RuntimeError,
+        code: ERROR_CODE_RUNTIME,
+        detail: expect.stringContaining(
+          "ensureConnectorResource: requires the Web Crypto SubtleCrypto API",
+        ),
+      });
+      expect(fetch).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("rejects an invalid connector ensure slug before dispatch", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: connectorResourceData() } });
+
+    await expect(createClient(fetch).ensureConnectorResource("UPPER")).rejects.toMatchObject({
+      code: ERROR_CODE_CLIENT_VALIDATION,
+    });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("forwards a caller idempotency key on connector ensure", async () => {
+    const fetch = mockFetch({
+      status: 201,
+      body: { data: connectorResourceData(), meta: { found_existing: false } },
+    });
+
+    const result = await createClient(fetch).ensureConnectorResource("prod-dashboard", {
+      idempotencyKey: "connector-ensure-job-1",
+    });
+
+    expect(result.foundExisting).toBe(false);
+    expect(callHeaders(fetch)["Idempotency-Key"]).toBe("connector-ensure-job-1");
+  });
+
+  it("does not generate an idempotency key for connector ensure", async () => {
+    const fetch = mockFetch({
+      status: 201,
+      body: { data: connectorResourceData(), meta: { found_existing: true } },
+    });
+
+    await createClient(fetch).ensureConnectorResource("prod-dashboard");
+
+    expect(callHeaders(fetch)).not.toHaveProperty("Idempotency-Key");
+  });
+
+  it("preserves pre-dispatch connector ensure validation as a known rejection", async () => {
+    const fetch = mockFetch({ status: 201, body: {} });
+
+    const error = await createClient(fetch)
+      .ensureConnectorResource("prod-dashboard", { idempotencyKey: " padded " })
+      .catch((caught: unknown) => caught as QURLError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error).not.toBeInstanceOf(ConnectorResourceOutcomeUnknownError);
+    expect(error.code).toBe(ERROR_CODE_CLIENT_VALIDATION);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("classifies an alternate connector ensure success status as outcome-unknown", async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: { data: connectorResourceData(), meta: { found_existing: false } },
+    });
+
+    await expect(
+      createClient(fetch).ensureConnectorResource("prod-dashboard"),
+    ).rejects.toMatchObject({
+      constructor: ConnectorResourceOutcomeUnknownError,
+      cause: { code: ERROR_CODE_UNEXPECTED_RESPONSE },
+    });
+  });
+
+  it("fails connector ensure closed without outcome-unknown when metadata is missing", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: connectorResourceData(), meta: {} } });
+
+    const error = await createClient(fetch)
+      .ensureConnectorResource("prod-dashboard")
+      .catch((caught: unknown) => caught as QURLError);
+
+    expect(error).not.toBeInstanceOf(ConnectorResourceOutcomeUnknownError);
+    expect(error).toMatchObject({
+      code: ERROR_CODE_UNEXPECTED_RESPONSE,
+      detail: expect.stringContaining("reconcile by slug before retrying"),
+    });
+  });
+
+  it("marks a connector ensure 5xx as outcome-unknown without hiding the server error", async () => {
+    const fetch = mockFetch({
+      status: 503,
+      body: { error: { status: 503, code: "service_unavailable", title: "Unavailable" } },
+    });
+
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch,
+      maxRetries: 3,
+    });
+
+    await expect(
+      client.ensureConnectorResource("prod-dashboard", {
+        idempotencyKey: "connector-ensure-job-503",
+      }),
+    ).rejects.toMatchObject({
+      constructor: ConnectorResourceOutcomeUnknownError,
+      status: 0,
+      cause: { constructor: ServerError, code: "service_unavailable", status: 503 },
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["ensure", 429, (client: QURLClient) => client.ensureConnectorResource("prod-dashboard")],
+    [
+      "slug lookup",
+      503,
+      (client: QURLClient) => client.getConnectorResourceBySlug("prod-dashboard"),
+    ],
+  ] as const)(
+    "does not pace or replay Connector %s after HTTP %i",
+    async (_name, status, invoke) => {
+      const fetch = mockFetch({
+        status,
+        body: { error: { status, code: "retryable", title: "Retryable" } },
+      });
+      const client = new QURLClient({
+        apiKey: "test-api-key",
+        baseUrl: "https://api.test.layerv.ai",
+        fetch,
+        maxRetries: 3,
+      });
+
+      await expect(invoke(client)).rejects.toBeInstanceOf(QURLError);
+      expect(fetch).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("marks a connector ensure transport failure as outcome-unknown", async () => {
+    const fetch = vi.fn().mockRejectedValue(new TypeError("socket closed"));
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 3,
+    });
+
+    await expect(client.ensureConnectorResource("prod-dashboard")).rejects.toMatchObject({
+      constructor: ConnectorResourceOutcomeUnknownError,
+      status: 0,
+      code: ERROR_CODE_CONNECTOR_RESOURCE_OUTCOME_UNKNOWN,
+      cause: { code: "network_error" },
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("marks invalid connector ensure metadata as outcome-unknown", async () => {
+    const fetch = mockFetch({
+      status: 201,
+      body: { data: connectorResourceData(), meta: { found_existing: "yes" } },
+    });
+
+    await expect(
+      createClient(fetch).ensureConnectorResource("prod-dashboard"),
+    ).rejects.toMatchObject({
+      constructor: ConnectorResourceOutcomeUnknownError,
+      cause: { code: ERROR_CODE_UNEXPECTED_RESPONSE },
+    });
+  });
+
+  it.each([false, 1, "metadata", []])(
+    "marks invalid connector ensure meta container %j as outcome-unknown",
+    async (meta) => {
+      const fetch = mockFetch({
+        status: 201,
+        body: { data: connectorResourceData(), meta },
+      });
+
+      await expect(
+        createClient(fetch).ensureConnectorResource("prod-dashboard"),
+      ).rejects.toMatchObject({
+        constructor: ConnectorResourceOutcomeUnknownError,
+        cause: { code: ERROR_CODE_UNEXPECTED_RESPONSE },
+      });
+    },
+  );
+
+  it("classifies an unexpected throwable after connector ensure dispatch as outcome-unknown", async () => {
+    const fetch = vi.fn(async () => {
+      const response = { headers: new Headers() } as Response;
+      Object.defineProperty(response, "status", {
+        get() {
+          throw new Error("custom response failure");
+        },
+      });
+      return response;
+    });
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 0,
+    });
+
+    await expect(client.ensureConnectorResource("prod-dashboard")).rejects.toMatchObject({
+      constructor: ConnectorResourceOutcomeUnknownError,
+      status: 0,
+      cause: { constructor: RuntimeError, code: ERROR_CODE_RUNTIME },
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("classifies a runtime capability loss after connector ensure dispatch as outcome-unknown", async () => {
+    const fetch = vi.fn(async () => {
+      vi.stubGlobal("crypto", undefined);
+      return new Response(
+        JSON.stringify({
+          data: connectorResourceData(),
+          meta: { found_existing: false },
+        }),
+        { status: 201, headers: { "content-type": "application/json" } },
+      );
+    });
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 0,
+    });
+
+    try {
+      await expect(client.ensureConnectorResource("prod-dashboard")).rejects.toMatchObject({
+        constructor: ConnectorResourceOutcomeUnknownError,
+        cause: { constructor: RuntimeError, code: ERROR_CODE_RUNTIME },
+      });
+      expect(fetch).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("preserves an authoritative connector ensure 4xx as a known rejection", async () => {
+    const fetch = mockFetch({
+      status: 409,
+      body: { error: { status: 409, code: "slug_in_use", title: "Conflict" } },
+    });
+
+    const error = await createClient(fetch)
+      .ensureConnectorResource("prod-dashboard")
+      .catch((caught: unknown) => caught as QURLError);
+
+    expect(error).not.toBeInstanceOf(ConnectorResourceOutcomeUnknownError);
+    expect(error).toMatchObject({ status: 409, code: "slug_in_use" });
+  });
+
+  it("marks bootstrap-key consumption after connector ensure as outcome-unknown", async () => {
+    const fetch = mockFetch({
+      status: 409,
+      body: {
+        error: {
+          status: 409,
+          code: "bootstrap_key_consumed",
+          title: "Bootstrap Key Consumed",
+        },
+      },
+    });
+
+    await expect(
+      createClient(fetch).ensureConnectorResource("prod-dashboard"),
+    ).rejects.toMatchObject({
+      constructor: ConnectorResourceOutcomeUnknownError,
+      status: 0,
+      code: ERROR_CODE_CONNECTOR_RESOURCE_OUTCOME_UNKNOWN,
+      cause: { status: 409, code: "bootstrap_key_consumed" },
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("marks a connector ensure slug mismatch as outcome-unknown", async () => {
+    const fetch = mockFetch({
+      status: 201,
+      body: {
+        data: connectorResourceData({ slug: "other-dashboard" }),
+        meta: { found_existing: false },
+      },
+    });
+
+    await expect(
+      createClient(fetch).ensureConnectorResource("prod-dashboard"),
+    ).rejects.toMatchObject({
+      constructor: ConnectorResourceOutcomeUnknownError,
+      cause: { code: ERROR_CODE_UNEXPECTED_RESPONSE },
+    });
+  });
+
+  it("marks a revoked connector ensure result as outcome-unknown", async () => {
+    const fetch = mockFetch({
+      status: 201,
+      body: {
+        data: connectorResourceData({ status: "revoked" }),
+        meta: { found_existing: true },
+      },
+    });
+
+    await expect(
+      createClient(fetch).ensureConnectorResource("prod-dashboard"),
+    ).rejects.toMatchObject({
+      constructor: ConnectorResourceOutcomeUnknownError,
+      cause: { code: ERROR_CODE_UNEXPECTED_RESPONSE },
+    });
+  });
+
+  it("gets a connector resource by immutable resource ID from the detail envelope", async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: { data: { resource: connectorResourceData() } },
+    });
+    const client = createClient(fetch);
+
+    const resource = await client.getConnectorResource(CONNECTOR_RESOURCE_ID);
+
+    expect(resource.resourceId).toBe(CONNECTOR_RESOURCE_ID);
+    expect(fetch).toHaveBeenCalledWith(
+      `https://api.test.layerv.ai/v1/resources/${CONNECTOR_RESOURCE_ID}`,
+      expect.objectContaining({ method: "GET" }),
+    );
+  });
+
+  it.each([
+    [
+      "getConnectorResource",
+      (client: QURLClient) => client.getConnectorResource(CONNECTOR_RESOURCE_ID),
+    ],
+    [
+      "getConnectorResourceBySlug",
+      (client: QURLClient) => client.getConnectorResourceBySlug("prod-dashboard"),
+    ],
+  ] as const)("does not pace or replay %s after a transport failure", async (_name, invoke) => {
+    const fetch = vi.fn().mockRejectedValue(new TypeError("socket closed"));
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 3,
+    });
+
+    await expect(invoke(client)).rejects.toMatchObject({ code: ERROR_CODE_NETWORK });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails closed when connector resource detail omits its nested resource", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+
+    await expect(
+      createClient(fetch).getConnectorResource(CONNECTOR_RESOURCE_ID),
+    ).rejects.toMatchObject({ code: ERROR_CODE_UNEXPECTED_RESPONSE });
+  });
+
+  it.each([
+    [
+      "getConnectorResource",
+      (client: QURLClient) => client.getConnectorResource(CONNECTOR_RESOURCE_ID),
+    ],
+    [
+      "deleteConnectorResource",
+      (client: QURLClient) => client.deleteConnectorResource(CONNECTOR_RESOURCE_ID),
+    ],
+  ] as const)("preflights SubtleCrypto before %s can dispatch", async (_method, invoke) => {
+    const fetch = mockFetch({ status: 200, body: { data: { resource: connectorResourceData() } } });
+    vi.stubGlobal("crypto", undefined);
+    try {
+      await expect(invoke(createClient(fetch))).rejects.toMatchObject({
+        constructor: RuntimeError,
+        code: ERROR_CODE_RUNTIME,
+        detail: expect.stringContaining(`${_method}: requires the Web Crypto SubtleCrypto API`),
+      });
+      expect(fetch).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("imports a prevalidated by-ID connector resource key only once", async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: { data: { resource: connectorResourceData() } },
+    });
+    const importKey = vi.spyOn(globalThis.crypto.subtle, "importKey");
+
+    try {
+      await createClient(fetch).getConnectorResource(CONNECTOR_RESOURCE_ID);
+      expect(importKey).toHaveBeenCalledTimes(1);
+    } finally {
+      importKey.mockRestore();
+    }
+  });
+
+  it("rejects a valid Connector key response that does not match the requested resource ID", async () => {
+    const pair = await globalThis.crypto.subtle.generateKey(
+      { name: "ECDSA", namedCurve: "P-256" },
+      true,
+      ["sign", "verify"],
+    );
+    const der = new Uint8Array(await globalThis.crypto.subtle.exportKey("spki", pair.publicKey));
+    const otherResourceId = btoa(String.fromCharCode(...der))
+      .replace(/\+/g, "-")
+      .replace(/\//g, "_")
+      .replace(/=+$/, "");
+    const fetch = mockFetch({
+      status: 200,
+      body: { data: { resource: connectorResourceData({ resource_id: otherResourceId }) } },
+    });
+
+    await expect(
+      createClient(fetch).getConnectorResource(CONNECTOR_RESOURCE_ID),
+    ).rejects.toMatchObject({ code: ERROR_CODE_UNEXPECTED_RESPONSE });
+  });
+
+  it("gets a connector resource by immutable slug without treating alias as identity", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: [connectorResourceData()] } });
+    const client = createClient(fetch);
+
+    const resource = await client.getConnectorResourceBySlug("prod-dashboard");
+
+    expect(resource.slug).toBe("prod-dashboard");
+    expect(resource.alias).toBe("dashboard-display-name");
+    expect(fetch).toHaveBeenCalledWith(
+      "https://api.test.layerv.ai/v1/resources?slug=prod-dashboard",
+      expect.objectContaining({ method: "GET" }),
+    );
+  });
+
+  it("preflights SubtleCrypto before connector slug lookup can dispatch", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: [connectorResourceData()] } });
+    vi.stubGlobal("crypto", undefined);
+    try {
+      await expect(
+        createClient(fetch).getConnectorResourceBySlug("prod-dashboard"),
+      ).rejects.toMatchObject({ constructor: RuntimeError, code: ERROR_CODE_RUNTIME });
+      expect(fetch).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it.each([
+    ["missing", []],
+    ["ambiguous", [connectorResourceData(), connectorResourceData()]],
+  ])("rejects a %s connector slug lookup result", async (kind, data) => {
+    const fetch = mockFetch({ status: 200, body: { data } });
+    const client = createClient(fetch);
+
+    const error = await client
+      .getConnectorResourceBySlug("prod-dashboard")
+      .catch((caught: unknown) => caught as QURLError);
+
+    expect(error).toBeInstanceOf(QURLError);
+    expect(error.code).toBe(kind === "missing" ? "resource_not_found" : "ambiguous_resource");
+  });
+
+  it("deletes a connector resource by immutable resource ID", async () => {
+    const fetch = mockFetch({ status: 204 });
+    const client = createClient(fetch);
+
+    await expect(client.deleteConnectorResource(CONNECTOR_RESOURCE_ID)).resolves.toBeUndefined();
+    expect(fetch).toHaveBeenCalledWith(
+      `https://api.test.layerv.ai/v1/resources/${CONNECTOR_RESOURCE_ID}`,
+      expect.objectContaining({ method: "DELETE" }),
+    );
+  });
+
+  it.each([
+    ["transport failure", () => Promise.reject(new TypeError("socket closed"))],
+    [
+      "alternate successful response",
+      () => Promise.resolve(new Response(JSON.stringify({ data: {} }), { status: 200 })),
+    ],
+  ])("marks connector delete %s as outcome-unknown", async (_name, response) => {
+    const fetch = vi.fn().mockImplementation(response);
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 3,
+    });
+
+    await expect(client.deleteConnectorResource(CONNECTOR_RESOURCE_ID)).rejects.toMatchObject({
+      constructor: ConnectorResourceOutcomeUnknownError,
+      status: 0,
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not replay a connector delete after a 503", async () => {
+    const fetch = mockFetch({
+      status: 503,
+      body: { error: { status: 503, code: "service_unavailable", title: "Unavailable" } },
+    });
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch,
+      maxRetries: 3,
+    });
+
+    await expect(client.deleteConnectorResource(CONNECTOR_RESOURCE_ID)).rejects.toMatchObject({
+      constructor: ConnectorResourceOutcomeUnknownError,
+      cause: { status: 503 },
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves an authoritative connector delete 4xx as a known rejection", async () => {
+    const fetch = mockFetch({
+      status: 409,
+      body: { error: { status: 409, code: "resource_conflict", title: "Conflict" } },
+    });
+
+    const error = await createClient(fetch)
+      .deleteConnectorResource(CONNECTOR_RESOURCE_ID)
+      .catch((caught: unknown) => caught as QURLError);
+
+    expect(error).not.toBeInstanceOf(ConnectorResourceOutcomeUnknownError);
+    expect(error).toMatchObject({ status: 409, code: "resource_conflict" });
+  });
+
+  it.each([
+    ["ensure", (client: QURLClient) => client.ensureConnectorResource("prod-dashboard")],
+    ["delete", (client: QURLClient) => client.deleteConnectorResource(CONNECTOR_RESOURCE_ID)],
+  ] as const)("preserves a connector %s HTTP 408 as a known rejection", async (_name, invoke) => {
+    const fetch = mockFetch({
+      status: 408,
+      body: { error: { status: 408, code: "request_timeout", title: "Request Timeout" } },
+    });
+
+    const error = await invoke(createClient(fetch)).catch((caught: unknown) => caught as QURLError);
+
+    expect(error).not.toBeInstanceOf(ConnectorResourceOutcomeUnknownError);
+    expect(error).toMatchObject({ status: 408, code: "request_timeout" });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves an authoritative repeated connector delete 404 as a known rejection", async () => {
+    const fetch = mockFetch({
+      status: 404,
+      body: { error: { status: 404, code: "resource_not_found", title: "Not Found" } },
+    });
+
+    const error = await createClient(fetch)
+      .deleteConnectorResource(CONNECTOR_RESOURCE_ID)
+      .catch((caught: unknown) => caught as QURLError);
+
+    expect(error).not.toBeInstanceOf(ConnectorResourceOutcomeUnknownError);
+    expect(error).toMatchObject({ status: 404, code: "resource_not_found" });
+  });
+
+  it.each([
+    ["missing routing ID", { connector_routing_id: undefined }],
+    ["cross-wired admission ID", { knock_resource_id: CONNECTOR_ROUTING_ID }],
+    ["resource identity reused as admission ID", { knock_resource_id: CONNECTOR_RESOURCE_ID }],
+    ["padded admission ID", { knock_resource_id: " asp-resource-1 " }],
+    ["control character in admission ID", { knock_resource_id: "asp\u0000resource" }],
+    ["non-canonical routing ID", { connector_routing_id: `${CONNECTOR_ROUTING_ID.slice(0, -1)}b` }],
+    [
+      "canonical base64url resource ID that is not a P-256 key",
+      { resource_id: NON_P256_CONNECTOR_RESOURCE_ID },
+    ],
+    ["off-curve P-256 resource key", { resource_id: OFF_CURVE_CONNECTOR_RESOURCE_ID }],
+    ["wrong type", { type: "url" }],
+    ["wrong slug", { slug: "other-dashboard" }],
+    ["invalid alias", { alias: "Prod Dashboard" }],
+    ["invalid CRID type", { crid: 42 }],
+  ])("fails closed when a connector resource response has %s", async (_name, overrides) => {
+    const fetch = mockFetch({
+      status: 200,
+      body: { data: [connectorResourceData(overrides)] },
+    });
+    const client = createClient(fetch);
+
+    const error = await client
+      .getConnectorResourceBySlug("prod-dashboard")
+      .catch((e: unknown) => e as QURLError);
+
+    expect(error).toBeInstanceOf(QURLError);
+    expect(error.code).toBe(ERROR_CODE_UNEXPECTED_RESPONSE);
+  });
+
+  it("fails closed when an active-only slug lookup returns a revoked row", async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: { data: [connectorResourceData({ status: "revoked" })] },
+    });
+
+    await expect(
+      createClient(fetch).getConnectorResourceBySlug("prod-dashboard"),
+    ).rejects.toMatchObject({ code: ERROR_CODE_UNEXPECTED_RESPONSE });
+  });
+
+  it("treats active and revoked rows as an ambiguous slug result", async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: {
+        data: [connectorResourceData({ status: "revoked" }), connectorResourceData()],
+      },
+    });
+
+    await expect(
+      createClient(fetch).getConnectorResourceBySlug("prod-dashboard"),
+    ).rejects.toMatchObject({ code: ERROR_CODE_AMBIGUOUS_RESOURCE });
+  });
+
+  it("treats multiple rows as ambiguous before row validation", async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: {
+        data: [connectorResourceData({ status: "pending" }), connectorResourceData()],
+      },
+    });
+
+    await expect(
+      createClient(fetch).getConnectorResourceBySlug("prod-dashboard"),
+    ).rejects.toMatchObject({ code: ERROR_CODE_AMBIGUOUS_RESOURCE });
+  });
+
+  it("fails closed when a connector slug row omits status", async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: { data: [connectorResourceData({ status: undefined })] },
+    });
+
+    await expect(
+      createClient(fetch).getConnectorResourceBySlug("prod-dashboard"),
+    ).rejects.toMatchObject({ code: ERROR_CODE_UNEXPECTED_RESPONSE });
+  });
+
+  it.each([null, "not-an-object"])(
+    "fails closed on malformed connector slug row %j",
+    async (row) => {
+      const fetch = mockFetch({ status: 200, body: { data: [row] } });
+
+      await expect(
+        createClient(fetch).getConnectorResourceBySlug("prod-dashboard"),
+      ).rejects.toMatchObject({ code: ERROR_CODE_UNEXPECTED_RESPONSE });
+    },
+  );
+
+  it("fails closed on a malformed connector slug row alongside a valid row", async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: { data: [null, connectorResourceData()] },
+    });
+
+    await expect(
+      createClient(fetch).getConnectorResourceBySlug("prod-dashboard"),
+    ).rejects.toMatchObject({ code: ERROR_CODE_AMBIGUOUS_RESOURCE });
+  });
+
+  it("normalizes a null connector alias to undefined", async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: { data: [connectorResourceData({ alias: null })] },
+    });
+
+    await expect(
+      createClient(fetch).getConnectorResourceBySlug("prod-dashboard"),
+    ).resolves.toMatchObject({ alias: undefined });
+  });
+
+  it("classifies a revoked by-ID result as a connector lifecycle error", async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: { data: { resource: connectorResourceData({ status: "revoked" }) } },
+    });
+
+    await expect(
+      createClient(fetch).getConnectorResource(CONNECTOR_RESOURCE_ID),
+    ).rejects.toMatchObject({ code: ERROR_CODE_CONNECTOR_RESOURCE_REVOKED });
+  });
+
+  it("fails closed on an unknown by-ID lifecycle status", async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: { data: { resource: connectorResourceData({ status: "pending" }) } },
+    });
+
+    await expect(
+      createClient(fetch).getConnectorResource(CONNECTOR_RESOURCE_ID),
+    ).rejects.toMatchObject({ code: ERROR_CODE_UNEXPECTED_RESPONSE });
+  });
+
+  it.each([
+    [
+      "missing routing and admission IDs",
+      { connector_routing_id: undefined, knock_resource_id: undefined },
+    ],
+    ["invalid CRID", { crid: 42 }],
+  ])(
+    "validates a revoked by-ID row with %s before lifecycle classification",
+    async (_name, overrides) => {
+      const fetch = mockFetch({
+        status: 200,
+        body: {
+          data: { resource: connectorResourceData({ status: "revoked", ...overrides }) },
+        },
+      });
+
+      await expect(
+        createClient(fetch).getConnectorResource(CONNECTOR_RESOURCE_ID),
+      ).rejects.toMatchObject({ code: ERROR_CODE_UNEXPECTED_RESPONSE });
+    },
+  );
+
+  it("rejects direct ConnectorResource construction outside validated client responses", () => {
+    const client = createClient(mockFetch({ status: 200 }));
+
+    expect(() => Reflect.construct(ConnectorResource, [client, connectorResourceData()])).toThrow(
+      ValidationError,
+    );
+  });
+
+  it.each(["", "ab", "UPPER", "-bad", "bad-"])(
+    "rejects invalid connector slug %s before fetch",
+    async (slug) => {
+      const fetch = mockFetch({ status: 200, body: { data: [] } });
+      const client = createClient(fetch);
+
+      await expect(client.getConnectorResourceBySlug(slug)).rejects.toBeInstanceOf(ValidationError);
+      expect(fetch).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rejects a connector resource ID whose DER is not a P-256 key before fetch", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+
+    await expect(
+      client.getConnectorResource(`A${CONNECTOR_RESOURCE_ID.slice(1)}`),
+    ).rejects.toBeInstanceOf(ValidationError);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("rejects a non-canonical connector resource ID spelling before fetch", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = createClient(fetch);
+    const nonCanonical = `${CONNECTOR_RESOURCE_ID.slice(0, -1)}B`;
+
+    await expect(client.getConnectorResource(nonCanonical)).rejects.toBeInstanceOf(ValidationError);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      "getConnectorResource",
+      (client: QURLClient) => client.getConnectorResource(CONNECTOR_RESOURCE_ID),
+      { data: { resource: connectorResourceData() } },
+    ],
+    [
+      "getConnectorResourceBySlug",
+      (client: QURLClient) => client.getConnectorResourceBySlug("prod-dashboard"),
+      { data: [connectorResourceData()] },
+    ],
+  ])("%s requires exact HTTP 200", async (_name, call, body) => {
+    const fetch = mockFetch({ status: 201, body });
+
+    await expect(call(createClient(fetch))).rejects.toMatchObject({
+      code: ERROR_CODE_UNEXPECTED_RESPONSE,
+    });
+  });
+
+  it("rejects a non-canonical connector resource ID before delete fetch", async () => {
+    const fetch = mockFetch({ status: 204 });
+    const client = createClient(fetch);
+
+    await expect(
+      client.deleteConnectorResource(`A${CONNECTOR_RESOURCE_ID.slice(1)}`),
+    ).rejects.toBeInstanceOf(ValidationError);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("deletes a qURL", async () => {
     const fetch = mockFetch({ status: 204 });
     const client = createClient(fetch);
 
     await expect(client.delete("r_abc123def45")).resolves.toBeUndefined();
+  });
+
+  it.each([
+    ["delete", (client: QURLClient) => client.delete("r_abc123def45")],
+    ["deleteResource", (client: QURLClient) => client.deleteResource("r_abc123def45")],
+    [
+      "revokeResourceQurl",
+      (client: QURLClient) => client.revokeResourceQurl("r_abc123def45", "q_3a7f2c8e91b"),
+    ],
+    [
+      "terminateResourceSession",
+      (client: QURLClient) => client.terminateResourceSession("r_abc123def45", "session-1"),
+    ],
+    ["deleteDomain", (client: QURLClient) => client.deleteDomain("app.example.com")],
+    ["deleteWebhook", (client: QURLClient) => client.deleteWebhook("wh_abc")],
+    ["revokeApiKey", (client: QURLClient) => client.revokeApiKey("key_abc")],
+    ["revokeAccessCode", (client: QURLClient) => client.revokeAccessCode("code_abc")],
+  ])("%s requires the endpoint's exact 204 success status", async (_name, invoke) => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+
+    await expect(invoke(createClient(fetch))).rejects.toMatchObject({
+      status: 200,
+      code: ERROR_CODE_UNEXPECTED_RESPONSE,
+      detail: expect.stringContaining("received HTTP 200"),
+      message: expect.stringContaining("may already have been applied"),
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects HTTP 202 for a no-content DELETE contract", async () => {
+    const fetch = mockFetch({ status: 202, body: { data: {} } });
+
+    await expect(createClient(fetch).delete("r_abc123def45")).rejects.toMatchObject({
+      status: 202,
+      code: ERROR_CODE_UNEXPECTED_RESPONSE,
+      detail: expect.stringContaining("received HTTP 202"),
+      message: expect.stringContaining("may already have been applied"),
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects an empty HTTP 200 for a no-content DELETE contract", async () => {
+    const fetch = mockFetch({ status: 200 });
+
+    await expect(createClient(fetch).delete("r_abc123def45")).rejects.toMatchObject({
+      status: 200,
+      code: ERROR_CODE_UNEXPECTED_RESPONSE,
+      detail: expect.stringContaining("received HTTP 200 with an empty body"),
+      message: expect.stringContaining("may already have been applied"),
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a non-empty body on a nominal 204 mutation response", async () => {
+    const response = {
+      ok: true,
+      status: 204,
+      statusText: "No Content",
+      headers: new Headers({}),
+      body: undefined,
+      text: () => Promise.resolve("unexpected"),
+      json: () => Promise.resolve(undefined),
+    } satisfies Partial<Response> as Response;
+    const fetch = vi.fn().mockResolvedValue(response);
+
+    await expect(
+      createClient(fetch as typeof globalThis.fetch).delete("r_abc123def45"),
+    ).rejects.toMatchObject({
+      status: 204,
+      code: ERROR_CODE_UNEXPECTED_RESPONSE,
+      detail: expect.stringContaining("with response bytes"),
+      message: expect.stringContaining("may already have been applied"),
+    });
   });
 
   it("delete rejects q_ (display) IDs client-side", async () => {
@@ -3499,10 +4506,7 @@ describe("QURLClient", () => {
     expect(dropLog).toBeDefined();
   });
 
-  it.each([
-    { label: "null", qurls: null, needle: "was null", branch: "null" },
-    { label: "undefined", qurls: undefined, needle: "was undefined", branch: "undefined" },
-  ])(
+  it.each([{ label: "null", qurls: null, needle: "was null", branch: "null" }])(
     "mapQurlsField logs when own-property `qurls` is $label",
     async ({ qurls, needle, branch }) => {
       const fetch = mockFetch({
@@ -3534,6 +4538,44 @@ describe("QURLClient", () => {
       expect(log![1]).toEqual({ branch });
     },
   );
+
+  it("mapQurlsField logs when a direct input has own-property `qurls: undefined`", () => {
+    const debugFn = vi.fn();
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch,
+      maxRetries: 0,
+      debug: debugFn,
+    });
+    const raw = {
+      resource_id: "r_direct_undefined",
+      target_url: "https://example.com",
+      status: "active",
+      qurls: undefined,
+    };
+    expect(Object.prototype.hasOwnProperty.call(raw, "qurls")).toBe(true);
+
+    // TypeScript `private` is compile-time only, so the un-exported helper is
+    // reachable through the runtime prototype without a test-only export.
+    // Direct invocation is deliberate: wire JSON cannot express an
+    // own-property `undefined`, so this branch is untestable through fetch.
+    const descriptor = Object.getOwnPropertyDescriptor(QURLClient.prototype, "mapQurlsField");
+    expect(typeof descriptor?.value).toBe("function");
+    const mapQurlsField = descriptor?.value as (
+      this: QURLClient,
+      input: Record<string, unknown>,
+    ) => Record<string, unknown>;
+    const result = mapQurlsField.call(client, raw);
+
+    expect(Object.prototype.hasOwnProperty.call(result, "qurls")).toBe(false);
+    expect(result.access_tokens).toBeUndefined();
+    expect(debugFn).toHaveBeenCalledWith("mapQurlsField: 'qurls' was undefined; dropping", {
+      branch: "undefined",
+    });
+    expect(fetch).not.toHaveBeenCalled();
+  });
 
   it("parseError synthesizes a title from HTTP status when statusText is empty (HTTP/2)", async () => {
     // HTTP/2 omits reason-phrases — fallback must keep Error.message legible.
@@ -3896,6 +4938,459 @@ describe("QURLClient", () => {
     expect(callHeaders(fetch)["Idempotency-Key"]).toBe("upstream-job-123");
   });
 
+  it.each([
+    ["same-origin", "https://api.test.layerv.ai/redirect-target"],
+    ["cross-origin", "https://redirect-target.invalid/collect"],
+  ])("refuses %s redirects without forwarding credential headers", async (_kind, targetUrl) => {
+    const target = vi.fn(async () => new Response(null, { status: 204 }));
+    let originalHeaders: Record<string, string> | undefined;
+    const fetch = vi.fn(
+      async (
+        url: Parameters<typeof globalThis.fetch>[0],
+        init?: Parameters<typeof globalThis.fetch>[1],
+      ) => {
+        if (String(url) === targetUrl) return target(url, init);
+        originalHeaders = init?.headers as Record<string, string>;
+
+        // Model fetch's redirect behavior: a missing/manual-misconfigured mode
+        // would make a second request and expose the test to target().
+        if (init?.redirect !== "manual") return target(targetUrl, init);
+        return new Response("redirect response body", {
+          status: 302,
+          headers: { location: targetUrl },
+        });
+      },
+    );
+    const client = new QURLClient({
+      apiKey: "redirect-test-secret",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 2,
+    });
+
+    const error = await client
+      .create(
+        { target_url: "https://example.com" },
+        { idempotencyKey: "redirect-test-idempotency" },
+      )
+      .catch((caught: unknown) => caught as QURLError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error.status).toBe(302);
+    expect(error.code).toBe(ERROR_CODE_UNEXPECTED_RESPONSE);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(target).not.toHaveBeenCalled();
+    expect(originalHeaders?.Authorization).toBe("Bearer redirect-test-secret");
+    expect(originalHeaders?.["Idempotency-Key"]).toBe("redirect-test-idempotency");
+    expect(error.message).not.toContain(targetUrl);
+    expect(error.message).not.toContain("redirect-test-secret");
+    expect(error.message).not.toContain("redirect-test-idempotency");
+  });
+
+  it.each([300, 301, 302, 303, 305, 307, 308])(
+    "refuses HTTP %i redirect responses without retrying",
+    async (status) => {
+      const fetch = vi.fn(async () => new Response(null, { status }));
+      const client = new QURLClient({
+        apiKey: "test-api-key",
+        baseUrl: "https://api.test.layerv.ai",
+        fetch: fetch as typeof globalThis.fetch,
+        maxRetries: 2,
+      });
+
+      await expect(client.getQuota()).rejects.toMatchObject({
+        status,
+        code: ERROR_CODE_UNEXPECTED_RESPONSE,
+      });
+      expect(fetch).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([
+    { method: "GET", invoke: (client: QURLClient) => client.getQuota() },
+    {
+      method: "POST",
+      invoke: (client: QURLClient) =>
+        client.create({ target_url: "https://example.com" }, { idempotencyKey: "redirect-post" }),
+    },
+    {
+      method: "PATCH",
+      invoke: (client: QURLClient) =>
+        client.update(
+          "r_abc123def45",
+          { description: "updated" },
+          { idempotencyKey: "redirect-patch" },
+        ),
+    },
+    { method: "DELETE", invoke: (client: QURLClient) => client.delete("r_abc123def45") },
+  ])("uses manual redirect handling and refuses a redirect for $method", async ({ invoke }) => {
+    const fetch = vi.fn(async () => new Response(null, { status: 302 }));
+
+    await expect(invoke(createClient(fetch))).rejects.toMatchObject({
+      status: 302,
+      code: ERROR_CODE_UNEXPECTED_RESPONSE,
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(fetch).mock.calls[0][1]?.redirect).toBe("manual");
+  });
+
+  it("refuses filtered opaque redirects as unexpected responses", async () => {
+    const fetch = vi.fn(async () => {
+      return {
+        ok: false,
+        status: 0,
+        statusText: "",
+        type: "opaqueredirect",
+        headers: new Headers(),
+        body: null,
+      } satisfies Partial<Response> as Response;
+    });
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 2,
+    });
+
+    const error = await client.getQuota().catch((caught: unknown) => caught as QURLError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error.status).toBe(0);
+    expect(error.code).toBe(ERROR_CODE_UNEXPECTED_RESPONSE);
+    expect(error.detail).toBe("Refused opaque redirect response for GET");
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a redirect already followed by a custom fetch implementation", async () => {
+    const fetch = vi.fn(
+      async () =>
+        ({
+          ok: true,
+          redirected: true,
+          status: 200,
+          statusText: "OK",
+          type: "basic",
+          headers: new Headers(),
+          body: null,
+        }) satisfies Partial<Response> as Response,
+    );
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 2,
+    });
+
+    const error = await client.getQuota().catch((caught: unknown) => caught as QURLError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error.code).toBe(ERROR_CODE_UNEXPECTED_RESPONSE);
+    expect(error.detail).toContain("followed redirect");
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a changed non-empty response URL even when redirected is false", async () => {
+    const fetch = vi.fn(
+      async () =>
+        ({
+          ok: true,
+          redirected: false,
+          url: "https://redirected.example/v1/quota",
+          status: 200,
+          statusText: "OK",
+          type: "basic",
+          headers: new Headers(),
+          body: null,
+        }) satisfies Partial<Response> as Response,
+    );
+
+    await expect(
+      new QURLClient({
+        apiKey: "test-api-key",
+        baseUrl: "https://api.test.layerv.ai",
+        fetch: fetch as typeof globalThis.fetch,
+        maxRetries: 2,
+      }).getQuota(),
+    ).rejects.toMatchObject({ status: 200, code: ERROR_CODE_UNEXPECTED_RESPONSE });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("names an invalid custom Response.url without reflecting its value", async () => {
+    const invalidResponseUrl = "/relative-response-url";
+    const fetch = vi.fn(
+      async () =>
+        ({
+          ok: true,
+          redirected: false,
+          url: invalidResponseUrl,
+          status: 200,
+          statusText: "OK",
+          type: "basic",
+          headers: new Headers(),
+          body: null,
+        }) satisfies Partial<Response> as Response,
+    );
+
+    const error = await createClient(fetch)
+      .getQuota()
+      .catch((caught: unknown) => caught as QURLError);
+
+    expect(error).toMatchObject({
+      status: 200,
+      code: ERROR_CODE_UNEXPECTED_RESPONSE,
+      detail: "Refused invalid custom Response.url redirect response for GET",
+      message:
+        "Unexpected Response (200): Refused invalid custom Response.url redirect response for GET",
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("accepts an equivalent normalized response URL", async () => {
+    const fetch = vi.fn(
+      async () =>
+        ({
+          ok: true,
+          redirected: false,
+          url: "https://API.TEST.LAYERV.AI:443/v1/quota",
+          status: 200,
+          statusText: "OK",
+          type: "basic",
+          headers: new Headers({ "content-type": "application/json" }),
+          body: undefined,
+          text: async () =>
+            JSON.stringify({
+              data: {
+                plan: "growth",
+                period_start: "2026-03-01",
+                period_end: "2026-04-01",
+              },
+            }),
+        }) satisfies Partial<Response> as Response,
+    );
+
+    await expect(
+      new QURLClient({
+        apiKey: "test-api-key",
+        baseUrl: "https://api.test.layerv.ai",
+        fetch: fetch as typeof globalThis.fetch,
+        maxRetries: 0,
+      }).getQuota(),
+    ).resolves.toMatchObject({ plan: "growth" });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not mislabel HTTP 304 as a redirect", async () => {
+    const fetch = vi.fn(
+      async () =>
+        new Response(null, {
+          status: 304,
+          statusText: "Not Modified",
+          // RFC 9110 permits this to describe the selected 200 representation.
+          // It is not the byte length of a body on this 304 response.
+          headers: { "content-length": String(RESPONSE_BODY_LIMIT + 1) },
+        }),
+    );
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 0,
+    });
+
+    const error = await client.getQuota().catch((caught: unknown) => caught as QURLError);
+
+    expect(error).toBeInstanceOf(QURLError);
+    expect(error.status).toBe(304);
+    expect(error.detail).toBe("Not Modified");
+    expect(error.detail).not.toContain("redirect");
+    expect(error.detail).not.toContain("body exceeds");
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("accepts an empty 204 from a Response-like shim whose json() rejects", async () => {
+    const response = {
+      ok: true,
+      status: 204,
+      statusText: "No Content",
+      headers: new Headers(),
+      text: () => Promise.resolve(""),
+      json: () => Promise.reject(new SyntaxError("Unexpected end of JSON input")),
+    } satisfies Partial<Response> as Response;
+    const fetch = vi.fn().mockResolvedValue(response);
+
+    await expect(createClient(fetch).delete("r_abc123def45")).resolves.toBeUndefined();
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("accepts an empty 204 from a bodyless shim whose json() resolves null", async () => {
+    const response = {
+      ok: true,
+      status: 204,
+      statusText: "No Content",
+      headers: new Headers(),
+      body: undefined,
+      text: () => Promise.resolve(""),
+      json: () => Promise.resolve(null),
+    } satisfies Partial<Response> as Response;
+    const fetch = vi.fn().mockResolvedValue(response);
+
+    await expect(createClient(fetch).delete("r_abc123def45")).resolves.toBeUndefined();
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("reads a Response-like shim whose body is not a WHATWG ReadableStream", async () => {
+    const response = {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      headers: new Headers(),
+      body: { pipe: () => undefined },
+      text: () =>
+        Promise.resolve(
+          JSON.stringify({
+            data: { plan: "growth", period_start: "2026-03-01", period_end: "2026-04-01" },
+          }),
+        ),
+    } satisfies Partial<Response> as Response;
+    const fetch = vi.fn().mockResolvedValue(response);
+
+    await expect(createClient(fetch).getQuota()).resolves.toMatchObject({ plan: "growth" });
+  });
+
+  it("does not replay a Response-like shim whose text() method rejects", async () => {
+    const response = {
+      ok: true,
+      redirected: false,
+      status: 200,
+      statusText: "OK",
+      type: "basic",
+      headers: new Headers(),
+      body: undefined,
+      text: () => Promise.reject(new Error("local response shim failed")),
+    } satisfies Partial<Response> as Response;
+    const fetch = vi.fn().mockResolvedValue(response);
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 2,
+    });
+
+    const error = await client.getQuota().catch((caught: unknown) => caught as QURLError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error).not.toBeInstanceOf(NetworkError);
+    expect(error).toMatchObject({ status: 200, code: ERROR_CODE_UNEXPECTED_RESPONSE });
+    expect(error.detail).toBe("Response-like fetch text() failed");
+    expect(error.cause).toMatchObject({
+      name: "ResponseBodyMaterializationError",
+      message: "Response-like fetch text() failed",
+    });
+    expect(error.message).not.toContain("local response shim failed");
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not replay a Response-like shim that omits headers.get", async () => {
+    const response = {
+      ok: true,
+      redirected: false,
+      status: 200,
+      statusText: "OK",
+      type: "basic",
+      body: undefined,
+      text: () =>
+        Promise.resolve(
+          JSON.stringify({
+            data: { plan: "growth", period_start: "2026-03-01", period_end: "2026-04-01" },
+          }),
+        ),
+    } satisfies Partial<Response> as Response;
+    const fetch = vi.fn().mockResolvedValue(response);
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 2,
+    });
+
+    const error = await client.getQuota().catch((caught: unknown) => caught as QURLError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error).not.toBeInstanceOf(NetworkError);
+    expect(error).toMatchObject({ status: 200, code: ERROR_CODE_UNEXPECTED_RESPONSE });
+    expect(error.detail).toBe("Response-like fetch must provide headers.get(name)");
+    expect(error.cause).toMatchObject({
+      name: "ResponseBodyMaterializationError",
+      message: "Response-like fetch must provide headers.get(name)",
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a typed HTTP 503 error when a Response-like shim omits headers.get", async () => {
+    const response = {
+      ok: false,
+      redirected: false,
+      status: 503,
+      statusText: "Service Unavailable",
+      type: "basic",
+      body: undefined,
+      text: () => Promise.resolve(""),
+    } satisfies Partial<Response> as Response;
+    const fetch = vi.fn().mockResolvedValue(response);
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 2,
+    });
+
+    const error = await client.getQuota().catch((caught: unknown) => caught as QURLError);
+
+    expect(error).toBeInstanceOf(ServerError);
+    expect(error).toMatchObject({ status: 503, code: ERROR_CODE_UNKNOWN });
+    expect(error.detail).toBe("Response-like fetch must provide headers.get(name)");
+    expect(error.cause).toMatchObject({
+      name: "ResponseBodyMaterializationError",
+      message: "Response-like fetch must provide headers.get(name)",
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not replay a Response-like stream that yields a non-byte chunk", async () => {
+    const reader = {
+      read: vi.fn().mockResolvedValue({ done: false, value: "not bytes" }),
+      cancel: vi.fn().mockResolvedValue(undefined),
+      releaseLock: vi.fn(),
+    };
+    const response = {
+      ok: true,
+      redirected: false,
+      status: 200,
+      statusText: "OK",
+      type: "basic",
+      headers: new Headers(),
+      body: { getReader: () => reader },
+    } satisfies Partial<Response> as Response;
+    const fetch = vi.fn().mockResolvedValue(response);
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 2,
+    });
+
+    const error = await client.getQuota().catch((caught: unknown) => caught as QURLError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error).not.toBeInstanceOf(NetworkError);
+    expect(error).toMatchObject({ status: 200, code: ERROR_CODE_UNEXPECTED_RESPONSE });
+    expect(error.detail).toBe("Response-like fetch body stream must yield Uint8Array chunks");
+    expect(error.cause).toMatchObject({ name: "ResponseBodyMaterializationError" });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(reader.read).toHaveBeenCalledTimes(1);
+    expect(reader.releaseLock).toHaveBeenCalledTimes(1);
+  });
+
   it("rejects invalid Idempotency-Key overrides before making a request", async () => {
     const fetch = mockFetch({
       status: 201,
@@ -4168,7 +5663,7 @@ describe("QURLClient", () => {
     expect(secondKey).toBe(firstKey);
   });
 
-  it("reuses Idempotency-Key across POST timeout retries", async () => {
+  it("does not replay a mutation for an injected fetch TimeoutError", async () => {
     const successResponse = {
       ok: true,
       status: 201,
@@ -4195,14 +5690,15 @@ describe("QURLClient", () => {
       maxRetries: 1,
     });
 
-    const result = await client.create({ target_url: "https://example.com" });
+    const error = await client
+      .create({ target_url: "https://example.com" })
+      .catch((caught: unknown) => caught as QURLError);
 
-    expect(result.resource_id).toBe("r_after_timeout");
-    expect(fetch).toHaveBeenCalledTimes(2);
-    const firstKey = callHeaders(fetch, 0)["Idempotency-Key"];
-    const secondKey = callHeaders(fetch, 1)["Idempotency-Key"];
-    expect(firstKey).toMatch(UUID_V7_RE);
-    expect(secondKey).toBe(firstKey);
+    expect(error).toBeInstanceOf(NetworkError);
+    expect(error).not.toBeInstanceOf(TimeoutError);
+    expect(error).toMatchObject({ status: 0, code: ERROR_CODE_NETWORK });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(callHeaders(fetch)["Idempotency-Key"]).toMatch(UUID_V7_RE);
   });
 
   it("returns quota response shape", async () => {
@@ -4433,6 +5929,572 @@ describe("QURLClient", () => {
       expect(qErr.status).toBe(500);
       expect(qErr.code).toBe(ERROR_CODE_UNKNOWN);
       expect(qErr.message).toContain("Internal Server Error");
+    }
+  });
+
+  it("uses the observed HTTP status when a problem body reports a conflicting status", async () => {
+    const fetch = mockFetch({
+      status: 503,
+      body: {
+        error: {
+          status: 404,
+          title: "Not Found",
+          detail: "stale intermediary body",
+          code: "not_found",
+        },
+      },
+    });
+    const error = await new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch,
+      maxRetries: 0,
+    })
+      .getQuota()
+      .catch((caught: unknown) => caught as QURLError);
+
+    expect(error).toBeInstanceOf(ServerError);
+    expect(error).toMatchObject({ status: 503, code: "not_found" });
+  });
+
+  it.each([
+    {
+      name: "JSON success with declared length",
+      status: 200,
+      contentType: "application/json",
+      headers: "accurate" as const,
+      body: () =>
+        sizedJSON(
+          '{"data":{"secret":"response-credential-marker","padding":"',
+          '"}}',
+          RESPONSE_BODY_LIMIT + 1,
+        ),
+    },
+    {
+      name: "JSON error without declared length",
+      status: 503,
+      contentType: "application/problem+json",
+      headers: "absent" as const,
+      body: () =>
+        sizedJSON(
+          '{"error":{"title":"Unavailable","detail":"response-credential-marker',
+          '"}}',
+          RESPONSE_BODY_LIMIT + 1,
+        ),
+    },
+    {
+      name: "JSON success without declared length",
+      status: 200,
+      contentType: "application/json",
+      headers: "absent" as const,
+      body: () =>
+        sizedJSON(
+          '{"data":{"secret":"response-credential-marker","padding":"',
+          '"}}',
+          RESPONSE_BODY_LIMIT + 1,
+        ),
+    },
+    {
+      name: "non-JSON success with inaccurate declared length",
+      status: 200,
+      contentType: "text/html",
+      headers: "inaccurate" as const,
+      body: () => `response-credential-marker${"x".repeat(RESPONSE_BODY_LIMIT)}`,
+    },
+    {
+      name: "non-JSON error without declared length",
+      status: 503,
+      contentType: "text/plain",
+      headers: "absent" as const,
+      body: () => `response-credential-marker${"x".repeat(RESPONSE_BODY_LIMIT)}`,
+    },
+  ])("rejects oversized $name bodies with a bounded typed error", async (testCase) => {
+    const body = testCase.body();
+    const headers: Record<string, string> = { "content-type": testCase.contentType };
+    if (testCase.headers === "accurate")
+      headers["content-length"] = String(new TextEncoder().encode(body).byteLength);
+    if (testCase.headers === "inaccurate") headers["content-length"] = "1";
+    const debug = vi.fn();
+    const fetch = vi.fn(async () => new Response(body, { status: testCase.status, headers }));
+    const client = new QURLClient({
+      apiKey: "request-credential-marker",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 0,
+      debug,
+    });
+
+    const error = await client.getQuota().catch((caught: unknown) => caught as QURLError);
+
+    expect(error).toBeInstanceOf(testCase.status >= 500 ? ServerError : ValidationError);
+    expect(error.status).toBe(testCase.status);
+    expect(error.code).toBe(
+      testCase.status >= 400 ? ERROR_CODE_UNKNOWN : ERROR_CODE_UNEXPECTED_RESPONSE,
+    );
+    expect(error.detail).toContain(`${RESPONSE_BODY_LIMIT}-byte limit`);
+    expect(error.message.length).toBeLessThan(256);
+    expect(error.message).not.toContain("response-credential-marker");
+    expect(error.message).not.toContain("request-credential-marker");
+    expect(JSON.stringify(debug.mock.calls)).not.toContain("response-credential-marker");
+    expect(JSON.stringify(debug.mock.calls)).not.toContain("request-credential-marker");
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries an oversized error body when the status and method are retryable", async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response("x".repeat(RESPONSE_BODY_LIMIT + 1), {
+          status: 503,
+          headers: { "content-type": "text/plain" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            data: { plan: "growth", period_start: "2026-03-01", period_end: "2026-04-01" },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      );
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 2,
+    });
+
+    await expect(client.getQuota()).resolves.toMatchObject({ plan: "growth" });
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects an oversized declared Content-Length before reading the body", async () => {
+    const getReader = vi.fn(() => {
+      throw new Error("body must not be read");
+    });
+    const cancel = vi.fn(async () => undefined);
+    const fetch = vi.fn(
+      async () =>
+        ({
+          ok: true,
+          redirected: false,
+          status: 200,
+          statusText: "OK",
+          type: "basic",
+          headers: new Headers({ "content-length": String(RESPONSE_BODY_LIMIT + 1) }),
+          body: { cancel, getReader },
+        }) satisfies Partial<Response> as Response,
+    );
+
+    await expect(
+      new QURLClient({
+        apiKey: "test-api-key",
+        baseUrl: "https://api.test.layerv.ai",
+        fetch: fetch as typeof globalThis.fetch,
+      }).getQuota(),
+    ).rejects.toMatchObject({ code: ERROR_CODE_UNEXPECTED_RESPONSE });
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(getReader).not.toHaveBeenCalled();
+  });
+
+  it("falls back to streamed accounting for a duplicated Content-Length header", async () => {
+    const headers = new Headers();
+    headers.append("Content-Length", String(RESPONSE_BODY_LIMIT + 1));
+    headers.append("Content-Length", String(RESPONSE_BODY_LIMIT + 1));
+    const fetch = vi.fn(
+      async () => new Response("x".repeat(RESPONSE_BODY_LIMIT + 1), { status: 200, headers }),
+    );
+
+    await expect(
+      new QURLClient({
+        apiKey: "test-api-key",
+        baseUrl: "https://api.test.layerv.ai",
+        fetch: fetch as typeof globalThis.fetch,
+        maxRetries: 0,
+      }).getQuota(),
+    ).rejects.toMatchObject({ status: 200, code: ERROR_CODE_UNEXPECTED_RESPONSE });
+  });
+
+  it.each([429, 503])(
+    "does not replay DELETE after an oversized HTTP %i response",
+    async (status) => {
+      const fetch = vi.fn(
+        async () =>
+          new Response("x".repeat(RESPONSE_BODY_LIMIT + 1), {
+            status,
+            headers: { "content-type": "text/plain", "Retry-After": "0" },
+          }),
+      );
+      const client = new QURLClient({
+        apiKey: "test-api-key",
+        baseUrl: "https://api.test.layerv.ai",
+        fetch: fetch as typeof globalThis.fetch,
+        maxRetries: 3,
+      });
+
+      await expect(client.delete("r_abc123def45")).rejects.toBeInstanceOf(QURLError);
+      expect(fetch).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("bounds materialized text from a Response-like fetch without a body stream", async () => {
+    const secret = `response-secret-${"x".repeat(RESPONSE_BODY_LIMIT)}`;
+    const fetch = vi.fn(
+      async () =>
+        ({
+          ok: false,
+          redirected: false,
+          status: 503,
+          statusText: "Unavailable",
+          type: "basic",
+          headers: new Headers(),
+          body: undefined,
+          text: async () => secret,
+        }) satisfies Partial<Response> as Response,
+    );
+    const error = await new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 0,
+    })
+      .getQuota()
+      .catch((caught: unknown) => caught as QURLError);
+
+    expect(error).toBeInstanceOf(ServerError);
+    expect(error).toMatchObject({ status: 503, code: ERROR_CODE_UNKNOWN });
+    expect(error.message).not.toContain("response-secret");
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["text", "ASCII", sizedJSON('{"data":{"padding":"', '"}}', RESPONSE_BODY_LIMIT), false],
+    [
+      "text",
+      "multibyte",
+      sizedMultibyteJSON('{"data":{"padding":"', '"}}', RESPONSE_BODY_LIMIT),
+      false,
+    ],
+    ["json", "ASCII", sizedJSON('{"data":{"padding":"', '"}}', RESPONSE_BODY_LIMIT), false],
+    [
+      "json",
+      "multibyte",
+      sizedMultibyteJSON('{"data":{"padding":"', '"}}', RESPONSE_BODY_LIMIT),
+      false,
+    ],
+    [
+      "text",
+      "multibyte max+1",
+      sizedMultibyteJSON('{"data":{"padding":"', '"}}', RESPONSE_BODY_LIMIT + 1),
+      true,
+    ],
+    [
+      "json",
+      "multibyte max+1",
+      sizedMultibyteJSON('{"data":{"padding":"', '"}}', RESPONSE_BODY_LIMIT + 1),
+      true,
+    ],
+  ] as const)("bounds %s shim %s response bytes", async (source, _kind, body, wantReject) => {
+    const parsed = source === "json" ? (JSON.parse(body) as unknown) : undefined;
+    const fetch = vi.fn(
+      async () =>
+        ({
+          ok: true,
+          redirected: false,
+          status: 200,
+          statusText: "OK",
+          type: "basic",
+          headers: new Headers(),
+          body: undefined,
+          text: async () => (source === "text" ? body : ""),
+          json: async () => parsed,
+        }) satisfies Partial<Response> as Response,
+    );
+
+    const result = await createClient(fetch as typeof globalThis.fetch)
+      .getQuota()
+      .catch((caught: unknown) => caught as QURLError);
+
+    if (wantReject) {
+      expect(result).toBeInstanceOf(ValidationError);
+      expect(result).toMatchObject({ status: 200, code: ERROR_CODE_UNEXPECTED_RESPONSE });
+    } else {
+      expect((result as unknown as { padding: string }).padding.length).toBeGreaterThan(0);
+    }
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats an undefined text result from a bodyless Response-like shim as empty", async () => {
+    const fetch = vi.fn(
+      async () =>
+        ({
+          ok: true,
+          redirected: false,
+          status: 204,
+          statusText: "No Content",
+          type: "basic",
+          headers: new Headers(),
+          body: undefined,
+          text: async () => undefined,
+          json: async () => undefined,
+        }) satisfies Partial<Response> as Response,
+    );
+
+    await expect(
+      createClient(fetch as typeof globalThis.fetch).delete("r_abc123def45"),
+    ).resolves.toBeUndefined();
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not report a Response-like JSON serialization failure as an empty body", async () => {
+    const fetch = vi.fn(
+      async () =>
+        ({
+          ok: true,
+          redirected: false,
+          status: 200,
+          statusText: "OK",
+          type: "basic",
+          headers: new Headers(),
+          body: undefined,
+          text: async () => "",
+          json: async () => ({ data: { unsupported: 1n } }),
+        }) satisfies Partial<Response> as Response,
+    );
+
+    const error = await new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 2,
+    })
+      .getQuota()
+      .catch((caught: unknown) => caught as QURLError);
+
+    expect(error).toMatchObject({ status: 200, code: ERROR_CODE_UNEXPECTED_RESPONSE });
+    expect(error.detail).toBe(
+      "Response-like fetch returned a value that cannot be serialized as JSON",
+    );
+    expect(error.cause).toMatchObject({ name: "ResponseBodyMaterializationError" });
+    expect(error.detail).not.toContain("non-JSON");
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("parses success and error JSON bodies exactly at the response limit", async () => {
+    const successBody = sizedJSON('{"data":{"padding":"', '"}}', RESPONSE_BODY_LIMIT);
+    const successFetch = vi.fn(
+      async () =>
+        new Response(successBody, {
+          status: 200,
+          headers: { "content-length": String(RESPONSE_BODY_LIMIT) },
+        }),
+    );
+    const success = await new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: successFetch as typeof globalThis.fetch,
+      maxRetries: 0,
+    }).getQuota();
+    expect((success as unknown as { padding: string }).padding.length).toBeGreaterThan(0);
+
+    const errorBody = sizedJSON(
+      '{"error":{"title":"Boundary","code":"boundary_error","detail":"',
+      '"}}',
+      RESPONSE_BODY_LIMIT,
+    );
+    const errorFetch = vi.fn(
+      async () =>
+        new Response(errorBody, {
+          status: 400,
+          headers: { "content-length": String(RESPONSE_BODY_LIMIT) },
+        }),
+    );
+    const error = await new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: errorFetch as typeof globalThis.fetch,
+      maxRetries: 0,
+    })
+      .getQuota()
+      .catch((caught: unknown) => caught as QURLError);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error.code).toBe("boundary_error");
+    expect(error.detail.endsWith("...")).toBe(true);
+    expect(new TextEncoder().encode(error.detail).byteLength).toBeLessThanOrEqual(512);
+    expect(error.detail).not.toContain("byte limit");
+  });
+
+  it("keeps structured API error snippets single-line, dangerous-control-free, UTF-8-safe, and bounded", async () => {
+    const detail = `  👩‍💻‌ ${"€".repeat(300)}\n\x00\x1b[2J\x85\u061C\u200E\u200F\u202Eresponse\u2066 tail  `;
+    const fetch = mockFetch({
+      status: 400,
+      body: { error: { title: "Bad Request", code: "bad_request", detail } },
+    });
+    const error = await createClient(fetch)
+      .getQuota()
+      .catch((caught: unknown) => caught as QURLError);
+
+    expect(error.detail.endsWith("...")).toBe(true);
+    expect(error.detail).not.toContain("\n");
+    expect(error.detail).not.toMatch(/[\p{Cc}\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/u);
+    expect(new TextEncoder().encode(error.detail).byteLength).toBeLessThanOrEqual(512);
+    expect(error.detail).toContain("‍");
+    expect(error.detail).toContain("‌");
+    expect(() =>
+      new TextDecoder("utf-8", { fatal: true }).decode(new TextEncoder().encode(error.detail)),
+    ).not.toThrow();
+    expect(error.detail).not.toContain("\uFFFD");
+  });
+
+  it("maps an oversized structured API error code to the stable unknown discriminant", async () => {
+    const code = `  ${"€".repeat(300)}\n\x00\x1b[2Jcode tail  `;
+    const fetch = mockFetch({
+      status: 400,
+      body: { error: { title: "Bad Request", code, detail: "Invalid request" } },
+    });
+    const error = await createClient(fetch)
+      .getQuota()
+      .catch((caught: unknown) => caught as QURLError);
+
+    expect(error.code).toBe(ERROR_CODE_UNKNOWN);
+  });
+
+  it("drops oversized exact API identifiers and request IDs", async () => {
+    const long = `${"€".repeat(300)}\n\u202Ecredential-tail`;
+    const fetch = mockFetch({
+      status: 400,
+      body: {
+        error: {
+          title: "Bad Request",
+          code: "bad_request",
+          detail: "Invalid request",
+          type: long,
+          instance: long,
+        },
+        meta: { request_id: long },
+      },
+    });
+    const error = await createClient(fetch)
+      .getQuota()
+      .catch((caught: unknown) => caught as QURLError);
+
+    expect(error.type).toBeUndefined();
+    expect(error.instance).toBeUndefined();
+    expect(error.requestId).toBeUndefined();
+  });
+
+  it.each([
+    ["code", " bad_request "],
+    ["code", "bad\nrequest"],
+    ["type", " https://errors.example/bad-request"],
+    ["type", "https://errors.example/bad\u202Erequest"],
+    ["instance", "/v1/resources/r_test "],
+    ["instance", "/v1/resources/\u0000r_test"],
+    ["request_id", " req_test"],
+    ["request_id", "req\ttest"],
+  ] as const)("drops %s when normalization would change its exact value", async (field, value) => {
+    const body = {
+      error: {
+        title: "Bad Request",
+        code: "bad_request",
+        detail: "Invalid request",
+        type: "https://errors.example/bad-request",
+        instance: "/v1/resources/r_test",
+      },
+      meta: { request_id: "req_test" },
+    };
+    if (field === "request_id") {
+      body.meta.request_id = value;
+    } else {
+      body.error[field] = value;
+    }
+    const fetch = mockFetch({ status: 400, body });
+    const error = await createClient(fetch)
+      .getQuota()
+      .catch((caught: unknown) => caught as QURLError);
+
+    if (field === "code") expect(error.code).toBe(ERROR_CODE_UNKNOWN);
+    if (field === "type") expect(error.type).toBeUndefined();
+    if (field === "instance") expect(error.instance).toBeUndefined();
+    if (field === "request_id") expect(error.requestId).toBeUndefined();
+  });
+
+  it("bounds source work before normalizing a server diagnostic", async () => {
+    const fetch = mockFetch({
+      status: 400,
+      body: {
+        error: {
+          title: "Bad Request",
+          code: "bad_request",
+          detail: `${"\0".repeat(512)}late server diagnostic`,
+        },
+      },
+    });
+
+    const error = await createClient(fetch)
+      .getQuota()
+      .catch((caught: unknown) => caught as QURLError);
+
+    expect(error.detail).toBe("Bad Request");
+    expect(error.message).not.toContain("late server diagnostic");
+  });
+
+  it("preserves the status error class and Retry-After for an oversized 429 body", async () => {
+    const fetch = vi.fn(
+      async () =>
+        new Response("x".repeat(RESPONSE_BODY_LIMIT + 1), {
+          status: 429,
+          headers: { "Retry-After": "7" },
+        }),
+    );
+    const error = await new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 0,
+    })
+      .getQuota()
+      .catch((caught: unknown) => caught as QURLError);
+
+    expect(error).toBeInstanceOf(RateLimitError);
+    expect(error).toMatchObject({
+      status: 429,
+      code: ERROR_CODE_UNKNOWN,
+      retryAfter: 7,
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries a retryable status even when its error body is non-JSON", async () => {
+    vi.useFakeTimers();
+    try {
+      const responseBody = "<html>transient proxy response</html>";
+      const fetch = vi.fn(
+        async () =>
+          new Response(responseBody, {
+            status: 503,
+            headers: { "content-type": "text/html" },
+          }),
+      );
+      const client = new QURLClient({
+        apiKey: "test-api-key",
+        baseUrl: "https://api.test.layerv.ai",
+        fetch: fetch as typeof globalThis.fetch,
+        maxRetries: 2,
+      });
+
+      const errorPromise = client.getQuota().catch((caught: unknown) => caught as QURLError);
+      await vi.runAllTimersAsync();
+      const error = await errorPromise;
+
+      expect(error).toBeInstanceOf(ServerError);
+      expect(error.status).toBe(503);
+      expect(error.code).toBe(ERROR_CODE_UNKNOWN);
+      expect(error.message.length).toBeLessThan(256);
+      expect(error.message).not.toContain(responseBody);
+      expect(fetch).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
     }
   });
 
@@ -5125,6 +7187,171 @@ describe("QURLClient", () => {
     expect((err as ValidationError).invalidFields).toEqual({ target_url: "required" });
   });
 
+  it("bounds, sanitizes, and caps structured invalid-field diagnostics", async () => {
+    const invalidFields = Object.fromEntries(
+      Array.from({ length: 120 }, (_, index) => [
+        `field-${index}\u202E`,
+        `${"€".repeat(300)}\n\u061C\u200E\u200Fsecret-tail`,
+      ]),
+    );
+    const fetch = mockFetch({
+      status: 400,
+      body: {
+        error: {
+          title: "Bad Request",
+          status: 400,
+          detail: "Invalid input",
+          code: "validation_error",
+          invalid_fields: invalidFields,
+        },
+      },
+    });
+
+    const error = await createClient(fetch)
+      .create({ target_url: "https://example.com" })
+      .catch((caught: unknown) => caught as ValidationError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(Object.keys(error.invalidFields ?? {}).length).toBeLessThan(100);
+    let aggregateBytes = 0;
+    for (const [key, value] of Object.entries(error.invalidFields ?? {})) {
+      expect(key).not.toMatch(/[\p{Cc}\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/u);
+      expect(value).not.toMatch(/[\p{Cc}\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/u);
+      expect(new TextEncoder().encode(key).byteLength).toBeLessThanOrEqual(512);
+      expect(new TextEncoder().encode(value).byteLength).toBeLessThanOrEqual(512);
+      expect(value).not.toContain("secret-tail");
+      aggregateBytes +=
+        new TextEncoder().encode(key).byteLength + new TextEncoder().encode(value).byteLength;
+    }
+    expect(aggregateBytes).toBeLessThanOrEqual(8 << 10);
+  });
+
+  it("retains invalid-field diagnostics at the 8 KiB aggregate boundary", async () => {
+    const fixedValue = "v".repeat(512);
+    const invalidFields = Object.fromEntries([
+      ...Array.from({ length: 8 }, (_, index) => [
+        `${String(index).padStart(3, "0")}${"k".repeat(509)}`,
+        fixedValue,
+      ]),
+      ["over-budget", "must not be retained"],
+    ]);
+    const fetch = mockFetch({
+      status: 400,
+      body: {
+        error: {
+          title: "Bad Request",
+          status: 400,
+          detail: "Invalid input",
+          code: "validation_error",
+          invalid_fields: invalidFields,
+        },
+      },
+    });
+
+    const error = await createClient(fetch)
+      .create({ target_url: "https://example.com" })
+      .catch((caught: unknown) => caught as ValidationError);
+
+    expect(Object.keys(error.invalidFields ?? {})).toHaveLength(8);
+    expect(error.invalidFields).not.toHaveProperty("over-budget");
+    const aggregateBytes = Object.entries(error.invalidFields ?? {}).reduce(
+      (total, [key, value]) =>
+        total +
+        new TextEncoder().encode(key).byteLength +
+        new TextEncoder().encode(value).byteLength,
+      0,
+    );
+    expect(aggregateBytes).toBe(8 << 10);
+  });
+
+  it("skips an over-budget invalid field and retains a later field that fits", async () => {
+    const skippedKey = "s".repeat(200);
+    const retainedKey = "keep";
+    const invalidFields = Object.fromEntries([
+      ...Array.from({ length: 7 }, (_, index) => [
+        `${String(index).padStart(3, "0")}${"k".repeat(509)}`,
+        "v".repeat(512),
+      ]),
+      ["n".repeat(400), "v".repeat(512)],
+      [skippedKey, "v".repeat(200)],
+      [retainedKey, "v".repeat(100)],
+    ]);
+    const fetch = mockFetch({
+      status: 400,
+      body: {
+        error: {
+          title: "Bad Request",
+          status: 400,
+          detail: "Invalid input",
+          code: "validation_error",
+          invalid_fields: invalidFields,
+        },
+      },
+    });
+
+    const error = await createClient(fetch)
+      .create({ target_url: "https://example.com" })
+      .catch((caught: unknown) => caught as ValidationError);
+
+    expect(error.invalidFields).not.toHaveProperty(skippedKey);
+    expect(error.invalidFields).toHaveProperty(retainedKey, "v".repeat(100));
+    const aggregateBytes = Object.entries(error.invalidFields ?? {}).reduce(
+      (total, [key, value]) =>
+        total +
+        new TextEncoder().encode(key).byteLength +
+        new TextEncoder().encode(value).byteLength,
+      0,
+    );
+    expect(aggregateBytes).toBeLessThanOrEqual(8 << 10);
+  });
+
+  it("bounds inspected invalid-field entries when early values have the wrong type", async () => {
+    const invalidFields = Object.fromEntries([
+      ...Array.from({ length: 100 }, (_, index) => [`ignored-${index}`, index]),
+      ["must-not-be-scanned", "late diagnostic"],
+    ]);
+    const fetch = mockFetch({
+      status: 400,
+      body: {
+        error: {
+          title: "Bad Request",
+          status: 400,
+          detail: "Invalid input",
+          code: "validation_error",
+          invalid_fields: invalidFields,
+        },
+      },
+    });
+
+    const error = await createClient(fetch)
+      .create({ target_url: "https://example.com" })
+      .catch((caught: unknown) => caught as ValidationError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error.invalidFields).toBeUndefined();
+  });
+
+  it("retains the first structured invalid-field diagnostic after normalized-key collisions", async () => {
+    const fetch = mockFetch({
+      status: 400,
+      body: {
+        error: {
+          title: "Bad Request",
+          status: 400,
+          detail: "Invalid input",
+          code: "validation_error",
+          invalid_fields: { "target\u202E url": "first", "target url": "second" },
+        },
+      },
+    });
+
+    const error = await createClient(fetch)
+      .create({ target_url: "https://example.com" })
+      .catch((caught: unknown) => caught as ValidationError);
+
+    expect(error.invalidFields).toEqual({ "target url": "first" });
+  });
+
   it("throws ValidationError on 422", async () => {
     const fetch = mockFetch({
       status: 422,
@@ -5160,6 +7387,26 @@ describe("QURLClient", () => {
     const err = await client.getQuota().catch((e: unknown) => e);
     expect(err).toBeInstanceOf(RateLimitError);
     expect((err as RateLimitError).retryAfter).toBe(5);
+  });
+
+  it("preserves Retry-After on a non-envelope 429 response", async () => {
+    const fetch = vi.fn(
+      async () =>
+        new Response("rate limited by gateway", {
+          status: 429,
+          headers: { "Retry-After": "9", "content-type": "text/plain" },
+        }),
+    );
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 0,
+    });
+
+    const error = await client.getQuota().catch((caught: unknown) => caught as QURLError);
+    expect(error).toBeInstanceOf(RateLimitError);
+    expect(error).toMatchObject({ status: 429, code: ERROR_CODE_UNKNOWN, retryAfter: 9 });
   });
 
   it("throws ServerError on 500", async () => {
@@ -5202,13 +7449,67 @@ describe("QURLClient", () => {
     expect((err as NetworkError).message).toContain("fetch failed");
   });
 
-  it("wraps DOMException timeout into TimeoutError", async () => {
-    const fetch = vi.fn().mockRejectedValue(new DOMException("signal timed out", "TimeoutError"));
-    const client = createClient(fetch);
+  it("does not retry or mislabel an injected fetch TimeoutError", async () => {
+    const injectedSignal = AbortSignal.timeout(1);
+    await new Promise<void>((resolve) => {
+      injectedSignal.addEventListener("abort", () => resolve(), { once: true });
+    });
+    const fetch = vi.fn().mockRejectedValue(injectedSignal.reason);
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 2,
+    });
 
     const err = await client.getQuota().catch((e: unknown) => e);
-    expect(err).toBeInstanceOf(TimeoutError);
-    expect((err as TimeoutError).message).toContain("timed out");
+    expect(err).toBeInstanceOf(NetworkError);
+    expect(err).not.toBeInstanceOf(TimeoutError);
+    expect(err).toMatchObject({ status: 0, code: ERROR_CODE_NETWORK });
+    expect((err as NetworkError).cause).toMatchObject({ name: "TimeoutError" });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("classifies only the SDK-owned fetch deadline as TimeoutError", async () => {
+    const fetch = vi.fn(
+      async (_url: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), {
+            once: true,
+          });
+        }),
+    );
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 0,
+      timeout: 5,
+    });
+
+    const error = await client.getQuota().catch((caught: unknown) => caught as QURLError);
+
+    expect(error).toBeInstanceOf(TimeoutError);
+    expect(error).toMatchObject({ status: 0, code: ERROR_CODE_TIMEOUT });
+    expect(error.cause).toMatchObject({ name: "TimeoutError" });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry or mislabel an injected fetch AbortError", async () => {
+    const fetch = vi.fn().mockRejectedValue(new DOMException("wrapper cancelled", "AbortError"));
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 2,
+    });
+
+    const error = await client.getQuota().catch((caught: unknown) => caught as QURLError);
+
+    expect(error).toBeInstanceOf(NetworkError);
+    expect(error).not.toBeInstanceOf(TimeoutError);
+    expect(error).toMatchObject({ status: 0, code: ERROR_CODE_NETWORK });
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   // --- Mutating-safe retry ---
@@ -5339,43 +7640,218 @@ describe("QURLClient", () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
-  it("retries DELETE on 502 without Idempotency-Key", async () => {
-    // DELETE is intentionally classified as non-mutating for retry
-    // purposes: HTTP DELETE is idempotent by spec (deleting an
-    // already-deleted resource is a no-op), and 204 responses carry
-    // no body to duplicate. Retrying 5xx on DELETE is safe and
-    // desirable. It does not need Idempotency-Key because the method
-    // itself is idempotent.
-    const badGatewayResponse = {
-      ok: false,
-      status: 502,
-      statusText: "Bad Gateway",
-      headers: new Headers({}),
-      json: () =>
-        Promise.resolve({
-          error: {
-            title: "Bad Gateway",
-            status: 502,
-            detail: "Upstream error",
-            code: "bad_gateway",
+  it("retries GET when a retryable response body fails mid-stream", async () => {
+    let reads = 0;
+    const brokenBody = new globalThis.ReadableStream<Uint8Array>({
+      pull(controller) {
+        reads += 1;
+        if (reads === 1) {
+          controller.enqueue(new TextEncoder().encode('{"error":'));
+        } else {
+          controller.error(new TypeError("upstream reset mid-body"));
+        }
+      },
+    });
+    const failure = new Response(brokenBody, { status: 503, statusText: "Unavailable" });
+    const success = new Response(
+      JSON.stringify({
+        data: { plan: "growth", period_start: "2026-03-01", period_end: "2026-04-01" },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+    const fetch = vi.fn().mockResolvedValueOnce(failure).mockResolvedValueOnce(success);
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 1,
+    });
+
+    await expect(client.getQuota()).resolves.toMatchObject({ plan: "growth" });
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries GET when a successful response body fails mid-stream", async () => {
+    const brokenBody = new globalThis.ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.error(new TypeError("successful response reset mid-body"));
+      },
+    });
+    const failure = new Response(brokenBody, { status: 200, statusText: "OK" });
+    const success = new Response(
+      JSON.stringify({
+        data: { plan: "growth", period_start: "2026-03-01", period_end: "2026-04-01" },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+    const fetch = vi.fn().mockResolvedValueOnce(failure).mockResolvedValueOnce(success);
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 1,
+    });
+
+    await expect(client.getQuota()).resolves.toMatchObject({ plan: "growth" });
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not retry GET when a 404 response body fails mid-stream", async () => {
+    const brokenBody = new globalThis.ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.error(new TypeError("not-found response reset mid-body"));
+      },
+    });
+    const failure = new Response(brokenBody, { status: 404, statusText: "Not Found" });
+    const fetch = vi.fn().mockResolvedValue(failure);
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 1,
+    });
+
+    const error = await client.getQuota().catch((caught: unknown) => caught as QURLError);
+    expect(error).toBeInstanceOf(NotFoundError);
+    expect(error).toMatchObject({ status: 404, code: ERROR_CODE_UNKNOWN });
+    expect(error.cause).toBeInstanceOf(TypeError);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not replay POST after a retryable 429 response body transport failure", async () => {
+    const brokenBody = new globalThis.ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.error(new TypeError("rate-limit body reset"));
+      },
+    });
+    const rateLimited = new Response(brokenBody, {
+      status: 429,
+      headers: { "Retry-After": "0" },
+    });
+    const fetch = vi.fn().mockResolvedValue(rateLimited);
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 1,
+    });
+
+    const error = await client
+      .create({ target_url: "https://example.com" })
+      .catch((caught: unknown) => caught as QURLError);
+    expect(error).toBeInstanceOf(RateLimitError);
+    expect(error).toMatchObject({ status: 429, code: ERROR_CODE_UNKNOWN, retryAfter: 0 });
+    expect(error.cause).toBeInstanceOf(TypeError);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves status-derived errors and Retry-After on non-success body failures", async () => {
+    const brokenResponse = (status: number, retryAfter?: string): Response =>
+      new Response(
+        new globalThis.ReadableStream<Uint8Array>({
+          pull(controller) {
+            controller.error(new TypeError("response body reset"));
           },
         }),
-      text: () => Promise.resolve(""),
-    } satisfies Partial<Response> as Response;
+        {
+          status,
+          headers: retryAfter === undefined ? undefined : { "Retry-After": retryAfter },
+        },
+      );
 
-    const noContentResponse = {
-      ok: true,
-      status: 204,
-      statusText: "No Content",
-      headers: new Headers({}),
-      json: () => Promise.resolve(undefined),
-      text: () => Promise.resolve(""),
-    } satisfies Partial<Response> as Response;
+    const serverError = await new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: vi.fn(async () => brokenResponse(503)) as typeof globalThis.fetch,
+      maxRetries: 0,
+    })
+      .getQuota()
+      .catch((caught: unknown) => caught as QURLError);
+    expect(serverError).toBeInstanceOf(ServerError);
+    expect(serverError).toMatchObject({ status: 503, code: ERROR_CODE_UNKNOWN });
+    expect(serverError.message).toContain("HTTP 503");
+    expect(serverError.retryAfter).toBeUndefined();
+    expect(serverError.cause).toBeInstanceOf(TypeError);
+    expect(Object.keys(serverError)).not.toContain("cause");
+    expect({ ...serverError }).not.toHaveProperty("cause");
+    expect(Object.getOwnPropertyDescriptor(serverError, "cause")).toEqual({
+      value: serverError.cause,
+      writable: true,
+      enumerable: false,
+      configurable: true,
+    });
 
-    const fetch = vi
-      .fn()
-      .mockResolvedValueOnce(badGatewayResponse)
-      .mockResolvedValueOnce(noContentResponse);
+    const rateLimitError = await new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: vi.fn(async () => brokenResponse(429, "7")) as typeof globalThis.fetch,
+      maxRetries: 0,
+    })
+      .getQuota()
+      .catch((caught: unknown) => caught as QURLError);
+    expect(rateLimitError).toBeInstanceOf(RateLimitError);
+    expect(rateLimitError).toMatchObject({ status: 429, code: ERROR_CODE_UNKNOWN });
+    expect(rateLimitError.message).toContain("HTTP 429");
+    expect(rateLimitError.retryAfter).toBe(7);
+    expect(rateLimitError.cause).toBeInstanceOf(TypeError);
+  });
+
+  it("reports a successful response body reset as a typed network failure", async () => {
+    const brokenBody = new globalThis.ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.error(new TypeError("successful response reset mid-body"));
+      },
+    });
+    const fetch = vi.fn(async () => new Response(brokenBody, { status: 200, statusText: "OK" }));
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 0,
+    });
+
+    const error = await client.getQuota().catch((caught: unknown) => caught as QURLError);
+    expect(error).toBeInstanceOf(NetworkError);
+    expect(error).toMatchObject({ status: 0, code: ERROR_CODE_NETWORK });
+    expect(error.message).toContain("HTTP 200");
+    expect(error.cause).toBeInstanceOf(TypeError);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["AbortError", "TimeoutError"])(
+    "does not retry or mislabel an independent response-body %s",
+    async (errorName) => {
+      const brokenBody = new globalThis.ReadableStream<Uint8Array>({
+        pull(controller) {
+          controller.error(new DOMException("wrapper cancelled body", errorName));
+        },
+      });
+      const fetch = vi.fn(async () => new Response(brokenBody, { status: 200, statusText: "OK" }));
+      const client = new QURLClient({
+        apiKey: "test-api-key",
+        baseUrl: "https://api.test.layerv.ai",
+        fetch: fetch as typeof globalThis.fetch,
+        maxRetries: 2,
+      });
+
+      const error = await client.getQuota().catch((caught: unknown) => caught as QURLError);
+
+      expect(error).toBeInstanceOf(NetworkError);
+      expect(error).not.toBeInstanceOf(TimeoutError);
+      expect(error).toMatchObject({ status: 0, code: ERROR_CODE_NETWORK });
+      expect(fetch).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("keeps the observed non-success class for an independent body AbortError", async () => {
+    const brokenBody = new globalThis.ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.error(new DOMException("wrapper cancelled error body", "AbortError"));
+      },
+    });
+    const fetch = vi.fn(
+      async () => new Response(brokenBody, { status: 404, statusText: "Not Found" }),
+    );
     const client = new QURLClient({
       apiKey: "test-api-key",
       baseUrl: "https://api.test.layerv.ai",
@@ -5383,10 +7859,211 @@ describe("QURLClient", () => {
       maxRetries: 2,
     });
 
-    await expect(client.delete("r_abc123def45")).resolves.toBeUndefined();
-    expect(fetch).toHaveBeenCalledTimes(2);
+    const error = await client.getQuota().catch((caught: unknown) => caught as QURLError);
+
+    expect(error).toBeInstanceOf(NotFoundError);
+    expect(error).toMatchObject({ status: 404, code: ERROR_CODE_UNKNOWN });
+    expect(error.cause).toMatchObject({ name: "AbortError" });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports a successful mutation body timeout without replaying the mutation", async () => {
+    const fetch = vi.fn(
+      async (_url: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
+        const signal = init?.signal;
+        const slowBody = new globalThis.ReadableStream<Uint8Array>({
+          start(controller) {
+            signal?.addEventListener(
+              "abort",
+              () => controller.error(signal.reason ?? new DOMException("aborted", "AbortError")),
+              { once: true },
+            );
+          },
+        });
+        return new Response(slowBody, { status: 201, statusText: "Created" });
+      },
+    );
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 2,
+      timeout: 5,
+    });
+
+    const error = await client
+      .create({ target_url: "https://example.com" })
+      .catch((caught: unknown) => caught as QURLError);
+
+    expect(error).toBeInstanceOf(TimeoutError);
+    expect(error).toMatchObject({ status: 0, code: ERROR_CODE_TIMEOUT });
+    expect(error.message).toContain("HTTP 201");
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports a 503 mutation body transport failure without replaying the mutation", async () => {
+    const brokenBody = new globalThis.ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.error(new TypeError("response body reset"));
+      },
+    });
+    const fetch = vi.fn(
+      async () => new Response(brokenBody, { status: 503, statusText: "Unavailable" }),
+    );
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 2,
+    });
+
+    const error = await client
+      .create({ target_url: "https://example.com" })
+      .catch((caught: unknown) => caught as QURLError);
+
+    expect(error).toBeInstanceOf(ServerError);
+    expect(error).toMatchObject({ status: 503, code: ERROR_CODE_UNKNOWN });
+    expect(error.message).toContain("HTTP 503");
+    expect(error.cause).toBeInstanceOf(TypeError);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("releases and cancels a response stream after a body-read failure", async () => {
+    const releaseLock = vi.fn();
+    const cancel = vi.fn(async () => undefined);
+    const fetch = vi.fn(
+      async () =>
+        ({
+          ok: false,
+          redirected: false,
+          status: 503,
+          statusText: "Unavailable",
+          type: "basic",
+          headers: new Headers(),
+          body: {
+            cancel,
+            getReader: () => ({
+              read: async () => {
+                throw new TypeError("response body reset");
+              },
+              cancel: vi.fn(async () => undefined),
+              releaseLock,
+            }),
+          },
+        }) satisfies Partial<Response> as Response,
+    );
+
+    await expect(
+      new QURLClient({
+        apiKey: "test-api-key",
+        baseUrl: "https://api.test.layerv.ai",
+        fetch: fetch as typeof globalThis.fetch,
+        maxRetries: 0,
+      }).getQuota(),
+    ).rejects.toBeInstanceOf(ServerError);
+    expect(releaseLock).toHaveBeenCalledTimes(1);
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([502, 503, 504])("does not replay DELETE after a %i response", async (status) => {
+    // A transport failure after dispatch makes the mutation outcome unknown.
+    // The caller reconciles resource state before it chooses to issue another
+    // delete; the HTTP verb alone cannot prove a replay safe.
+    const gatewayResponse = {
+      ok: false,
+      status,
+      statusText: "Gateway failure",
+      headers: new Headers({}),
+      json: () =>
+        Promise.resolve({
+          error: {
+            title: "Bad Gateway",
+            status,
+            detail: "Upstream error",
+            code: "bad_gateway",
+          },
+        }),
+      text: () => Promise.resolve(""),
+    } satisfies Partial<Response> as Response;
+
+    const fetch = vi.fn().mockResolvedValue(gatewayResponse);
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 2,
+    });
+
+    await expect(client.delete("r_abc123def45")).rejects.toBeInstanceOf(ServerError);
+    expect(fetch).toHaveBeenCalledTimes(1);
     expect(callHeaders(fetch, 0)).not.toHaveProperty("Idempotency-Key");
-    expect(callHeaders(fetch, 1)).not.toHaveProperty("Idempotency-Key");
+  });
+
+  it("does not replay DELETE after a 429 response", async () => {
+    // Match qurl-go's explicit-caller-retry model. A custom gateway can emit
+    // 429 after dispatch, so receiving the status alone is not proof that a
+    // destructive operation was never applied.
+    const fetch = mockFetch({
+      status: 429,
+      body: {
+        error: {
+          title: "Rate Limited",
+          status: 429,
+          detail: "Slow down",
+          code: "rate_limited",
+        },
+      },
+    });
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch,
+      maxRetries: 2,
+    });
+
+    await expect(client.delete("r_abc123def45")).rejects.toBeInstanceOf(RateLimitError);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not replay terminateAllResourceSessions after a 503 response", async () => {
+    const fetch = mockFetch({
+      status: 503,
+      body: {
+        error: {
+          title: "Unavailable",
+          status: 503,
+          detail: "Outcome unknown",
+          code: "unavailable",
+        },
+      },
+    });
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch,
+      maxRetries: 2,
+    });
+
+    await expect(client.terminateAllResourceSessions("r_abc123def45")).rejects.toBeInstanceOf(
+      ServerError,
+    );
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not replay DELETE after a fetch-level outcome-unknown failure", async () => {
+    const fetch = vi
+      .fn()
+      .mockRejectedValueOnce(new TypeError("socket closed after dispatch"))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 2,
+    });
+
+    await expect(client.delete("r_abc123def45")).rejects.toBeInstanceOf(NetworkError);
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   it("retries POST on 429", async () => {
@@ -5578,6 +8255,105 @@ describe("QURLClient", () => {
     expect(messages.some((m: string) => m.includes("unexpected error response shape"))).toBe(true);
   });
 
+  it("bounds and sanitizes keys logged for an unexpected error response shape", async () => {
+    const debugFn = vi.fn();
+    const longKey = `${"€".repeat(300)}\n\u202Esecret-tail`;
+    const body = Object.fromEntries([
+      [longKey, true],
+      ...Array.from({ length: 120 }, (_, index) => [`field-${index}`, true]),
+    ]);
+    const fetch = mockFetch({ status: 500, body });
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch,
+      maxRetries: 0,
+      debug: debugFn,
+    });
+
+    await client.getQuota().catch(() => {});
+
+    const metadata = debugFn.mock.calls.find(([message]) =>
+      String(message).includes("unexpected error response shape"),
+    )?.[1] as { body_keys?: string[] };
+    expect(metadata.body_keys).toHaveLength(100);
+    for (const key of metadata.body_keys ?? []) {
+      expect(new TextEncoder().encode(key).byteLength).toBeLessThanOrEqual(512);
+      expect(key).not.toMatch(/[\p{Cc}\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/u);
+      expect(key).not.toContain("secret-tail");
+    }
+  });
+
+  it("retains debug body keys at the 8 KiB aggregate boundary", async () => {
+    const debugFn = vi.fn();
+    const body = Object.fromEntries([
+      ...Array.from({ length: 16 }, (_, index) => [
+        `${String(index).padStart(3, "0")}${"k".repeat(509)}`,
+        true,
+      ]),
+      ["over-budget", true],
+    ]);
+    const fetch = mockFetch({ status: 500, body });
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch,
+      maxRetries: 0,
+      debug: debugFn,
+    });
+
+    await client.getQuota().catch(() => {});
+
+    const metadata = debugFn.mock.calls.find(([message]) =>
+      String(message).includes("unexpected error response shape"),
+    )?.[1] as { body_keys?: string[] };
+    expect(metadata.body_keys).toHaveLength(16);
+    expect(metadata.body_keys).not.toContain("over-budget");
+    expect(
+      (metadata.body_keys ?? []).reduce(
+        (total, key) => total + new TextEncoder().encode(key).byteLength,
+        0,
+      ),
+    ).toBe(8 << 10);
+  });
+
+  it("skips an over-budget debug key and retains a later key that fits", async () => {
+    const skippedKey = "s".repeat(200);
+    const retainedKey = "z".repeat(100);
+    const body = Object.fromEntries([
+      ...Array.from({ length: 15 }, (_, index) => [
+        `${String(index).padStart(3, "0")}${"k".repeat(509)}`,
+        true,
+      ]),
+      ["n".repeat(400), true],
+      [skippedKey, true],
+      [retainedKey, true],
+    ]);
+    const debugFn = vi.fn();
+    const fetch = mockFetch({ status: 500, body });
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch,
+      maxRetries: 0,
+      debug: debugFn,
+    });
+
+    await client.getQuota().catch(() => {});
+
+    const metadata = debugFn.mock.calls.find(([message]) =>
+      String(message).includes("unexpected error response shape"),
+    )?.[1] as { body_keys?: string[] };
+    expect(metadata.body_keys).not.toContain(skippedKey);
+    expect(metadata.body_keys).toContain(retainedKey);
+    expect(
+      (metadata.body_keys ?? []).reduce(
+        (total, key) => total + new TextEncoder().encode(key).byteLength,
+        0,
+      ),
+    ).toBeLessThanOrEqual(8 << 10);
+  });
+
   it("5xx with JSON body but missing `error` envelope surfaces as ServerError with .code === 'unknown'", async () => {
     // Locks in the documented `.code === "unknown"` sentinel for the
     // parseError fallback path (JSON parses, `error` envelope absent).
@@ -5630,6 +8406,39 @@ describe("QURLClient", () => {
     expect(new ServerError(data)).toBeInstanceOf(QURLError);
     expect(new NetworkError("fail")).toBeInstanceOf(QURLError);
     expect(new TimeoutError()).toBeInstanceOf(QURLError);
+    expect(new RuntimeError("unsupported")).toBeInstanceOf(QURLError);
+  });
+
+  it.each([
+    ["NetworkError", (cause: unknown) => new NetworkError("fail", { cause })],
+    ["TimeoutError", (cause: unknown) => new TimeoutError("timed out", { cause })],
+    ["RuntimeError", (cause: unknown) => new RuntimeError("unsupported", { cause })],
+  ] as const)("attaches %s cause with the native non-enumerable descriptor", (_name, makeError) => {
+    const cause = new TypeError("transport detail");
+    const error = makeError(cause);
+
+    expect(error.cause).toBe(cause);
+    expect(Object.keys(error)).not.toContain("cause");
+    expect({ ...error }).not.toHaveProperty("cause");
+    expect(Object.getOwnPropertyDescriptor(error, "cause")).toEqual({
+      value: cause,
+      writable: true,
+      enumerable: false,
+      configurable: true,
+    });
+  });
+
+  it("distinguishes an omitted cause from an explicitly undefined cause", () => {
+    const omitted = new NetworkError("fail");
+    const explicit = new NetworkError("fail", { cause: undefined });
+
+    expect(Object.hasOwn(omitted, "cause")).toBe(false);
+    expect(Object.getOwnPropertyDescriptor(explicit, "cause")).toEqual({
+      value: undefined,
+      writable: true,
+      enumerable: false,
+      configurable: true,
+    });
   });
 
   // --- edge cases ---
@@ -7133,6 +9942,24 @@ describe("QURLClient", () => {
     expect((error as ValidationError).detail).toContain("[request_id=req_shape_guard_correlation]");
   });
 
+  it("drops batch shape-guard request IDs that cannot be preserved exactly", async () => {
+    const requestId = `${"€".repeat(300)}\n\u202Esecret-tail`;
+    const fetch = mockFetch({
+      status: 400,
+      body: {
+        data: { unexpected: "not a batch response" },
+        meta: { request_id: requestId },
+      },
+    });
+
+    const error = await createClient(fetch)
+      .batchCreate({ items: [{ target_url: "https://example.com" }] })
+      .catch((caught: unknown) => caught as ValidationError);
+
+    expect(error.requestId).toBeUndefined();
+    expect(error.detail).not.toContain("[request_id=");
+  });
+
   it("batch create shape-guard error has undefined requestId when meta is absent", async () => {
     // Inverse of the propagation test above: a 400 passthrough with
     // no `meta` envelope at all (just `{ data: <bad shape> }`) must
@@ -7392,6 +10219,121 @@ describe("QURLClient", () => {
     expect((error as QURLError).status).toBe(200);
     expect((error as QURLError).code).toBe(ERROR_CODE_UNEXPECTED_RESPONSE);
     expect((error as QURLError).detail).toContain("non-JSON");
+  });
+
+  it("bounds and sanitizes statusText on a non-JSON success response", async () => {
+    const statusText = `${"€".repeat(300)}\n\u202Ecredential-tail`;
+    const nonJsonOkFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText,
+      headers: new Headers({ "content-type": "text/html" }),
+      text: () => Promise.resolve("<html>broken response</html>"),
+    } satisfies Partial<Response> as Response);
+
+    const error = await createClient(nonJsonOkFetch as typeof globalThis.fetch)
+      .getQuota()
+      .catch((caught: unknown) => caught as QURLError);
+
+    expect(error).toBeInstanceOf(QURLError);
+    const renderedTitle = error.message.split(" (200):", 1)[0];
+    expect(new TextEncoder().encode(renderedTitle).byteLength).toBeLessThanOrEqual(512);
+    expect(renderedTitle).not.toMatch(/[\p{Cc}\u202A-\u202E\u2066-\u2069]/u);
+    expect(renderedTitle).not.toContain("credential-tail");
+  });
+
+  it("rejects malformed UTF-8 after a successful mutation without replaying it", async () => {
+    const encoder = new TextEncoder();
+    const malformedBody = new Uint8Array([
+      ...encoder.encode(
+        '{"data":{"resource_id":"r_new","target_url":"https://example.com","description":"',
+      ),
+      0xff,
+      ...encoder.encode('"}}'),
+    ]);
+    const fetch = vi.fn(
+      async () =>
+        new Response(malformedBody, {
+          status: 201,
+          statusText: "Created",
+          headers: { "content-type": "application/json" },
+        }),
+    );
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 2,
+    });
+
+    const error = await client
+      .create({ target_url: "https://example.com" })
+      .catch((caught: unknown) => caught as QURLError);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error).toMatchObject({ status: 201, code: ERROR_CODE_UNEXPECTED_RESPONSE });
+    expect(error.detail).toContain("not valid UTF-8");
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry GET after a successful response with malformed UTF-8", async () => {
+    const encoder = new TextEncoder();
+    const malformedBody = new Uint8Array([
+      ...encoder.encode('{"data":{"plan":"'),
+      0xff,
+      ...encoder.encode('","period_start":"2026-03-01","period_end":"2026-04-01"}}'),
+    ]);
+    const fetch = vi.fn(
+      async () =>
+        new Response(malformedBody, {
+          status: 200,
+          statusText: "OK",
+          headers: { "content-type": "application/json" },
+        }),
+    );
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 2,
+    });
+
+    await expect(client.getQuota()).rejects.toMatchObject({
+      status: 200,
+      code: ERROR_CODE_UNEXPECTED_RESPONSE,
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a retryable error status retryable when its body has malformed UTF-8", async () => {
+    vi.useFakeTimers();
+    try {
+      const malformed = new Response(Uint8Array.from([0x7b, 0x22, 0xff, 0x22, 0x7d]), {
+        status: 503,
+        statusText: "Service Unavailable",
+      });
+      const success = new Response(
+        JSON.stringify({
+          data: { plan: "growth", period_start: "2026-03-01", period_end: "2026-04-01" },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+      const fetch = vi.fn().mockResolvedValueOnce(malformed).mockResolvedValueOnce(success);
+      const client = new QURLClient({
+        apiKey: "test-api-key",
+        baseUrl: "https://api.test.layerv.ai",
+        fetch: fetch as typeof globalThis.fetch,
+        maxRetries: 1,
+      });
+
+      const resultPromise = client.getQuota();
+      await vi.runAllTimersAsync();
+
+      await expect(resultPromise).resolves.toMatchObject({ plan: "growth" });
+      expect(fetch).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("batch create rejects success entries missing resource_id", async () => {

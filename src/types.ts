@@ -310,6 +310,13 @@ export interface CreatePortalOptions {
    * server default; zero is rejected rather than treated as default.
    */
   sessionDuration?: string | number;
+  /**
+   * Scope a qURL for an existing tunnel resource to one path and its
+   * descendants. The SDK rejects only empty values and values over 2048 UTF-8
+   * bytes; the API remains authoritative for the path grammar and resource
+   * type. This option is invalid with `createPortalForUrl`.
+   */
+  targetPath?: string;
 }
 
 /**
@@ -470,10 +477,18 @@ export interface UpdateResourceInput {
 /** Resource data returned by the `/v1/resources` surface. */
 export interface Resource {
   resource_id: string;
+  /** Cryptographic Resource ID derived from the resource public key. */
+  crid?: string;
   type?: ResourceType;
   target_url?: string;
   knock_resource_id?: string;
+  /** Opaque reverse-connection routing label for qURL Connector resources. */
+  connector_routing_id?: string;
   status?: "active" | "revoked" | (string & {});
+  /** Durable qURL Connector sharing intent. */
+  desired_state?: "on" | "off" | (string & {});
+  /** Monotonic qURL Connector serving lifecycle; zero means never started. */
+  serving_epoch?: number;
   description?: string;
   tags?: string[];
   custom_domain?: string | null;
@@ -515,8 +530,9 @@ export type CreateQurlForResourceInput = Omit<
    * Path this resource qURL resolves to (e.g. "/api/detect").
    *
    * Creation-only and valid only for tunnel resources. The SDK rejects empty
-   * or overlong values before sending a request; server validation rejects
-   * invalid path grammar, including paths missing a leading "/".
+   * values and values over 2048 UTF-8 bytes before sending a request; server
+   * validation rejects invalid path grammar, including paths missing a
+   * leading "/".
    */
   target_path?: string;
 };
@@ -1009,7 +1025,13 @@ export interface ClientOptions {
   apiKey: string;
   /** Base URL. Defaults to https://api.layerv.ai */
   baseUrl?: string;
-  /** Custom fetch implementation. */
+  /**
+   * Custom fetch implementation. Redirect-safety requires it to honor
+   * `redirect: "manual"`, accurately expose `Response.redirected`, and leave
+   * `Response.url` empty or set it to the normalized request URL when no
+   * redirect was followed. Every Response-like result must also provide a
+   * `headers` object with a WHATWG-compatible `headers.get(name)` method.
+   */
   fetch?: typeof globalThis.fetch;
   /** Maximum retry attempts for transient errors (429, 5xx). Default: 3. */
   maxRetries?: number;

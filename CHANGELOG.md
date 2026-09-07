@@ -16,10 +16,109 @@
   response scopes remain forward-compatible with future server values, but
   callers must validate/narrow response values before writing them back through
   the closed request type.
-- **client:** remove the released legacy HTTP bootstrap method and the
-  not-yet-released relay registration implementation. Native qURL Connector
-  assignment and registration are UDP-only and belong in the Go runtime; the
-  TypeScript package remains focused on browser and management-plane qURL APIs.
+
+- **client:** replace alias-based `connectorResource(connectorId)` with the
+  explicit Connector lifecycle methods below.
+
+### Features
+
+- **client:** add qurl-go-compatible Connector resource management by immutable
+  slug and canonical public resource ID. Connector identity, reverse routing,
+  and NHP admission IDs are validated and exposed separately.
+
+### Bug Fixes
+
+- **client:** keep slug-idempotent Connector ensure off the generic automatic
+  idempotency path, and treat a consumed bootstrap key as outcome-unknown.
+- **client:** send the required `{}` body for a default portal mint.
+
+## [0.6.0](https://github.com/layervai/qurl-typescript/compare/qurl-v0.5.0...qurl-v0.6.0) (2026-09-07)
+
+
+### ⚠ BREAKING CHANGES
+
+* **client:** align Connector resource lifecycle with Go ([#247](https://github.com/layervai/qurl-typescript/issues/247))
+
+### Features
+
+* **client:** align Connector resource lifecycle with Go ([#247](https://github.com/layervai/qurl-typescript/issues/247)) ([e6dfcb6](https://github.com/layervai/qurl-typescript/commit/e6dfcb6bc509150cf140f85aad7e835d2173539c))
+
+## [0.5.0](https://github.com/layervai/qurl-typescript/compare/qurl-v0.4.0...qurl-v0.5.0) (2026-09-07)
+
+
+### ⚠ BREAKING CHANGES
+
+* **api:** the Node PortalOpener configuration, health types, lifecycle states, cancellation behavior, Node version floor, and error surface now match the reviewed qurl-go PortalOpener contract. Existing proactive-opener consumers must update to the new API.
+
+### Features
+
+* **api:** add scoped descendant portal requests ([#253](https://github.com/layervai/qurl-typescript/issues/253)) ([f761e89](https://github.com/layervai/qurl-typescript/commit/f761e8999052488b398b604b4c90bac06a37c26a))
+
+
+### Bug Fixes
+
+* **api:** align portal opener with Go lifecycle ([#251](https://github.com/layervai/qurl-typescript/issues/251)) ([be901e7](https://github.com/layervai/qurl-typescript/commit/be901e7ed159e8c5d248fbab08b6bf2255029379))
+
+## [0.4.0](https://github.com/layervai/qurl-typescript/compare/qurl-v0.3.1...qurl-v0.4.0) (2026-09-06)
+
+### ⚠ BREAKING CHANGES
+
+- **client:** DELETE operations are no longer retried after transport, 429, or 5xx
+  failures. This matches qurl-go's no-hidden-HTTP-retry rule, avoids request-path
+  pacing, and requires the caller to use `retryAfter` and reconcile state before
+  a deliberate retry. Documented no-content DELETE endpoints now require an
+  exact empty HTTP 204 response
+  ([#213](https://github.com/layervai/qurl-typescript/issues/213)).
+- **client:** server-provided error titles, details, and up to 100
+  invalid-field entries have controls and bidirectional formatting characters
+  removed, are normalized to one line, and are capped at 512 UTF-8 bytes per
+  key/value and 8 KiB per retained collection so error objects and debug paths
+  stay bounded. Exact machine identifiers (`code`, RFC 7807 `type` and
+  `instance`, and request IDs) are not normalized or truncated into false
+  identifiers: changed or overlong values are dropped, and an invalid code
+  becomes `unknown`. Non-string invalid-field values are omitted, and
+  normalized-key collisions retain the first diagnostic.
+- **client:** API redirects are refused instead of followed, including when an
+  injected fetch implementation follows one before returning a response.
+- **client:** API response bodies larger than 1 MiB and successful JSON bodies
+  with malformed UTF-8 are rejected before JSON parsing. The size limit also
+  applies to streamed bodies without a trustworthy Content-Length. Resume
+  collection reads from the last successful cursor with a smaller page. The
+  fixed shared-cap decision is tracked in #249.
+- **client:** GET requests now retry transport failures from successful response
+  bodies and from the normal retryable error statuses. Hard 4xx responses are
+  not replayed. Mutations require reconciliation and are not replayed after a
+  response-body transport failure.
+- **client:** the observed HTTP status now controls server-error classification;
+  a conflicting RFC 7807 `error.status` value can no longer change the typed
+  error class.
+- **client:** remove the unsafe legacy HTTP bootstrap method
+  ([#209](https://github.com/layervai/qurl-typescript/issues/209)) and incomplete
+  relay registration implementation
+  ([#206](https://github.com/layervai/qurl-typescript/issues/206)). Native NHP 1.1
+  assignment, registration, and proactive opener parity replace them under the
+  program tracked in #248.
+
+### Features
+
+- Add the proactive native NHP portal opener
+  ([#250](https://github.com/layervai/qurl-typescript/issues/250)).
+- Add native NHP agent registration
+  ([#177](https://github.com/layervai/qurl-typescript/issues/177)).
+
+### Bug Fixes
+
+- **client:** preserve the status-derived error class and `Retry-After` on 429
+  and 503 responses whose body is unreadable or is not a valid API error
+  envelope; unreadable bodies retain the transport failure as `cause`.
+- **client:** classify an injected fetch failure or successful response body's
+  independent `AbortError` or `TimeoutError` as a non-retried `NetworkError`;
+  after non-success headers, preserve the status-derived class and attach the
+  failure as its cause. Only the SDK timeout signal produces `TimeoutError`.
+  Deterministic Response-like materialization failures retain their SDK-authored
+  detail and cause and are not retried.
+- Make the review workflow validate the destination origin instead of one exact
+  URL ([#234](https://github.com/layervai/qurl-typescript/issues/234)).
 
 ## [0.3.1](https://github.com/layervai/qurl-typescript/compare/qurl-v0.3.0...qurl-v0.3.1) (2026-07-05)
 

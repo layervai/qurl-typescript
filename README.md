@@ -39,7 +39,9 @@ endpoint in front of the same service:
 npm install @layervai/qurl
 ```
 
-Requires Node.js 20+ and has **no runtime dependencies**. Both `import { QURLClient } from '@layervai/qurl'` (ESM) and `const { QURLClient } = require('@layervai/qurl')` (CJS) work.
+Requires Node.js 22.12+ and has **no runtime dependencies**. Both
+`import { QURLClient } from '@layervai/qurl'` (ESM) and
+`const { QURLClient } = require('@layervai/qurl')` (CJS) work.
 
 ## Quickstart
 
@@ -66,13 +68,59 @@ same URL again returns the existing resource. `validFor` accepts a duration
 string (`'5m'`, `'24h'`) or a number of milliseconds (whole seconds, at least
 one minute); prefer short portal lifetimes.
 
-If qURL Connector already protects the service, use the connector id instead
-of calling `protectUrl`:
+If qURL Connector protects the service, address its management-plane resource
+by immutable slug instead of calling `protectUrl`:
 
 ```typescript
-const resource = await client.connectorResource('prod-dashboard');
-const portal = await resource.createPortal({ validFor: '5m' });
+const { resource, foundExisting } = await client.ensureConnectorResource(
+  'prod-dashboard',
+  { idempotencyKey: 'connector-bootstrap-prod-dashboard' },
+);
+console.log(foundExisting ? 'Using existing connector resource' : 'Created connector resource');
+const portal = await resource.createPortal({
+  validFor: '5m',
+  targetPath: '/api/detect/eib_example',
+});
 ```
+
+`targetPath` is available only when minting for an existing resource. The SDK
+checks the non-empty 2048-byte boundary; the API remains authoritative for the
+path grammar and the tunnel-only resource gate. `createPortalForUrl` rejects
+this option because it creates a URL resource.
+
+`resource.resourceId`, `resource.connectorRoutingId`, and
+`resource.knockResourceId` are three distinct server-issued values for public
+identity, reverse routing, and NHP admission. Consume each verbatim; never
+derive or substitute one for another. Use `getConnectorResource(resourceId)`
+or `getConnectorResourceBySlug(slug)` for read-only lookup and
+`deleteConnectorResource(resourceId)` to revoke it. This replaces the old
+alias-based `connectorResource(connectorId)` method.
+`ConnectorResource` instances cannot be constructed directly; the client
+returns them only after validating the complete response contract.
+
+`ensureConnectorResource` and `deleteConnectorResource` throw
+`ConnectorResourceOutcomeUnknownError` when a dispatched mutation may have
+committed but its response cannot prove the result. Reconcile by immutable slug
+or resource ID before deciding whether to retry. The wrapper deliberately uses
+`status: 0`; the original typed error is available as `cause`, including its
+observed HTTP status.
+
+Connector lifecycle calls make one HTTP attempt. The SDK does not pace or
+replay them; the caller controls any retry after it reconciles state.
+
+`ensureConnectorResource` does not generate an idempotency key because the slug
+operation is already idempotent. If you supply an `idempotencyKey`, the SDK
+forwards it, and you must reuse it on any deliberate retry. A 409
+`bootstrap_key_consumed` response is outcome-unknown because resource binding
+can finish before bootstrap-key consumption fails. The original bootstrap key
+is terminal: do not retry it. Obtain a new bootstrap key and use normal
+owner-authenticated lookup by immutable slug to reconcile the resource first.
+
+The API does not apply idempotency replay to DELETE, so after an outcome-unknown
+`deleteConnectorResource` call, reconcile by resource ID before issuing a
+deliberate retry. A valid exact-201 resource missing only `meta.found_existing`
+is known to have selected that row but still fails as an unwrapped
+`unexpected_response` because required ensure metadata is absent.
 
 If you persist the resource id, future calls do not need to recreate the
 handle (no API call is made until you mint):
@@ -102,12 +150,24 @@ const portal = await resource.createPortal({
   label: 'Alice from Acme',
   oneTimeUse: true,
   maxSessions: 1,
+  targetPath: '/api/detect/eib_example',
 });
 ```
 
+`createPortal` sends `{}` when no options are set because the service requires
+a JSON object at the wire level.
+
+The Node-only `@layervai/qurl/node` entry opens received qv2 links with native
+NHP UDP. It has no relay or HTTP-resolve fallback. Connector assignment and
+registration are separate producer operations and are not part of the portal
+opener.
+
 qURL Connector assignment and registration use native UDP through
-`qurl-connector` and `qurl-go`. This TypeScript package handles browser and
-management-plane qURL APIs; it does not expose an HTTP enrollment API.
+`qurl-connector` and `qurl-go`. This package does not expose an HTTP enrollment API.
+Like the Go SDK, credential minting uses HTTPS and token consumption uses
+native UDP. The Go SDK currently exposes minting through its restricted
+`RegisteredAgentResourceHTTPDoer` bridge; this SDK uses `createApiKey`.
+The service controls which credential kinds each caller can mint.
 It can mint the one-shot credential consumed by that native enrollment flow:
 
 ```typescript
@@ -151,6 +211,161 @@ LayerV API: the client needs an API key with the `qurl:resolve` scope.
 `enterPortal` fails closed — if access is granted but no resource URL comes
 back, it throws instead of returning an empty handle.
 
+### Proactive native Node opener
+
+Use the Node subpath when a service receives a qv2 link and must keep one NHP
+session ready for a low-latency private request. Construct and start one opener
+for that link during setup. `start()` sends the native UDP knock and schedules
+background renewal before the admission expires. A transient renewal failure
+retries after 500 ms, then 1 second, then at most every 2 seconds while the old
+admission remains valid. `fetch()` never opens or renews a session, and it never
+sleeps. It fails if the cached admission has expired.
+
+Renewal waits at least 5 seconds after a successful open. If a server grants a
+session that expires before that safe renewal point, the grant expires without
+a background attempt and `start()` is the explicit recovery path. Production
+admissions should be longer than this minimum gap.
+
+```javascript
+const { createPortalOpener } = require('@layervai/qurl/node');
+
+async function uploadPrivateObject(uploadBody) {
+  const opener = createPortalOpener({
+    qurl: process.env.PRIVATE_UPLOAD_QURL,
+  });
+  try {
+    await opener.start();
+    return await opener.fetch(
+      (authenticatedTarget) => ({
+        method: 'POST',
+        headers: signUploadForExactTarget(authenticatedTarget),
+        body: uploadBody,
+      }),
+      { redirects: 'error' },
+    );
+  } finally {
+    await opener.close();
+  }
+}
+```
+
+For a service whose ACK target is a base path, append only trusted raw path
+segments with `fetchDescendant()`. The opener rejects empty, dot, and delimiter
+segments and escapes each accepted segment before it sends the request:
+
+```javascript
+const response = await opener.fetchDescendant(
+  ['eib_example'],
+  (authenticatedTarget) => ({ method: 'POST' }),
+  { redirects: 'error' },
+);
+```
+
+The request builder receives a copy of the selected authenticated target. The
+opener ignores mutations to that copy and sends the initial request only to the
+fixed ACK URL or the validated descendant. A descendant call accepts raw path
+segments, not a URL or path string. It preserves the ACK target query and
+escapes each segment separately. It adds the private `qurl_vsession` cookie,
+replaces a caller-supplied cookie with that name, and preserves other valid
+cookies, including duplicate `Cookie` entries that Node joins with semicolons.
+It does not accept a caller URL, and it rejects a caller-supplied `Host` header
+so Fetch derives the authority from the pinned target. Both `fetch()` and
+`fetchDescendant()` use only the cached NHP 1.1 admission. Use
+`redirects: 'error'` to keep a descendant request at its initial target. The
+default `follow` mode can move outside that path subtree, but only within the
+authenticated origin. Also use `redirects: 'error'` for a request whose
+signature binds its method, target, timestamp, or nonce. This mode closes a
+redirect response and does not replay the request. Follow mode permits at most
+10 requests, including the initial request, and uses the standard 301/302/303
+method rewrite rules. As in Go, a 3xx response with no `Location` header, or a
+307/308 response whose streaming body cannot be replayed, is returned to the
+caller without a follow-up request. The caller then owns that response body and
+must consume or cancel it. Local admission expiry is checked before the first
+request; the protected service remains authoritative while a permitted redirect
+chain is in progress.
+
+When `fetch()` rejects before it sends a direct `RequestInit`, it releases a
+caller-owned streaming body. It cancels a web `ReadableStream`, destroys a Node
+`Readable`, or closes another iterator when that body supports the operation. A
+request builder remains lazy and is not called until a grant is ready.
+
+Each open has a whole-operation deadline that covers DNS and UDP.
+`openTimeoutMs` sets this ceiling; the default is 15 seconds and the maximum is
+60 seconds. Native DNS or address attempts can fail before this ceiling, so a
+larger value does not extend their internal timeouts. A renewal also stops at
+the old grant's expiry. Pass an abort signal to `start()` when lifecycle code
+needs a shorter deadline. Concurrent `start()` calls share one attempt. The
+first caller's signal owns that attempt, so its abort fails all waiters but does
+not count as an open failure in health. A cold cancellation restores `new`; a
+recovery cancellation preserves its prior `degraded` health. A later waiter's
+abort stops only that wait.
+Content requests use the caller's `RequestInit.signal`; `fetch()` does not add
+an independent application-request deadline. The signal stays active while the
+returned response body is read. Set the opener's optional `fetch` when the
+protected request must use a custom Fetch implementation. Native NHP opening
+never uses this function. The custom function receives the `qurl_vsession`
+bearer cookie and is inside the credential boundary. It must implement standard
+Fetch signal behavior and honor `redirect: 'manual'`. If it needs a receiver,
+pass it already bound; the SDK invokes it with the standard global Fetch
+receiver. An unfollowed synthetic response can leave `Response.url` empty.
+Otherwise, it must report
+`Response.url` and `Response.redirected` accurately. It must not log or forward
+protected request headers.
+
+TypeScript consumers of `@layervai/qurl/node` must provide Node and Fetch API
+declarations, for example current `@types/node`, or a configuration that includes
+the `DOM` library for Fetch types. The native opener requires Node 22.12 or later.
+This floor ensures that composite request signals are reclaimed on long-lived
+openers.
+
+Native opening requires public deployment trust. Set `QURL_DEPLOYMENT` to one
+strict JSON object or to a path that contains that object. The object must have
+trusted P-256 issuer keys and native cell host, UDP port 443, and X25519 public
+key entries. A configured path must be a regular file no larger than 1 MiB.
+Construction does no I/O. `start()` resolves and validates the deployment, and
+the first successful open pins that resolved trust for renewal and recovery.
+The opener does not perform discovery. It fails before DNS if the verified link
+names an unknown cell.
+
+Use `opener.health()` for the local `new`, `starting`, `ready`, `degraded`, or
+`closed` state. It reports absolute expiry, renewal, and last-success times, a
+secret-free failure class, and the number of consecutive unsuccessful open
+attempts. A renewal window can contain more than one such attempt. The
+`starting` state is only for the first cold open; an explicit recovery from a
+failure reports `degraded` until it succeeds. Date fields describe the most
+recent successful grant, so use `ready` as the authority for current usability.
+A transient renewal failure keeps the state `ready` while the prior admission
+is usable. A changed authenticated target is not retried. It keeps the prior
+admission until expiry. During that time, `start()` remains idempotent because
+the old admission is still usable; `health().lastFailureClass` reports the
+target change. After expiry, an explicit `start()` attempts recovery. If the
+target change is intentional and permanent, create a new opener for the new
+qURL; the old opener stays bound to its first authenticated target. Other
+failures retry through the remaining admission window. This does not put an
+open or sleep on the `fetch()` path.
+
+Close cancels and waits for an active NHP open, then wipes the mutable
+private-key, visitor-secret, and session-token buffers. Close also aborts a
+protected request and its returned response body, and prevents another redirect
+leg from starting. JavaScript can create immutable string copies during JSON
+and HTTP processing, so the SDK cannot promise full memory zeroization before garbage
+collection. The opener retains the immutable qURL string until close so it can
+verify each renewal. Never log the qURL, ACK body, request cookies, or request
+headers.
+
+A cold `start()` failure leaves health at `degraded`. Catch `PortalBusyError`
+for an authenticated COOKIE busy response and `PortalInvalidReplyError` for a
+malformed authenticated reply. An open deadline throws `PortalOpenTimeoutError`.
+The thrown typed error is the cold-start
+diagnostic; health does not expose its message or secret values.
+
+Local qv2 verification checks the signed bytes, trust, and clock-free claim
+ordering. As in the Go SDK, it does not compare `nbf` or `exp` with the local
+clock. The authenticated NHP open is the authoritative live validity check.
+The opener also follows the Go NHP COOKIE rule: an authenticated COOKIE is
+a busy result and does not use ACK counter correlation or local clock skew
+checks. Replaying it can only force another busy result; it cannot grant access.
+
 ## REST-Shaped API (Compatibility)
 
 The original REST-shaped methods remain fully supported and share the same
@@ -191,9 +406,11 @@ console.log(`Access granted to ${access.target_url} for ${access.access_grant?.e
 | Method | Description |
 |--------|-------------|
 | `protectUrl(targetUrl, opts?)` | Protect a private URL → portal-minting `ProtectedResource` handle |
-| `resource.createPortal(opts?)` / `createPortal(resourceOrId, opts?)` | Mint a short-lived portal link (`Portal`) |
-| `createPortalForUrl(targetUrl, opts?)` | Protect + mint in one API call → `{ portal, resource }` |
-| `connectorResource(connectorId)` | Handle for a service qURL Connector already protects |
+| `resource.createPortal(opts?)` / `createPortal(resourceOrId, opts?)` | Mint a short-lived portal link; existing resources can set `targetPath` |
+| `createPortalForUrl(targetUrl, opts?)` | Protect + mint a URL resource; rejects `targetPath` |
+| `ensureConnectorResource(slug, requestOptions?)` | Find or create an active Connector resource by immutable slug |
+| `getConnectorResource(resourceId)` / `getConnectorResourceBySlug(slug)` | Load a validated Connector resource by immutable identity |
+| `deleteConnectorResource(resourceId)` | Revoke a Connector resource by immutable public resource ID |
 | `resourceById(id)` | Handle from a stored resource id (no API call) |
 | `enterPortal(linkOrToken)` | Open a qURL link programmatically → `ResourceHandle` |
 
@@ -306,7 +523,7 @@ try {
 Client-detected failures use `status: 0` with a discriminating `code`:
 `"client_validation"` for bad input caught before a request, and — on the
 portal surface — `"resource_not_found"` / `"ambiguous_resource"` when
-`connectorResource` cannot resolve a connector id to exactly one resource,
+`getConnectorResourceBySlug` cannot resolve a slug to exactly one resource,
 and `"unexpected_response"` when a response is missing required fields (e.g.
 `enterPortal` failing closed on a grant with no resource URL).
 
@@ -339,14 +556,49 @@ const clientWithLogger = new QURLClient({
 
 ## Retry Behavior
 
-The client automatically retries failed requests with exponential backoff:
+The client retries only requests whose replay contract is explicit:
 
-- **GET/DELETE**: Retries on 429, 502, 503, 504
-- **POST/PATCH**: Retries status responses only on 429
-- **Network errors**: Always retried; POST/PATCH requests send an `Idempotency-Key` on the first attempt and reuse it on retries
-- **`Retry-After` header**: Honored on 429 and 503 responses (RFC 7231 §7.1.3). Currently the SDK only parses **delta-seconds** values (e.g. `Retry-After: 30`); HTTP-date values (`Retry-After: Wed, 21 Oct 2026 07:28:00 GMT`) silently fall back to exponential backoff. Tracked in [#61](https://github.com/layervai/qurl-typescript/issues/61).
+- **GET**: Retries on 429, 502, 503, 504 and transport failures, including a
+  dropped response body after successful headers arrive
+- **POST/PATCH**: Retries complete status responses only on 429. A transport
+  failure while reading a response body is not replayed because the mutation
+  may have applied.
+- **POST/PATCH fetch failures**: Retried with the `Idempotency-Key` generated on
+  the first attempt when no response is available
+- **DELETE**: Never replayed automatically, including on 429. A transport
+  failure after dispatch makes the mutation outcome unknown, and the HTTP verb
+  alone cannot prove a replay safe. Reconcile resource state before you issue
+  a deliberate retry. This matches qurl-go's explicit-caller-retry model.
+- **`Retry-After` header**: Preserved on 429 and 503 responses, including when
+  a mid-body transport failure produces a status-derived error (RFC 7231
+  §7.1.3), and honored by automatic GET retries. Currently the SDK only parses
+  **delta-seconds** values (e.g.
+  `Retry-After: 30`); HTTP-date values (`Retry-After: Wed, 21 Oct 2026 07:28:00 GMT`)
+  silently fall back to exponential backoff. Tracked in
+  [#61](https://github.com/layervai/qurl-typescript/issues/61).
+- **Response failures**: Redirects, oversized successful bodies, and malformed
+  UTF-8 successful bodies are not retried. Retryable error statuses remain
+  retryable when an intermediary returns HTML, an empty body, malformed UTF-8,
+  or another complete non-envelope error response. A mid-stream transport
+  failure is retried for a successful GET or a GET with a retryable status.
+  A hard 4xx GET is not retried. An independent `AbortError` or `TimeoutError`
+  from an injected fetch, or while reading a successful response body, is a
+  non-retried `NetworkError`. After non-success headers arrive, the SDK
+  preserves the status-derived error class and attaches the independent
+  failure as its cause without retrying it. Only the SDK's timeout signal
+  produces a `TimeoutError`. Mutations require reconciliation.
+
+All documented no-content DELETE operations require exactly HTTP 204 with an
+empty response body. Alternate success statuses or response bytes fail closed
+as `unexpected_response` contract errors whose `.status` preserves the
+observed HTTP status. The delete may already have applied; reconcile resource
+state before retrying.
 
 Configure with `maxRetries` (default: 3). Set to `0` to disable.
+
+When DELETE returns `RateLimitError`, use `retryAfter` for scheduling but
+reconcile current resource state before issuing a deliberate retry; the SDK
+does not assume the rejected response proves the mutation never ran.
 
 > **Worst-case latency**: `timeout` is enforced per *attempt*, not for the whole request. Total worst-case latency is roughly `timeout × (maxRetries + 1) + sum(retry delays)`. Operators tuning `timeout` should account for this when sizing health-check budgets.
 
@@ -367,6 +619,51 @@ SDK-generated keys require `globalThis.crypto.getRandomValues`, which is availab
 ## Security Notes
 
 - Treat API keys and qURL links like credentials. Do not log them.
+- SDK API requests use manual redirect handling. Redirect-capable HTTP statuses
+  (300, 301, 302, 303, 305, 307, 308), filtered `opaqueredirect` responses in
+  browsers and Node native fetch, and responses a custom fetch reports as
+  already redirected are rejected as a typed `QURLError`
+  (`code: "unexpected_response"`) without requesting the `Location` target.
+  This prevents forwarding `Authorization` and
+  `Idempotency-Key` when the fetch implementation honors `redirect: "manual"`
+  and accurately exposes `Response.redirected`. A shim must also leave
+  `Response.url` empty or report the normalized request URL when it did not
+  follow a redirect. Every Response-like shim must provide `headers.get(name)`.
+  A non-empty invalid `Response.url` fails closed with an SDK-authored error
+  that names this shim requirement but does not reflect the invalid value. A
+  non-redirecting 304 is handled as an ordinary unsuccessful API response
+  rather than mislabeled as a redirect.
+- API success and error bodies are limited to **1 MiB (1,048,576 bytes)**,
+  matching qurl-go's security posture. The SDK checks `Content-Length` when
+  present and independently counts streamed bytes, so missing or inaccurate
+  headers cannot bypass the limit. Bodies exactly at the limit are accepted.
+  This fixed security limit has no override. Callers must request a smaller
+  page, and the SDKs must not independently widen the limit.
+  A maximum-size list page can exceed the cap after JSON escaping; request a
+  smaller page if a list call reports the body-limit error. For resumable list
+  reads, use the page method, save each successful `next_cursor`, and resume
+  from that cursor with a smaller `limit`. A shared configurable-cap decision
+  is tracked in [#249](https://github.com/layervai/qurl-typescript/issues/249).
+  Standards-compliant fetch implementations are bounded while streaming;
+  custom Response-like shims that omit `body` are validated after their
+  `text()`/`json()` result has already been materialized by that shim.
+  Oversized bodies fail with a typed error before JSON decoding while
+  preserving the observed status-derived error class and `Retry-After`.
+  Transient error statuses retain the normal retry policy for GET and
+  idempotency-key-backed mutations; oversized successful responses and DELETE
+  responses are not retried.
+  Successful JSON bodies with malformed UTF-8 are rejected without replay.
+  Server-provided error title/detail snippets and `invalidFields` keys/values
+  have controls and bidirectional formatting characters removed, are
+  normalized to one line, and are capped at 512 UTF-8 bytes. Machine-readable
+  error codes, RFC 7807 type/instance values, and request IDs are kept only
+  when they need no normalization and fit the same limit. At most 100
+  `invalidFields` entries are retained, and each retained
+  `invalidFields` or debug `body_keys` collection has an 8 KiB UTF-8 budget.
+  Redirect/body-limit contract-error details do not include `Location` values
+  or response-body snippets. Standard request debug logging includes the request
+  URL, so do not place credentials in identifiers or enable debug output in a
+  sensitive logging environment.
 - Prefer short portal lifetimes such as `validFor: '5m'`.
 - Do not ask portal recipients to handle credentials. Recipients only need
   the link.
