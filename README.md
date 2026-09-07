@@ -68,11 +68,15 @@ same URL again returns the existing resource. `validFor` accepts a duration
 string (`'5m'`, `'24h'`) or a number of milliseconds (whole seconds, at least
 one minute); prefer short portal lifetimes.
 
-If qURL Connector already protects the service, use the connector id instead
-of calling `protectUrl`:
+If qURL Connector protects the service, address its management-plane resource
+by immutable slug instead of calling `protectUrl`:
 
 ```typescript
-const resource = await client.connectorResource('prod-dashboard');
+const { resource, foundExisting } = await client.ensureConnectorResource(
+  'prod-dashboard',
+  { idempotencyKey: 'connector-bootstrap-prod-dashboard' },
+);
+console.log(foundExisting ? 'Using existing connector resource' : 'Created connector resource');
 const portal = await resource.createPortal({
   validFor: '5m',
   targetPath: '/api/detect/eib_example',
@@ -83,6 +87,40 @@ const portal = await resource.createPortal({
 checks the non-empty 2048-byte boundary; the API remains authoritative for the
 path grammar and the tunnel-only resource gate. `createPortalForUrl` rejects
 this option because it creates a URL resource.
+
+`resource.resourceId`, `resource.connectorRoutingId`, and
+`resource.knockResourceId` are three distinct server-issued values for public
+identity, reverse routing, and NHP admission. Consume each verbatim; never
+derive or substitute one for another. Use `getConnectorResource(resourceId)`
+or `getConnectorResourceBySlug(slug)` for read-only lookup and
+`deleteConnectorResource(resourceId)` to revoke it. This replaces the old
+alias-based `connectorResource(connectorId)` method.
+`ConnectorResource` instances cannot be constructed directly; the client
+returns them only after validating the complete response contract.
+
+`ensureConnectorResource` and `deleteConnectorResource` throw
+`ConnectorResourceOutcomeUnknownError` when a dispatched mutation may have
+committed but its response cannot prove the result. Reconcile by immutable slug
+or resource ID before deciding whether to retry. The wrapper deliberately uses
+`status: 0`; the original typed error is available as `cause`, including its
+observed HTTP status.
+
+Connector lifecycle calls make one HTTP attempt. The SDK does not pace or
+replay them; the caller controls any retry after it reconciles state.
+
+`ensureConnectorResource` does not generate an idempotency key because the slug
+operation is already idempotent. If you supply an `idempotencyKey`, the SDK
+forwards it, and you must reuse it on any deliberate retry. A 409
+`bootstrap_key_consumed` response is outcome-unknown because resource binding
+can finish before bootstrap-key consumption fails. The original bootstrap key
+is terminal: do not retry it. Obtain a new bootstrap key and use normal
+owner-authenticated lookup by immutable slug to reconcile the resource first.
+
+The API does not apply idempotency replay to DELETE, so after an outcome-unknown
+`deleteConnectorResource` call, reconcile by resource ID before issuing a
+deliberate retry. A valid exact-201 resource missing only `meta.found_existing`
+is known to have selected that row but still fails as an unwrapped
+`unexpected_response` because required ensure metadata is absent.
 
 If you persist the resource id, future calls do not need to recreate the
 handle (no API call is made until you mint):
@@ -115,6 +153,9 @@ const portal = await resource.createPortal({
   targetPath: '/api/detect/eib_example',
 });
 ```
+
+`createPortal` sends `{}` when no options are set because the service requires
+a JSON object at the wire level.
 
 The Node-only `@layervai/qurl/node` entry opens received qv2 links with native
 NHP UDP. It has no relay or HTTP-resolve fallback. Connector assignment and
@@ -336,7 +377,9 @@ console.log(`Access granted to ${access.target_url} for ${access.access_grant?.e
 | `protectUrl(targetUrl, opts?)` | Protect a private URL → portal-minting `ProtectedResource` handle |
 | `resource.createPortal(opts?)` / `createPortal(resourceOrId, opts?)` | Mint a short-lived portal link; existing resources can set `targetPath` |
 | `createPortalForUrl(targetUrl, opts?)` | Protect + mint a URL resource; rejects `targetPath` |
-| `connectorResource(connectorId)` | Handle for a service qURL Connector already protects |
+| `ensureConnectorResource(slug, requestOptions?)` | Find or create an active Connector resource by immutable slug |
+| `getConnectorResource(resourceId)` / `getConnectorResourceBySlug(slug)` | Load a validated Connector resource by immutable identity |
+| `deleteConnectorResource(resourceId)` | Revoke a Connector resource by immutable public resource ID |
 | `resourceById(id)` | Handle from a stored resource id (no API call) |
 | `enterPortal(linkOrToken)` | Open a qURL link programmatically → `ResourceHandle` |
 
@@ -449,7 +492,7 @@ try {
 Client-detected failures use `status: 0` with a discriminating `code`:
 `"client_validation"` for bad input caught before a request, and — on the
 portal surface — `"resource_not_found"` / `"ambiguous_resource"` when
-`connectorResource` cannot resolve a connector id to exactly one resource,
+`getConnectorResourceBySlug` cannot resolve a slug to exactly one resource,
 and `"unexpected_response"` when a response is missing required fields (e.g.
 `enterPortal` failing closed on a grant with no resource URL).
 

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import conformancePackage from "@layervai/qurl-conformance";
 import { ProtectedResource, SIGNED_FRAGMENT_RE } from "./client.js";
-import { NotFoundError, QURLError, ValidationError } from "./errors.js";
+import { ValidationError } from "./errors.js";
 import { createClient, mockFetch, mockFetches } from "./__tests__/test-helpers.js";
 
 // Tests for the portal-verb surface (mirrors qurl-go's portal API and
@@ -231,12 +231,22 @@ describe("createPortal", () => {
     expect(portal.link).toBe("https://qurl.link/#at_portal1");
   });
 
-  it("sends no body when every option is omitted, so the API default applies", async () => {
+  it("sends an empty JSON object when every option is omitted", async () => {
     const fetch = mockFetch({ status: 201, body: { data: PORTAL_DATA } });
     const client = createClient(fetch);
 
     await client.resourceById("r_abc123def45").createPortal();
-    expect(callRequest(fetch).init.body).toBeUndefined();
+    expect(callBody(fetch)).toEqual({});
+    expect(callHeaders(fetch)["Content-Type"]).toBe("application/json");
+  });
+
+  it("keeps a valid portal result from an alternate 2xx status", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: PORTAL_DATA } });
+
+    const portal = await createClient(fetch).createPortal("r_abc123def45");
+
+    expect(portal.link).toBe("https://qurl.link/#at_portal1");
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   it("rejects a handle bound to a different client", async () => {
@@ -358,58 +368,6 @@ describe("resourceById", () => {
   it.each([[""], ["   "], [" r_abc123def45 "]])("rejects invalid id %j", (id) => {
     const client = createClient(mockFetch({ status: 200, body: { data: {} } }));
     expect(() => client.resourceById(id)).toThrow(ValidationError);
-  });
-});
-
-describe("connectorResource", () => {
-  it("looks up the slug and returns a bound handle", async () => {
-    const fetch = mockFetch({ status: 200, body: { data: [RESOURCE_DATA] } });
-    const client = createClient(fetch);
-
-    const resource = await client.connectorResource("prod-dashboard");
-
-    const { url } = callRequest(fetch);
-    expect(new URL(url).searchParams.get("slug")).toBe("prod-dashboard");
-    expect(resource.id).toBe("r_abc123def45");
-    expect(resource.targetUrl).toBe("https://internal.example.com/dashboard");
-    expect(resource.details?.alias).toBe("prod-dashboard");
-  });
-
-  it("throws NotFoundError when no resource matches", async () => {
-    const fetch = mockFetch({ status: 200, body: { data: [] } });
-    const err = await createClient(fetch)
-      .connectorResource("missing-conn")
-      .catch((e: unknown) => e as NotFoundError);
-    expect(err).toBeInstanceOf(NotFoundError);
-    expect((err as NotFoundError).status).toBe(0);
-    expect((err as NotFoundError).code).toBe("resource_not_found");
-  });
-
-  it("throws on an ambiguous lookup", async () => {
-    const second = { ...RESOURCE_DATA, resource_id: "r_other9999999" };
-    const fetch = mockFetch({ status: 200, body: { data: [RESOURCE_DATA, second] } });
-    const err = await createClient(fetch)
-      .connectorResource("prod-dashboard")
-      .catch((e: unknown) => e as QURLError);
-    expect(err).toBeInstanceOf(QURLError);
-    expect((err as QURLError).code).toBe("ambiguous_resource");
-  });
-
-  it("throws when the returned alias does not match", async () => {
-    const mismatched = { ...RESOURCE_DATA, alias: "some-other-alias" };
-    const fetch = mockFetch({ status: 200, body: { data: [mismatched] } });
-    await expect(createClient(fetch).connectorResource("prod-dashboard")).rejects.toMatchObject({
-      code: "unexpected_response",
-      detail: expect.stringContaining("missing or different alias"),
-    });
-  });
-
-  it("requires a connector id", async () => {
-    const client = createClient(mockFetch({ status: 200, body: { data: [] } }));
-    await expect(client.connectorResource("   ")).rejects.toMatchObject({
-      code: "client_validation",
-      detail: expect.stringContaining("connector id"),
-    });
   });
 });
 
