@@ -1294,8 +1294,6 @@ const DELETE_RESOURCE_RECOVERY =
 
 const RESOURCE_OR_QURL_ID_PATH_OPTIONS: PathIdValidationOptions = {
   requireCridUnlessQurlDisplayId: true,
-  rejectBareAccessToken: true,
-  accessTokenRecovery: "pass a resource or qURL display ID returned by the API",
 };
 
 const QURL_ID_PATH_OPTIONS: PathIdValidationOptions = {
@@ -3710,7 +3708,7 @@ export class QURLClient {
       );
     }
     const wire = data;
-    for (const field of ["qurl_id", "crid", "type", "expires_at"] as const) {
+    for (const field of ["qurl_id", "type", "expires_at"] as const) {
       const value = wire[field];
       if (value !== undefined && value !== null && typeof value !== "string") {
         throw unexpectedResponseError(`shareResource: response has invalid ${field}`);

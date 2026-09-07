@@ -539,7 +539,7 @@ if (result.failed > 0) {
 
 Non-400 errors (401, 403, 429, 5xx, and unexpected 400 body shapes) still throw the appropriate `QURLError` subclass.
 
-**Slimmer per-item shape** — `BatchItemSuccess` returns `{ crid, resource_id, qurl_link, qurl_site, expires_at? }` per item. Unlike single `client.create()`, the batch response intentionally **omits `qurl_id` and `label`** to keep the payload compact. If you migrate a per-item `create()` loop to `batchCreate` and rely on `qurl_id` for downstream addressing, fetch each via `client.get(crid)` after the batch (or stay on the single-create path).
+**Slimmer per-item shape** — `BatchItemSuccess` returns `{ crid, resource_id, qurl_link, qurl_site, expires_at? }` per item. Unlike single `client.create()`, the batch response intentionally **omits `qurl_id` and `label`** to keep the payload compact. If you migrate a per-item `create()` loop to `batchCreate` and rely on `qurl_id` for downstream addressing, check `item.crid` is present, then fetch each via `client.get(item.crid)` after the batch (or stay on the single-create path).
 
 **Result ordering** — `result.results` is **not** guaranteed to be sorted by `index`. Each entry's `index` field carries the position in the original `items` array, so build per-input-position state by keying on `r.index` (e.g., `for (const r of result.results) { byInputIndex[r.index] = r; }`) rather than relying on iteration order.
 
@@ -601,6 +601,7 @@ const page = await client.list({ limit: 10, status: 'active' });
 
 // Auto-paginate through all results
 for await (const qurl of client.listAll({ status: 'active' })) {
+  if (!qurl.crid) throw new Error("The API response has no resource CRID");
   console.log(qurl.crid);
 }
 ```

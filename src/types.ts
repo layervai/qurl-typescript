@@ -105,7 +105,7 @@ export interface QurlSummary {
  */
 export interface QURL {
   resource_id: string;
-  /** Public resource locator; the resource_id field carries key metadata. */
+  /** Raw REST metadata; check presence before use, or use a validated resource handle. */
   crid?: string;
   type?: ResourceType;
   target_url: string;
@@ -153,7 +153,7 @@ export interface CreateInput {
 export interface CreateOutput {
   qurl_id: string;
   resource_id: string;
-  /** Public resource locator; the resource_id field carries key metadata. */
+  /** Raw REST metadata; check presence before use, or use a validated resource handle. */
   crid?: string;
   qurl_link: string;
   branded_domain?: string;
@@ -433,7 +433,7 @@ export interface BatchItemSuccess {
   index: number;
   success: true;
   resource_id: string;
-  /** Public resource locator; the resource_id field carries key metadata. */
+  /** Raw REST metadata; check presence before use, or use a validated resource handle. */
   crid?: string;
   qurl_link: string;
   branded_domain?: string;
