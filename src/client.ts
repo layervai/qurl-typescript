@@ -1,8 +1,10 @@
 import {
+  ConnectorResourceOutcomeUnknownError,
   createError,
   ERROR_CODE_AMBIGUOUS_RESOURCE,
   ERROR_CODE_CLIENT_VALIDATION,
   ERROR_CODE_RESOURCE_NOT_FOUND,
+  ERROR_CODE_CONNECTOR_RESOURCE_REVOKED,
   ERROR_CODE_UNEXPECTED_RESPONSE,
   ERROR_CODE_UNKNOWN,
   NetworkError,
@@ -96,6 +98,32 @@ import { VERSION } from "./version.js";
 const DEFAULT_BASE_URL = "https://api.layerv.ai";
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_TIMEOUT = 30_000;
+// Match qurl-go c4f2f98's exact API response cap. Current qurl-service list
+// routes cap pages at 100 items. A caller can still exceed this cap with a
+// large, heavily escaped webhook-delivery page, so list callers must request a
+// smaller page if the service reports the body-limit error. This cap is fixed:
+// do not add an override or widen one SDK independently from the other.
+// The limit is enforced from Content-Length when usable and again while
+// consuming the response stream.
+const MAX_RESPONSE_BODY_BYTES = 1 << 20;
+const MAX_ERROR_SNIPPET_BYTES = 512;
+// UTF-8 uses at least one byte per UTF-16 code unit. Reading more source units
+// cannot add a byte that fits in a 512-byte retained diagnostic.
+const MAX_ERROR_SNIPPET_SOURCE_CODE_UNITS = MAX_ERROR_SNIPPET_BYTES;
+const MAX_INVALID_FIELD_ENTRIES = 100;
+const MAX_DEBUG_BODY_KEYS = 100;
+// Bound each retained diagnostic collection as well as each string. Without
+// this aggregate cap, 100 valid 512-byte keys and values could turn a small
+// server error into a large caller-visible object. This is a diagnostic budget,
+// not part of the API wire contract.
+const MAX_DIAGNOSTIC_COLLECTION_BYTES = 8 << 10;
+const TEXT_ENCODER = new TextEncoder();
+const ERROR_SNIPPET_ELLIPSIS = "...";
+const ERROR_SNIPPET_ELLIPSIS_BYTES = 3;
+// RFC 8259 JSON exchanged between systems must be valid UTF-8. A non-fatal
+// decoder would replace malformed bytes with U+FFFD before JSON.parse and hide
+// the producer's exact contract violation.
+const TEXT_DECODER = new TextDecoder("utf-8", { fatal: true });
 const RETRY_BASE_DELAY_MS = 500;
 // Bounds local exponential backoff (NOT server-asserted Retry-After —
 // see `RETRY_AFTER_HARD_CAP_MS` for that).
@@ -108,8 +136,10 @@ const RETRY_AFTER_PARSE_LIMIT_S = RETRY_AFTER_HARD_CAP_MS / 1000;
 const RETRYABLE_STATUS = new Set([429, 502, 503, 504]);
 // Keep mutating status retries 429-only until the service-side idempotency
 // cache contract is proven across 5xx, TTL, and replay-window edge cases.
-// Network-error retries still reuse Idempotency-Key below.
+// Fetch-level POST/PATCH retries still reuse Idempotency-Key below.
 const RETRYABLE_STATUS_MUTATING = new Set([429]);
+const REDIRECT_RESPONSE_STATUSES = new Set([300, 301, 302, 303, 305, 307, 308]);
+const NO_RETRYABLE_STATUSES: ReadonlySet<number> = new Set<number>();
 type HttpMethod = "GET" | "POST" | "PATCH" | "DELETE";
 const IDEMPOTENCY_KEY_METHODS = new Set<HttpMethod>(["POST", "PATCH"]);
 const MUTATING_RETRY_METHODS = new Set<HttpMethod>(["POST", "PATCH"]);
@@ -120,7 +150,32 @@ const UUID_HEX = Array.from({ length: 256 }, (_, i) => i.toString(16).padStart(2
 type RawRequestOptions = {
   passthroughStatuses?: readonly number[];
   requestOptions?: RequestOptions;
+  allowEmptySuccessBody?: boolean;
+  retry?: boolean;
+  /** When false, forward a caller key but do not create one for this operation. */
+  generateIdempotencyKey?: boolean;
 };
+
+class ResponseBodyTooLargeError extends Error {
+  constructor() {
+    super(`Response body exceeds ${MAX_RESPONSE_BODY_BYTES}-byte limit`);
+    this.name = "ResponseBodyTooLargeError";
+  }
+}
+
+class InvalidResponseEncodingError extends Error {
+  constructor() {
+    super("Response body is not valid UTF-8");
+    this.name = "InvalidResponseEncodingError";
+  }
+}
+
+class ResponseBodyMaterializationError extends Error {
+  constructor(message = "Response-like fetch returned a value that cannot be serialized as JSON") {
+    super(message);
+    this.name = "ResponseBodyMaterializationError";
+  }
+}
 
 const NO_PASSTHROUGH_STATUSES: readonly number[] = [];
 const BATCH_PASSTHROUGH_STATUSES: readonly number[] = [400];
@@ -300,6 +355,7 @@ const CREATE_PORTAL_OPTION_KEYS = [
   "oneTimeUse",
   "maxSessions",
   "sessionDuration",
+  "targetPath",
 ] as const satisfies readonly (keyof CreatePortalOptions)[];
 
 assertExhaustive<
@@ -556,6 +612,7 @@ function validateRequestOptions(options: unknown): asserts options is RequestOpt
 function idempotencyKeyForRequest(
   method: HttpMethod,
   options: RequestOptions | undefined,
+  generateWhenMissing = true,
 ): string | undefined {
   // Validate before method gating so future read-only methods that accept
   // RequestOptions fail loudly on malformed options instead of discarding them.
@@ -563,7 +620,7 @@ function idempotencyKeyForRequest(
   if (!IDEMPOTENCY_KEY_METHODS.has(method)) {
     return undefined;
   }
-  return options?.idempotencyKey ?? generateUuidV7();
+  return options?.idempotencyKey ?? (generateWhenMissing ? generateUuidV7() : undefined);
 }
 
 function generateUuidV7(): string {
@@ -625,22 +682,344 @@ function fillRandomBytes(bytes: Uint8Array<ArrayBuffer>): void {
  * Distinct from {@link clientValidationError} so callers can `.code`-branch
  * between "I passed bad input locally" (`"client_validation"`) and "the
  * server returned a body I can't interpret" (`"unexpected_response"`).
- * Uses `status: 0` because the offending HTTP status (400/207/etc.) isn't
- * the thing being reported — the shape mismatch is.
+ * Uses `status: 0` by default because a logical shape mismatch is not tied to
+ * the HTTP classification. Callers that enforce an observed HTTP contract
+ * pass that status explicitly.
  *
  * Threads `request_id` through to {@link QURLError.requestId} when the
  * server-side correlation ID is available — operators debugging
  * "unexpected response" tickets need it on the *error* path too, not
  * just on success/passthrough returns.
  */
-function unexpectedResponseError(detail: string, request_id?: string): ValidationError {
+function unexpectedResponseError(
+  detail: string,
+  options: { status?: number; requestId?: string } = {},
+): ValidationError {
+  // Every detail passed here is an SDK-authored contract message whose dynamic
+  // inputs were validated by the caller-side shape guards. Do not pass raw
+  // server strings to this helper. Server diagnostics use boundedErrorSnippet.
+  const safeRequestId = boundedErrorIdentifier(options.requestId);
   return new ValidationError({
-    status: 0,
+    status: options.status ?? 0,
     code: ERROR_CODE_UNEXPECTED_RESPONSE,
     title: "Unexpected Response",
     detail,
-    request_id,
+    request_id: safeRequestId,
   });
+}
+
+function withErrorCause<T extends Error>(error: T, cause: unknown): T {
+  // Match the native Error `cause` descriptor. In particular, do not leak a
+  // transport object through Object.keys(), object spread, or JSON logging.
+  Object.defineProperty(error, "cause", {
+    value: cause,
+    writable: true,
+    configurable: true,
+  });
+  return error;
+}
+
+function isIndependentAbort(error: unknown, requestSignal: AbortSignal): boolean {
+  return (
+    error instanceof Error &&
+    (error.name === "AbortError" || error.name === "TimeoutError") &&
+    !requestSignal.aborted
+  );
+}
+
+function isSdkTimeout(error: unknown, requestSignal: AbortSignal): boolean {
+  return (
+    error instanceof Error &&
+    requestSignal.aborted &&
+    (error.name === "TimeoutError" || error.name === "AbortError")
+  );
+}
+
+/**
+ * Normalize a server-provided problem title/detail into a single-line,
+ * UTF-8-safe snippet. Error messages must stay bounded even when a proxy or
+ * compromised upstream returns very large structured problem fields.
+ */
+function normalizedErrorSnippet(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  // Bound source work before the Unicode regular expressions allocate
+  // normalized copies. The response body cap is much larger than one retained
+  // diagnostic, so processing the full server string would waste memory.
+  const normalized = value
+    .slice(0, MAX_ERROR_SNIPPET_SOURCE_CODE_UNITS)
+    // Strip control characters plus bidi override/isolate controls that can
+    // visually reorder diagnostics. Preserve other formatting characters
+    // such as ZWJ/ZWNJ, which are required by legitimate scripts and emoji.
+    .replace(/[\p{Cc}\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/gu, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+  return normalized === "" ? undefined : normalized;
+}
+
+function boundedErrorSnippet(value: unknown): string | undefined {
+  const sourceTruncated =
+    typeof value === "string" && value.length > MAX_ERROR_SNIPPET_SOURCE_CODE_UNITS;
+  const normalized = normalizedErrorSnippet(value);
+  if (normalized === undefined) return undefined;
+  const contentLimit = sourceTruncated
+    ? MAX_ERROR_SNIPPET_BYTES - ERROR_SNIPPET_ELLIPSIS_BYTES
+    : MAX_ERROR_SNIPPET_BYTES;
+  // UTF-8 uses at most three bytes per UTF-16 code unit. Most diagnostics are
+  // short ASCII, so avoid an allocation only to prove they fit.
+  if (normalized.length * 3 <= contentLimit) {
+    return sourceTruncated ? `${normalized}${ERROR_SNIPPET_ELLIPSIS}` : normalized;
+  }
+  const encoded = TEXT_ENCODER.encode(normalized);
+  if (encoded.byteLength <= contentLimit) {
+    return sourceTruncated ? `${normalized}${ERROR_SNIPPET_ELLIPSIS}` : normalized;
+  }
+
+  let end = MAX_ERROR_SNIPPET_BYTES - ERROR_SNIPPET_ELLIPSIS_BYTES;
+  // Do not split a multi-byte UTF-8 sequence at the cap.
+  while (end > 0 && (encoded[end] & 0xc0) === 0x80) end--;
+  return `${TEXT_DECODER.decode(encoded.subarray(0, end))}${ERROR_SNIPPET_ELLIPSIS}`;
+}
+
+/** Keep server identifiers useful as exact machine-readable discriminants. */
+function boundedErrorIdentifier(value: unknown): string | undefined {
+  if (typeof value !== "string" || value.length > MAX_ERROR_SNIPPET_SOURCE_CODE_UNITS) {
+    return undefined;
+  }
+  const normalized = normalizedErrorSnippet(value);
+  if (
+    normalized === undefined ||
+    normalized !== value ||
+    TEXT_ENCODER.encode(value).byteLength > MAX_ERROR_SNIPPET_BYTES
+  ) {
+    return undefined;
+  }
+  return value;
+}
+
+/** Collect at most the first N enumerable own string keys without a full key-array copy. */
+function firstEnumerableOwnKeys(value: object, limit: number): string[] {
+  const keys: string[] = [];
+  for (const key in value) {
+    if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
+    keys.push(key);
+    if (keys.length === limit) break;
+  }
+  return keys;
+}
+
+/** Bound the structured per-field diagnostics exposed on ValidationError. */
+function boundedInvalidFields(value: unknown): Record<string, string> | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+
+  const entries: [string, string][] = [];
+  const retainedKeys = new Set<string>();
+  let retainedBytes = 0;
+  // Bound inspected entries as well as retained entries. A hostile envelope
+  // whose values all have the wrong type must not make diagnostics scan every
+  // key in the response body.
+  for (const rawKey of firstEnumerableOwnKeys(value, MAX_INVALID_FIELD_ENTRIES)) {
+    const rawValue = (value as Record<string, unknown>)[rawKey];
+    const key = boundedErrorSnippet(rawKey);
+    const fieldDetail = boundedErrorSnippet(rawValue);
+    if (key !== undefined && fieldDetail !== undefined && !retainedKeys.has(key)) {
+      const entryBytes =
+        TEXT_ENCODER.encode(key).byteLength + TEXT_ENCODER.encode(fieldDetail).byteLength;
+      // A later, smaller entry can still fit even when this one cannot.
+      if (retainedBytes + entryBytes > MAX_DIAGNOSTIC_COLLECTION_BYTES) continue;
+      retainedKeys.add(key);
+      entries.push([key, fieldDetail]);
+      retainedBytes += entryBytes;
+    }
+  }
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
+
+/** Bound server-controlled object keys before forwarding them to a debug sink. */
+function boundedObjectKeys(value: object): string[] {
+  // Stop before normalization so a hostile envelope cannot force work over
+  // every enumerable own key. Some early keys may normalize away; bounded
+  // diagnostics are more important here than filling every available slot.
+  const retained: string[] = [];
+  let retainedBytes = 0;
+  for (const rawKey of firstEnumerableOwnKeys(value, MAX_DEBUG_BODY_KEYS)) {
+    const key = boundedErrorSnippet(rawKey);
+    if (key === undefined) continue;
+    const keyBytes = TEXT_ENCODER.encode(key).byteLength;
+    // A later, smaller key can still fit even when this one cannot.
+    if (retainedBytes + keyBytes > MAX_DIAGNOSTIC_COLLECTION_BYTES) continue;
+    retained.push(key);
+    retainedBytes += keyBytes;
+  }
+  return retained;
+}
+
+async function cancelResponseBody(body: Response["body"]): Promise<void> {
+  if (!body) return;
+  try {
+    await body.cancel();
+  } catch {
+    // Best-effort resource cleanup must not replace the deterministic SDK error.
+  }
+}
+
+function materializedResponseBodyExceedsLimit(value: string): boolean {
+  if (value.length > MAX_RESPONSE_BODY_BYTES) return true;
+  // Encoding creates another buffer. UTF-8 uses at most three bytes per
+  // UTF-16 code unit, so shorter strings are provably safe without that copy.
+  return (
+    value.length * 3 > MAX_RESPONSE_BODY_BYTES &&
+    TEXT_ENCODER.encode(value).byteLength > MAX_RESPONSE_BODY_BYTES
+  );
+}
+
+function contentLengthExceedsLimit(response: Response): boolean {
+  // 204/205 never carry content, and a 304 Content-Length describes the
+  // selected representation rather than a response body. Do not reject those
+  // statuses for metadata about bytes that fetch will not deliver.
+  if (response.status === 204 || response.status === 205 || response.status === 304) return false;
+  const value = response.headers.get("content-length");
+  if (value === null || !/^\d+$/.test(value.trim())) return false;
+  return Number(value) > MAX_RESPONSE_BODY_BYTES;
+}
+
+type ResponseUrlState = "same" | "changed" | "invalid";
+
+/** Detect a followed redirect from fetch implementations that expose only the final URL. */
+function responseUrlState(responseUrl: unknown, requestUrl: string): ResponseUrlState {
+  if (typeof responseUrl !== "string" || responseUrl === "") return "same";
+  if (responseUrl === requestUrl) return "same";
+  try {
+    // URL serialization normalizes equivalent spellings such as host case and
+    // an explicit default port, so they do not create false redirect reports.
+    return new URL(responseUrl).href === new URL(requestUrl).href ? "same" : "changed";
+  } catch {
+    // A non-empty invalid response URL cannot prove that credentials stayed on
+    // the requested endpoint. Fail closed without reflecting it in diagnostics.
+    return "invalid";
+  }
+}
+
+/**
+ * Read a response body while retaining accepted chunks up to the documented
+ * cap. A fetch implementation can still hand us one arbitrarily large,
+ * already-materialized chunk before we can reject it. For a compliant body,
+ * final assembly transiently holds the chunks plus the combined output buffer
+ * (roughly twice the cap) before decoding. Content-Length is an early-rejection
+ * optimization only; streaming byte accounting remains authoritative because
+ * that header may be absent or false.
+ */
+async function readBoundedResponseBody(response: Response): Promise<string> {
+  // `headers.get` is part of the documented injected-fetch contract. Detect a
+  // malformed local shim before it can be mistaken for a retryable body-stream
+  // failure and replay an otherwise deterministic GET programming error.
+  if (typeof response.headers?.get !== "function") {
+    throw new ResponseBodyMaterializationError(
+      "Response-like fetch must provide headers.get(name)",
+    );
+  }
+  if (contentLengthExceedsLimit(response)) {
+    await cancelResponseBody(response.body);
+    throw new ResponseBodyTooLargeError();
+  }
+
+  const body = response.body;
+  if (body === null) return "";
+
+  // Standards-compliant fetch implementations always expose a ReadableStream
+  // for a non-empty body. Retain compatibility with Response-like test/custom
+  // fetch implementations while still checking their materialized text before
+  // this SDK parses it as JSON.
+  if (body === undefined || typeof body.getReader !== "function") {
+    let materializedText: unknown = "";
+    if (typeof response.text === "function") {
+      try {
+        materializedText = await response.text();
+      } catch {
+        // Native fetch exposes a body stream above. A failing text() here is a
+        // deterministic custom Response contract error, not a retryable reset.
+        throw new ResponseBodyMaterializationError("Response-like fetch text() failed");
+      }
+    }
+    const text = typeof materializedText === "string" ? materializedText : "";
+    if (materializedResponseBodyExceedsLimit(text)) {
+      throw new ResponseBodyTooLargeError();
+    }
+    if (
+      text !== "" ||
+      response.status === 204 ||
+      response.status === 205 ||
+      response.status === 304
+    ) {
+      return text;
+    }
+
+    // Older injected Response-like objects may implement json() but return an
+    // empty placeholder from text(). This path is never used by native fetch.
+    let parsed: unknown;
+    try {
+      parsed = await response.json();
+    } catch {
+      // A Response-like shim may expose json() but reject on an empty 204
+      // body. Native fetch represents that body as null and returns above.
+      return "";
+    }
+    let serialized: string | undefined;
+    try {
+      serialized = JSON.stringify(parsed);
+    } catch {
+      throw new ResponseBodyMaterializationError();
+    }
+    if (serialized === undefined) return "";
+    if (materializedResponseBodyExceedsLimit(serialized)) {
+      throw new ResponseBodyTooLargeError();
+    }
+    return serialized;
+  }
+
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!(value instanceof Uint8Array)) {
+        throw new ResponseBodyMaterializationError(
+          "Response-like fetch body stream must yield Uint8Array chunks",
+        );
+      }
+      const nextTotal = total + value.byteLength;
+      if (nextTotal > MAX_RESPONSE_BODY_BYTES) {
+        try {
+          await reader.cancel();
+        } catch {
+          // Preserve the body-limit failure even if stream cancellation fails.
+        }
+        throw new ResponseBodyTooLargeError();
+      }
+      chunks.push(value);
+      total = nextTotal;
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  let bytes: Uint8Array;
+  if (chunks.length === 1) {
+    bytes = chunks[0];
+  } else {
+    bytes = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+  }
+  try {
+    return TEXT_DECODER.decode(bytes);
+  } catch {
+    throw new InvalidResponseEncodingError();
+  }
 }
 
 // ---- Spec-derived validation helpers ------------------------------------
@@ -661,6 +1040,14 @@ const MAX_TARGET_PATH = 2048;
 const MAX_TAGS = 10;
 const MAX_TAG_LENGTH = 50;
 const MAX_AUTO_PAGINATION_PAGES = 10_000;
+// Keep these identity contracts aligned with qurl-go and the public API.
+const CONNECTOR_SLUG_PATTERN = /^[a-z][a-z0-9-]{1,62}[a-z0-9]$/;
+// Current service schemas intentionally share this grammar, but keep the
+// mutable alias contract separate from the immutable lookup identity.
+const CONNECTOR_ALIAS_PATTERN = /^[a-z][a-z0-9-]{1,62}[a-z0-9]$/;
+const CONNECTOR_RESOURCE_ID_PATTERN = /^[A-Za-z0-9_-]{122}$/;
+const CONNECTOR_RESOURCE_ID_DER_PREFIX = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE";
+const CONNECTOR_ROUTING_ID_PATTERN = /^c-[a-z2-7]{51}[aq]$/;
 // CreateQurlRequest.target_url pattern is loose (just a URI) but
 // UpdateQurlRequest.tags pattern is specific — enforce it here.
 const TAG_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9 _-]*$/;
@@ -680,6 +1067,19 @@ function requireMaxLength(value: string | undefined, field: string, max: number)
     throw clientValidationError(
       `${field}: must be ${max} characters or fewer (got ${value.length})`,
     );
+  }
+}
+
+function requireMaxUtf8Bytes(value: string | undefined, field: string, max: number): void {
+  if (value === undefined) return;
+  if (typeof value !== "string") {
+    throw clientValidationError(
+      `${field}: must be a string (got ${value === null ? "null" : typeof value})`,
+    );
+  }
+  const bytes = TEXT_ENCODER.encode(value).byteLength;
+  if (bytes > max) {
+    throw clientValidationError(`${field}: must be ${max} UTF-8 bytes or fewer (got ${bytes})`);
   }
 }
 
@@ -817,10 +1217,11 @@ const DELETE_RESOURCE_RECOVERY =
   "pass a resource ID returned by the API; to revoke one qURL, call revokeResourceQurl(resourceId, qurlId)";
 
 const RESOURCE_ID_PATH_OPTIONS: PathIdValidationOptions = {
-  // Today's resource forms (P-256 SPKI, CRID, and legacy r_) cannot collide
+  // Today's resource forms (P-256 SPKI and CRID) cannot collide
   // with lowercase `at_` because they have fixed structural prefixes. This is
   // credential-leak defense in depth, not a general resource-ID grammar;
-  // revisit if credential formats change or resource keys lose those prefixes.
+  // ponytail: fixed current prefixes; revisit this guard if resource keys or
+  // credentials change format. Do not infer a general opaque-ID grammar.
   rejectBareAccessToken: true,
   accessTokenRecovery: "pass a resource ID returned by the API",
 };
@@ -838,12 +1239,12 @@ const QURL_ID_PATH_OPTIONS: PathIdValidationOptions = {
 const DELETE_QURL_RESOURCE_ID_PATH_OPTIONS: PathIdValidationOptions = {
   rejectBareAccessToken: true,
   accessTokenRecovery: DELETE_RESOURCE_RECOVERY,
-  // Current resource IDs have fixed public-key/CRID/r_ prefixes, so q_ is an
+  // Current resource IDs have fixed public-key/CRID prefixes, so q_ is an
   // unambiguous display-ID mix-up. Guard the reserved prefix rather than the
   // current display-ID suffix grammar: a future display-ID extension must not
   // silently turn an individual revoke into whole-resource deletion. This is
-  // specific to legacy DELETE /v1/qurls/{id}, which resolves a qURL display ID
-  // to its parent resource; DELETE /v1/resources/{id} does not.
+  // specific to legacy DELETE /v1/qurls/{id}, matching its service-side
+  // q_/at_ rejection. Read routes can resolve display IDs to their parent.
   rejectQurlDisplayId: true,
 };
 
@@ -854,7 +1255,7 @@ const DELETE_QURL_RESOURCE_ID_PATH_OPTIONS: PathIdValidationOptions = {
  * only basic shape plus transport-safety rules and leaves endpoint-specific
  * identifier grammar to the service.
  */
-function requireNonEmptyId(
+function validatePathId(
   id: string,
   method: string,
   field = "id",
@@ -953,6 +1354,214 @@ function decodedPathIdForms(id: string): string[] {
     }
   }
   return decodedIds;
+}
+
+function requireConnectorSlug(slug: string, method: string): void {
+  if (typeof slug !== "string" || !CONNECTOR_SLUG_PATTERN.test(slug)) {
+    throw clientValidationError(
+      `${method}: slug must be 3-64 lowercase alphanumeric or hyphen characters, start with a letter, and end alphanumeric`,
+    );
+  }
+}
+
+function classifyConnectorMutationFailure(operation: "ensure" | "delete", error: unknown): never {
+  if (!(error instanceof QURLError)) {
+    throw new ConnectorResourceOutcomeUnknownError(
+      new RuntimeError("Unexpected failure after Connector mutation dispatch", { cause: error }),
+    );
+  }
+  // Most authoritative 4xx responses prove that the mutation was rejected.
+  // bootstrap_key_consumed is the exception: the service returns it from the
+  // consume phase after the resource may have been bound or found.
+  // Callers perform argument/runtime preflight outside their mutation try
+  // blocks; every other surfaced failure therefore follows dispatch or a
+  // nominal success whose resource contract could not be consumed, so callers
+  // must reconcile before retrying. Ensure's exact 201 + valid resource but
+  // missing found_existing is handled after this classifier: the row proves
+  // the selected resource, while only its required metadata is unavailable.
+  if (operation === "ensure" && error.status === 409 && error.code === "bootstrap_key_consumed") {
+    throw new ConnectorResourceOutcomeUnknownError(error);
+  }
+  if (error.status >= 400 && error.status < 500) {
+    throw error;
+  }
+  throw new ConnectorResourceOutcomeUnknownError(error);
+}
+
+function decodeCanonicalBase64Url(value: string): Uint8Array | undefined {
+  if (
+    !CONNECTOR_RESOURCE_ID_PATTERN.test(value) ||
+    !value.startsWith(CONNECTOR_RESOURCE_ID_DER_PREFIX)
+  ) {
+    return undefined;
+  }
+  try {
+    const padded = value.replace(/-/g, "+").replace(/_/g, "/") + "==";
+    const binary = atob(padded);
+    const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+    const canonical = btoa(String.fromCharCode(...bytes))
+      .replace(/\+/g, "-")
+      .replace(/\//g, "_")
+      .replace(/=+$/, "");
+    return canonical === value ? bytes : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function isValidConnectorResourceId(value: string): Promise<boolean> {
+  const der = decodeCanonicalBase64Url(value);
+  if (!der) return false;
+  if (!globalThis.crypto?.subtle) {
+    throw new RuntimeError(
+      "qURL Connector resource validation requires the Web Crypto SubtleCrypto API",
+    );
+  }
+  return importsAsConnectorPublicKey(der);
+}
+
+function requireConnectorSubtleCrypto(method: string): void {
+  if (!globalThis.crypto?.subtle) {
+    throw new RuntimeError(`${method}: requires the Web Crypto SubtleCrypto API`);
+  }
+}
+
+async function requireConnectorResourceId(resourceId: string, method: string): Promise<void> {
+  const der = decodeCanonicalBase64Url(resourceId);
+  if (!der) {
+    throw clientValidationError(
+      `${method}: resource id must be a canonical unpadded base64url P-256 DER SPKI public key`,
+    );
+  }
+  requireConnectorSubtleCrypto(method);
+  if (!(await importsAsConnectorPublicKey(der))) {
+    throw clientValidationError(
+      `${method}: resource id must be a canonical unpadded base64url P-256 DER SPKI public key`,
+    );
+  }
+}
+
+async function importsAsConnectorPublicKey(der: Uint8Array): Promise<boolean> {
+  try {
+    const keyData = new ArrayBuffer(der.byteLength);
+    new Uint8Array(keyData).set(der);
+    await globalThis.crypto.subtle.importKey(
+      "spki",
+      keyData,
+      { name: "ECDSA", namedCurve: "P-256" },
+      false,
+      ["verify"],
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+type ConnectorResourceExpectation = {
+  slug?: string;
+  resourceId?: string;
+  revokedIsLifecycleError?: boolean;
+};
+
+function containsControlCharacter(value: string): boolean {
+  return Array.from(value).some((character) => {
+    const codePoint = character.codePointAt(0) as number;
+    return codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f);
+  });
+}
+
+async function parseConnectorResource(
+  client: QURLClient,
+  value: unknown,
+  method: string,
+  expectation: ConnectorResourceExpectation = {},
+): Promise<ConnectorResource> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw unexpectedResponseError(`${method}: response is missing connector resource data`);
+  }
+  const resource = value as Resource;
+  if (typeof resource.resource_id !== "string") {
+    throw unexpectedResponseError(`${method}: response has missing or invalid resource_id`);
+  }
+  if (expectation.resourceId !== undefined && resource.resource_id !== expectation.resourceId) {
+    throw unexpectedResponseError(`${method}: response resource_id does not match the request`);
+  }
+  // A by-ID request already validated its requested resource key and matched
+  // this response byte-for-byte, so do not repeat the async key import.
+  if (
+    expectation.resourceId === undefined &&
+    !(await isValidConnectorResourceId(resource.resource_id))
+  ) {
+    throw unexpectedResponseError(`${method}: response has missing or invalid resource_id`);
+  }
+  if (
+    typeof resource.connector_routing_id !== "string" ||
+    !CONNECTOR_ROUTING_ID_PATTERN.test(resource.connector_routing_id)
+  ) {
+    throw unexpectedResponseError(
+      `${method}: response has missing or invalid connector_routing_id`,
+    );
+  }
+  if (
+    typeof resource.knock_resource_id !== "string" ||
+    resource.knock_resource_id.trim() === "" ||
+    resource.knock_resource_id.trim() !== resource.knock_resource_id ||
+    containsControlCharacter(resource.knock_resource_id)
+  ) {
+    throw unexpectedResponseError(`${method}: response has missing or invalid knock_resource_id`);
+  }
+  if (
+    resource.resource_id === resource.knock_resource_id ||
+    resource.connector_routing_id === resource.knock_resource_id
+  ) {
+    throw unexpectedResponseError(
+      `${method}: response cross-wires resource identity, routing, and admission values`,
+    );
+  }
+  if (resource.type !== "tunnel") {
+    throw unexpectedResponseError(`${method}: response resource type is not tunnel`);
+  }
+  if (typeof resource.slug !== "string" || !CONNECTOR_SLUG_PATTERN.test(resource.slug)) {
+    throw unexpectedResponseError(`${method}: response has missing or invalid slug`);
+  }
+  if (expectation.slug !== undefined && resource.slug !== expectation.slug) {
+    throw unexpectedResponseError(`${method}: response slug does not match the request`);
+  }
+  if (
+    resource.alias !== undefined &&
+    resource.alias !== null &&
+    (typeof resource.alias !== "string" || !CONNECTOR_ALIAS_PATTERN.test(resource.alias))
+  ) {
+    // The public API intentionally gives mutable aliases and immutable slugs the
+    // same canonical wire grammar (domain aliasPattern/slugPattern). Keeping
+    // response validation aligned avoids accepting a row the service itself
+    // could not create or update.
+    throw unexpectedResponseError(`${method}: response has invalid alias`);
+  }
+  if (resource.crid !== undefined && typeof resource.crid !== "string") {
+    throw unexpectedResponseError(`${method}: response has invalid crid`);
+  }
+  // Match qurl-go: ConnectorResource carries an optional producer CRID
+  // verbatim. Consumers that possess a trusted delivered key can verify the
+  // binding separately; this management-plane row is not itself a trust root.
+  if (resource.status === "revoked") {
+    if (expectation.revokedIsLifecycleError !== true) {
+      throw unexpectedResponseError(
+        `${method}: active-only operation returned a revoked connector resource`,
+      );
+    }
+    throw new QURLError({
+      status: 0,
+      code: ERROR_CODE_CONNECTOR_RESOURCE_REVOKED,
+      title: "Connector Resource Revoked",
+      detail: `${method}: qURL Connector resource is revoked`,
+    });
+  }
+  if (resource.status !== "active") {
+    throw unexpectedResponseError(`${method}: response has invalid resource status`);
+  }
+  return new ConnectorResource(client, resource, CONNECTOR_RESOURCE_CONSTRUCTOR_TOKEN);
 }
 
 function requireValidTags(tags: string[] | null | undefined): void {
@@ -1183,7 +1792,7 @@ function validateQurlTokenOptions(input: CreateQurlForResourceInput | undefined)
   // gate server-authoritative (`invalid_target_path`); a client-side regex
   // would create a drift surface. Keep max-before-empty consistent with label;
   // empty strings pass the length check and are rejected by the next guard.
-  requireMaxLength(input.target_path, "target_path", MAX_TARGET_PATH);
+  requireMaxUtf8Bytes(input.target_path, "target_path", MAX_TARGET_PATH);
   requireNonEmptyIfPresent(input.target_path, "target_path");
   requireBooleanIfPresent(input.one_time_use, "one_time_use");
   requireMaxSessionsInRange(input.max_sessions);
@@ -1655,22 +2264,16 @@ function parsePortal(data: PortalWireResponse | undefined, method: string): Port
 }
 
 /**
- * Validate portal options and build the create-portal wire body, or
- * `undefined` when every option is omitted so no request body is sent and
- * the server applies its default lifetime (matching mintLink /
- * createQurlForResource).
+ * Validate portal options and build the create-portal wire body. The service
+ * requires a JSON object even when every option is omitted; `{}` selects the
+ * owner's plan defaults and matches qurl-go's zero-value request struct.
  */
-function buildCreatePortalBody(
-  opts: CreatePortalOptions,
-  method: string,
-): Record<string, unknown> | undefined {
+function buildCreatePortalBody(opts: CreatePortalOptions, method: string): Record<string, unknown> {
   requireObjectInput(opts, method);
   requireNoUnknownFields(opts, CREATE_PORTAL_OPTION_KEYS, method);
   // null → omitted, via the SDK-wide normalizePatchFields convention.
-  const { validFor, label, oneTimeUse, maxSessions, sessionDuration } = normalizePatchFields(
-    opts,
-    CREATE_PORTAL_OPTION_KEYS,
-  ) as CreatePortalOptions;
+  const { validFor, label, oneTimeUse, maxSessions, sessionDuration, targetPath } =
+    normalizePatchFields(opts, CREATE_PORTAL_OPTION_KEYS) as CreatePortalOptions;
   if (label !== undefined) {
     requireMaxLength(label, "label", MAX_LABEL);
     // qurl-go's WithLabel rejects blank labels; the REST-shaped mintLink
@@ -1681,6 +2284,11 @@ function buildCreatePortalBody(
   }
   requireBooleanIfPresent(oneTimeUse, "oneTimeUse");
   requireMaxSessionsInRange(maxSessions, "maxSessions");
+  requireMaxUtf8Bytes(targetPath, "targetPath", MAX_TARGET_PATH);
+  requireNonEmptyIfPresent(targetPath, "targetPath");
+  if (targetPath !== undefined && method === "createPortalForUrl") {
+    throw clientValidationError("targetPath: requires an existing resource");
+  }
   const body: Record<string, unknown> = {};
   const expiresIn = serializeApiDuration(validFor, "validFor", MIN_PORTAL_VALID_FOR_SECONDS);
   if (expiresIn !== undefined) body.expires_in = expiresIn;
@@ -1694,7 +2302,8 @@ function buildCreatePortalBody(
     MIN_SESSION_DURATION_SECONDS,
   );
   if (wireSessionDuration !== undefined) body.session_duration = wireSessionDuration;
-  return Object.keys(body).length > 0 ? body : undefined;
+  if (targetPath !== undefined) body.target_path = targetPath;
+  return body;
 }
 
 interface ApiResponse<T> {
@@ -1719,6 +2328,8 @@ interface ApiResponse<T> {
    * otherwise let the SDK silently overwrite a server-supplied value.
    */
   __http_status?: number;
+  /** SDK-injected exact-body signal used by no-content endpoint contracts. */
+  __http_body_empty?: boolean;
 }
 
 interface ApiErrorEnvelope {
@@ -1932,7 +2543,7 @@ export class QURLClient {
     // .requestId property AND the message string so a stack trace
     // pasted into a support ticket carries the correlation handle
     // without a follow-up round-trip.
-    const requestId = envelope.meta?.request_id;
+    const requestId = boundedErrorIdentifier(envelope.meta?.request_id);
     const requestIdSuffix = requestId !== undefined ? ` [request_id=${requestId}]` : "";
 
     // `Number.isInteger` rejects NaN, Infinity, and floats. Combined
@@ -1950,7 +2561,7 @@ export class QURLClient {
     ) {
       throw unexpectedResponseError(
         `Unexpected response shape from POST /v1/qurls/batch${statusSuffix}${requestIdSuffix}`,
-        requestId,
+        { requestId },
       );
     }
 
@@ -1959,7 +2570,7 @@ export class QURLClient {
         `Unexpected response shape from POST /v1/qurls/batch${statusSuffix}: ` +
           `counts/results length mismatch (succeeded=${result.succeeded}, ` +
           `failed=${result.failed}, results.length=${result.results.length})${requestIdSuffix}`,
-        requestId,
+        { requestId },
       );
     }
 
@@ -1974,7 +2585,7 @@ export class QURLClient {
       throw unexpectedResponseError(
         `Unexpected response shape from POST /v1/qurls/batch${statusSuffix}: ` +
           `results.length (${result.results.length}) does not match request item count (${requestItemCount})${requestIdSuffix}`,
-        requestId,
+        { requestId },
       );
     }
 
@@ -1990,20 +2601,20 @@ export class QURLClient {
       if (reason !== null) {
         throw unexpectedResponseError(
           `Unexpected response shape from POST /v1/qurls/batch${statusSuffix}: results[${i}] ${reason}${requestIdSuffix}`,
-          requestId,
+          { requestId },
         );
       }
       const entry = result.results[i] as { index: number };
       if (entry.index >= requestItemCount) {
         throw unexpectedResponseError(
           `Unexpected response shape from POST /v1/qurls/batch${statusSuffix}: results[${i}] index out of range (sent ${requestItemCount} items)${requestIdSuffix}`,
-          requestId,
+          { requestId },
         );
       }
       if (seenIndices.has(entry.index)) {
         throw unexpectedResponseError(
           `Unexpected response shape from POST /v1/qurls/batch${statusSuffix}: results[${i}] duplicate index${requestIdSuffix}`,
-          requestId,
+          { requestId },
         );
       }
       seenIndices.add(entry.index);
@@ -2043,14 +2654,14 @@ export class QURLClient {
       if (seenCursors.has(cursor)) {
         throw unexpectedResponseError(
           `${methodName}: server returned repeated cursor after ${pageCount} auto-pagination pages`,
-          page.request_id,
+          { requestId: page.request_id },
         );
       }
       seenCursors.add(cursor);
       if (pageCount >= MAX_AUTO_PAGINATION_PAGES) {
         throw unexpectedResponseError(
           `${methodName}: exceeded ${MAX_AUTO_PAGINATION_PAGES} auto-pagination pages without termination`,
-          page.request_id,
+          { requestId: page.request_id },
         );
       }
     } while (cursor);
@@ -2115,7 +2726,7 @@ export class QURLClient {
    * portals for it (qurl-go: `Client.ResourceByID`):
    *
    * ```ts
-   * const resource = client.resourceById("r_demo1234567");
+   * const resource = client.resourceById(storedResourceId);
    * const portal = await resource.createPortal({ validFor: "1h" });
    * ```
    *
@@ -2123,55 +2734,153 @@ export class QURLClient {
    * need the full resource details.
    */
   resourceById(id: string): ProtectedResource {
-    requireNonEmptyId(id, "resourceById", "id", RESOURCE_ID_PATH_OPTIONS);
+    validatePathId(id, "resourceById", "id", RESOURCE_ID_PATH_OPTIONS);
     return new ProtectedResource(this, id);
   }
 
-  /**
-   * Return the resource qURL Connector created for `connectorId`.
-   *
-   * Use when qURL Connector already protects the service — do not call
-   * {@link protectUrl} again for the same service. The connector id is the
-   * resource slug LayerV stores for that connector; the LayerV API performs
-   * the slug lookup, and the SDK confirms the returned alias matches
-   * `connectorId` before binding the handle (qurl-go:
-   * `Client.ConnectorResource`).
-   *
-   * Throws {@link NotFoundError} (`status: 0`, `code: "resource_not_found"`)
-   * when no resource exists for the connector id, {@link QURLError}
-   * (`code: "ambiguous_resource"`) when the lookup returns more than one
-   * resource, and {@link ValidationError} (`code: "unexpected_response"`)
-   * when the returned resource's alias is missing or does not match.
-   */
-  async connectorResource(connectorId: string): Promise<ProtectedResource> {
-    requireNonEmptyId(connectorId, "connectorResource", "connector id");
-    const { resources } = await this.listResources({ slug: connectorId });
-    if (resources.length === 0) {
+  /** Find or create the active qURL Connector resource for an immutable slug. */
+  async ensureConnectorResource(
+    slug: string,
+    requestOptions?: RequestOptions,
+  ): Promise<EnsureConnectorResourceResult> {
+    requireConnectorSlug(slug, "ensureConnectorResource");
+    // Response validation imports the producer's P-256 resource key. Preflight
+    // before POST so a missing runtime capability cannot orphan a committed row.
+    requireConnectorSubtleCrypto("ensureConnectorResource");
+    // Keep invalid options in the known pre-dispatch error arm. rawRequest
+    // validates again when building the request, which protects future callers
+    // that do not have this mutation-specific outcome contract.
+    validateRequestOptions(requestOptions);
+    let response: ApiResponse<Resource>;
+    let resource: ConnectorResource;
+    try {
+      response = await this.rawRequest<Resource>(
+        "POST",
+        "/v1/resources",
+        {
+          type: "tunnel",
+          slug,
+          find_or_create: true,
+        },
+        { requestOptions, retry: false, generateIdempotencyKey: false },
+      );
+      // The find-or-create endpoint returns 201 for both newly-created
+      // and found-existing rows; meta.found_existing distinguishes the arms.
+      if (response.__http_status !== 201) {
+        throw unexpectedResponseError(
+          `ensureConnectorResource: expected HTTP 201, got ${response.__http_status ?? "unknown"}`,
+        );
+      }
+      resource = await parseConnectorResource(this, response.data, "ensureConnectorResource", {
+        slug,
+      });
+    } catch (error) {
+      classifyConnectorMutationFailure("ensure", error);
+    }
+    if (
+      response.meta !== undefined &&
+      response.meta !== null &&
+      (typeof response.meta !== "object" || Array.isArray(response.meta))
+    ) {
+      classifyConnectorMutationFailure(
+        "ensure",
+        unexpectedResponseError("ensureConnectorResource: response has invalid meta"),
+      );
+    }
+    const foundExisting = (response.meta as { found_existing?: unknown } | null | undefined)
+      ?.found_existing;
+    if (foundExisting === undefined || foundExisting === null) {
+      throw unexpectedResponseError(
+        "ensureConnectorResource: response is missing meta.found_existing; the validated resource exists, so reconcile by slug before retrying",
+      );
+    }
+    if (typeof foundExisting !== "boolean") {
+      classifyConnectorMutationFailure(
+        "ensure",
+        unexpectedResponseError(
+          "ensureConnectorResource: response has invalid meta.found_existing",
+        ),
+      );
+    }
+    return { resource, foundExisting };
+  }
+
+  /** Fetch a qURL Connector resource by its immutable public resource ID. */
+  async getConnectorResource(resourceId: string): Promise<ConnectorResource> {
+    await requireConnectorResourceId(resourceId, "getConnectorResource");
+    const { data, __http_status } = await this.rawRequest<ResourceDetail>(
+      "GET",
+      `/v1/resources/${encodeURIComponent(resourceId)}`,
+      undefined,
+      { retry: false },
+    );
+    if (__http_status !== 200) {
+      throw unexpectedResponseError(
+        `getConnectorResource: expected HTTP 200, got ${__http_status ?? "unknown"}`,
+      );
+    }
+    return parseConnectorResource(this, data?.resource, "getConnectorResource", {
+      resourceId,
+      revokedIsLifecycleError: true,
+    });
+  }
+
+  /** Fetch the single active qURL Connector resource for an immutable slug. */
+  async getConnectorResourceBySlug(slug: string): Promise<ConnectorResource> {
+    requireConnectorSlug(slug, "getConnectorResourceBySlug");
+    // Parsing validates the returned P-256 resource key; avoid dispatching a
+    // read that this runtime cannot safely consume.
+    requireConnectorSubtleCrypto("getConnectorResourceBySlug");
+    // The slug point lookup is intrinsically active-only. It also
+    // rejects combining `slug` with `status`, so this query must stay slug-only.
+    const { data, __http_status } = await this.rawRequest<Resource[]>(
+      "GET",
+      `/v1/resources?slug=${encodeURIComponent(slug)}`,
+      undefined,
+      { retry: false },
+    );
+    if (__http_status !== 200) {
+      throw unexpectedResponseError(
+        `getConnectorResourceBySlug: expected HTTP 200, got ${__http_status ?? "unknown"}`,
+      );
+    }
+    if (!Array.isArray(data)) {
+      throw unexpectedResponseError(
+        "getConnectorResourceBySlug: response has missing or invalid data",
+      );
+    }
+    if (data.length === 0) {
       throw new NotFoundError({
         status: 0,
         code: ERROR_CODE_RESOURCE_NOT_FOUND,
         title: "Resource Not Found",
-        detail: `connectorResource: no resource found for connector "${connectorId}"`,
+        detail: "getConnectorResourceBySlug: no active resource exists for the requested slug",
       });
     }
-    if (resources.length > 1) {
+    if (data.length > 1) {
       throw new QURLError({
         status: 0,
         code: ERROR_CODE_AMBIGUOUS_RESOURCE,
         title: "Ambiguous Resource",
-        detail: `connectorResource: connector "${connectorId}" returned ${resources.length} resources`,
+        detail: `getConnectorResourceBySlug: expected one active resource, got ${data.length}`,
       });
     }
-    const resource = resources[0];
-    if (resource.alias !== connectorId) {
-      throw unexpectedResponseError(
-        `connectorResource: connector "${connectorId}" returned a resource with a missing or different alias`,
-      );
+    return parseConnectorResource(this, data[0], "getConnectorResourceBySlug", { slug });
+  }
+
+  /**
+   * Revoke a qURL Connector resource by immutable public resource ID.
+   *
+   * The API does not apply Idempotency-Key replay to DELETE. After an
+   * outcome-unknown failure, reconcile by ID before issuing a deliberate retry.
+   */
+  async deleteConnectorResource(resourceId: string): Promise<void> {
+    await requireConnectorResourceId(resourceId, "deleteConnectorResource");
+    try {
+      await this.requestNoContent(`/v1/resources/${encodeURIComponent(resourceId)}`);
+    } catch (error) {
+      classifyConnectorMutationFailure("delete", error);
     }
-    if (typeof resource.resource_id !== "string" || resource.resource_id.trim() === "") {
-      throw unexpectedResponseError("connectorResource: response is missing resource_id");
-    }
-    return new ProtectedResource(this, resource.resource_id, resource.target_url, resource);
   }
 
   /**
@@ -2181,14 +2890,15 @@ export class QURLClient {
    * reach one private resource. Recipients open `portal.link` directly and
    * need no LayerV credentials. Prefer short lifetimes such as
    * `{ validFor: "5m" }`. Accepts a {@link ProtectedResource} handle or a
-   * resource identifier (current public ID, CRID, or legacy `r_...`).
-   * REST-shaped equivalents: {@link mintLink} / {@link createQurlForResource}.
+   * public resource ID string. REST-shaped equivalents: {@link mintLink} /
+   * {@link createQurlForResource}.
    *
    * Duration options take a string (`"5m"`, `"24h"`; server-validated) or a
    * number of milliseconds with qurl-go's client-side guardrails: whole
    * seconds only, at least one minute for `validFor` and one second for
    * `sessionDuration`. `maxSessions: 0` is sent explicitly and means
-   * unlimited; blank labels are rejected.
+   * unlimited; blank labels are rejected. `targetPath` is valid only for an
+   * existing resource. The API owns its full grammar and tunnel-only gate.
    */
   async createPortal(
     resource: ProtectedResource | string,
@@ -2208,7 +2918,7 @@ export class QURLClient {
         `createPortal: resource must be a ProtectedResource handle or a resource id string (got ${describeShape(resource)})`,
       );
     }
-    requireNonEmptyId(resourceId, "createPortal", "resource id", RESOURCE_ID_PATH_OPTIONS);
+    validatePathId(resourceId, "createPortal", "resource id", RESOURCE_ID_PATH_OPTIONS);
     const body = buildCreatePortalBody(opts, "createPortal");
     const data = await this.request<PortalWireResponse>(
       "POST",
@@ -2228,7 +2938,9 @@ export class QURLClient {
    * {@link protectUrl} when you need the full server-populated resource
    * metadata. Portal options match {@link createPortal}; `targetUrl` gets
    * the same malformed-URL and embedded-credentials rejection as
-   * {@link protectUrl}. REST-shaped equivalent: {@link create}.
+   * {@link protectUrl}. `targetPath` is rejected because this call creates a
+   * URL resource instead of addressing an existing resource. REST-shaped
+   * equivalent: {@link create}.
    */
   async createPortalForUrl(
     targetUrl: string,
@@ -2448,12 +3160,12 @@ export class QURLClient {
   /**
    * Get a qURL resource and its access tokens.
    *
-   * Accepts a current public resource ID, CRID, legacy `r_...` ID, or qURL
+   * Accepts a current public resource ID, CRID, or qURL
    * display ID (`q_` prefix); the API resolves display IDs to the parent
    * resource automatically.
    */
   async get(id: string): Promise<QURL> {
-    requireNonEmptyId(id, "get", "id", RESOURCE_OR_QURL_ID_PATH_OPTIONS);
+    validatePathId(id, "get", "id", RESOURCE_OR_QURL_ID_PATH_OPTIONS);
     const raw = await this.request<QURL & { qurls?: AccessToken[] }>(
       "GET",
       `/v1/qurls/${encodeURIComponent(id)}`,
@@ -2515,7 +3227,7 @@ export class QURLClient {
   /**
    * Delete (revoke) a qURL resource and all its access tokens.
    *
-   * Accepts the opaque public resource ID, CRID, or legacy `r_...` ID returned
+   * Accepts the public resource ID or CRID returned
    * by the API. The service owns identifier grammar so the SDK remains
    * compatible when public resource identifiers evolve.
    * Consequently, even an implausibly short non-secret ID is sent for the
@@ -2525,21 +3237,21 @@ export class QURLClient {
    * whole parent resource; use {@link revokeResourceQurl} for one qURL.
    *
    * @throws {ValidationError} If `id` is blank, padded with whitespace, too
-   * long, URL-shaped, contains a qURL access-token credential, or is a qURL
+   * long, a URL dot segment, URL-shaped, contains an access token, or is a qURL
    * display ID. URL dot-segment and credential checks inspect at most three
    * rounds of percent decoding; more deeply encoded input is left to the
    * authoritative service after safe single-segment encoding.
    */
   async delete(id: string): Promise<void> {
-    requireNonEmptyId(id, "delete", "id", DELETE_QURL_RESOURCE_ID_PATH_OPTIONS);
-    await this.rawRequest("DELETE", `/v1/qurls/${encodeURIComponent(id)}`);
+    validatePathId(id, "delete", "id", DELETE_QURL_RESOURCE_ID_PATH_OPTIONS);
+    await this.requestNoContent(`/v1/qurls/${encodeURIComponent(id)}`);
   }
 
   /**
    * Extend a qURL's expiration.
    *
-   * Accepts a current public resource ID, CRID, legacy `r_...` ID, or qURL
-   * display ID (`q_` prefix). Convenience method — delegates to {@link update} with only the
+   * Accepts a current public resource ID, CRID, or qURL
+   * display ID (`q_` prefix). Delegates to {@link update} with only the
    * expiration fields. `ExtendInput` shares its `extend_by` / `expires_at`
    * fields with `UpdateInput` but is *narrower in two ways*: (1) exactly
    * one of the two must be present (XOR via `?: never`), where `UpdateInput`
@@ -2551,7 +3263,7 @@ export class QURLClient {
    * enforced separately by the runtime check inside `update()`.
    */
   async extend(id: string, input: ExtendInput, options?: RequestOptions): Promise<QURL> {
-    requireNonEmptyId(id, "extend", "id", RESOURCE_OR_QURL_ID_PATH_OPTIONS);
+    validatePathId(id, "extend", "id", RESOURCE_OR_QURL_ID_PATH_OPTIONS);
     requireObjectInput(input, "extend");
     const { extend_by, expires_at } = input;
     if (extend_by === undefined && expires_at === undefined) {
@@ -2568,12 +3280,12 @@ export class QURLClient {
   /**
    * Update a qURL — extend expiration, change description, rename tags.
    *
-   * Accepts a current public resource ID, CRID, legacy `r_...` ID, or qURL
+   * Accepts a current public resource ID, CRID, or qURL
    * display ID (`q_` prefix); the API resolves display IDs to the parent
    * resource automatically.
    */
   async update(id: string, input: UpdateInput, options?: RequestOptions): Promise<QURL> {
-    requireNonEmptyId(id, "update", "id", RESOURCE_OR_QURL_ID_PATH_OPTIONS);
+    validatePathId(id, "update", "id", RESOURCE_OR_QURL_ID_PATH_OPTIONS);
     requireObjectInput(input, "update");
     requireNoUnknownFields(input, UPDATE_FIELD_KEYS, "update");
     // Normalize null → undefined so untyped-JS callers passing
@@ -2613,7 +3325,7 @@ export class QURLClient {
    *
    * Portal-flow equivalent: {@link createPortal}.
    *
-   * Accepts a current public resource ID, CRID, legacy `r_...` ID, or qURL
+   * Accepts a current public resource ID, CRID, or qURL
    * display ID (`q_` prefix); the API resolves display IDs to the parent
    * resource automatically.
    *
@@ -2622,7 +3334,7 @@ export class QURLClient {
    * server applies its 24h default expiration.
    */
   async mintLink(id: string, input?: MintInput, options?: RequestOptions): Promise<MintOutput> {
-    requireNonEmptyId(id, "mintLink", "id", RESOURCE_OR_QURL_ID_PATH_OPTIONS);
+    validatePathId(id, "mintLink", "id", RESOURCE_OR_QURL_ID_PATH_OPTIONS);
     // Normalize null → omitted so untyped-JS callers passing
     // `{ expires_in: null, expires_at: "..." }` don't leak null into
     // the wire body via JSON.stringify and don't bypass the XOR check
@@ -2771,7 +3483,7 @@ export class QURLClient {
 
   /** Get one resource plus its bounded qURL preview. */
   async getResource(id: string): Promise<ResourceDetail> {
-    requireNonEmptyId(id, "getResource", "id", RESOURCE_ID_PATH_OPTIONS);
+    validatePathId(id, "getResource", "id", RESOURCE_ID_PATH_OPTIONS);
     return this.request<ResourceDetail>("GET", `/v1/resources/${encodeURIComponent(id)}`);
   }
 
@@ -2781,7 +3493,7 @@ export class QURLClient {
     input: UpdateResourceInput,
     options?: RequestOptions,
   ): Promise<Resource> {
-    requireNonEmptyId(id, "updateResource", "id", RESOURCE_ID_PATH_OPTIONS);
+    validatePathId(id, "updateResource", "id", RESOURCE_ID_PATH_OPTIONS);
     requireObjectInput(input, "updateResource");
     requireNoUnknownFields(input, UPDATE_RESOURCE_FIELD_KEYS, "updateResource");
     const validationInput = normalizePatchFields(
@@ -2809,8 +3521,8 @@ export class QURLClient {
 
   /** Revoke a resource and all of its qURLs. */
   async deleteResource(id: string): Promise<void> {
-    requireNonEmptyId(id, "deleteResource", "id", RESOURCE_ID_PATH_OPTIONS);
-    await this.rawRequest("DELETE", `/v1/resources/${encodeURIComponent(id)}`);
+    validatePathId(id, "deleteResource", "id", RESOURCE_ID_PATH_OPTIONS);
+    await this.requestNoContent(`/v1/resources/${encodeURIComponent(id)}`);
   }
 
   /**
@@ -2823,7 +3535,7 @@ export class QURLClient {
     input?: CreateQurlForResourceInput,
     options?: RequestOptions,
   ): Promise<CreateOutput> {
-    requireNonEmptyId(id, "createQurlForResource", "id", RESOURCE_ID_PATH_OPTIONS);
+    validatePathId(id, "createQurlForResource", "id", RESOURCE_ID_PATH_OPTIONS);
     let normalized: CreateQurlForResourceInput | undefined = input;
     if (input !== undefined) {
       requireObjectInput(input, "createQurlForResource");
@@ -2845,10 +3557,9 @@ export class QURLClient {
 
   /** Revoke a specific qURL token on a resource. */
   async revokeResourceQurl(id: string, qurlId: string): Promise<void> {
-    requireNonEmptyId(id, "revokeResourceQurl", "id", RESOURCE_ID_PATH_OPTIONS);
-    requireNonEmptyId(qurlId, "revokeResourceQurl", "qurl id", QURL_ID_PATH_OPTIONS);
-    await this.rawRequest(
-      "DELETE",
+    validatePathId(id, "revokeResourceQurl", "id", RESOURCE_ID_PATH_OPTIONS);
+    validatePathId(qurlId, "revokeResourceQurl", "qurl id", QURL_ID_PATH_OPTIONS);
+    await this.requestNoContent(
       `/v1/resources/${encodeURIComponent(id)}/qurls/${encodeURIComponent(qurlId)}`,
     );
   }
@@ -2860,8 +3571,8 @@ export class QURLClient {
     input: UpdateResourceQurlInput,
     options?: RequestOptions,
   ): Promise<QurlSummary> {
-    requireNonEmptyId(id, "updateResourceQurl", "id", RESOURCE_ID_PATH_OPTIONS);
-    requireNonEmptyId(qurlId, "updateResourceQurl", "qurl id", QURL_ID_PATH_OPTIONS);
+    validatePathId(id, "updateResourceQurl", "id", RESOURCE_ID_PATH_OPTIONS);
+    validatePathId(qurlId, "updateResourceQurl", "qurl id", QURL_ID_PATH_OPTIONS);
     requireObjectInput(input, "updateResourceQurl");
     requireNoUnknownFields(input, UPDATE_RESOURCE_QURL_FIELD_KEYS, "updateResourceQurl");
     const normalized = normalizePatchFields(
@@ -2890,7 +3601,7 @@ export class QURLClient {
    * this page and emits a debug log rather than pretending it fetched all pages.
    */
   async listResourceSessions(id: string): Promise<SessionListOutput> {
-    requireNonEmptyId(id, "listResourceSessions", "id", RESOURCE_ID_PATH_OPTIONS);
+    validatePathId(id, "listResourceSessions", "id", RESOURCE_ID_PATH_OPTIONS);
     const { data, meta } = await this.rawRequest<Session[]>(
       "GET",
       `/v1/resources/${encodeURIComponent(id)}/sessions`,
@@ -2909,15 +3620,9 @@ export class QURLClient {
     };
   }
 
-  /**
-   * Terminate all active sessions for a resource.
-   *
-   * The returned count is best-effort under retries: if the first DELETE
-   * succeeds server-side but the response is lost, a retried request may
-   * return `0` because there are no sessions left to terminate.
-   */
+  /** Terminate all active sessions for a resource and return the server count. */
   async terminateAllResourceSessions(id: string): Promise<SessionTerminateOutput> {
-    requireNonEmptyId(id, "terminateAllResourceSessions", "id", RESOURCE_ID_PATH_OPTIONS);
+    validatePathId(id, "terminateAllResourceSessions", "id", RESOURCE_ID_PATH_OPTIONS);
     const path = `/v1/resources/${encodeURIComponent(id)}/sessions`;
     const { data, meta, __http_status } = await this.rawRequest<{ terminated?: number }>(
       "DELETE",
@@ -2938,10 +3643,9 @@ export class QURLClient {
 
   /** Terminate a specific resource session. */
   async terminateResourceSession(id: string, sessionId: string): Promise<void> {
-    requireNonEmptyId(id, "terminateResourceSession", "id", RESOURCE_ID_PATH_OPTIONS);
-    requireNonEmptyId(sessionId, "terminateResourceSession", "session id");
-    await this.rawRequest(
-      "DELETE",
+    validatePathId(id, "terminateResourceSession", "id", RESOURCE_ID_PATH_OPTIONS);
+    validatePathId(sessionId, "terminateResourceSession", "session id");
+    await this.requestNoContent(
       `/v1/resources/${encodeURIComponent(id)}/sessions/${encodeURIComponent(sessionId)}`,
     );
   }
@@ -3139,19 +3843,19 @@ export class QURLClient {
 
   /** Get custom domain status. */
   async getDomain(domain: string): Promise<Domain> {
-    requireNonEmptyId(domain, "getDomain", "domain");
+    validatePathId(domain, "getDomain", "domain");
     return this.request<Domain>("GET", `/v1/domains/${encodeURIComponent(domain)}`);
   }
 
   /** Remove a custom domain. */
   async deleteDomain(domain: string): Promise<void> {
-    requireNonEmptyId(domain, "deleteDomain", "domain");
-    await this.rawRequest("DELETE", `/v1/domains/${encodeURIComponent(domain)}`);
+    validatePathId(domain, "deleteDomain", "domain");
+    await this.requestNoContent(`/v1/domains/${encodeURIComponent(domain)}`);
   }
 
   /** Trigger DNS verification for a custom domain. */
   async verifyDomain(domain: string, options?: RequestOptions): Promise<DomainVerifyResult> {
-    requireNonEmptyId(domain, "verifyDomain", "domain");
+    validatePathId(domain, "verifyDomain", "domain");
     return this.request<DomainVerifyResult>(
       "POST",
       `/v1/domains/${encodeURIComponent(domain)}/verify`,
@@ -3162,7 +3866,7 @@ export class QURLClient {
 
   /** Regenerate a domain verification token. */
   async regenerateDomainToken(domain: string, options?: RequestOptions): Promise<Domain> {
-    requireNonEmptyId(domain, "regenerateDomainToken", "domain");
+    validatePathId(domain, "regenerateDomainToken", "domain");
     return this.request<Domain>(
       "POST",
       `/v1/domains/${encodeURIComponent(domain)}/regenerate-token`,
@@ -3233,7 +3937,7 @@ export class QURLClient {
 
   /** Get a webhook. */
   async getWebhook(id: string): Promise<Webhook> {
-    requireNonEmptyId(id, "getWebhook");
+    validatePathId(id, "getWebhook");
     return this.request<Webhook>("GET", `/v1/webhooks/${encodeURIComponent(id)}`);
   }
 
@@ -3243,7 +3947,7 @@ export class QURLClient {
     input: UpdateWebhookInput,
     options?: RequestOptions,
   ): Promise<Webhook> {
-    requireNonEmptyId(id, "updateWebhook");
+    validatePathId(id, "updateWebhook");
     requireObjectInput(input, "updateWebhook");
     requireNoUnknownFields(input, UPDATE_WEBHOOK_FIELD_KEYS, "updateWebhook");
     const normalized = normalizePatchFields(
@@ -3266,13 +3970,13 @@ export class QURLClient {
 
   /** Delete a webhook. */
   async deleteWebhook(id: string): Promise<void> {
-    requireNonEmptyId(id, "deleteWebhook");
-    await this.rawRequest("DELETE", `/v1/webhooks/${encodeURIComponent(id)}`);
+    validatePathId(id, "deleteWebhook");
+    await this.requestNoContent(`/v1/webhooks/${encodeURIComponent(id)}`);
   }
 
   /** Regenerate a webhook signing secret. */
   async regenerateWebhookSecret(id: string, options?: RequestOptions): Promise<WebhookWithSecret> {
-    requireNonEmptyId(id, "regenerateWebhookSecret");
+    validatePathId(id, "regenerateWebhookSecret");
     return this.request<WebhookWithSecret>(
       "POST",
       `/v1/webhooks/${encodeURIComponent(id)}/secret`,
@@ -3286,7 +3990,7 @@ export class QURLClient {
     id: string,
     input: ListWebhookDeliveriesInput = {},
   ): Promise<WebhookDeliveryListOutput> {
-    requireNonEmptyId(id, "listWebhookDeliveries");
+    validatePathId(id, "listWebhookDeliveries");
     const { data, meta } = await this.rawRequest<WebhookDelivery[]>(
       "GET",
       appendQuery(
@@ -3309,7 +4013,7 @@ export class QURLClient {
     id: string,
     input: Omit<ListWebhookDeliveriesInput, "cursor"> = {},
   ): AsyncGenerator<WebhookDelivery, void, undefined> {
-    requireNonEmptyId(id, "listAllWebhookDeliveries");
+    validatePathId(id, "listAllWebhookDeliveries");
     validateListAllInput(
       input as Record<string, unknown>,
       WEBHOOK_DELIVERY_LIST_PARAM_KEYS,
@@ -3384,7 +4088,7 @@ export class QURLClient {
     input: UpdateApiKeyInput,
     options?: RequestOptions,
   ): Promise<ApiKey> {
-    requireNonEmptyId(keyId, "updateApiKey");
+    validatePathId(keyId, "updateApiKey");
     requireObjectInput(input, "updateApiKey");
     requireNoUnknownFields(input, UPDATE_API_KEY_FIELD_KEYS, "updateApiKey");
     const normalized = normalizePatchFields(
@@ -3407,8 +4111,8 @@ export class QURLClient {
 
   /** Revoke an API key. */
   async revokeApiKey(keyId: string): Promise<void> {
-    requireNonEmptyId(keyId, "revokeApiKey");
-    await this.rawRequest("DELETE", `/v1/api-keys/${encodeURIComponent(keyId)}`);
+    validatePathId(keyId, "revokeApiKey");
+    await this.requestNoContent(`/v1/api-keys/${encodeURIComponent(keyId)}`);
   }
 
   /** Redeem an access code. */
@@ -3473,8 +4177,8 @@ export class QURLClient {
 
   /** Revoke an access code. */
   async revokeAccessCode(id: string): Promise<void> {
-    requireNonEmptyId(id, "revokeAccessCode");
-    await this.rawRequest("DELETE", `/v1/access-codes/${encodeURIComponent(id)}`);
+    validatePathId(id, "revokeAccessCode");
+    await this.requestNoContent(`/v1/access-codes/${encodeURIComponent(id)}`);
   }
 
   // --- Internal HTTP plumbing ---
@@ -3499,6 +4203,26 @@ export class QURLClient {
   }
 
   /**
+   * Require the service's exact 204 response with no response bytes exposed by
+   * Fetch. A standards-compliant Fetch implementation discards any forbidden
+   * wire body on 204, so the SDK cannot detect bytes that Fetch did not expose.
+   */
+  private async requestNoContent(path: string): Promise<void> {
+    const response = await this.rawRequest<never>("DELETE", path, undefined, {
+      allowEmptySuccessBody: true,
+    });
+    if (response.__http_status !== 204 || response.__http_body_empty !== true) {
+      const status = response.__http_status ?? 0;
+      const bodyShape = response.__http_body_empty ? "with an empty body" : "with response bytes";
+      throw unexpectedResponseError(
+        `Unexpected response from DELETE; expected empty HTTP 204, received HTTP ${status} ${bodyShape}. ` +
+          "The delete may already have been applied; reconcile resource state before retrying.",
+        { status },
+      );
+    }
+  }
+
+  /**
    * Issue an HTTP request and parse the JSON response.
    *
    * `passthroughStatuses` lets a caller opt certain non-2xx codes out of the
@@ -3514,8 +4238,14 @@ export class QURLClient {
     rawOptions: RawRequestOptions = {},
   ): Promise<ApiResponse<T>> {
     const url = `${this.baseUrl}${path}`;
-    const { passthroughStatuses = NO_PASSTHROUGH_STATUSES, requestOptions } = rawOptions;
-    const idempotencyKey = idempotencyKeyForRequest(method, requestOptions);
+    const {
+      passthroughStatuses = NO_PASSTHROUGH_STATUSES,
+      requestOptions,
+      allowEmptySuccessBody = false,
+      retry = true,
+      generateIdempotencyKey = true,
+    } = rawOptions;
+    const idempotencyKey = idempotencyKeyForRequest(method, requestOptions, generateIdempotencyKey);
     const headers: Record<string, string> = {
       Authorization: `Bearer ${this.apiKey}`,
       Accept: "application/json",
@@ -3528,12 +4258,22 @@ export class QURLClient {
       headers["Idempotency-Key"] = idempotencyKey;
     }
 
-    // POST/PATCH keep status-code retries limited to rate limits. They
-    // still retry fetch-level failures below with the same Idempotency-Key,
-    // which fixes the duplicate-creation path from lost responses
-    // without broadening mutating 5xx replay behavior.
-    const mutatingForRetry = MUTATING_RETRY_METHODS.has(method);
-    const retryable = mutatingForRetry ? RETRYABLE_STATUS_MUTATING : RETRYABLE_STATUS;
+    // Reads may retry transient statuses and transport failures. POST/PATCH
+    // keep status-code retries limited to rate limits and reuse the same
+    // Idempotency-Key for fetch-level failures. DELETE is deliberately never
+    // replayed, including after 429: this matches qurl-go's no-hidden-HTTP-
+    // retry rule and avoids SDK pacing on an application request path. The
+    // caller receives retryAfter when supplied and must reconcile resource
+    // state before it chooses to issue another delete.
+    const idempotencyKeyBackedRetry = retry && MUTATING_RETRY_METHODS.has(method);
+    const retryFetchFailure = retry && (method === "GET" || idempotencyKeyBackedRetry);
+    const retryable = !retry
+      ? NO_RETRYABLE_STATUSES
+      : method === "GET"
+        ? RETRYABLE_STATUS
+        : idempotencyKeyBackedRetry
+          ? RETRYABLE_STATUS_MUTATING
+          : NO_RETRYABLE_STATUSES;
     const serializedBody = body !== undefined ? JSON.stringify(body) : undefined;
     let lastError: Error | undefined;
 
@@ -3547,6 +4287,7 @@ export class QURLClient {
       this.log(`${method} ${url}`);
 
       let response: Response;
+      const requestSignal = AbortSignal.timeout(this.timeout);
       try {
         // `timeout` is intentionally a per-attempt budget, not a total-
         // request budget. With maxRetries=3 and timeout=30s, a slow
@@ -3560,23 +4301,164 @@ export class QURLClient {
           method,
           headers,
           body: serializedBody,
-          signal: AbortSignal.timeout(this.timeout),
+          redirect: "manual",
+          signal: requestSignal,
         });
       } catch (err) {
-        lastError = this.classifyFetchError(err);
+        lastError = this.classifyFetchError(err, requestSignal);
         this.log(
           `${method} ${url} ${lastError instanceof TimeoutError ? "timed out" : "network error"}`,
           {
-            error: lastError.message,
+            error: boundedErrorSnippet(lastError.message),
           },
         );
-        if (attempt < this.maxRetries) {
+        // An injected fetch can abort or impose a deadline for its own reason.
+        // That is not this SDK's timeout. Replaying it can defeat caller-side
+        // cancellation or deadline policy.
+        if (
+          retryFetchFailure &&
+          !isIndependentAbort(err, requestSignal) &&
+          attempt < this.maxRetries
+        ) {
           continue;
         }
         throw lastError;
       }
 
       this.log(`${method} ${url} → ${response.status}`);
+
+      // Redirects are deterministic protocol violations for SDK API calls.
+      // Refuse them before reading Location or entering retry handling so
+      // Authorization and Idempotency-Key can never reach a follow-up target.
+      const responseUrlStateValue = responseUrlState(response.url, url);
+      if (
+        response.redirected === true ||
+        responseUrlStateValue !== "same" ||
+        REDIRECT_RESPONSE_STATUSES.has(response.status) ||
+        response.type === "opaqueredirect"
+      ) {
+        await cancelResponseBody(response.body);
+        const redirectKind =
+          response.redirected === true
+            ? "followed"
+            : responseUrlStateValue === "invalid"
+              ? "invalid custom Response.url"
+              : responseUrlStateValue === "changed"
+                ? "changed Response.url"
+                : REDIRECT_RESPONSE_STATUSES.has(response.status)
+                  ? `HTTP ${response.status}`
+                  : "opaque";
+        throw unexpectedResponseError(`Refused ${redirectKind} redirect response for ${method}`, {
+          status: response.status,
+        });
+      }
+
+      let responseBody: string;
+      try {
+        responseBody = await readBoundedResponseBody(response);
+      } catch (err) {
+        if (err instanceof ResponseBodyTooLargeError) {
+          this.log(`rejected oversized response body from ${response.status}`, {
+            status: response.status,
+          });
+          const detail =
+            `Response body exceeds ${MAX_RESPONSE_BODY_BYTES}-byte limit on HTTP ${response.status}; ` +
+            "request a smaller page when listing collections";
+          if (response.ok) {
+            throw unexpectedResponseError(detail, { status: response.status });
+          }
+          const bodyError = createError({
+            status: response.status,
+            // The unread body cannot supply a trustworthy server code. Keep
+            // the real HTTP status class (429/5xx) just like other unreadable
+            // error bodies instead of reclassifying it as client validation.
+            code: ERROR_CODE_UNKNOWN,
+            title: boundedErrorSnippet(response.statusText) || `HTTP ${response.status}`,
+            detail,
+            retry_after: this.parseRetryAfter(response),
+          });
+          // The unread body does not change operation semantics: retry a GET,
+          // or an idempotency-key-backed mutation on an explicitly retryable
+          // status. Successful oversized responses remain deterministic
+          // contract failures, and DELETE has no retryable statuses.
+          if (retryable.has(response.status) && attempt < this.maxRetries) {
+            lastError = bodyError;
+            continue;
+          }
+          throw bodyError;
+        }
+        if (err instanceof InvalidResponseEncodingError) {
+          this.log(`rejected malformed UTF-8 response body from ${response.status}`, {
+            status: response.status,
+          });
+          const detail = `Response body is not valid UTF-8 on HTTP ${response.status}`;
+          if (response.ok) {
+            // A successful status with an invalid wire body is a deterministic
+            // response-contract failure. Do not replay a GET or a mutation.
+            throw unexpectedResponseError(detail, { status: response.status });
+          }
+          const encodingError = createError({
+            status: response.status,
+            code: ERROR_CODE_UNKNOWN,
+            title: boundedErrorSnippet(response.statusText) || `HTTP ${response.status}`,
+            detail,
+            retry_after: this.parseRetryAfter(response),
+          });
+          // For an explicit error status, the HTTP classification remains
+          // authoritative even when its body encoding is invalid.
+          if (retryable.has(response.status) && attempt < this.maxRetries) {
+            lastError = encodingError;
+            continue;
+          }
+          throw encodingError;
+        }
+        await cancelResponseBody(response.body);
+        const transportReadError = this.classifyResponseReadError(err, response, requestSignal);
+        if (transportReadError !== undefined) {
+          this.log(`transport failure while reading response body from ${response.status}`, {
+            status: response.status,
+            error: transportReadError.code,
+          });
+          // A successful GET can be replayed when its success body is lost. A
+          // non-success GET retries only the status set that the normal error
+          // path retries. Mutations are never replayed after a body transport
+          // failure because the operation may have applied.
+          if (
+            method === "GET" &&
+            !isIndependentAbort(err, requestSignal) &&
+            (response.ok || retryable.has(response.status)) &&
+            attempt < this.maxRetries
+          ) {
+            lastError = transportReadError;
+            continue;
+          }
+          throw transportReadError;
+        }
+        this.log(`failed to read response body from ${response.status}`, {
+          status: response.status,
+        });
+        // ResponseBodyMaterializationError messages are fixed SDK-authored
+        // contract text. The underlying shim rejection is never interpolated.
+        const detail =
+          err instanceof ResponseBodyMaterializationError
+            ? err.message
+            : `Failed to read response body on HTTP ${response.status}`;
+        const readError = response.ok
+          ? unexpectedResponseError(detail, { status: response.status })
+          : createError({
+              status: response.status,
+              code: ERROR_CODE_UNKNOWN,
+              title: boundedErrorSnippet(response.statusText) || `HTTP ${response.status}`,
+              detail,
+              retry_after: this.parseRetryAfter(response),
+            });
+        // This arm contains deterministic Response-like shim failures (for
+        // example a BigInt returned by json()) and non-Error throws. Do not
+        // replay them: another attempt will see the same local contract bug.
+        throw err instanceof ResponseBodyMaterializationError
+          ? withErrorCause(readError, err)
+          : readError;
+      }
 
       // `response.ok` is true for the entire 200-299 range, so partial-
       // success responses like 207 flow through this path naturally —
@@ -3600,37 +4482,60 @@ export class QURLClient {
               url,
             });
           }
-          return { data: undefined as unknown as T, __http_status: response.status };
+          return {
+            data: undefined as unknown as T,
+            __http_status: response.status,
+            __http_body_empty: responseBody.length === 0,
+          };
+        }
+        // Exact no-content helpers must inspect both axes of the success
+        // contract. Let only those callers observe an empty non-204 response;
+        // body-returning methods still reject it as non-JSON below.
+        if (response.ok && allowEmptySuccessBody && responseBody.length === 0) {
+          return {
+            data: undefined as unknown as T,
+            __http_status: response.status,
+            __http_body_empty: true,
+          };
         }
         try {
-          const json = (await response.json()) as ApiResponse<T>;
-          return { ...json, __http_status: response.status };
+          const json = JSON.parse(responseBody) as ApiResponse<T>;
+          return {
+            ...json,
+            __http_status: response.status,
+            // JSON.parse("") throws, so parsed JSON is necessarily non-empty.
+            __http_body_empty: false,
+          };
         } catch {
           // Non-JSON body on a 2xx response (server contract violation)
           // or on a passthrough status (e.g. proxy HTML on 400). The
-          // body stream is already consumed by the failed `.json()`,
-          // so we can't delegate to parseError — synthesize a typed
-          // QURLError directly so consumers catching by-class don't
-          // miss it.
+          // body was read through the cap before JSON decoding.
+          // Synthesize a typed QURLError directly so consumers catching
+          // by-class don't miss the contract failure.
           this.log(
             `non-JSON body on ${isPassthrough ? "passthrough" : "success"} response ${response.status}`,
             {
               status: response.status,
-              content_type: response.headers.get("content-type") ?? undefined,
+              content_type: boundedErrorSnippet(response.headers.get("content-type")),
             },
           );
           throw createError({
             status: response.status,
             code: ERROR_CODE_UNEXPECTED_RESPONSE,
-            title: response.statusText || `HTTP ${response.status}`,
+            title: boundedErrorSnippet(response.statusText) || `HTTP ${response.status}`,
             detail: `Expected JSON response body on HTTP ${response.status} but received non-JSON content`,
           });
         }
       }
 
-      const errorData = await this.parseError(response);
+      const errorData = this.parseError(response, responseBody);
       const err = createError(errorData);
 
+      // Retryability is determined by status even when an intermediary
+      // returned HTML, an empty body, or another non-envelope error. Those
+      // shapes are common for transient 429/502/503/504 responses and do not
+      // prove that a retry cannot succeed. Redirects and oversized bodies
+      // already throw before reaching this check.
       if (retryable.has(response.status) && attempt < this.maxRetries) {
         lastError = err;
         continue;
@@ -3642,9 +4547,9 @@ export class QURLClient {
     throw lastError ?? new Error("Request failed after retries");
   }
 
-  private async parseError(response: Response): Promise<QURLErrorData> {
+  private parseError(response: Response, responseBody: string): QURLErrorData {
     try {
-      const json = (await response.json()) as ApiErrorEnvelope;
+      const json = JSON.parse(responseBody) as ApiErrorEnvelope;
       if (json.error) {
         const err = json.error;
         // Detail fallback chain:
@@ -3653,18 +4558,29 @@ export class QURLClient {
         //   3. err.title    (RFC 7807 required field)
         //   4. HTTP status  (final safety net)
         // This prevents `"Title (403): undefined"` when the API omits detail.
-        const detail = err.detail ?? err.message ?? err.title ?? `HTTP ${response.status}`;
+        const detail =
+          boundedErrorSnippet(err.detail) ??
+          boundedErrorSnippet(err.message) ??
+          boundedErrorSnippet(err.title) ??
+          `HTTP ${response.status}`;
         // HTTP/2 omits reason-phrases — `statusText` may be "".
-        const title = err.title ?? (response.statusText || `HTTP ${response.status}`);
+        const title =
+          boundedErrorSnippet(err.title) ??
+          boundedErrorSnippet(response.statusText) ??
+          `HTTP ${response.status}`;
+        // The transport status is authoritative for error classification. A
+        // conflicting or malformed RFC 7807 body must not turn a real 5xx into
+        // a NotFoundError (or vice versa) in caller reconciliation logic.
+        const status = response.status;
         return {
-          status: err.status ?? response.status,
-          code: err.code ?? ERROR_CODE_UNKNOWN,
+          status,
+          code: boundedErrorIdentifier(err.code) ?? ERROR_CODE_UNKNOWN,
           title,
           detail,
-          type: err.type,
-          instance: err.instance,
-          invalid_fields: err.invalid_fields,
-          request_id: json.meta?.request_id,
+          type: boundedErrorIdentifier(err.type),
+          instance: boundedErrorIdentifier(err.instance),
+          invalid_fields: boundedInvalidFields(err.invalid_fields),
+          request_id: boundedErrorIdentifier(json.meta?.request_id),
           retry_after: this.parseRetryAfter(response),
         };
       }
@@ -3674,31 +4590,37 @@ export class QURLClient {
       // status-only safety net below.
       this.log(`unexpected error response shape from ${response.status}`, {
         status: response.status,
-        body_keys: Object.keys(json as object),
+        body_keys:
+          typeof json === "object" && json !== null ? boundedObjectKeys(json as object) : undefined,
       });
     } catch {
-      // Body wasn't valid JSON (or the network stream errored during
-      // read). Log so operators can distinguish this from a malformed
-      // envelope, and fall through to the status-only safety net.
+      // Body wasn't valid JSON. Log so operators can distinguish this from a
+      // malformed envelope, and fall through to the status-only safety net.
       this.log(`non-JSON error response from ${response.status}`, {
         status: response.status,
-        content_type: response.headers.get("content-type") ?? undefined,
+        content_type: boundedErrorSnippet(response.headers.get("content-type")),
       });
     }
 
+    const statusText = boundedErrorSnippet(response.statusText) || `HTTP ${response.status}`;
     return {
       status: response.status,
       code: ERROR_CODE_UNKNOWN,
-      title: response.statusText || `HTTP ${response.status}`,
-      detail: response.statusText || `HTTP ${response.status}`,
+      title: statusText,
+      detail: statusText,
+      retry_after: this.parseRetryAfter(response),
     };
   }
 
   private parseRetryAfter(response: Response): number | undefined {
-    // RFC 7231 §7.1.3: Retry-After honored on 429 + 503. (RFC 7231
-    // also allows Retry-After on 3xx redirects; the SDK doesn't follow
-    // redirects, so 429/503 cover the relevant cases.)
+    // RFC 7231 §7.1.3: Retry-After honored on 429 + 503. Although the RFC
+    // also permits it on 3xx responses, rawRequest now refuses redirects
+    // as deterministic errors before retry parsing, so only 429/503 apply.
     if (response.status !== 429 && response.status !== 503) return undefined;
+    // This fallback can run after the body reader rejects a malformed injected
+    // Response-like shim. Preserve the typed, non-retryable SDK error instead
+    // of dereferencing the same missing method and leaking a raw TypeError.
+    if (typeof response.headers?.get !== "function") return undefined;
     const header = response.headers.get("Retry-After");
     if (!header) return undefined;
     // TODO: parse HTTP-date format per RFC 7231 §7.1.3 — currently only
@@ -3761,20 +4683,57 @@ export class QURLClient {
     return Math.min(base + jitter, RETRY_MAX_DELAY_MS);
   }
 
-  private classifyFetchError(err: unknown): TimeoutError | NetworkError {
-    if (err instanceof DOMException && err.name === "TimeoutError") {
+  private classifyFetchError(
+    err: unknown,
+    requestSignal: AbortSignal,
+  ): TimeoutError | NetworkError {
+    // AbortSignal.timeout is the only timeout source owned by this SDK. Keep
+    // this check tied to that signal instead of trusting an injected fetch's
+    // AbortError or TimeoutError name.
+    if (isSdkTimeout(err, requestSignal)) {
       return new TimeoutError("Request timed out", { cause: err });
     }
     const cause = err instanceof Error ? err : undefined;
     return new NetworkError(cause?.message ?? String(err), { cause });
+  }
+
+  private classifyResponseReadError(
+    err: unknown,
+    response: Response,
+    requestSignal: AbortSignal,
+  ): QURLError | undefined {
+    if (err instanceof ResponseBodyMaterializationError) return undefined;
+    if (!(err instanceof Error)) return undefined;
+    if (!response.ok) {
+      const statusText = boundedErrorSnippet(response.statusText) || `HTTP ${response.status}`;
+      return withErrorCause(
+        createError({
+          status: response.status,
+          code: ERROR_CODE_UNKNOWN,
+          title: statusText,
+          detail: `Failed to read response body after HTTP ${response.status}`,
+          retry_after: this.parseRetryAfter(response),
+        }),
+        err,
+      );
+    }
+    if (isSdkTimeout(err, requestSignal)) {
+      return new TimeoutError(
+        `Request timed out while reading response body after HTTP ${response.status}`,
+        { cause: err },
+      );
+    }
+    return new NetworkError(
+      `Network failure while reading response body after HTTP ${response.status}`,
+      { cause: err },
+    );
   }
 }
 
 /**
  * A LayerV-protected resource, bound to the client that produced it.
  *
- * Obtained from {@link QURLClient.protectUrl},
- * {@link QURLClient.connectorResource}, or {@link QURLClient.resourceById} —
+ * Obtained from {@link QURLClient.protectUrl} or {@link QURLClient.resourceById} —
  * not constructed directly. Mint short-lived access links for the resource
  * with {@link createPortal} (qurl-go: `qurl.Resource`).
  */
@@ -3783,7 +4742,7 @@ export class ProtectedResource {
   // CONTRIBUTING.md's dual-build rule bars) so the binding stays on the
   // instance and out of Object.keys/JSON.stringify output.
   readonly #client: QURLClient;
-  /** The LayerV resource identifier (current public ID, CRID, or legacy `r_...`). */
+  /** The LayerV public resource ID. */
   readonly id: string;
   /** The private URL protected by this resource, when known. */
   readonly targetUrl?: string;
@@ -3820,5 +4779,59 @@ export class ProtectedResource {
     requestOptions?: RequestOptions,
   ): Promise<Portal> {
     return this.#client.createPortal(this, opts, requestOptions);
+  }
+}
+
+/** Result of idempotently ensuring a qURL Connector resource. */
+export interface EnsureConnectorResourceResult {
+  resource: ConnectorResource;
+  foundExisting: boolean;
+}
+
+const CONNECTOR_RESOURCE_CONSTRUCTOR_TOKEN = Symbol("validated ConnectorResource");
+
+/**
+ * A validated qURL Connector resource bound to the client that loaded it.
+ *
+ * Resource identity, reverse-routing identity, and NHP admission identity are
+ * distinct server-issued values. Callers must consume each field verbatim and
+ * must never derive one from another.
+ */
+export class ConnectorResource {
+  readonly #client: QURLClient;
+  readonly resourceId: string;
+  /** Producer-supplied CRID carried verbatim; verify it against a trusted key before trust. */
+  readonly crid?: string;
+  readonly connectorRoutingId: string;
+  readonly knockResourceId: string;
+  readonly slug: string;
+  readonly alias?: string;
+
+  /** @internal Instances are returned by QURLClient after wire validation. */
+  constructor(
+    client: QURLClient,
+    details: Resource,
+    validationToken: typeof CONNECTOR_RESOURCE_CONSTRUCTOR_TOKEN,
+  ) {
+    if (validationToken !== CONNECTOR_RESOURCE_CONSTRUCTOR_TOKEN) {
+      throw clientValidationError(
+        "ConnectorResource cannot be constructed directly; load it through QURLClient",
+      );
+    }
+    this.#client = client;
+    this.resourceId = details.resource_id;
+    this.crid = details.crid;
+    this.connectorRoutingId = details.connector_routing_id as string;
+    this.knockResourceId = details.knock_resource_id as string;
+    this.slug = details.slug as string;
+    this.alias = details.alias ?? undefined;
+  }
+
+  /** Mint a short-lived portal for this Connector resource. */
+  async createPortal(
+    opts: CreatePortalOptions = {},
+    requestOptions?: RequestOptions,
+  ): Promise<Portal> {
+    return this.#client.createPortal(this.resourceId, opts, requestOptions);
   }
 }

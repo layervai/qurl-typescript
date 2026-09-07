@@ -15,9 +15,13 @@ export const ERROR_CODE_UNEXPECTED_RESPONSE = "unexpected_response";
 export const ERROR_CODE_NETWORK = "network_error";
 export const ERROR_CODE_TIMEOUT = "timeout";
 export const ERROR_CODE_RUNTIME = "runtime_error";
-/** `connectorResource` found no resource for the connector id (client-detected, `status: 0`). */
+/** A dispatched Connector resource mutation could have committed and must be reconciled. */
+export const ERROR_CODE_CONNECTOR_RESOURCE_OUTCOME_UNKNOWN = "connector_resource_outcome_unknown";
+/** A by-ID Connector resource lookup found a revoked lifecycle row. */
+export const ERROR_CODE_CONNECTOR_RESOURCE_REVOKED = "connector_resource_revoked";
+/** A Connector slug lookup found no active resource (client-detected, `status: 0`). */
 export const ERROR_CODE_RESOURCE_NOT_FOUND = "resource_not_found";
-/** `connectorResource` matched more than one resource where exactly one is required (client-detected, `status: 0`). */
+/** A Connector slug lookup matched more than one active resource (client-detected, `status: 0`). */
 export const ERROR_CODE_AMBIGUOUS_RESOURCE = "ambiguous_resource";
 /** Fallback `.code` when the server returns a non-RFC-7807 response (HTML proxy page, plaintext gateway error, JSON without `error` envelope). */
 export const ERROR_CODE_UNKNOWN = "unknown";
@@ -25,14 +29,12 @@ export const ERROR_CODE_UNKNOWN = "unknown";
 /**
  * Base error thrown by the qURL API client. Catch this to handle all SDK errors.
  *
- * **`status: 0` convention:** Client-detected failures — validation errors
- * (`code: "client_validation"`), unexpected response shapes
- * (`code: "unexpected_response"`), runtime capability errors
- * (`code: "runtime_error"`), network errors (`code: "network_error"`), and
- * timeouts (`code: "timeout"`) — all use `status: 0` because no real HTTP
- * status code applies. To distinguish between these cases, branch on `.code`
- * rather than `.status`. Non-zero `.status` always reflects a real HTTP
- * status from the API (e.g. 400, 401, 429, 500).
+ * **`status: 0` convention:** Client-only validation, runtime, network, and
+ * timeout failures use `status: 0` because no HTTP status applies. Logical
+ * response-shape guards can also use zero. An `unexpected_response` tied to a
+ * concrete HTTP contract violation (redirect, oversized body, wrong
+ * no-content status/body) instead preserves the observed status. Branch on
+ * `.code` first and then `.status`; see {@link ValidationError}.
  *
  * **`.code === "unknown"`** is a possible value when the server returns a
  * non-RFC-7807 response (e.g. a Cloudflare HTML error page, a gateway
@@ -111,7 +113,10 @@ export class NotFoundError extends QURLError {
  *   returning HTML on a passthrough status, or a batch response missing
  *   required fields).
  *
- * `instanceof ValidationError` catches both. To distinguish them, check
+ * `instanceof ValidationError` catches both on ordinary client/response
+ * paths. A Connector mutation wraps a post-dispatch `unexpected_response`
+ * in {@link ConnectorResourceOutcomeUnknownError}; inspect that error's
+ * typed `cause` before deciding whether to retry. To distinguish them, check
  * `.code` rather than using `instanceof` alone.
  *
  * **`.status` asymmetry within `code: "unexpected_response"`:**
@@ -119,9 +124,11 @@ export class NotFoundError extends QURLError {
  *   counts/length mismatch, per-entry contract violation): `.status`
  *   is `0`. The HTTP status that produced the bad body is appended
  *   to `.detail` as `(HTTP 400)` / `(HTTP 207)` etc. for diagnostics.
- * - Non-JSON body on a 2xx or passthrough status (e.g. proxy HTML
- *   error page, plaintext gateway error, truncated body): `.status`
- *   is the actual HTTP status (e.g. `400`, `200`).
+ * - Non-JSON, oversized, redirect, or exact-status/body-contract failure on a
+ *   2xx, passthrough, or other observed HTTP status: `.status` is the actual
+ *   HTTP status (e.g. `200`, `302`, `400`, `503`). Filtered opaque redirects
+ *   in browsers and Node native fetch use `.status === 0` because Fetch does
+ *   not expose their 3xx status.
  *
  * Consumers branching purely on `.status` should branch on `.code`
  * first, then `.detail` for shape-guard cases. See #59 for tracking
@@ -150,14 +157,49 @@ export class ServerError extends QURLError {
   }
 }
 
+function attachErrorCause(error: Error, options?: { cause?: unknown }): void {
+  if (!options || !("cause" in options)) return;
+  // Match the native Error `cause` descriptor. In particular, keep transport
+  // objects out of Object.keys(), object spread, and JSON logging.
+  Object.defineProperty(error, "cause", {
+    value: options.cause,
+    writable: true,
+    configurable: true,
+  });
+}
+
+/**
+ * A Connector resource ensure/delete was dispatched, but the response cannot
+ * prove whether it committed. Reconcile by immutable slug or resource ID
+ * before choosing whether to retry. The original typed failure is in `cause`.
+ * The wrapper uses `status: 0` so generic HTTP-status retry predicates cannot
+ * replay the mutation; inspect `cause.status` for the observed HTTP status.
+ * A valid HTTP 201 Connector row missing only `meta.found_existing` is a known
+ * committed/selected row with incomplete metadata and is not wrapped here.
+ */
+export class ConnectorResourceOutcomeUnknownError extends QURLError {
+  declare readonly code: typeof ERROR_CODE_CONNECTOR_RESOURCE_OUTCOME_UNKNOWN;
+  declare readonly cause: QURLError;
+
+  constructor(cause: QURLError) {
+    super({
+      status: 0,
+      code: ERROR_CODE_CONNECTOR_RESOURCE_OUTCOME_UNKNOWN,
+      title: "Connector Resource Outcome Unknown",
+      detail: `Mutation outcome is unknown; reconcile before retrying. ${cause.detail}`,
+      request_id: cause.requestId,
+    });
+    this.name = "ConnectorResourceOutcomeUnknownError";
+    attachErrorCause(this, { cause });
+  }
+}
+
 /** Transport-level error — DNS failure, connection refused, etc. */
 export class NetworkError extends QURLError {
   constructor(message: string, options?: { cause?: unknown }) {
     super({ status: 0, code: ERROR_CODE_NETWORK, title: "Network Error", detail: message });
     this.name = "NetworkError";
-    if (options?.cause) {
-      this.cause = options.cause;
-    }
+    attachErrorCause(this, options);
   }
 }
 
@@ -166,9 +208,7 @@ export class TimeoutError extends QURLError {
   constructor(message: string = "Request timed out", options?: { cause?: unknown }) {
     super({ status: 0, code: ERROR_CODE_TIMEOUT, title: "Timeout", detail: message });
     this.name = "TimeoutError";
-    if (options?.cause) {
-      this.cause = options.cause;
-    }
+    attachErrorCause(this, options);
   }
 }
 
@@ -177,9 +217,7 @@ export class RuntimeError extends QURLError {
   constructor(message: string, options?: { cause?: unknown }) {
     super({ status: 0, code: ERROR_CODE_RUNTIME, title: "Runtime Error", detail: message });
     this.name = "RuntimeError";
-    if (options && "cause" in options) {
-      this.cause = options.cause;
-    }
+    attachErrorCause(this, options);
   }
 }
 

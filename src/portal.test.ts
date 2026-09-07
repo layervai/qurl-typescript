@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import conformancePackage from "@layervai/qurl-conformance";
 import { ProtectedResource, SIGNED_FRAGMENT_RE } from "./client.js";
-import { NotFoundError, QURLError, ValidationError } from "./errors.js";
+import { ValidationError } from "./errors.js";
 import { createClient, mockFetch, mockFetches } from "./__tests__/test-helpers.js";
 
 // Tests for the portal-verb surface (mirrors qurl-go's portal API and
@@ -194,6 +194,7 @@ describe("createPortal", () => {
       label: "Alice from Acme",
       oneTimeUse: true,
       maxSessions: 0,
+      targetPath: "/api/detect/eib_example",
     });
 
     const { url } = callRequest(fetch, 1);
@@ -204,6 +205,7 @@ describe("createPortal", () => {
       one_time_use: true,
       // Explicit 0 means unlimited and must survive body construction.
       max_sessions: 0,
+      target_path: "/api/detect/eib_example",
     });
     expect(portal.resourceId).toBe("r_abc123def45");
     expect(portal.link).toBe("https://qurl.link/#at_portal1");
@@ -229,12 +231,22 @@ describe("createPortal", () => {
     expect(portal.link).toBe("https://qurl.link/#at_portal1");
   });
 
-  it("sends no body when every option is omitted, so the API default applies", async () => {
+  it("sends an empty JSON object when every option is omitted", async () => {
     const fetch = mockFetch({ status: 201, body: { data: PORTAL_DATA } });
     const client = createClient(fetch);
 
     await client.resourceById("r_abc123def45").createPortal();
-    expect(callRequest(fetch).init.body).toBeUndefined();
+    expect(callBody(fetch)).toEqual({});
+    expect(callHeaders(fetch)["Content-Type"]).toBe("application/json");
+  });
+
+  it("keeps a valid portal result from an alternate 2xx status", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: PORTAL_DATA } });
+
+    const portal = await createClient(fetch).createPortal("r_abc123def45");
+
+    expect(portal.link).toBe("https://qurl.link/#at_portal1");
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   it("rejects a handle bound to a different client", async () => {
@@ -262,6 +274,8 @@ describe("createPortal", () => {
     [{ label: "" }, "label: must not be empty"],
     [{ label: "   " }, "label: must not be empty"],
     [{ oneTimeUse: "yes" as unknown as boolean }, "oneTimeUse: must be a boolean"],
+    [{ targetPath: "" }, "targetPath: must not be an empty string"],
+    [{ targetPath: 42 as unknown as string }, "targetPath: must be a string"],
   ])("option guardrails reject %j before any request", async (options, message) => {
     const fetch = mockFetch({ status: 201, body: { data: PORTAL_DATA } });
     const client = createClient(fetch);
@@ -290,6 +304,24 @@ describe("createPortal", () => {
     const fetch = mockFetch({ status: 201, body: { data: PORTAL_DATA } });
     await createClient(fetch).createPortal("r_abc123def45", { sessionDuration: 90_000 });
     expect(callBody(fetch)).toEqual({ session_duration: "90s" });
+  });
+
+  it("uses the same 2048-byte targetPath boundary as qurl-go", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: PORTAL_DATA } });
+    const targetPath = `/${"é".repeat(1023)}a`;
+    expect(new TextEncoder().encode(targetPath)).toHaveLength(2048);
+
+    await createClient(fetch).createPortal("r_abc123def45", { targetPath });
+    expect(callBody(fetch)).toEqual({ target_path: targetPath });
+
+    const overlong = `/${"é".repeat(1024)}`;
+    await expect(
+      createClient(fetch).createPortal("r_abc123def45", { targetPath: overlong }),
+    ).rejects.toMatchObject({
+      code: "client_validation",
+      detail: expect.stringContaining("targetPath: must be 2048 UTF-8 bytes or fewer"),
+    });
+    expect(vi.mocked(fetch).mock.calls).toHaveLength(1);
   });
 
   it("rejects unknown option fields, catching REST-shaped spellings", async () => {
@@ -339,58 +371,6 @@ describe("resourceById", () => {
   });
 });
 
-describe("connectorResource", () => {
-  it("looks up the slug and returns a bound handle", async () => {
-    const fetch = mockFetch({ status: 200, body: { data: [RESOURCE_DATA] } });
-    const client = createClient(fetch);
-
-    const resource = await client.connectorResource("prod-dashboard");
-
-    const { url } = callRequest(fetch);
-    expect(new URL(url).searchParams.get("slug")).toBe("prod-dashboard");
-    expect(resource.id).toBe("r_abc123def45");
-    expect(resource.targetUrl).toBe("https://internal.example.com/dashboard");
-    expect(resource.details?.alias).toBe("prod-dashboard");
-  });
-
-  it("throws NotFoundError when no resource matches", async () => {
-    const fetch = mockFetch({ status: 200, body: { data: [] } });
-    const err = await createClient(fetch)
-      .connectorResource("missing-conn")
-      .catch((e: unknown) => e as NotFoundError);
-    expect(err).toBeInstanceOf(NotFoundError);
-    expect((err as NotFoundError).status).toBe(0);
-    expect((err as NotFoundError).code).toBe("resource_not_found");
-  });
-
-  it("throws on an ambiguous lookup", async () => {
-    const second = { ...RESOURCE_DATA, resource_id: "r_other9999999" };
-    const fetch = mockFetch({ status: 200, body: { data: [RESOURCE_DATA, second] } });
-    const err = await createClient(fetch)
-      .connectorResource("prod-dashboard")
-      .catch((e: unknown) => e as QURLError);
-    expect(err).toBeInstanceOf(QURLError);
-    expect((err as QURLError).code).toBe("ambiguous_resource");
-  });
-
-  it("throws when the returned alias does not match", async () => {
-    const mismatched = { ...RESOURCE_DATA, alias: "some-other-alias" };
-    const fetch = mockFetch({ status: 200, body: { data: [mismatched] } });
-    await expect(createClient(fetch).connectorResource("prod-dashboard")).rejects.toMatchObject({
-      code: "unexpected_response",
-      detail: expect.stringContaining("missing or different alias"),
-    });
-  });
-
-  it("requires a connector id", async () => {
-    const client = createClient(mockFetch({ status: 200, body: { data: [] } }));
-    await expect(client.connectorResource("   ")).rejects.toMatchObject({
-      code: "client_validation",
-      detail: expect.stringContaining("connector id"),
-    });
-  });
-});
-
 describe("createPortalForUrl", () => {
   it("posts to /v1/qurls and returns both the portal and a reusable handle", async () => {
     const fetch = mockFetches([
@@ -432,6 +412,19 @@ describe("createPortalForUrl", () => {
     const fetch = mockFetch({ status: 201, body: { data: PORTAL_DATA } });
     await createClient(fetch).createPortalForUrl("https://internal.example.com/dashboard");
     expect(callBody(fetch)).toEqual({ target_url: "https://internal.example.com/dashboard" });
+  });
+
+  it("rejects targetPath because URL resources do not address an existing resource", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: PORTAL_DATA } });
+    await expect(
+      createClient(fetch).createPortalForUrl("https://internal.example.com/dashboard", {
+        targetPath: "/api/detect",
+      }),
+    ).rejects.toMatchObject({
+      code: "client_validation",
+      detail: expect.stringContaining("targetPath: requires an existing resource"),
+    });
+    expect(fetch).not.toHaveBeenCalled();
   });
 });
 
