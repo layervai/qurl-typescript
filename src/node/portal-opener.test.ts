@@ -92,6 +92,18 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+function trackedRequestBody() {
+  let canceled = false;
+  return {
+    body: new ReadableStream({
+      cancel() {
+        canceled = true;
+      },
+    }),
+    wasCanceled: () => canceled,
+  };
+}
+
 function fakeTimerQueue() {
   const callbacks: Array<() => void> = [];
   const delays: number[] = [];
@@ -791,20 +803,62 @@ describe("native portal opener", () => {
   });
 
   it("rejects fetch before start without content I/O", async () => {
+    const request = trackedRequestBody();
     const fetchImpl = vi.fn() as unknown as typeof globalThis.fetch;
     const { opener } = fixture(fetchImpl);
-    await expect(opener.fetch()).rejects.toBeInstanceOf(PortalOpenerNotStartedError);
+    await expect(opener.fetch({ method: "POST", body: request.body })).rejects.toBeInstanceOf(
+      PortalOpenerNotStartedError,
+    );
+    expect(request.wasCanceled()).toBe(true);
     expect(fetchImpl).not.toHaveBeenCalled();
     await opener.close();
   });
 
-  it("rejects an invalid redirect option without content I/O", async () => {
+  it("rejects an invalid redirect option, cancels its stream, and performs no content I/O", async () => {
+    const request = trackedRequestBody();
     const fetchImpl = vi.fn() as unknown as typeof globalThis.fetch;
     const { opener } = fixture(fetchImpl);
     await opener.start();
-    await expect(opener.fetch({}, { redirects: "manual" as never })).rejects.toBeInstanceOf(
-      PortalConfigurationError,
+    await expect(
+      opener.fetch({ method: "POST", body: request.body }, { redirects: "manual" as never }),
+    ).rejects.toBeInstanceOf(PortalConfigurationError);
+    expect(request.wasCanceled()).toBe(true);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    await opener.close();
+  });
+
+  it("cancels a direct request body while the initial Start is pending", async () => {
+    const request = trackedRequestBody();
+    const pending = deferred<NHPMessage>();
+    const fetchImpl = vi.fn() as unknown as typeof globalThis.fetch;
+    const { opener, knock } = fixture(fetchImpl);
+    knock.mockImplementationOnce(() => pending.promise);
+    const start = opener.start();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    await expect(opener.fetch({ method: "POST", body: request.body })).rejects.toBeInstanceOf(
+      PortalOpenerNotStartedError,
     );
+    expect(request.wasCanceled()).toBe(true);
+    expect(fetchImpl).not.toHaveBeenCalled();
+
+    pending.resolve(ack());
+    await start;
+    await opener.close();
+  });
+
+  it("cancels a direct request body while the opener is degraded", async () => {
+    const request = trackedRequestBody();
+    const failure = new Error("initial open failed");
+    const fetchImpl = vi.fn() as unknown as typeof globalThis.fetch;
+    const { opener, knock } = fixture(fetchImpl);
+    knock.mockRejectedValueOnce(failure);
+    await expect(opener.start()).rejects.toBe(failure);
+
+    await expect(opener.fetch({ method: "POST", body: request.body })).rejects.toBeInstanceOf(
+      PortalOpenerNotReadyError,
+    );
+    expect(request.wasCanceled()).toBe(true);
     expect(fetchImpl).not.toHaveBeenCalled();
     await opener.close();
   });
@@ -826,19 +880,14 @@ describe("native portal opener", () => {
   ])(
     "rejects a caller %s override, cancels its stream, and performs no content I/O",
     async (_name, invalid) => {
-      let canceled = false;
-      const body = new ReadableStream({
-        cancel() {
-          canceled = true;
-        },
-      });
+      const request = trackedRequestBody();
       const fetchImpl = vi.fn() as unknown as typeof globalThis.fetch;
       const { opener } = fixture(fetchImpl);
       await opener.start();
-      await expect(opener.fetch({ ...invalid, method: "POST", body })).rejects.toBeInstanceOf(
-        PortalConfigurationError,
-      );
-      expect(canceled).toBe(true);
+      await expect(
+        opener.fetch({ ...invalid, method: "POST", body: request.body }),
+      ).rejects.toBeInstanceOf(PortalConfigurationError);
+      expect(request.wasCanceled()).toBe(true);
       expect(fetchImpl).not.toHaveBeenCalled();
       await opener.close();
     },
@@ -849,30 +898,29 @@ describe("native portal opener", () => {
     ["invalid header", { headers: [["bad header name", "value"]] as RequestInit["headers"] }],
     ["invalid signal", { signal: {} as AbortSignal }],
   ])("cancels its stream when caller-controlled %s preparation throws", async (_name, invalid) => {
-    let canceled = false;
-    const body = new ReadableStream({
-      cancel() {
-        canceled = true;
-      },
-    });
+    const request = trackedRequestBody();
     const fetchImpl = vi.fn() as unknown as typeof globalThis.fetch;
     const { opener } = fixture(fetchImpl);
     await opener.start();
-    await expect(opener.fetch({ method: "POST", body, ...invalid })).rejects.toBeInstanceOf(
-      TypeError,
-    );
-    expect(canceled).toBe(true);
+    await expect(
+      opener.fetch({ method: "POST", body: request.body, ...invalid }),
+    ).rejects.toBeInstanceOf(TypeError);
+    expect(request.wasCanceled()).toBe(true);
     expect(fetchImpl).not.toHaveBeenCalled();
     await opener.close();
   });
 
   it("makes close idempotent and rejects start and fetch after close", async () => {
+    const request = trackedRequestBody();
     const { opener, knock } = fixture();
     const first = opener.close();
     expect(opener.close()).toBe(first);
     await first;
     await expect(opener.start()).rejects.toThrow("portal opener is closed");
-    await expect(opener.fetch()).rejects.toThrow("portal opener is closed");
+    await expect(opener.fetch({ method: "POST", body: request.body })).rejects.toThrow(
+      "portal opener is closed",
+    );
+    expect(request.wasCanceled()).toBe(true);
     expect(knock).not.toHaveBeenCalled();
   });
 

@@ -339,32 +339,39 @@ class NativePortalOpener implements PortalOpener {
     input: RequestInit | PortalRequestBuilder = {},
     options: PortalFetchOptions = {},
   ): Promise<Response> {
-    if (this.#state === "closed") throw new PortalOpenerClosedError();
-    if (
-      options.redirects !== undefined &&
-      options.redirects !== "follow" &&
-      options.redirects !== "error"
-    ) {
-      throw new PortalConfigurationError("portal fetch redirects must be follow or error");
-    }
-    if (this.#state === "new" || (this.#state === "starting" && !this.#startingRecovery)) {
-      throw new PortalOpenerNotStartedError();
-    }
-    const grant = this.#grant;
-    if (this.#state !== "running" || !this.#isGrantReady(grant)) {
-      throw new PortalOpenerNotReadyError();
-    }
-    // A successful renewal or close wipes the mutable grant token. Keep the
-    // unavoidable request string local to this fetch so every redirect leg has
-    // one stable credential snapshot.
-    const sessionToken = grant.token.toString("ascii");
-    const init = typeof input === "function" ? input(new URL(grant.resourceUrl)) : input;
-    if (!init || typeof init !== "object") {
-      throw new PortalConfigurationError("portal request builder must return RequestInit");
-    }
     let body: RequestInit["body"] = undefined;
     try {
-      body = init.body;
+      // A direct RequestInit already belongs to this call. Capture its body
+      // before any option or lifecycle rejection so every pre-fetch exit can
+      // release a caller-owned stream. Builders remain lazy until a grant is
+      // ready and therefore have no body to release on earlier exits.
+      if (typeof input !== "function" && input && typeof input === "object") {
+        body = input.body;
+      }
+      if (this.#state === "closed") throw new PortalOpenerClosedError();
+      if (
+        options.redirects !== undefined &&
+        options.redirects !== "follow" &&
+        options.redirects !== "error"
+      ) {
+        throw new PortalConfigurationError("portal fetch redirects must be follow or error");
+      }
+      if (this.#state === "new" || (this.#state === "starting" && !this.#startingRecovery)) {
+        throw new PortalOpenerNotStartedError();
+      }
+      const grant = this.#grant;
+      if (this.#state !== "running" || !this.#isGrantReady(grant)) {
+        throw new PortalOpenerNotReadyError();
+      }
+      // A successful renewal or close wipes the mutable grant token. Keep the
+      // unavoidable request string local to this fetch so every redirect leg has
+      // one stable credential snapshot.
+      const sessionToken = grant.token.toString("ascii");
+      const init = typeof input === "function" ? input(new URL(grant.resourceUrl)) : input;
+      if (!init || typeof init !== "object") {
+        throw new PortalConfigurationError("portal request builder must return RequestInit");
+      }
+      if (typeof input === "function") body = init.body;
       if (Object.prototype.hasOwnProperty.call(init, "redirect") && init.redirect !== undefined) {
         throw new PortalConfigurationError(
           "portal fetch owns redirect handling; redirect overrides are not allowed",
@@ -460,6 +467,7 @@ class NativePortalOpener implements PortalOpener {
       }
     } catch (error) {
       await discardRequestBody(body);
+      if (error instanceof PortalOpenerClosedError) throw error;
       if (this.#isClosed()) throw new PortalOpenerClosedError({ cause: error });
       throw error;
     }

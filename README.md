@@ -186,6 +186,10 @@ must consume or cancel it. Local admission expiry is checked before the first
 request; the protected service remains authoritative while a permitted redirect
 chain is in progress.
 
+When `fetch()` rejects before it sends a direct `RequestInit`, it cancels a
+caller-owned `ReadableStream` body. A request builder remains lazy and is not
+called until a grant is ready.
+
 Each open has a whole-operation deadline that covers DNS and UDP.
 `openTimeoutMs` sets this ceiling; the default is 15 seconds and the maximum is
 60 seconds. Native DNS or address attempts can fail before this ceiling, so a
