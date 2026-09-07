@@ -1,4 +1,5 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
+import { setMaxListeners } from "node:events";
 import type { NHPMessage } from "./nhp-wire.js";
 import { NHP_MAX_BODY_SIZE, NHP_TYPE_ACK, NHP_TYPE_COOKIE } from "./nhp-wire.js";
 import {
@@ -284,6 +285,9 @@ class NativePortalOpener implements PortalOpener {
     this.#runtime = runtime;
     this.#fetch = options.fetch ?? runtime.fetch;
     this.#openTimeoutMs = options.openTimeoutMs ?? DEFAULT_OPEN_TIMEOUT_MS;
+    // Native Fetch attaches one abort listener per in-flight request. This
+    // signal is private and intentionally shared so close can stop all work.
+    setMaxListeners(0, this.#lifecycleController.signal);
   }
 
   async start(options: PortalStartOptions = {}): Promise<void> {

@@ -1674,6 +1674,33 @@ describe("native portal opener", () => {
     }
   });
 
+  it("does not warn when concurrent requests share the lifecycle signal", async () => {
+    let requestSignal: AbortSignal | undefined;
+    const fetchImpl = vi.fn(async (_input, init) => {
+      requestSignal = init?.signal ?? undefined;
+      return new Response("ok");
+    }) as unknown as typeof globalThis.fetch;
+    const { opener } = fixture(fetchImpl);
+    await opener.start();
+    const response = await opener.fetch();
+    const warnings: Error[] = [];
+    const onWarning = (warning: Error) => warnings.push(warning);
+    process.on("warning", onWarning);
+    try {
+      for (let index = 0; index < 20; index += 1) {
+        requestSignal!.addEventListener("abort", () => undefined, { once: true });
+      }
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(warnings.filter((warning) => warning.name === "MaxListenersExceededWarning")).toEqual(
+        [],
+      );
+    } finally {
+      process.off("warning", onWarning);
+      await response.body?.cancel();
+      await opener.close();
+    }
+  });
+
   it("does not start a redirect leg after close when custom fetch ignores abort", async () => {
     const first = deferred<Response>();
     const fetchImpl = vi
