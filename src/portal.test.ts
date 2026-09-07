@@ -49,7 +49,6 @@ const RESOLVE_DATA = {
   target_url: "https://internal.example.com/dashboard",
   resource_id:
     "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE2cTVv5_3eeYCcLLq5ROYCqcmY50HiKZ9ATglIkPnCji1E_S63UMtXba1moR8-Q6EV7oM6zwwh9_j2CDujzXvLA",
-  crid: "ahpviqz46qwcvx56glfatm3p3ooccwfcf2it4sdgjervwdkapykw3o3qdq2a",
   access_grant: {
     expires_in: 305,
     granted_at: "2026-03-10T15:30:00Z",
