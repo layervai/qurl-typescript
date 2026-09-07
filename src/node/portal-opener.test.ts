@@ -844,6 +844,27 @@ describe("native portal opener", () => {
     },
   );
 
+  it.each([
+    ["invalid header", { headers: [["bad header name", "value"]] as RequestInit["headers"] }],
+    ["invalid signal", { signal: {} as AbortSignal }],
+  ])("cancels its stream when caller-controlled %s preparation throws", async (_name, invalid) => {
+    let canceled = false;
+    const body = new ReadableStream({
+      cancel() {
+        canceled = true;
+      },
+    });
+    const fetchImpl = vi.fn() as unknown as typeof globalThis.fetch;
+    const { opener } = fixture(fetchImpl);
+    await opener.start();
+    await expect(opener.fetch({ ...invalid, method: "POST", body })).rejects.toBeInstanceOf(
+      TypeError,
+    );
+    expect(canceled).toBe(true);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    await opener.close();
+  });
+
   it("makes close idempotent and rejects start and fetch after close", async () => {
     const { opener, knock } = fixture();
     const first = opener.close();

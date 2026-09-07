@@ -371,22 +371,21 @@ class NativePortalOpener implements PortalOpener {
     let currentUrl = grant.resourceUrl;
     let method = (init.method ?? "GET").toUpperCase();
     let body = init.body;
-    let headers = new Headers(init.headers);
-    if (headers.has("host")) {
-      await discardRequestBody(body);
-      throw new PortalConfigurationError(
-        "portal fetch owns the Host derived from the authenticated target",
-      );
-    }
-    // A native composite signal avoids one listener per request on the shared
-    // lifecycle signal. It also remains active after headers arrive, so caller
-    // cancellation and close retain standard Fetch response-body semantics.
-    const requestSignal = AbortSignal.any(
-      init.signal
-        ? [init.signal, this.#lifecycleController.signal]
-        : [this.#lifecycleController.signal],
-    );
     try {
+      let headers = new Headers(init.headers);
+      if (headers.has("host")) {
+        throw new PortalConfigurationError(
+          "portal fetch owns the Host derived from the authenticated target",
+        );
+      }
+      // A native composite signal avoids one listener per request on the shared
+      // lifecycle signal. It also remains active after headers arrive, so caller
+      // cancellation and close retain standard Fetch response-body semantics.
+      const requestSignal = AbortSignal.any(
+        init.signal
+          ? [init.signal, this.#lifecycleController.signal]
+          : [this.#lifecycleController.signal],
+      );
       for (let requestCount = 1; ; requestCount++) {
         this.#requireOpen();
         throwIfAborted(requestSignal);
