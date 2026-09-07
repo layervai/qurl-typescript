@@ -1,3 +1,4 @@
+import { parseCrid, cridKeyMatches } from "./crid.js";
 import {
   ConnectorResourceOutcomeUnknownError,
   createError,
@@ -1426,19 +1427,8 @@ function requireConnectorSubtleCrypto(method: string): void {
   }
 }
 
-async function requireConnectorResourceId(resourceId: string, method: string): Promise<void> {
-  const der = decodeCanonicalBase64Url(resourceId);
-  if (!der) {
-    throw clientValidationError(
-      `${method}: resource id must be a canonical unpadded base64url P-256 DER SPKI public key`,
-    );
-  }
-  requireConnectorSubtleCrypto(method);
-  if (!(await importsAsConnectorPublicKey(der))) {
-    throw clientValidationError(
-      `${method}: resource id must be a canonical unpadded base64url P-256 DER SPKI public key`,
-    );
-  }
+function requireConnectorCrid(crid: string, method: string): void {
+  if (!parseCrid(crid)) throw clientValidationError(`${method}: requires a valid CRID`);
 }
 
 async function importsAsConnectorPublicKey(der: Uint8Array): Promise<boolean> {
@@ -1460,7 +1450,7 @@ async function importsAsConnectorPublicKey(der: Uint8Array): Promise<boolean> {
 
 type ConnectorResourceExpectation = {
   slug?: string;
-  resourceId?: string;
+  crid?: string;
   revokedIsLifecycleError?: boolean;
 };
 
@@ -1484,16 +1474,16 @@ async function parseConnectorResource(
   if (typeof resource.resource_id !== "string") {
     throw unexpectedResponseError(`${method}: response has missing or invalid resource_id`);
   }
-  if (expectation.resourceId !== undefined && resource.resource_id !== expectation.resourceId) {
-    throw unexpectedResponseError(`${method}: response resource_id does not match the request`);
-  }
-  // A by-ID request already validated its requested resource key and matched
-  // this response byte-for-byte, so do not repeat the async key import.
-  if (
-    expectation.resourceId === undefined &&
-    !(await isValidConnectorResourceId(resource.resource_id))
-  ) {
+  if (!(await isValidConnectorResourceId(resource.resource_id))) {
     throw unexpectedResponseError(`${method}: response has missing or invalid resource_id`);
+  }
+  if (expectation.crid !== undefined && resource.crid !== expectation.crid) {
+    throw unexpectedResponseError(`${method}: response crid does not match the request`);
+  }
+  if (!(await cridKeyMatches(resource.crid, decodeCanonicalBase64Url(resource.resource_id)!))) {
+    throw unexpectedResponseError(
+      `${method}: response has missing, invalid, or public-key-mismatched crid`,
+    );
   }
   if (
     typeof resource.connector_routing_id !== "string" ||
@@ -1539,12 +1529,6 @@ async function parseConnectorResource(
     // could not create or update.
     throw unexpectedResponseError(`${method}: response has invalid alias`);
   }
-  if (resource.crid !== undefined && typeof resource.crid !== "string") {
-    throw unexpectedResponseError(`${method}: response has invalid crid`);
-  }
-  // Match qurl-go: ConnectorResource carries an optional producer CRID
-  // verbatim. Consumers that possess a trusted delivered key can verify the
-  // binding separately; this management-plane row is not itself a trust root.
   if (resource.status === "revoked") {
     if (expectation.revokedIsLifecycleError !== true) {
       throw unexpectedResponseError(
@@ -2805,12 +2789,13 @@ export class QURLClient {
     return { resource, foundExisting };
   }
 
-  /** Fetch a qURL Connector resource by its immutable public resource ID. */
-  async getConnectorResource(resourceId: string): Promise<ConnectorResource> {
-    await requireConnectorResourceId(resourceId, "getConnectorResource");
+  /** Fetch a qURL Connector resource by its CRID. */
+  async getConnectorResource(crid: string): Promise<ConnectorResource> {
+    requireConnectorCrid(crid, "getConnectorResource");
+    requireConnectorSubtleCrypto("getConnectorResource");
     const { data, __http_status } = await this.rawRequest<ResourceDetail>(
       "GET",
-      `/v1/resources/${encodeURIComponent(resourceId)}`,
+      `/v1/resources/${encodeURIComponent(crid)}`,
       undefined,
       { retry: false },
     );
@@ -2820,7 +2805,7 @@ export class QURLClient {
       );
     }
     return parseConnectorResource(this, data?.resource, "getConnectorResource", {
-      resourceId,
+      crid,
       revokedIsLifecycleError: true,
     });
   }
@@ -2869,15 +2854,15 @@ export class QURLClient {
   }
 
   /**
-   * Revoke a qURL Connector resource by immutable public resource ID.
+   * Revoke a qURL Connector resource by CRID.
    *
    * The API does not apply Idempotency-Key replay to DELETE. After an
    * outcome-unknown failure, reconcile by ID before issuing a deliberate retry.
    */
-  async deleteConnectorResource(resourceId: string): Promise<void> {
-    await requireConnectorResourceId(resourceId, "deleteConnectorResource");
+  async deleteConnectorResource(crid: string): Promise<void> {
+    requireConnectorCrid(crid, "deleteConnectorResource");
     try {
-      await this.requestNoContent(`/v1/resources/${encodeURIComponent(resourceId)}`);
+      await this.requestNoContent(`/v1/resources/${encodeURIComponent(crid)}`);
     } catch (error) {
       classifyConnectorMutationFailure("delete", error);
     }
@@ -4800,8 +4785,8 @@ const CONNECTOR_RESOURCE_CONSTRUCTOR_TOKEN = Symbol("validated ConnectorResource
 export class ConnectorResource {
   readonly #client: QURLClient;
   readonly resourceId: string;
-  /** Producer-supplied CRID carried verbatim; verify it against a trusted key before trust. */
-  readonly crid?: string;
+  /** Required public identifier, verified against the returned resource key. */
+  readonly crid: string;
   readonly connectorRoutingId: string;
   readonly knockResourceId: string;
   readonly slug: string;
@@ -4820,7 +4805,7 @@ export class ConnectorResource {
     }
     this.#client = client;
     this.resourceId = details.resource_id;
-    this.crid = details.crid;
+    this.crid = details.crid!;
     this.connectorRoutingId = details.connector_routing_id as string;
     this.knockResourceId = details.knock_resource_id as string;
     this.slug = details.slug as string;
@@ -4832,6 +4817,6 @@ export class ConnectorResource {
     opts: CreatePortalOptions = {},
     requestOptions?: RequestOptions,
   ): Promise<Portal> {
-    return this.#client.createPortal(this.resourceId, opts, requestOptions);
+    return this.#client.createPortal(this.crid, opts, requestOptions);
   }
 }

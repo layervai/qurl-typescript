@@ -4,6 +4,11 @@
 
 ### ⚠ BREAKING CHANGES
 
+- **client:** Connector get/delete and handle-based portal minting now use
+  CRIDs only. Connector management responses must include a CRID that matches
+  the returned public key. Public-key arguments and CRID-less responses are
+  rejected; there is no backward-compatibility fallback.
+
 - **client:** `delete()` no longer requires a legacy `r_...` resource ID. It
   accepts current opaque public resource IDs and CRIDs, leaving identifier
   grammar to qurl-service, while rejecting qURL display IDs before the legacy
