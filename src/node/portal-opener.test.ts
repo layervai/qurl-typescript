@@ -804,7 +804,7 @@ describe("native portal opener", () => {
     await opener.close();
   });
 
-  it("inserts one separator when the ACK base path has no trailing slash", async () => {
+  it("inserts one separator and escapes UTF-8 and control bytes", async () => {
     const fetchImpl = vi.fn(
       async () => new Response(null, { status: 204 }),
     ) as unknown as typeof fetch;
@@ -812,11 +812,11 @@ describe("native portal opener", () => {
     knock.mockResolvedValueOnce(ack(900, "0", "https://private.example.test/api/detect"));
     await opener.start();
 
-    await opener.fetchDescendant(["eib_example"]);
+    await opener.fetchDescendant(["café", "line\r\nX: value"]);
 
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(String(vi.mocked(fetchImpl).mock.calls[0][0])).toBe(
-      "https://private.example.test/api/detect/eib_example",
+      "https://private.example.test/api/detect/caf%C3%A9/line%0D%0AX:%20value",
     );
     expect(knock).toHaveBeenCalledTimes(1);
     await opener.close();

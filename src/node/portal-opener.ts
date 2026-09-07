@@ -880,6 +880,7 @@ function escapePortalDescendantSegment(segment: string): string {
   const escaped: string[] = [];
   for (const byte of Buffer.from(segment, "utf8")) {
     const character = String.fromCharCode(byte);
+    // Match Go's url.PathEscape path-segment allow set exactly.
     if (
       (byte >= 0x41 && byte <= 0x5a) ||
       (byte >= 0x61 && byte <= 0x7a) ||

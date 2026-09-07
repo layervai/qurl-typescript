@@ -199,10 +199,11 @@ cookies, including duplicate `Cookie` entries that Node joins with semicolons.
 It does not accept a caller URL, and it rejects a caller-supplied `Host` header
 so Fetch derives the authority from the pinned target. Both `fetch()` and
 `fetchDescendant()` use only the cached NHP 1.1 admission. Use
-`redirects: 'error'` for
-a request whose signature binds its method, target, timestamp, or nonce. This
-mode closes a redirect response and does not replay the request. The default
-`follow` mode can then move within the authenticated origin. It permits at most
+`redirects: 'error'` to keep a descendant request at its initial target. The
+default `follow` mode can move outside that path subtree, but only within the
+authenticated origin. Also use `redirects: 'error'` for a request whose
+signature binds its method, target, timestamp, or nonce. This mode closes a
+redirect response and does not replay the request. Follow mode permits at most
 10 requests, including the initial request, and uses the standard 301/302/303
 method rewrite rules. As in Go, a 3xx response with no `Location` header, or a
 307/308 response whose streaming body cannot be replayed, is returned to the
