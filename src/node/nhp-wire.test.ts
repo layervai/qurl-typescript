@@ -18,7 +18,7 @@ type RelayVectors = {
 const vectors = conformancePackage.relayKnockVectors() as RelayVectors;
 const hex = (value: string): Buffer => Buffer.from(value, "hex");
 
-describe("NHP 1.1 wire", () => {
+describe("NHP wire", () => {
   it("builds the shared byte-exact KNK vector", () => {
     const v = vectors.knock;
     const built = buildNHPMessage({

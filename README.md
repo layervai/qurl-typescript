@@ -106,7 +106,7 @@ const portal = await resource.createPortal({
 ```
 
 The Node-only `@layervai/qurl/node` entry opens received qv2 links with native
-NHP 1.1 UDP. It has no relay or HTTP-resolve fallback. Connector assignment and
+NHP UDP. It has no relay or HTTP-resolve fallback. Connector assignment and
 registration are separate producer operations and are not part of the portal
 opener.
 
@@ -133,10 +133,10 @@ back, it throws instead of returning an empty handle.
 Use the Node subpath when a service receives a qv2 link and must keep one NHP
 session ready for a low-latency private request. Construct and start one opener
 for that link during setup. `start()` sends the native UDP knock and schedules
-bounded background renewal before the admission expires. Failed renewal tries
-are spread across the remaining valid grant window. `fetch()` never opens or
-renews a session, and it never sleeps. It fails if the cached admission has
-expired.
+background renewal before the admission expires. A transient renewal failure
+retries after 500 ms, then 1 second, then at most every 2 seconds while the old
+admission remains valid. `fetch()` never opens or renews a session, and it never
+sleeps. It fails if the cached admission has expired.
 
 ```javascript
 const { createPortalOpener } = require('@layervai/qurl/node');
@@ -144,7 +144,6 @@ const { createPortalOpener } = require('@layervai/qurl/node');
 async function uploadPrivateObject(uploadBody) {
   const opener = createPortalOpener({
     qurl: process.env.PRIVATE_UPLOAD_QURL,
-    transport: 'native-only',
   });
   try {
     await opener.start();
@@ -167,25 +166,27 @@ opener ignores mutations to that copy and sends the initial request only to the
 fixed ACK URL. It adds the private `qurl_vsession` cookie, replaces a
 caller-supplied cookie with that name, and preserves other valid cookies,
 including duplicate `Cookie` entries that Node joins with semicolons. It does
-not accept a caller URL or path. Use `redirects: 'error'` for a request
-whose signature binds its method, target, timestamp, or nonce. This mode closes
-a redirect response and does not replay the request. The default `follow` mode
-can then move within the authenticated origin. It permits at most 10 requests,
-including the initial request, and uses the standard 301/302/303 method rewrite
-rules. As in Go, a 3xx response with no `Location` header, or a 307/308 response
-whose streaming body cannot be replayed, is returned to the caller without a
-follow-up request. The caller then owns that response body and must consume or
-cancel it. Local admission expiry is checked before the first request; the
-protected service remains authoritative while a permitted redirect chain is in
-progress.
+not accept a caller URL or path, and it rejects a caller-supplied `Host` header
+so Fetch derives the authority from that fixed URL. Use `redirects: 'error'` for
+a request whose signature binds its method, target, timestamp, or nonce. This
+mode closes a redirect response and does not replay the request. The default
+`follow` mode can then move within the authenticated origin. It permits at most
+10 requests, including the initial request, and uses the standard 301/302/303
+method rewrite rules. As in Go, a 3xx response with no `Location` header, or a
+307/308 response whose streaming body cannot be replayed, is returned to the
+caller without a follow-up request. The caller then owns that response body and
+must consume or cancel it. Local admission expiry is checked before the first
+request; the protected service remains authoritative while a permitted redirect
+chain is in progress.
 
-`timeoutMs` bounds each resolved-address attempt, and `maxAddresses` caps the
-serial address attempts. This matches qurl-go. Every open also has a whole-open
-deadline that covers DNS and UDP: at least 15 seconds, or the configured
-per-address budget times `maxAddresses + 1` when that is larger. Pass an abort
-signal to `start()` when lifecycle code needs a shorter deadline.
+Each open has a whole-operation deadline that covers DNS and UDP. Set it with
+`openTimeoutMs`; the default is 15 seconds and the maximum is 60 seconds. A
+renewal also stops at the old grant's expiry. Pass an abort signal to `start()`
+when lifecycle code needs a shorter deadline.
 Content requests use the caller's `RequestInit.signal`; `fetch()` does not add
-an independent application-request deadline.
+an independent application-request deadline. Set the opener's optional `fetch`
+when the protected request must use a custom Fetch implementation. Native NHP
+opening never uses this function.
 
 TypeScript consumers of `@layervai/qurl/node` must provide Node and Fetch API
 declarations, for example current `@types/node`, or a configuration that includes
@@ -194,33 +195,38 @@ the `DOM` library for Fetch types.
 Native opening requires public deployment trust. Set `QURL_DEPLOYMENT` to one
 strict JSON object or to a path that contains that object. The object must have
 trusted P-256 issuer keys and native cell host, UDP port 443, and X25519 public
-key entries. A configured path must be a regular file no larger than 1 MiB. The
-SDK loads and validates this value once when it constructs the opener. It does
-not perform discovery and it fails before DNS if the verified link names an
-unknown cell.
+key entries. A configured path must be a regular file no larger than 1 MiB.
+Construction does no I/O. `start()` resolves and validates the deployment, and
+the first successful open pins that resolved trust for renewal and recovery.
+The opener does not perform discovery. It fails before DNS if the verified link
+names an unknown cell.
 
-Use `opener.health()` for the local `idle`, `starting`, `healthy`, `renewing`,
-`degraded`, `expired`, or `closed` state. A degraded state includes a typed
-renewal failure class but no raw session capability. After bounded background
-retries stop, `start()` makes one explicit recovery attempt and refreshes the
-health result. If that explicit attempt fails while the prior grant is still
-usable, the opener re-arms its bounded background attempts after it returns the
-error. This does not put an open or sleep on the `fetch()` path. Stop and await
-in-flight content requests before you call `await opener.close()` during
-shutdown. Close cancels and waits for an active NHP exchange, then wipes the
-mutable private-key, visitor-secret, and session-token buffers. JavaScript can
-create immutable string copies during JSON and HTTP processing, so the SDK
-cannot promise full memory zeroization before garbage collection. Never log the
-qURL, ACK body, request cookies, or request headers.
+Use `opener.health()` for the local `new`, `starting`, `ready`, `degraded`, or
+`closed` state. It reports absolute expiry, renewal, and last-success times, a
+secret-free failure class, and the consecutive failure count. A transient
+renewal failure keeps the state `ready` while the prior admission is usable. A
+changed authenticated target is not retried. It keeps the prior admission until
+expiry and then requires an explicit `start()` recovery. Other failures retry
+through the remaining admission window. This does not put an open or sleep on
+the `fetch()` path.
 
-A cold `start()` failure leaves health at `idle`. Catch `PortalBusyError` for an
-authenticated COOKIE busy response and `PortalInvalidReplyError` for a malformed
-authenticated reply. The thrown typed error is the cold-start diagnostic.
+Close cancels and waits for an active NHP open, then wipes the mutable
+private-key, visitor-secret, and session-token buffers. A protected request that
+already started owns its copied handle and continues during close; await such
+requests separately when shutdown policy requires it. JavaScript can create
+immutable string copies during JSON and HTTP processing, so the SDK cannot
+promise full memory zeroization before garbage collection. Never log the qURL,
+ACK body, request cookies, or request headers.
+
+A cold `start()` failure leaves health at `degraded`. Catch `PortalBusyError`
+for an authenticated COOKIE busy response and `PortalInvalidReplyError` for a
+malformed authenticated reply. The thrown typed error is the cold-start
+diagnostic; health does not expose its message or secret values.
 
 Local qv2 verification checks the signed bytes, trust, and clock-free claim
 ordering. As in the Go SDK, it does not compare `nbf` or `exp` with the local
 clock. The authenticated NHP open is the authoritative live validity check.
-The opener also follows the Go NHP 1.1 COOKIE rule: an authenticated COOKIE is
+The opener also follows the Go NHP COOKIE rule: an authenticated COOKIE is
 a busy result and does not use ACK counter correlation or local clock skew
 checks. Replaying it can only force another busy result; it cannot grant access.
 
