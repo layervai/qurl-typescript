@@ -19,6 +19,17 @@
   idempotency path, and treat a consumed bootstrap key as outcome-unknown.
 - **client:** send the required `{}` body for a default portal mint.
 
+## [0.6.0](https://github.com/layervai/qurl-typescript/compare/qurl-v0.5.0...qurl-v0.6.0) (2026-09-07)
+
+
+### ⚠ BREAKING CHANGES
+
+* **client:** align Connector resource lifecycle with Go ([#247](https://github.com/layervai/qurl-typescript/issues/247))
+
+### Features
+
+* **client:** align Connector resource lifecycle with Go ([#247](https://github.com/layervai/qurl-typescript/issues/247)) ([e6dfcb6](https://github.com/layervai/qurl-typescript/commit/e6dfcb6bc509150cf140f85aad7e835d2173539c))
+
 ## [0.5.0](https://github.com/layervai/qurl-typescript/compare/qurl-v0.4.0...qurl-v0.5.0) (2026-09-07)
 
 
