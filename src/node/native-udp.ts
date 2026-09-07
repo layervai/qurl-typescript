@@ -12,10 +12,10 @@ import {
 } from "./nhp-wire.js";
 import type { ValidatedCell } from "./deployment.js";
 
-// Keep these defaults exported inside the Node implementation so the portal
-// lifecycle can derive one bounded whole-open deadline from the same values.
-export const NATIVE_DEFAULT_TIMEOUT_MS = 3_000;
-export const NATIVE_DEFAULT_MAX_ADDRESSES = 3;
+// These are internal per-address exchange bounds. PortalOpener applies its own
+// whole-open deadline and does not expose per-address tuning.
+const NATIVE_DEFAULT_TIMEOUT_MS = 3_000;
+const NATIVE_DEFAULT_MAX_ADDRESSES = 3;
 
 const ipv4Denied = new BlockList();
 // Keep this set in lockstep with qurl-go's nonRoutablePrefixes plus the
@@ -100,9 +100,9 @@ for (const [network, prefix] of [
 
 export interface NativeExchangeOptions {
   readonly signal?: AbortSignal;
-  /** Per-address timeout; serial fallback can use maxAddresses times this value. */
+  /** Internal per-address timeout. PortalOpener does not expose this setting. */
   readonly timeoutMs?: number;
-  /** Maximum number of resolved addresses tried serially. */
+  /** Internal serial-address cap. PortalOpener does not expose this setting. */
   readonly maxAddresses?: number;
 }
 
@@ -161,7 +161,7 @@ async function nativeKnockWithRuntime(
           options.signal,
         );
         const reply = runtime.decryptReply(devicePrivateKey, cell.serverPublicKey, packet);
-        // NHP 1.1 COOKIE is a stateless busy response. Go intentionally does
+        // NHP COOKIE is a stateless busy response. Go intentionally does
         // not bind its counter to the request; only an ACK must match it.
         if (reply.type === NHP_TYPE_COOKIE) return reply;
         if (reply.counter !== built.counter) {

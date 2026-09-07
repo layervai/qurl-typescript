@@ -4,16 +4,24 @@ export {
   PortalConfigurationError,
   PortalDenyError,
   PortalInvalidReplyError,
+  PortalOpenerClosedError,
+  PortalOpenerNotReadyError,
+  PortalOpenerNotStartedError,
+  PortalOpenTimeoutError,
+  PortalRedirectError,
   PortalStateError,
+  PortalTargetChangedError,
+  PortalTooManyRedirectsError,
   PortalVerificationError,
 } from "./node/portal-opener.js";
 export type {
   CreatePortalOpenerOptions,
   PortalFetchOptions,
   PortalOpener,
-  PortalRenewalFailure,
+  PortalOpenerFailureClass,
+  PortalOpenerHealth,
+  PortalOpenerState,
   PortalRequestBuilder,
-  PortalSessionHealth,
   PortalStartOptions,
 } from "./node/portal-opener.js";
 export type {

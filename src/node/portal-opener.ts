@@ -1,4 +1,5 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
+import { setMaxListeners } from "node:events";
 import type { NHPMessage } from "./nhp-wire.js";
 import { NHP_MAX_BODY_SIZE, NHP_TYPE_ACK, NHP_TYPE_COOKIE } from "./nhp-wire.js";
 import {
@@ -8,24 +9,19 @@ import {
   type ValidatedCell,
   type ValidatedDeployment,
 } from "./deployment.js";
-import {
-  nativeKnock,
-  NATIVE_DEFAULT_MAX_ADDRESSES,
-  NATIVE_DEFAULT_TIMEOUT_MS,
-  type NativeExchangeOptions,
-} from "./native-udp.js";
+import { nativeKnock, type NativeExchangeOptions } from "./native-udp.js";
 import { isStrictJsonObject, parseStrictJson, type StrictJsonValue } from "./strict-json.js";
 import { verifyQv2Link, type VerifiedQv2Link } from "./qv2.js";
 
 const SESSION_COOKIE = "qurl_vsession";
 const MAX_REDIRECT_REQUESTS = 10;
-const RENEWAL_NUMERATOR = 3;
-const RENEWAL_DENOMINATOR = 4;
-const MAX_BACKGROUND_RENEWAL_ATTEMPTS = 4;
-const MIN_BACKGROUND_RETRY_MS = 100;
-// qurl-go bounds the full portal open at 15 seconds. Larger caller-selected
-// per-address budgets remain usable, but every DNS plus UDP sequence is finite.
 const DEFAULT_OPEN_TIMEOUT_MS = 15_000;
+const MAX_OPEN_TIMEOUT_MS = 60_000;
+const MIN_RENEWAL_GAP_MS = 5_000;
+const MIN_RENEWAL_LEAD_MS = 5_000;
+const MAX_RENEWAL_LEAD_MS = 60_000;
+const INITIAL_RETRY_MS = 500;
+const MAX_RETRY_MS = 2_000;
 // Node changes a larger setTimeout delay to 1 ms. Clamp long grants so an
 // authenticated but unexpected lifetime cannot create a hot renewal loop.
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
@@ -33,16 +29,14 @@ const MAX_ACK_BODY_BYTES = 4_096;
 const UINT64_MAX = (1n << 64n) - 1n;
 
 export interface CreatePortalOpenerOptions {
-  /** Full qv2t1 qURL. The opener verifies and then drops this immutable string. */
+  /** Full qv2t1 qURL. The opener re-verifies it before each native open. */
   readonly qurl: string;
-  /** Native-only is deliberate. There is no relay or HTTP-resolve fallback. */
-  readonly transport: "native-only";
-  /** Public deployment trust. Omit to load QURL_DEPLOYMENT once at construction. */
+  /** Public deployment trust. Omit to load QURL_DEPLOYMENT on the first start. */
   readonly deployment?: PortalDeployment;
-  /** Per-address UDP attempt timeout. Use start({ signal }) for one overall deadline. */
-  readonly timeoutMs?: number;
-  /** Maximum serial address attempts for one native exchange. */
-  readonly maxAddresses?: number;
+  /** Whole-operation deadline for each NHP open. The default is 15 seconds. */
+  readonly openTimeoutMs?: number;
+  /** Protected-content fetch implementation. Native NHP opening never uses it. */
+  readonly fetch?: typeof globalThis.fetch;
 }
 
 export interface PortalStartOptions {
@@ -56,18 +50,20 @@ export interface PortalFetchOptions {
   readonly redirects?: "follow" | "error";
 }
 
-export type PortalRenewalFailure = {
-  readonly kind: "transport" | "busy" | "denied" | "invalid_reply" | "local_state";
-};
+export type PortalOpenerState = "new" | "starting" | "ready" | "degraded" | "closed";
 
-export type PortalSessionHealth =
-  | { readonly state: "idle" | "starting" | "closed" }
-  | {
-      readonly state: "healthy" | "renewing" | "degraded" | "expired";
-      readonly expiresInMs: number;
-      readonly backgroundAttempts: number;
-      readonly renewalFailure?: PortalRenewalFailure;
-    };
+export type PortalOpenerFailureClass = "" | "open_failed" | "target_changed";
+
+/** Secret-free, nonblocking lifecycle snapshot. */
+export interface PortalOpenerHealth {
+  readonly state: PortalOpenerState;
+  readonly ready: boolean;
+  readonly expiresAt?: Date;
+  readonly renewAt?: Date;
+  readonly lastOpenSucceededAt?: Date;
+  readonly lastFailureClass: PortalOpenerFailureClass;
+  readonly consecutiveFailures: number;
+}
 
 export interface PortalOpener {
   /** Open now and schedule renewal before the admission expires. */
@@ -75,7 +71,7 @@ export interface PortalOpener {
   /** Start a fetch at the exact ACK URL. Same-origin redirects follow only when allowed. */
   fetch(init?: RequestInit | PortalRequestBuilder, options?: PortalFetchOptions): Promise<Response>;
   /** Read local session state. This method does no I/O and exposes no capability. */
-  health(): PortalSessionHealth;
+  health(): PortalOpenerHealth;
   /** Stop renewal and wipe mutable private-key, visitor-secret, and token buffers. */
   close(): Promise<void>;
 }
@@ -111,6 +107,55 @@ export class PortalStateError extends Error {
   }
 }
 
+export class PortalOpenerNotStartedError extends PortalStateError {
+  constructor() {
+    super("portal opener has not started");
+    this.name = "PortalOpenerNotStartedError";
+  }
+}
+
+export class PortalOpenerNotReadyError extends PortalStateError {
+  constructor(options?: ErrorOptions) {
+    super("portal opener has no active session", options);
+    this.name = "PortalOpenerNotReadyError";
+  }
+}
+
+export class PortalOpenerClosedError extends PortalStateError {
+  constructor(options?: ErrorOptions) {
+    super("portal opener is closed", options);
+    this.name = "PortalOpenerClosedError";
+  }
+}
+
+export class PortalOpenTimeoutError extends PortalStateError {
+  constructor() {
+    super("native NHP open exceeded its overall deadline");
+    this.name = "PortalOpenTimeoutError";
+  }
+}
+
+export class PortalTargetChangedError extends PortalStateError {
+  constructor() {
+    super("portal renewal changed the authenticated target");
+    this.name = "PortalTargetChangedError";
+  }
+}
+
+export class PortalRedirectError extends PortalStateError {
+  constructor(message = "protected request redirect refused", options?: ErrorOptions) {
+    super(message, options);
+    this.name = "PortalRedirectError";
+  }
+}
+
+export class PortalTooManyRedirectsError extends PortalStateError {
+  constructor() {
+    super(`portal fetch stopped at the ${MAX_REDIRECT_REQUESTS}-request redirect limit`);
+    this.name = "PortalTooManyRedirectsError";
+  }
+}
+
 export class PortalBusyError extends PortalStateError {
   constructor() {
     super("qURL platform is busy; retry start later");
@@ -134,18 +179,32 @@ interface PortalRuntime {
   ) => Promise<NHPMessage>;
   readonly fetch: typeof globalThis.fetch;
   readonly nowNanos: () => bigint;
-  readonly randomFraction: () => number;
+  readonly nowEpochMs: () => number;
   readonly setTimer: (callback: () => void, delayMs: number) => NodeJS.Timeout;
   readonly clearTimer: (timer: NodeJS.Timeout) => void;
   readonly setDeadlineTimer: (callback: () => void, delayMs: number) => NodeJS.Timeout;
   readonly clearDeadlineTimer: (timer: NodeJS.Timeout) => void;
 }
 
+const defaultContentFetch: typeof globalThis.fetch = (input, init) => {
+  // Resolve lazily so importing the Node entry point does not require global
+  // Fetch when a consumer supplies its own protected-content implementation.
+  const implementation = globalThis.fetch as typeof globalThis.fetch | undefined;
+  if (typeof implementation !== "function") {
+    return Promise.reject(
+      new PortalConfigurationError(
+        "portal fetch requires global Fetch or CreatePortalOpenerOptions.fetch",
+      ),
+    );
+  }
+  return implementation.call(globalThis, input, init);
+};
+
 const defaultRuntime: PortalRuntime = {
   knock: nativeKnock,
-  fetch: globalThis.fetch.bind(globalThis),
+  fetch: defaultContentFetch,
   nowNanos: () => process.hrtime.bigint(),
-  randomFraction: () => randomBytes(2).readUInt16BE(0) / 0xffff,
+  nowEpochMs: () => Date.now(),
   setTimer: (callback, delayMs) => setTimeout(callback, delayMs),
   clearTimer: (timer) => clearTimeout(timer),
   setDeadlineTimer: (callback, delayMs) => setTimeout(callback, delayMs),
@@ -163,156 +222,120 @@ export function createPortalOpenerWithRuntime(
   if (!options || typeof options !== "object") {
     throw new PortalConfigurationError("native portal opener options are required");
   }
-  if (options.transport !== "native-only") {
-    throw new PortalConfigurationError("native portal opener transport must be native-only");
-  }
-  if (typeof options.qurl !== "string" || options.qurl === "") {
+  if (typeof options.qurl !== "string" || options.qurl.trim() === "") {
     throw new PortalConfigurationError("native portal opener qurl must be a non-empty string");
   }
   if (
-    options.timeoutMs !== undefined &&
-    (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0 || options.timeoutMs > 60_000)
+    options.openTimeoutMs !== undefined &&
+    (!Number.isFinite(options.openTimeoutMs) ||
+      options.openTimeoutMs < 1 ||
+      options.openTimeoutMs > MAX_OPEN_TIMEOUT_MS)
   ) {
-    throw new PortalConfigurationError("native portal opener timeoutMs must be from 1 to 60000");
+    throw new PortalConfigurationError(
+      "native portal opener openTimeoutMs must be from 1 to 60000",
+    );
   }
-  if (
-    options.maxAddresses !== undefined &&
-    (!Number.isInteger(options.maxAddresses) ||
-      options.maxAddresses < 1 ||
-      options.maxAddresses > 16)
-  ) {
-    throw new PortalConfigurationError("native portal opener maxAddresses must be from 1 to 16");
+  if (options.fetch !== undefined && typeof options.fetch !== "function") {
+    throw new PortalConfigurationError("native portal opener fetch must be a function");
   }
-
-  let deployment: ValidatedDeployment;
-  try {
-    deployment = loadPortalDeployment(options.deployment);
-  } catch (error) {
-    throw new PortalConfigurationError("native qURL deployment trust is invalid", {
-      cause: error,
-    });
-  }
-  let link: VerifiedQv2Link;
-  try {
-    link = verifyQv2Link(options.qurl, deployment.issuers);
-  } catch (error) {
-    throw new PortalVerificationError("native qURL credential validation failed", {
-      cause: error,
-    });
-  }
-  return constructVerifiedPortalOpener(options, link, deployment, runtime);
-}
-
-function constructVerifiedPortalOpener(
-  options: CreatePortalOpenerOptions,
-  link: VerifiedQv2Link,
-  deployment: ValidatedDeployment,
-  runtime: PortalRuntime,
-): PortalOpener {
-  let retainDevicePrivateKey = false;
-  try {
-    const cell = deployment.cells.get(fingerprintKey(link.claims.cellPublicKey));
-    if (!cell) {
-      throw new PortalConfigurationError("verified qURL names a cell outside the native catalog");
-    }
-    // The 64-bit fingerprint is only an efficient map index. The signed cell
-    // identity must still match the exact deployment key used by Noise.
-    if (!timingSafeEqual(cell.serverPublicKey, link.claims.cellPublicKey)) {
-      throw new PortalConfigurationError("deployment cell key does not match the signed cell key");
-    }
-    const opener = new NativePortalOpener(options, link, cell, runtime);
-    retainDevicePrivateKey = true;
-    return opener;
-  } finally {
-    if (!retainDevicePrivateKey) link.devicePrivateKey.fill(0);
-  }
+  return new NativePortalOpener(options, runtime);
 }
 
 type ActiveGrant = {
   readonly resourceUrl: string;
   readonly origin: string;
   readonly expiresAtNanos: bigint;
+  readonly renewAtNanos: bigint;
+  readonly expiresAtEpochMs: number;
+  readonly renewAtEpochMs: number;
+  readonly openedAtEpochMs: number;
   readonly token: Buffer;
 };
 
+type InternalState = "new" | "starting" | "running" | "degraded" | "closed";
+
 class NativePortalOpener implements PortalOpener {
-  readonly #link: VerifiedQv2Link;
-  readonly #cell: ValidatedCell;
   readonly #runtime: PortalRuntime;
-  readonly #exchangeOptions: Omit<NativeExchangeOptions, "signal">;
+  readonly #fetch: typeof globalThis.fetch;
+  readonly #explicitDeployment?: PortalDeployment;
   readonly #openTimeoutMs: number;
-  readonly #sessionSecret: Buffer;
+  #qurl: string;
+  #resolvedDeployment?: ValidatedDeployment;
+  #sessionSecret?: Buffer;
   #grant?: ActiveGrant;
   #boundResourceUrl?: string;
+  #startPromise?: Promise<void>;
   #openPromise?: Promise<void>;
   #openController?: AbortController;
   #closePromise?: Promise<void>;
   #renewalTimer?: NodeJS.Timeout;
-  #renewalError?: unknown;
-  #renewalFailure?: PortalRenewalFailure;
-  #backgroundAttempts = 0;
-  #renewing = false;
-  #closed = false;
+  #renewalCycle?: Promise<void>;
+  readonly #lifecycleController = new AbortController();
+  #state: InternalState = "new";
+  #startingRecovery = false;
+  #expiresAtEpochMs?: number;
+  #renewAtEpochMs?: number;
+  #lastOpenSucceededAt?: number;
+  #lastFailureClass: PortalOpenerFailureClass = "";
+  #consecutiveFailures = 0;
 
-  constructor(
-    options: CreatePortalOpenerOptions,
-    link: VerifiedQv2Link,
-    cell: ValidatedCell,
-    runtime: PortalRuntime,
-  ) {
-    this.#link = link;
-    this.#cell = cell;
+  constructor(options: CreatePortalOpenerOptions, runtime: PortalRuntime) {
+    this.#qurl = options.qurl;
+    this.#explicitDeployment = options.deployment;
     this.#runtime = runtime;
-    this.#exchangeOptions = { timeoutMs: options.timeoutMs, maxAddresses: options.maxAddresses };
-    const attemptTimeoutMs = options.timeoutMs ?? NATIVE_DEFAULT_TIMEOUT_MS;
-    const maximumAddresses = options.maxAddresses ?? NATIVE_DEFAULT_MAX_ADDRESSES;
-    this.#openTimeoutMs = Math.max(
-      DEFAULT_OPEN_TIMEOUT_MS,
-      attemptTimeoutMs * (maximumAddresses + 1),
-    );
-    this.#sessionSecret = randomBytes(32);
-    try {
-      // A locally valid qv2 credential can still be too large for one native
-      // NHP packet. Reject it before start or DNS and wipe the sizing copy.
-      const probe = this.#knockBody();
-      probe.fill(0);
-    } catch (error) {
-      this.#sessionSecret.fill(0);
-      throw error;
-    }
+    this.#fetch = options.fetch ?? runtime.fetch;
+    this.#openTimeoutMs = options.openTimeoutMs ?? DEFAULT_OPEN_TIMEOUT_MS;
+    // Native Fetch attaches one abort listener per in-flight request. This
+    // signal is private and intentionally shared so close can stop all work.
+    setMaxListeners(0, this.#lifecycleController.signal);
   }
 
   async start(options: PortalStartOptions = {}): Promise<void> {
     this.#requireOpen();
-    if (
-      this.#grant &&
-      this.#runtime.nowNanos() < this.#grant.expiresAtNanos &&
-      !this.#renewalFailure
-    ) {
-      return;
-    }
+    if (this.#state === "running" && this.#grant && this.#isGrantReady(this.#grant)) return;
     if (options.signal?.aborted) {
       throw options.signal.reason ?? new DOMException("Aborted", "AbortError");
     }
-    const sharedOpen = this.#openPromise !== undefined;
-    if (!sharedOpen && this.#renewalTimer) {
-      // Explicit lifecycle recovery takes ownership from the pending retry.
-      // Cancel it before resetting the bounded background-attempt counter.
-      this.#runtime.clearTimer(this.#renewalTimer);
-      this.#renewalTimer = undefined;
+
+    if (this.#state === "running" && !this.#isGrantReady(this.#grant) && this.#renewalCycle) {
+      await waitForPromise(this.#renewalCycle, options.signal);
+      return this.start(options);
     }
+
+    const sharedStart = this.#startPromise;
+    if (sharedStart) return waitForPromise(sharedStart, options.signal);
+
+    let attempt!: Promise<void>;
+    attempt = this.#runStart(options.signal).finally(() => {
+      if (this.#startPromise === attempt) this.#startPromise = undefined;
+    });
+    this.#startPromise = attempt;
+    return attempt;
+  }
+
+  async #runStart(signal?: AbortSignal): Promise<void> {
+    // A pending renewal wait always has a ready grant, so public start() returns
+    // before reaching this explicit-open path. Keep that invariant if start()
+    // admission rules change: clearing its timer would strand #renewalCycle.
+    if (this.#renewalTimer) this.#runtime.clearTimer(this.#renewalTimer);
+    this.#renewalTimer = undefined;
+    const recovery = this.#state === "degraded" || this.#state === "running";
+    this.#startingRecovery = recovery;
+    this.#state = "starting";
     try {
-      await this.#openSingleFlight(options.signal);
+      await this.#openSingleFlight(signal);
     } catch (error) {
-      // A caller waiting on an existing background open observes that open's
-      // own health update. An explicit recovery owner replaces stale
-      // diagnostics and re-arms bounded background recovery while the old
-      // grant is usable. The timer is asynchronous; start never sleeps.
-      if (!sharedOpen && this.#grant && !this.#closed) {
-        this.#backgroundAttempts = 0;
-        this.#handleRenewalFailure(error);
+      if (this.#isClosed()) throw new PortalOpenerClosedError({ cause: error });
+      this.#clearGrant();
+      if (signal?.aborted && error === signal.reason) {
+        this.#state = recovery ? "degraded" : "new";
+      } else {
+        this.#state = "degraded";
+        this.#recordFailure(error);
       }
       throw error;
+    } finally {
+      this.#startingRecovery = false;
     }
   }
 
@@ -320,163 +343,204 @@ class NativePortalOpener implements PortalOpener {
     input: RequestInit | PortalRequestBuilder = {},
     options: PortalFetchOptions = {},
   ): Promise<Response> {
-    this.#requireOpen();
-    if (
-      options.redirects !== undefined &&
-      options.redirects !== "follow" &&
-      options.redirects !== "error"
-    ) {
-      throw new PortalStateError("portal fetch redirects must be follow or error");
-    }
-    const grant = this.#grant;
-    if (!grant) throw new PortalStateError("portal opener must be started before fetch");
-    if (this.#runtime.nowNanos() >= grant.expiresAtNanos) {
-      throw new PortalStateError("portal admission expired; call start to open it again", {
-        cause: this.#renewalError,
-      });
-    }
-    // A successful renewal or close wipes the mutable grant token. Keep the
-    // unavoidable request string local to this fetch so every redirect leg has
-    // one stable credential snapshot.
-    const sessionToken = grant.token.toString("ascii");
-    const init = typeof input === "function" ? input(new URL(grant.resourceUrl)) : input;
-    if (!init || typeof init !== "object") {
-      throw new PortalStateError("portal request builder must return RequestInit");
-    }
-    if (Object.prototype.hasOwnProperty.call(init, "redirect") && init.redirect !== undefined) {
-      throw new PortalStateError(
-        "portal fetch owns redirect handling; redirect overrides are not allowed",
-      );
-    }
-    let currentUrl = grant.resourceUrl;
-    let method = (init.method ?? "GET").toUpperCase();
-    let body = init.body;
-    let headers = new Headers(init.headers);
-    for (let requestCount = 1; ; requestCount++) {
-      this.#requireOpen();
-      const requestHeaders = authorizeHeaders(headers, sessionToken);
-      const response = await this.#runtime.fetch(currentUrl, {
-        ...init,
-        method,
-        body,
-        headers: requestHeaders,
-        redirect: "manual",
-      });
-      if (response.redirected === true || !responseMatchesRequestUrl(response.url, currentUrl)) {
-        await discardResponseBody(response);
-        throw new PortalStateError(
-          "portal fetch refused a response that bypassed its manual redirect policy",
+    let body: RequestInit["body"] = undefined;
+    try {
+      // A direct RequestInit already belongs to this call. Capture its body
+      // before any option or lifecycle rejection so every pre-fetch exit can
+      // release a caller-owned stream. Builders remain lazy until a grant is
+      // ready and therefore have no body to release on earlier exits.
+      if (typeof input !== "function" && input && typeof input === "object") {
+        body = input.body;
+      }
+      if (this.#state === "closed") throw new PortalOpenerClosedError();
+      if (
+        options.redirects !== undefined &&
+        options.redirects !== "follow" &&
+        options.redirects !== "error"
+      ) {
+        throw new PortalConfigurationError("portal fetch redirects must be follow or error");
+      }
+      if (this.#state === "new" || (this.#state === "starting" && !this.#startingRecovery)) {
+        throw new PortalOpenerNotStartedError();
+      }
+      const grant = this.#grant;
+      if (this.#state !== "running" || !this.#isGrantReady(grant)) {
+        throw new PortalOpenerNotReadyError();
+      }
+      // A successful renewal or close wipes the mutable grant token. Keep the
+      // unavoidable request string local to this fetch so every redirect leg has
+      // one stable credential snapshot.
+      const sessionToken = grant.token.toString("ascii");
+      const init = typeof input === "function" ? input(new URL(grant.resourceUrl)) : input;
+      if (!init || typeof init !== "object") {
+        throw new PortalConfigurationError("portal request builder must return RequestInit");
+      }
+      if (typeof input === "function") body = init.body;
+      if (Object.prototype.hasOwnProperty.call(init, "redirect") && init.redirect !== undefined) {
+        throw new PortalConfigurationError(
+          "portal fetch owns redirect handling; redirect overrides are not allowed",
         );
       }
-      if (![301, 302, 303, 307, 308].includes(response.status)) return response;
-      if (options.redirects === "error") {
-        await discardResponseBody(response);
-        throw new PortalStateError("portal fetch refused a redirect for a fixed signed request");
-      }
-      const location = response.headers.get("location");
-      if (!location) return response;
-      if (requestCount >= MAX_REDIRECT_REQUESTS) {
-        await discardResponseBody(response);
-        throw new PortalStateError("portal fetch stopped at the 10-request redirect limit");
-      }
-      let next: URL;
-      try {
-        next = new URL(location, currentUrl);
-      } catch {
-        await discardResponseBody(response);
-        throw new PortalStateError("portal fetch refused an invalid redirect target");
-      }
-      let nextOrigin: string;
-      try {
-        nextOrigin = normalizedHttpsOrigin(next);
-      } catch {
-        await discardResponseBody(response);
-        throw new PortalStateError("portal fetch refused an invalid redirect target");
-      }
-      if (nextOrigin !== grant.origin) {
-        await discardResponseBody(response);
-        throw new PortalStateError(
-          "portal fetch refused a redirect outside the authenticated origin",
+      let currentUrl = grant.resourceUrl;
+      let method = (init.method ?? "GET").toUpperCase();
+      let headers = new Headers(init.headers);
+      if (headers.has("host")) {
+        throw new PortalConfigurationError(
+          "portal fetch owns the Host derived from the authenticated target",
         );
       }
+      // Use the lifecycle signal directly when there is no caller signal. When
+      // both are present, native composition avoids listener fanout and remains
+      // active after headers arrive, preserving Fetch response-body semantics.
+      const requestSignal = init.signal
+        ? AbortSignal.any([init.signal, this.#lifecycleController.signal])
+        : this.#lifecycleController.signal;
+      for (let requestCount = 1; ; requestCount++) {
+        this.#requireOpen();
+        throwIfAborted(requestSignal);
+        const requestHeaders = authorizeHeaders(headers, sessionToken);
+        const response = await this.#fetch.call(globalThis, currentUrl, {
+          ...init,
+          method,
+          body,
+          headers: requestHeaders,
+          redirect: "manual",
+          signal: requestSignal,
+        });
+        if (requestSignal.aborted) {
+          await discardResponseBody(response);
+          throwIfAborted(requestSignal);
+        }
+        if (response.redirected === true || !responseMatchesRequestUrl(response.url, currentUrl)) {
+          await discardResponseBody(response);
+          throw new PortalRedirectError(
+            "portal fetch refused a response that bypassed its manual redirect policy",
+          );
+        }
+        if (![301, 302, 303, 307, 308].includes(response.status)) return response;
+        const location = response.headers.get("location");
+        if (!location) return response;
+        if (options.redirects === "error") {
+          await discardResponseBody(response);
+          throw new PortalRedirectError(
+            "portal fetch refused a redirect for a fixed signed request",
+          );
+        }
+        if (requestCount >= MAX_REDIRECT_REQUESTS) {
+          await discardResponseBody(response);
+          throw new PortalTooManyRedirectsError();
+        }
+        let next: URL;
+        try {
+          next = new URL(location, currentUrl);
+        } catch {
+          await discardResponseBody(response);
+          throw new PortalRedirectError("portal fetch refused an invalid redirect target");
+        }
+        // Fragments are never part of an HTTP request target, and Fetch omits
+        // them from Response.url. Normalize before the next request and its
+        // manual-redirect bypass check.
+        next.hash = "";
+        let nextOrigin: string;
+        try {
+          nextOrigin = normalizedHttpsOrigin(next);
+        } catch {
+          await discardResponseBody(response);
+          throw new PortalRedirectError("portal fetch refused an invalid redirect target");
+        }
+        if (nextOrigin !== grant.origin) {
+          await discardResponseBody(response);
+          throw new PortalRedirectError(
+            "portal fetch refused a redirect outside the authenticated origin",
+          );
+        }
 
-      if ([301, 302, 303].includes(response.status) && method !== "GET" && method !== "HEAD") {
-        method = "GET";
-        body = undefined;
-        headers = new Headers(headers);
-        headers.delete("content-length");
-        headers.delete("content-type");
-      } else if ((response.status === 307 || response.status === 308) && body !== undefined) {
-        if (!isReplayableBody(body)) return response;
+        if ([301, 302, 303].includes(response.status) && method !== "GET" && method !== "HEAD") {
+          method = "GET";
+          body = undefined;
+          headers = new Headers(headers);
+          headers.delete("content-length");
+          headers.delete("content-type");
+        } else if ((response.status === 307 || response.status === 308) && body !== undefined) {
+          if (!isReplayableBody(body)) return response;
+        }
+        await discardResponseBody(response);
+        currentUrl = next.href;
       }
-      await discardResponseBody(response);
-      currentUrl = next.href;
+    } catch (error) {
+      await discardRequestBody(body);
+      if (error instanceof PortalOpenerClosedError) throw error;
+      if (this.#isClosed()) throw new PortalOpenerClosedError({ cause: error });
+      throw error;
     }
   }
 
-  health(): PortalSessionHealth {
-    if (this.#closed) return { state: "closed" };
-    if (this.#openPromise && !this.#grant) return { state: "starting" };
-    const grant = this.#grant;
-    if (!grant) return { state: "idle" };
-    const remainingNanos = grant.expiresAtNanos - this.#runtime.nowNanos();
-    if (remainingNanos <= 0n) {
-      return {
-        state: "expired",
-        expiresInMs: 0,
-        backgroundAttempts: this.#backgroundAttempts,
-        renewalFailure: this.#renewalFailure,
-      };
-    }
-    const expiresInMs = Number((remainingNanos + 999_999n) / 1_000_000n);
+  health(): PortalOpenerHealth {
+    const ready = this.#state === "running" && this.#isGrantReady(this.#grant);
+    let state: PortalOpenerState;
+    if (this.#state === "closed") state = "closed";
+    else if (this.#state === "new") state = "new";
+    else if (this.#state === "starting" && !this.#startingRecovery) state = "starting";
+    else if (ready) state = "ready";
+    else state = "degraded";
     return {
-      state: this.#renewing ? "renewing" : this.#renewalFailure ? "degraded" : "healthy",
-      expiresInMs,
-      backgroundAttempts: this.#backgroundAttempts,
-      renewalFailure: this.#renewalFailure,
+      state,
+      ready,
+      expiresAt: dateFromEpoch(this.#expiresAtEpochMs),
+      renewAt: dateFromEpoch(this.#renewAtEpochMs),
+      lastOpenSucceededAt: dateFromEpoch(this.#lastOpenSucceededAt),
+      lastFailureClass: this.#lastFailureClass,
+      consecutiveFailures: this.#consecutiveFailures,
     };
   }
 
   close(): Promise<void> {
     if (this.#closePromise) return this.#closePromise;
-    this.#closed = true;
+    this.#state = "closed";
     if (this.#renewalTimer) this.#runtime.clearTimer(this.#renewalTimer);
     this.#renewalTimer = undefined;
+    this.#expiresAtEpochMs = undefined;
+    this.#renewAtEpochMs = undefined;
+    this.#lastOpenSucceededAt = undefined;
+    this.#lastFailureClass = "";
+    this.#consecutiveFailures = 0;
+    this.#startingRecovery = false;
+    this.#lifecycleController.abort(new PortalOpenerClosedError());
+    this.#openController?.abort(new PortalOpenerClosedError());
     const active = this.#openPromise;
-    this.#openController?.abort(
-      new PortalStateError("portal opener closed while a native open was in progress"),
-    );
+    const renewal = this.#renewalCycle;
     const closing = (async () => {
-      try {
-        await active;
-      } catch {
-        // The initiating caller receives this error. close is idempotent cleanup.
-      } finally {
-        this.#grant?.token.fill(0);
-        this.#grant = undefined;
-        this.#boundResourceUrl = undefined;
-        this.#link.devicePrivateKey.fill(0);
-        this.#sessionSecret.fill(0);
-        this.#renewalError = undefined;
-        this.#renewalFailure = undefined;
-        this.#backgroundAttempts = 0;
-        this.#renewing = false;
-      }
+      await Promise.allSettled([active, renewal].filter((item) => item !== undefined));
+      this.#clearGrant();
+      this.#boundResourceUrl = undefined;
+      this.#qurl = "";
+      this.#sessionSecret?.fill(0);
+      this.#sessionSecret = undefined;
+      this.#resolvedDeployment = undefined;
     })();
     this.#closePromise = closing;
     return closing;
   }
 
-  #openSingleFlight(signal?: AbortSignal): Promise<void> {
+  #openSingleFlight(signal?: AbortSignal, expiresAtNanos?: bigint): Promise<void> {
     this.#requireOpen();
     const active = this.#openPromise;
     if (active) return waitForPromise(active, signal);
 
     const controller = new AbortController();
     const removeAbortListener = linkAbortSignal(signal, controller);
+    const remainingMs =
+      expiresAtNanos === undefined
+        ? this.#openTimeoutMs
+        : nanosToCeilingMilliseconds(expiresAtNanos - this.#runtime.nowNanos());
+    const deadlineMs = Math.min(this.#openTimeoutMs, remainingMs);
+    if (deadlineMs <= 0) {
+      removeAbortListener();
+      return Promise.reject(new PortalOpenTimeoutError());
+    }
     const deadline = this.#runtime.setDeadlineTimer(() => {
-      controller.abort(new Error("native NHP open exceeded its overall deadline"));
-    }, this.#openTimeoutMs);
+      controller.abort(new PortalOpenTimeoutError());
+    }, deadlineMs);
     deadline.unref?.();
     const current = this.#performOpen(controller.signal).finally(() => {
       this.#runtime.clearDeadlineTimer(deadline);
@@ -493,115 +557,228 @@ class NativePortalOpener implements PortalOpener {
 
   async #performOpen(signal: AbortSignal): Promise<void> {
     this.#requireOpen();
-    const body = this.#knockBody();
+    const deployment = this.#loadDeployment();
+    const link = this.#verifyLink(deployment);
     try {
+      const cell = validatedCellForLink(link, deployment);
+      this.#sessionSecret ??= randomBytes(32);
+      const body = this.#knockBody(link);
       // Start the local validity bound before DNS and UDP I/O. The cell starts
       // its grant no earlier than this, so this client never assumes extra RTT.
-      const openedAtNanos = this.#runtime.nowNanos();
-      const reply = await this.#runtime.knock(this.#cell, this.#link.devicePrivateKey, body, {
-        ...this.#exchangeOptions,
-        signal,
-      });
+      const startedAtNanos = this.#runtime.nowNanos();
+      const startedAtEpochMs = this.#runtime.nowEpochMs();
       try {
-        if (this.#closed) {
-          throw new PortalStateError("portal opener was closed while start was in progress");
-        }
-        if (reply.type === NHP_TYPE_COOKIE) {
-          throw new PortalBusyError();
-        }
-        if (reply.type !== NHP_TYPE_ACK) {
-          throw new PortalInvalidReplyError("native NHP returned an unexpected reply type");
-        }
-        const grant = parseGrant(reply.body, openedAtNanos);
-        if (this.#boundResourceUrl !== undefined && grant.resourceUrl !== this.#boundResourceUrl) {
-          grant.token.fill(0);
-          throw new PortalInvalidReplyError(
-            "native NHP renewal changed the authenticated resource URL",
+        const reply = await this.#runtime.knock(cell, link.devicePrivateKey, body, {
+          signal,
+        });
+        try {
+          this.#requireOpen();
+          if (reply.type === NHP_TYPE_COOKIE) throw new PortalBusyError();
+          if (reply.type !== NHP_TYPE_ACK) {
+            throw new PortalInvalidReplyError("native NHP returned an unexpected reply type");
+          }
+          const openedAtNanos = this.#runtime.nowNanos();
+          const openedAtEpochMs = this.#runtime.nowEpochMs();
+          const grant = parseGrant(
+            reply.body,
+            startedAtNanos,
+            startedAtEpochMs,
+            openedAtNanos,
+            openedAtEpochMs,
           );
+          if (
+            this.#boundResourceUrl !== undefined &&
+            grant.resourceUrl !== this.#boundResourceUrl
+          ) {
+            grant.token.fill(0);
+            throw new PortalTargetChangedError();
+          }
+          if (this.#runtime.nowNanos() >= grant.expiresAtNanos) {
+            grant.token.fill(0);
+            throw new PortalInvalidReplyError(
+              "native NHP admission expired before it became usable",
+            );
+          }
+          this.#resolvedDeployment ??= deployment;
+          this.#installGrant(grant);
+        } finally {
+          // ACK and deny bodies can contain a bearer. Wipe them on every parse path.
+          reply.body.fill(0);
         }
-        if (this.#runtime.nowNanos() >= grant.expiresAtNanos) {
-          grant.token.fill(0);
-          throw new PortalStateError("native NHP admission expired before it became usable");
-        }
-        const old = this.#grant;
-        this.#grant = grant;
-        this.#boundResourceUrl ??= grant.resourceUrl;
-        old?.token.fill(0);
-        this.#renewalError = undefined;
-        this.#renewalFailure = undefined;
-        this.#backgroundAttempts = 0;
-        this.#renewing = false;
-        this.#scheduleRenewal(grant);
       } finally {
-        // ACK and deny bodies can contain a bearer. Wipe them on every parse path.
-        reply.body.fill(0);
+        body.fill(0);
       }
     } finally {
-      body.fill(0);
+      link.devicePrivateKey.fill(0);
     }
   }
 
   #scheduleRenewal(grant: ActiveGrant): void {
     if (this.#renewalTimer) this.#runtime.clearTimer(this.#renewalTimer);
-    // The grant lifetime starts before DNS and UDP I/O. Base renewal on the
-    // actual remaining lifetime so exchange latency cannot move renewal past
-    // the conservative local expiry boundary.
-    const remainingNanos = grant.expiresAtNanos - this.#runtime.nowNanos();
-    const remainingMs = remainingNanos <= 0n ? 0 : Number(remainingNanos / 1_000_000n);
     const delayMs = Math.min(
       MAX_TIMER_DELAY_MS,
-      Math.max(1, Math.floor((remainingMs * RENEWAL_NUMERATOR) / RENEWAL_DENOMINATOR)),
+      Math.max(0, nanosToCeilingMilliseconds(grant.renewAtNanos - this.#runtime.nowNanos())),
     );
-    this.#renewalTimer = this.#runtime.setTimer(() => {
-      this.#renewalTimer = undefined;
-      if (this.#closed) return;
-      this.#renewing = true;
-      this.#backgroundAttempts++;
-      void this.#openSingleFlight().catch((error: unknown) => this.#handleRenewalFailure(error));
+    const timer = this.#runtime.setTimer(() => {
+      if (this.#renewalTimer === timer) this.#renewalTimer = undefined;
+      if (this.#state !== "running" || this.#grant !== grant) return;
+      if (this.#runtime.nowNanos() < grant.renewAtNanos) {
+        this.#scheduleRenewal(grant);
+        return;
+      }
+      const cycle = this.#runRenewalCycle(grant)
+        .catch((error: unknown) => {
+          // A background task must never create an unhandled rejection. An
+          // unexpected internal failure loses readiness instead of risking the
+          // host process or leaving an unsupervised running state.
+          if (this.#isClosed() || this.#grant !== grant) return;
+          this.#recordFailure(error);
+          this.#expireGrant(grant);
+        })
+        .finally(() => {
+          if (this.#renewalCycle === cycle) this.#renewalCycle = undefined;
+        });
+      this.#renewalCycle = cycle;
     }, delayMs);
-    this.#renewalTimer.unref?.();
+    this.#renewalTimer = timer;
+    timer.unref?.();
   }
 
-  #handleRenewalFailure(error: unknown): void {
-    if (this.#closed) return;
-    this.#recordRenewalFailure(error);
-    if (this.#backgroundAttempts >= MAX_BACKGROUND_RENEWAL_ATTEMPTS) return;
-    const grant = this.#grant;
-    if (!grant) return;
-    const delayMs = backgroundRetryDelay(
-      grant.expiresAtNanos - this.#runtime.nowNanos(),
-      MAX_BACKGROUND_RENEWAL_ATTEMPTS - this.#backgroundAttempts,
-      this.#runtime.randomFraction(),
-    );
-    if (delayMs === undefined) return;
-    this.#renewalTimer = this.#runtime.setTimer(() => {
-      this.#renewalTimer = undefined;
-      if (this.#closed) return;
-      this.#renewing = true;
-      this.#backgroundAttempts++;
-      void this.#openSingleFlight().catch((next: unknown) => this.#handleRenewalFailure(next));
-    }, delayMs);
-    this.#renewalTimer.unref?.();
+  async #runRenewalCycle(grant: ActiveGrant): Promise<void> {
+    let delayMs = INITIAL_RETRY_MS;
+    while (this.#state === "running" && this.#grant === grant) {
+      if (!this.#isGrantReady(grant)) {
+        this.#expireGrant(grant);
+        return;
+      }
+      try {
+        await this.#openSingleFlight(this.#lifecycleController.signal, grant.expiresAtNanos);
+        return;
+      } catch (error) {
+        if (this.#isClosed()) return;
+        if (this.#grant !== grant) return;
+        this.#recordFailure(error);
+        if (error instanceof PortalTargetChangedError) {
+          if (!(await this.#waitUntil(grant.expiresAtNanos))) return;
+          this.#expireGrant(grant);
+          return;
+        }
+        const remaining = nanosToCeilingMilliseconds(
+          grant.expiresAtNanos - this.#runtime.nowNanos(),
+        );
+        if (remaining <= 0) continue;
+        if (!(await this.#waitForRenewal(Math.min(delayMs, remaining)))) return;
+        delayMs = Math.min(delayMs * 2, MAX_RETRY_MS);
+      }
+    }
   }
 
-  #recordRenewalFailure(error: unknown): void {
-    this.#renewing = false;
-    this.#renewalError = error;
-    this.#renewalFailure = classifyRenewalFailure(error);
+  #waitForRenewal(delayMs: number): Promise<boolean> {
+    const signal = this.#lifecycleController.signal;
+    if (signal.aborted) return Promise.resolve(false);
+    return new Promise((resolve) => {
+      let settled = false;
+      let timer: NodeJS.Timeout | undefined;
+      const finish = (result: boolean) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener("abort", abort);
+        if (timer && this.#renewalTimer === timer) this.#renewalTimer = undefined;
+        resolve(result);
+      };
+      const abort = () => {
+        if (timer) this.#runtime.clearTimer(timer);
+        finish(false);
+      };
+      timer = this.#runtime.setTimer(() => finish(true), delayMs);
+      if (settled) {
+        this.#runtime.clearTimer(timer);
+        return;
+      }
+      this.#renewalTimer = timer;
+      timer.unref?.();
+      if (signal.aborted) abort();
+      else signal.addEventListener("abort", abort, { once: true });
+    });
   }
 
-  #knockBody(): Uint8Array {
+  async #waitUntil(deadlineNanos: bigint): Promise<boolean> {
+    while (this.#runtime.nowNanos() < deadlineNanos) {
+      const remaining = nanosToCeilingMilliseconds(deadlineNanos - this.#runtime.nowNanos());
+      if (!(await this.#waitForRenewal(Math.min(MAX_TIMER_DELAY_MS, remaining)))) return false;
+    }
+    return true;
+  }
+
+  #installGrant(grant: ActiveGrant): void {
+    this.#clearGrant();
+    this.#grant = grant;
+    this.#boundResourceUrl ??= grant.resourceUrl;
+    this.#expiresAtEpochMs = grant.expiresAtEpochMs;
+    this.#renewAtEpochMs = grant.renewAtEpochMs;
+    this.#lastOpenSucceededAt = grant.openedAtEpochMs;
+    this.#lastFailureClass = "";
+    this.#consecutiveFailures = 0;
+    this.#state = "running";
+    this.#scheduleRenewal(grant);
+  }
+
+  #recordFailure(error: unknown): void {
+    this.#lastFailureClass =
+      error instanceof PortalTargetChangedError ? "target_changed" : "open_failed";
+    this.#consecutiveFailures++;
+  }
+
+  #expireGrant(grant: ActiveGrant): void {
+    if (this.#grant !== grant || this.#state !== "running") return;
+    this.#clearGrant();
+    this.#state = "degraded";
+  }
+
+  #clearGrant(): void {
+    this.#grant?.token.fill(0);
+    this.#grant = undefined;
+  }
+
+  #isGrantReady(grant: ActiveGrant | undefined): grant is ActiveGrant {
+    return grant !== undefined && this.#runtime.nowNanos() < grant.expiresAtNanos;
+  }
+
+  #loadDeployment(): ValidatedDeployment {
+    if (this.#resolvedDeployment) return this.#resolvedDeployment;
+    try {
+      return loadPortalDeployment(this.#explicitDeployment);
+    } catch (error) {
+      throw new PortalConfigurationError("native qURL deployment trust is invalid", {
+        cause: error,
+      });
+    }
+  }
+
+  #verifyLink(deployment: ValidatedDeployment): VerifiedQv2Link {
+    try {
+      return verifyQv2Link(this.#qurl, deployment.issuers);
+    } catch (error) {
+      throw new PortalVerificationError("native qURL credential validation failed", {
+        cause: error,
+      });
+    }
+  }
+
+  #knockBody(link: VerifiedQv2Link): Uint8Array {
+    const sessionSecret = this.#sessionSecret;
+    if (!sessionSecret) throw new PortalStateError("portal opener session is not initialized");
     // Immutable JS strings cannot be zeroized. Keep their lifetime to this one
     // serialization and retain private capability material only in mutable
     // buffers between opens.
     const encoded = JSON.stringify({
       headerType: 1,
       aspId: "qurl",
-      resId: this.#link.claims.resourcePublicKeyB64,
+      resId: link.claims.resourcePublicKeyB64,
       usrData: {
-        qurl_claims_b64: this.#link.claimsB64,
-        qurl_issuer_sig_b64: this.#link.signatureB64,
-        qurl_session_secret: this.#sessionSecret.toString("base64url"),
+        qurl_claims_b64: link.claimsB64,
+        qurl_issuer_sig_b64: link.signatureB64,
+        qurl_session_secret: sessionSecret.toString("base64url"),
       },
     });
     const body = Buffer.from(encoded, "utf8");
@@ -613,11 +790,21 @@ class NativePortalOpener implements PortalOpener {
   }
 
   #requireOpen(): void {
-    if (this.#closed) throw new PortalStateError("portal opener is closed");
+    if (this.#state === "closed") throw new PortalOpenerClosedError();
+  }
+
+  #isClosed(): boolean {
+    return this.#state === "closed";
   }
 }
 
-function parseGrant(body: Uint8Array, nowNanos: bigint): ActiveGrant {
+function parseGrant(
+  body: Uint8Array,
+  startedAtNanos: bigint,
+  startedAtEpochMs: number,
+  openedAtNanos: bigint,
+  openedAtEpochMs: number,
+): ActiveGrant {
   let value: StrictJsonValue;
   try {
     value = parseStrictJson(body, MAX_ACK_BODY_BYTES);
@@ -674,12 +861,57 @@ function parseGrant(body: Uint8Array, nowNanos: bigint): ActiveGrant {
   const tokenString = requireString(value.aspToken, "ACK application token");
   validateSessionToken(tokenString);
   const token = Buffer.from(tokenString, "ascii");
+  const lifetimeNanos = BigInt(openSeconds) * 1_000_000_000n;
+  const expiresAtNanos = startedAtNanos + lifetimeNanos;
+  let renewAtNanos = expiresAtNanos - renewalLeadNanos(lifetimeNanos);
+  const minimumRenewAt = openedAtNanos + BigInt(MIN_RENEWAL_GAP_MS) * 1_000_000n;
+  if (renewAtNanos < minimumRenewAt) renewAtNanos = minimumRenewAt;
+  if (renewAtNanos > expiresAtNanos) renewAtNanos = expiresAtNanos;
   return {
-    resourceUrl,
+    resourceUrl: parsed.href,
     origin,
-    expiresAtNanos: nowNanos + BigInt(openSeconds) * 1_000_000_000n,
+    expiresAtNanos,
+    renewAtNanos,
+    expiresAtEpochMs: startedAtEpochMs + openSeconds * 1_000,
+    renewAtEpochMs: openedAtEpochMs + Number(renewAtNanos - openedAtNanos) / 1_000_000,
+    openedAtEpochMs,
     token,
   };
+}
+
+function renewalLeadNanos(lifetimeNanos: bigint): bigint {
+  let lead = lifetimeNanos / 5n;
+  const minimum = BigInt(MIN_RENEWAL_LEAD_MS) * 1_000_000n;
+  const maximum = BigInt(MAX_RENEWAL_LEAD_MS) * 1_000_000n;
+  if (lead < minimum) lead = minimum;
+  if (lead > maximum) lead = maximum;
+  if (lead >= lifetimeNanos) lead = lifetimeNanos / 2n;
+  return lead;
+}
+
+function validatedCellForLink(
+  link: VerifiedQv2Link,
+  deployment: ValidatedDeployment,
+): ValidatedCell {
+  const cell = deployment.cells.get(fingerprintKey(link.claims.cellPublicKey));
+  if (!cell) {
+    throw new PortalConfigurationError("verified qURL names a cell outside the native catalog");
+  }
+  // The 64-bit fingerprint is only an efficient map index. The signed cell
+  // identity must still match the exact deployment key used by Noise.
+  if (!timingSafeEqual(cell.serverPublicKey, link.claims.cellPublicKey)) {
+    throw new PortalConfigurationError("deployment cell key does not match the signed cell key");
+  }
+  return cell;
+}
+
+function nanosToCeilingMilliseconds(value: bigint): number {
+  if (value <= 0n) return 0;
+  return Number((value + 999_999n) / 1_000_000n);
+}
+
+function dateFromEpoch(value: number | undefined): Date | undefined {
+  return value === undefined ? undefined : new Date(value);
 }
 
 function requireString(value: StrictJsonValue | undefined, name: string): string {
@@ -726,6 +958,8 @@ function validateSessionToken(
   value: string,
   decode: (part: string) => Buffer = (part) => Buffer.from(part, "base64url"),
 ): void {
+  // This is a defense-in-depth capability bound. The ACK envelope limit above
+  // currently makes it unreachable, but this validator also has direct tests.
   if (value.length > 4_096 || value.trim() !== value || hasUnsafeTokenByte(value)) {
     throw new PortalInvalidReplyError("ACK application token has an invalid shape");
   }
@@ -808,7 +1042,7 @@ function isReplayableBody(body: RequestInit["body"]): boolean {
     body instanceof ArrayBuffer ||
     ArrayBuffer.isView(body) ||
     body instanceof Blob ||
-    (typeof FormData !== "undefined" && body instanceof FormData)
+    body instanceof FormData
   );
 }
 
@@ -820,6 +1054,34 @@ async function discardResponseBody(response: Response): Promise<void> {
   }
 }
 
+async function discardRequestBody(body: RequestInit["body"]): Promise<void> {
+  try {
+    if (body instanceof ReadableStream) {
+      await body.cancel();
+      return;
+    }
+    if (!body || typeof body !== "object") return;
+    const destroy = Reflect.get(body, "destroy");
+    if (typeof destroy === "function") {
+      Reflect.apply(destroy, body, []);
+      return;
+    }
+    const asyncIterator = Reflect.get(body, Symbol.asyncIterator);
+    if (typeof asyncIterator === "function") {
+      const iterator = Reflect.apply(asyncIterator, body, []) as AsyncIterator<unknown>;
+      await iterator.return?.();
+      return;
+    }
+    const iteratorFactory = Reflect.get(body, Symbol.iterator);
+    if (typeof iteratorFactory === "function") {
+      const iterator = Reflect.apply(iteratorFactory, body, []) as Iterator<unknown>;
+      iterator.return?.();
+    }
+  } catch {
+    // Invalid request handling must keep its stable error for a broken stream.
+  }
+}
+
 function responseMatchesRequestUrl(responseUrl: string, requestUrl: string): boolean {
   if (responseUrl === "" || responseUrl === requestUrl) return true;
   try {
@@ -827,6 +1089,10 @@ function responseMatchesRequestUrl(responseUrl: string, requestUrl: string): boo
   } catch {
     return false;
   }
+}
+
+function throwIfAborted(signal: AbortSignal): void {
+  if (signal.aborted) throw signal.reason ?? new DOMException("Aborted", "AbortError");
 }
 
 function linkAbortSignal(signal: AbortSignal | undefined, controller: AbortController): () => void {
@@ -864,42 +1130,7 @@ function waitForPromise(promise: Promise<void>, signal: AbortSignal | undefined)
   });
 }
 
-function classifyRenewalFailure(error: unknown): PortalRenewalFailure {
-  if (error instanceof PortalDenyError) return { kind: "denied" };
-  if (error instanceof PortalBusyError) return { kind: "busy" };
-  if (error instanceof PortalInvalidReplyError) return { kind: "invalid_reply" };
-  if (
-    error instanceof PortalStateError ||
-    error instanceof PortalConfigurationError ||
-    error instanceof PortalVerificationError
-  )
-    return { kind: "local_state" };
-  return { kind: "transport" };
-}
-
-function backgroundRetryDelay(
-  remainingNanos: bigint,
-  remainingAttempts: number,
-  randomFraction: number,
-): number | undefined {
-  if (remainingNanos <= 0n || remainingAttempts < 1) return undefined;
-  const remainingMs = Number(remainingNanos / 1_000_000n);
-  if (remainingMs < 1) return undefined;
-  // Divide the current remaining lifetime into one slot per possible attempt
-  // plus a final expiry reserve. Recompute after every failed exchange so long
-  // grants retry over minutes while short grants retain several useful tries.
-  const slotMs = Math.floor(remainingMs / (remainingAttempts + 1));
-  if (slotMs < 1) return undefined;
-  const boundedRandom = Math.max(0, Math.min(1, randomFraction));
-  const jittered = Math.floor(slotMs * (0.75 + boundedRandom * 0.25));
-  return Math.min(
-    MAX_TIMER_DELAY_MS,
-    slotMs,
-    Math.max(Math.min(MIN_BACKGROUND_RETRY_MS, slotMs), jittered),
-  );
-}
-
 export const portalOpenerTesting = {
-  constructVerifiedPortalOpener,
+  validatedCellForLink,
   validateSessionToken,
 };

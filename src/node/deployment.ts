@@ -57,7 +57,7 @@ const defaultDeploymentFileRuntime: DeploymentFileRuntime = {
   close: closeSync,
 };
 
-/** Load and validate deployment trust once, before an opener can do network I/O. */
+/** Load and validate deployment trust before an opener can do network I/O. */
 export function loadPortalDeployment(explicit?: PortalDeployment): ValidatedDeployment {
   if (explicit !== undefined) return validateDeployment(explicit);
   const configured = process.env.QURL_DEPLOYMENT;
@@ -75,7 +75,7 @@ function readBoundedDeploymentFile(
   path: string,
   runtime: DeploymentFileRuntime = defaultDeploymentFileRuntime,
 ): Buffer {
-  // O_NONBLOCK prevents a FIFO or device path from hanging construction before
+  // O_NONBLOCK prevents a FIFO or device path from hanging startup before
   // fstat can enforce the regular-file contract. It has no effect on files.
   const descriptor = runtime.open(path, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK);
   try {
