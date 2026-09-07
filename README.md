@@ -39,7 +39,7 @@ endpoint in front of the same service:
 npm install @layervai/qurl
 ```
 
-Requires Node.js 20.3+ and has **no runtime dependencies**. Both
+Requires Node.js 22.12+ and has **no runtime dependencies**. Both
 `import { QURLClient } from '@layervai/qurl'` (ESM) and
 `const { QURLClient } = require('@layervai/qurl')` (CJS) work.
 
@@ -215,7 +215,9 @@ protected request headers.
 
 TypeScript consumers of `@layervai/qurl/node` must provide Node and Fetch API
 declarations, for example current `@types/node`, or a configuration that includes
-the `DOM` library for Fetch types. The native opener requires Node 20.3 or later.
+the `DOM` library for Fetch types. The native opener requires Node 22.12 or later.
+This floor ensures that composite request signals are reclaimed on long-lived
+openers.
 
 Native opening requires public deployment trust. Set `QURL_DEPLOYMENT` to one
 strict JSON object or to a path that contains that object. The object must have

@@ -1641,6 +1641,20 @@ describe("native portal opener", () => {
     await opener.close();
   });
 
+  it("does not create a composite signal without a caller signal", async () => {
+    const any = vi.spyOn(AbortSignal, "any");
+    const { opener } = fixture();
+    try {
+      await opener.start();
+      const response = await opener.fetch();
+      await response.body?.cancel();
+      expect(any).not.toHaveBeenCalled();
+    } finally {
+      any.mockRestore();
+      await opener.close();
+    }
+  });
+
   it("does not start a redirect leg after close when custom fetch ignores abort", async () => {
     const first = deferred<Response>();
     const fetchImpl = vi

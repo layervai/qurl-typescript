@@ -385,14 +385,12 @@ class NativePortalOpener implements PortalOpener {
           "portal fetch owns the Host derived from the authenticated target",
         );
       }
-      // A native composite signal avoids one listener per request on the shared
-      // lifecycle signal. It also remains active after headers arrive, so caller
-      // cancellation and close retain standard Fetch response-body semantics.
-      const requestSignal = AbortSignal.any(
-        init.signal
-          ? [init.signal, this.#lifecycleController.signal]
-          : [this.#lifecycleController.signal],
-      );
+      // Use the lifecycle signal directly when there is no caller signal. When
+      // both are present, native composition avoids listener fanout and remains
+      // active after headers arrive, preserving Fetch response-body semantics.
+      const requestSignal = init.signal
+        ? AbortSignal.any([init.signal, this.#lifecycleController.signal])
+        : this.#lifecycleController.signal;
       for (let requestCount = 1; ; requestCount++) {
         this.#requireOpen();
         throwIfAborted(requestSignal);
