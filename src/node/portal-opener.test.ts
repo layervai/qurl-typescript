@@ -452,6 +452,7 @@ describe("native portal opener", () => {
 
   it.each([
     ["zero open timeout", { openTimeoutMs: 0 }],
+    ["sub-millisecond open timeout", { openTimeoutMs: 0.5 }],
     ["large open timeout", { openTimeoutMs: 60_001 }],
   ])("rejects %s before an NHP exchange", (_name, invalid) => {
     const knock = vi.fn();
@@ -981,6 +982,25 @@ describe("native portal opener", () => {
       await opener.close();
     },
   );
+
+  it("removes a redirect fragment before the next request and URL check", async () => {
+    const final = new Response("done", { status: 200 });
+    Object.defineProperty(final, "url", {
+      value: "https://private.example.test/done",
+    });
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(null, { status: 302, headers: { location: "/done#section" } }),
+      )
+      .mockResolvedValueOnce(final) as unknown as typeof globalThis.fetch;
+    const { opener } = fixture(fetchImpl);
+    await opener.start();
+    const response = await opener.fetch();
+    expect(response).toBe(final);
+    expect(vi.mocked(fetchImpl).mock.calls[1][0]).toBe("https://private.example.test/done");
+    await opener.close();
+  });
 
   it("blocks a redirect to another origin", async () => {
     const crossFetch = vi.fn(

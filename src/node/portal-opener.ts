@@ -227,7 +227,7 @@ export function createPortalOpenerWithRuntime(
   if (
     options.openTimeoutMs !== undefined &&
     (!Number.isFinite(options.openTimeoutMs) ||
-      options.openTimeoutMs <= 0 ||
+      options.openTimeoutMs < 1 ||
       options.openTimeoutMs > MAX_OPEN_TIMEOUT_MS)
   ) {
     throw new PortalConfigurationError(
@@ -429,6 +429,10 @@ class NativePortalOpener implements PortalOpener {
           await discardResponseBody(response);
           throw new PortalRedirectError("portal fetch refused an invalid redirect target");
         }
+        // Fragments are never part of an HTTP request target, and Fetch omits
+        // them from Response.url. Normalize before the next request and its
+        // manual-redirect bypass check.
+        next.hash = "";
         let nextOrigin: string;
         try {
           nextOrigin = normalizedHttpsOrigin(next);
