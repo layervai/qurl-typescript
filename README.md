@@ -188,8 +188,20 @@ expire within 24 hours. A connector claim's `id` is its immutable connector
 slug. Request enums are validated against the current service contract;
 response types remain additive for forward-compatible reads, and new request
 enum values require a matching SDK release. Use
-`isApiKeyRequestScope(scope)` to narrow a response scope before writing it back
-through `createApiKey` or `updateApiKey`.
+`isApiKeyRequestScope(scope)` to validate response scopes before writing them
+back. Reject unknown scopes; do not filter them out, which can remove permissions.
+When changing only a name, omit `scopes` from `updateApiKey`.
+
+```typescript
+import { isApiKeyRequestScope } from '@layervai/qurl';
+
+const scopes = key.scopes;
+if (!scopes?.length || !scopes.every(isApiKeyRequestScope)) {
+  throw new Error('Cannot reuse these scopes; check the current SDK contract');
+}
+await client.updateApiKey(keyId, { scopes });
+```
+
 This credential surface requires the kind-first qurl-service contract at or
 after commit `047cf31e1cdf545e3060e0f9294d738a19fb997b`.
 

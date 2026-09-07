@@ -1,4 +1,4 @@
-import { describe, it, expect, expectTypeOf, vi } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { ConnectorResource, isApiKeyRequestScope, QURLClient } from "./client.js";
 import {
   AuthenticationError,
@@ -2002,9 +2002,6 @@ describe("QURLClient", () => {
 
     expect(isApiKeyRequestScope(responseScope)).toBe(true);
     expect(isApiKeyRequestScope("future:scope")).toBe(false);
-    if (isApiKeyRequestScope(responseScope)) {
-      expectTypeOf(responseScope).toEqualTypeOf<ApiKeyRequestScope>();
-    }
   });
 
   it("createApiKey accepts an explicit empty claim list for an unbound agent token", async () => {

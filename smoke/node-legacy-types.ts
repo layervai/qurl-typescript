@@ -10,7 +10,7 @@ import {
   type PortalOpenerHealth,
   type PortalOpenerState,
 } from "@layervai/qurl/node";
-import { QURLClient } from "@layervai/qurl";
+import { isApiKeyRequestScope, type ApiKeyRequestScope, QURLClient } from "@layervai/qurl";
 
 const options: CreatePortalOpenerOptions = {
   qurl: "https://qurl.link/#qv2t1.example",
@@ -40,3 +40,19 @@ void health;
 void state;
 void client;
 void portal;
+
+// Compile the emitted credential declarations as a package consumer.
+const responseScope: string = "qurl:read";
+if (isApiKeyRequestScope(responseScope)) {
+  const scope: ApiKeyRequestScope = responseScope;
+  void client.createApiKey({ name: "durable", scopes: [scope] });
+}
+void client.createApiKey({ kind: "enrollment_token", name: "agent" });
+// @ts-expect-error Durable keys require scopes.
+void client.createApiKey({ name: "durable" });
+// @ts-expect-error Enrollment scopes are assigned by the service.
+void client.createApiKey({ kind: "enrollment_token", name: "agent", scopes: ["qurl:agent"] });
+// @ts-expect-error Durable keys cannot expire.
+void client.createApiKey({ name: "durable", scopes: ["qurl:read"], expires_in: "1h" });
+// @ts-expect-error Retired fields are not accepted.
+void client.createApiKey({ name: "durable", scopes: ["qurl:read"], purpose: "tunnel_bootstrap" });
