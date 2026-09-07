@@ -362,16 +362,16 @@ class NativePortalOpener implements PortalOpener {
     if (!init || typeof init !== "object") {
       throw new PortalConfigurationError("portal request builder must return RequestInit");
     }
-    if (Object.prototype.hasOwnProperty.call(init, "redirect") && init.redirect !== undefined) {
-      await discardRequestBody(init.body);
-      throw new PortalConfigurationError(
-        "portal fetch owns redirect handling; redirect overrides are not allowed",
-      );
-    }
-    let currentUrl = grant.resourceUrl;
-    let method = (init.method ?? "GET").toUpperCase();
-    let body = init.body;
+    let body: RequestInit["body"] = undefined;
     try {
+      body = init.body;
+      if (Object.prototype.hasOwnProperty.call(init, "redirect") && init.redirect !== undefined) {
+        throw new PortalConfigurationError(
+          "portal fetch owns redirect handling; redirect overrides are not allowed",
+        );
+      }
+      let currentUrl = grant.resourceUrl;
+      let method = (init.method ?? "GET").toUpperCase();
       let headers = new Headers(init.headers);
       if (headers.has("host")) {
         throw new PortalConfigurationError(

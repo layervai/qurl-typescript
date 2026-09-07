@@ -845,6 +845,7 @@ describe("native portal opener", () => {
   );
 
   it.each([
+    ["invalid method", { method: 123 as unknown as string }],
     ["invalid header", { headers: [["bad header name", "value"]] as RequestInit["headers"] }],
     ["invalid signal", { signal: {} as AbortSignal }],
   ])("cancels its stream when caller-controlled %s preparation throws", async (_name, invalid) => {
@@ -857,7 +858,7 @@ describe("native portal opener", () => {
     const fetchImpl = vi.fn() as unknown as typeof globalThis.fetch;
     const { opener } = fixture(fetchImpl);
     await opener.start();
-    await expect(opener.fetch({ ...invalid, method: "POST", body })).rejects.toBeInstanceOf(
+    await expect(opener.fetch({ method: "POST", body, ...invalid })).rejects.toBeInstanceOf(
       TypeError,
     );
     expect(canceled).toBe(true);

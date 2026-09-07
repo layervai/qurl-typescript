@@ -202,8 +202,10 @@ returned response body is read. Set the opener's optional `fetch` when the
 protected request must use a custom Fetch implementation. Native NHP opening
 never uses this function. The custom function receives the `qurl_vsession`
 bearer cookie and is inside the credential boundary. It must implement standard
-Fetch signal behavior and honor `redirect: 'manual'`. An unfollowed synthetic
-response can leave `Response.url` empty. Otherwise, it must report
+Fetch signal behavior and honor `redirect: 'manual'`. If it needs a receiver,
+pass it already bound; the SDK invokes it with the standard global Fetch
+receiver. An unfollowed synthetic response can leave `Response.url` empty.
+Otherwise, it must report
 `Response.url` and `Response.redirected` accurately. It must not log or forward
 protected request headers.
 
