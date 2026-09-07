@@ -2,8 +2,12 @@ import {
   createPortalOpener,
   PortalBusyError,
   PortalInvalidReplyError,
+  PortalOpenerClosedError,
   PortalOpenerNotReadyError,
+  PortalOpenerNotStartedError,
+  PortalRedirectError,
   PortalTargetChangedError,
+  PortalTooManyRedirectsError,
 } from "@layervai/qurl/node";
 
 if (typeof createPortalOpener !== "function") {
@@ -15,10 +19,15 @@ if (typeof PortalBusyError !== "function") {
 if (typeof PortalInvalidReplyError !== "function") {
   throw new Error("ESM Node entry does not export PortalInvalidReplyError");
 }
-if (
-  typeof PortalOpenerNotReadyError !== "function" ||
-  typeof PortalTargetChangedError !== "function"
-) {
+for (const value of [
+  PortalOpenerClosedError,
+  PortalOpenerNotReadyError,
+  PortalOpenerNotStartedError,
+  PortalRedirectError,
+  PortalTargetChangedError,
+  PortalTooManyRedirectsError,
+]) {
+  if (typeof value === "function") continue;
   throw new Error("ESM Node entry does not export portal lifecycle errors");
 }
 

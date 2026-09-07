@@ -138,6 +138,11 @@ retries after 500 ms, then 1 second, then at most every 2 seconds while the old
 admission remains valid. `fetch()` never opens or renews a session, and it never
 sleeps. It fails if the cached admission has expired.
 
+Renewal waits at least 5 seconds after a successful open. If a server grants a
+session that expires before that safe renewal point, the grant expires without
+a background attempt and `start()` is the explicit recovery path. Production
+admissions should be longer than this minimum gap.
+
 ```javascript
 const { createPortalOpener } = require('@layervai/qurl/node');
 
@@ -186,7 +191,9 @@ when lifecycle code needs a shorter deadline.
 Content requests use the caller's `RequestInit.signal`; `fetch()` does not add
 an independent application-request deadline. Set the opener's optional `fetch`
 when the protected request must use a custom Fetch implementation. Native NHP
-opening never uses this function.
+opening never uses this function. The custom function receives the
+`qurl_vsession` bearer cookie and is inside the credential boundary. It must not
+log or forward protected request headers.
 
 TypeScript consumers of `@layervai/qurl/node` must provide Node and Fetch API
 declarations, for example current `@types/node`, or a configuration that includes

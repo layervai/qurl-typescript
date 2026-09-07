@@ -9,10 +9,15 @@ if (typeof nodeSdk.PortalBusyError !== "function") {
 if (typeof nodeSdk.PortalInvalidReplyError !== "function") {
   throw new Error("CJS Node entry does not export PortalInvalidReplyError");
 }
-if (
-  typeof nodeSdk.PortalOpenerNotReadyError !== "function" ||
-  typeof nodeSdk.PortalTargetChangedError !== "function"
-) {
+for (const name of [
+  "PortalOpenerClosedError",
+  "PortalOpenerNotReadyError",
+  "PortalOpenerNotStartedError",
+  "PortalRedirectError",
+  "PortalTargetChangedError",
+  "PortalTooManyRedirectsError",
+]) {
+  if (typeof nodeSdk[name] === "function") continue;
   throw new Error("CJS Node entry does not export portal lifecycle errors");
 }
 

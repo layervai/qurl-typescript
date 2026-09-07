@@ -121,13 +121,14 @@ function fixture(
   optionOverrides: Partial<CreatePortalOpenerOptions> = {},
 ) {
   let now = 1_000_000_000n;
+  let nowReader = () => now;
   const renewal = fakeTimerQueue();
   const deadline = fakeTimerQueue();
   const knock = vi.fn(async () => ack());
   const runtime = {
     knock,
     fetch: fetchImpl,
-    nowNanos: () => now,
+    nowNanos: () => nowReader(),
     nowEpochMs: () => Number(now / 1_000_000n),
     setTimer: renewal.set,
     clearTimer: renewal.clear,
@@ -147,7 +148,11 @@ function fixture(
     timerDelays: renewal.delays,
     deadlineTimers: deadline.callbacks,
     deadlineDelays: deadline.delays,
-    setNow: (value: bigint) => (now = value),
+    setNow: (value: bigint) => {
+      now = value;
+      nowReader = () => now;
+    },
+    setNowReader: (reader: () => bigint) => (nowReader = reader),
   };
 }
 
@@ -1007,6 +1012,28 @@ describe("native portal opener", () => {
     await opener.close();
   });
 
+  it("closes promptly while a target-changed renewal waits for expiry", async () => {
+    const { opener, knock, timers, setNow } = fixture();
+    knock
+      .mockResolvedValueOnce(ack(60))
+      .mockResolvedValueOnce(ack(60, "0", "https://private.example.test/changed"));
+    await opener.start();
+    setNow(49_000_000_000n);
+    timers.shift()!();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(opener.health()).toMatchObject({
+      state: "ready",
+      ready: true,
+      lastFailureClass: "target_changed",
+      consecutiveFailures: 1,
+    });
+    expect(timers).toHaveLength(1);
+
+    await opener.close();
+    expect(timers).toHaveLength(0);
+    expect(opener.health()).toMatchObject({ state: "closed", ready: false });
+  });
+
   it("canonicalizes equivalent authenticated targets before binding renewal", async () => {
     const sent: string[] = [];
     const fetchImpl = vi.fn(async (target: string | URL | Request) => {
@@ -1079,8 +1106,8 @@ describe("native portal opener", () => {
     await opener.close();
   });
 
-  it("measures grant lifetime before exchange and enforces the 5 second post-open gap", async () => {
-    const { opener, knock, setNow, timerDelays } = fixture();
+  it("expires a short grant at the Go-compatible 5 second renewal gap", async () => {
+    const { opener, knock, timers, setNow, timerDelays } = fixture();
     knock.mockImplementationOnce(async () => {
       setNow(2_000_000_000n);
       return ack(2);
@@ -1094,6 +1121,37 @@ describe("native portal opener", () => {
       lastOpenSucceededAt: new Date(2_000),
     });
     expect(timerDelays).toEqual([1_000]);
+    setNow(3_000_000_000n);
+    timers.shift()!();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(knock).toHaveBeenCalledTimes(1);
+    expect(opener.health()).toMatchObject({
+      state: "degraded",
+      ready: false,
+      lastFailureClass: "",
+      consecutiveFailures: 0,
+    });
+    await opener.close();
+  });
+
+  it("contains an unexpected background-cycle rejection and degrades fail closed", async () => {
+    const { opener, timers, setNow, setNowReader } = fixture();
+    await opener.start();
+    const failure = new Error("unexpected local clock failure");
+    let reads = 0;
+    setNowReader(() => {
+      if (reads++ === 0) return 850_000_000_000n;
+      throw failure;
+    });
+    timers.shift()!();
+    await new Promise((resolve) => setImmediate(resolve));
+    setNow(850_000_000_000n);
+    expect(opener.health()).toMatchObject({
+      state: "degraded",
+      ready: false,
+      lastFailureClass: "open_failed",
+      consecutiveFailures: 1,
+    });
     await opener.close();
   });
 
@@ -1204,7 +1262,17 @@ describe("native portal opener", () => {
     await opener.start();
     const response = opener.fetch();
     await new Promise((resolve) => setImmediate(resolve));
-    await opener.close();
+    const closing = opener.close();
+    expect(opener.health()).toEqual({
+      state: "closed",
+      ready: false,
+      expiresAt: undefined,
+      renewAt: undefined,
+      lastOpenSucceededAt: undefined,
+      lastFailureClass: "",
+      consecutiveFailures: 0,
+    });
+    await closing;
     first.resolve(new Response(null, { status: 302, headers: { location: "/done" } }));
     await expect(response).resolves.toBeInstanceOf(Response);
     expect(fetchImpl).toHaveBeenCalledTimes(2);

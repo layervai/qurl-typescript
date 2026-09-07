@@ -200,7 +200,7 @@ export function createPortalOpenerWithRuntime(
   if (!options || typeof options !== "object") {
     throw new PortalConfigurationError("native portal opener options are required");
   }
-  if (typeof options.qurl !== "string" || options.qurl === "") {
+  if (typeof options.qurl !== "string" || options.qurl.trim() === "") {
     throw new PortalConfigurationError("native portal opener qurl must be a non-empty string");
   }
   if (
@@ -215,9 +215,6 @@ export function createPortalOpenerWithRuntime(
   }
   if (options.fetch !== undefined && typeof options.fetch !== "function") {
     throw new PortalConfigurationError("native portal opener fetch must be a function");
-  }
-  if (options.qurl.trim() === "") {
-    throw new PortalConfigurationError("native portal opener qurl must be a non-empty string");
   }
   return new NativePortalOpener(options, runtime);
 }
@@ -427,6 +424,12 @@ class NativePortalOpener implements PortalOpener {
     this.#state = "closed";
     if (this.#renewalTimer) this.#runtime.clearTimer(this.#renewalTimer);
     this.#renewalTimer = undefined;
+    this.#expiresAtEpochMs = undefined;
+    this.#renewAtEpochMs = undefined;
+    this.#lastOpenSucceededAt = undefined;
+    this.#lastFailureClass = "";
+    this.#consecutiveFailures = 0;
+    this.#startingRecovery = false;
     this.#lifecycleController.abort(new PortalOpenerClosedError());
     this.#openController?.abort(new PortalOpenerClosedError());
     const active = this.#openPromise;
@@ -439,12 +442,6 @@ class NativePortalOpener implements PortalOpener {
       this.#sessionSecret?.fill(0);
       this.#sessionSecret = undefined;
       this.#resolvedDeployment = undefined;
-      this.#expiresAtEpochMs = undefined;
-      this.#renewAtEpochMs = undefined;
-      this.#lastOpenSucceededAt = undefined;
-      this.#lastFailureClass = "";
-      this.#consecutiveFailures = 0;
-      this.#startingRecovery = false;
     })();
     this.#closePromise = closing;
     return closing;
@@ -554,9 +551,18 @@ class NativePortalOpener implements PortalOpener {
         this.#scheduleRenewal(grant);
         return;
       }
-      const cycle = this.#runRenewalCycle(grant).finally(() => {
-        if (this.#renewalCycle === cycle) this.#renewalCycle = undefined;
-      });
+      const cycle = this.#runRenewalCycle(grant)
+        .catch((error: unknown) => {
+          // A background task must never create an unhandled rejection. An
+          // unexpected internal failure loses readiness instead of risking the
+          // host process or leaving an unsupervised running state.
+          if (this.#isClosed() || this.#grant !== grant) return;
+          this.#recordFailure(error);
+          this.#expireGrant(grant);
+        })
+        .finally(() => {
+          if (this.#renewalCycle === cycle) this.#renewalCycle = undefined;
+        });
       this.#renewalCycle = cycle;
     }, delayMs);
     this.#renewalTimer = timer;
@@ -593,23 +599,31 @@ class NativePortalOpener implements PortalOpener {
   }
 
   #waitForRenewal(delayMs: number): Promise<boolean> {
+    const signal = this.#lifecycleController.signal;
+    if (signal.aborted) return Promise.resolve(false);
     return new Promise((resolve) => {
       let settled = false;
+      let timer: NodeJS.Timeout | undefined;
       const finish = (result: boolean) => {
         if (settled) return;
         settled = true;
-        this.#lifecycleController.signal.removeEventListener("abort", abort);
-        if (this.#renewalTimer === timer) this.#renewalTimer = undefined;
+        signal.removeEventListener("abort", abort);
+        if (timer && this.#renewalTimer === timer) this.#renewalTimer = undefined;
         resolve(result);
       };
       const abort = () => {
-        this.#runtime.clearTimer(timer);
+        if (timer) this.#runtime.clearTimer(timer);
         finish(false);
       };
-      const timer = this.#runtime.setTimer(() => finish(true), delayMs);
+      timer = this.#runtime.setTimer(() => finish(true), delayMs);
+      if (settled) {
+        this.#runtime.clearTimer(timer);
+        return;
+      }
       this.#renewalTimer = timer;
       timer.unref?.();
-      this.#lifecycleController.signal.addEventListener("abort", abort, { once: true });
+      if (signal.aborted) abort();
+      else signal.addEventListener("abort", abort, { once: true });
     });
   }
 
