@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## [0.5.0](https://github.com/layervai/qurl-typescript/compare/qurl-v0.4.0...qurl-v0.5.0) (2026-09-07)
+
+
+### ⚠ BREAKING CHANGES
+
+* **api:** the Node PortalOpener configuration, health types, lifecycle states, cancellation behavior, Node version floor, and error surface now match the reviewed qurl-go PortalOpener contract. Existing proactive-opener consumers must update to the new API.
+
+### Features
+
+* **api:** add scoped descendant portal requests ([#253](https://github.com/layervai/qurl-typescript/issues/253)) ([f761e89](https://github.com/layervai/qurl-typescript/commit/f761e8999052488b398b604b4c90bac06a37c26a))
+
+
+### Bug Fixes
+
+* **api:** align portal opener with Go lifecycle ([#251](https://github.com/layervai/qurl-typescript/issues/251)) ([be901e7](https://github.com/layervai/qurl-typescript/commit/be901e7ed159e8c5d248fbab08b6bf2255029379))
+
 ## [0.4.0](https://github.com/layervai/qurl-typescript/compare/qurl-v0.3.1...qurl-v0.4.0) (2026-09-06)
 
 ### ⚠ BREAKING CHANGES
