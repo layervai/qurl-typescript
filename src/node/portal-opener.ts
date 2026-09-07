@@ -391,7 +391,7 @@ class NativePortalOpener implements PortalOpener {
         this.#requireOpen();
         throwIfAborted(requestSignal);
         const requestHeaders = authorizeHeaders(headers, sessionToken);
-        const response = await this.#fetch(currentUrl, {
+        const response = await this.#fetch.call(globalThis, currentUrl, {
           ...init,
           method,
           body,

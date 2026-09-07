@@ -1493,6 +1493,19 @@ describe("native portal opener", () => {
     await opener.close();
   });
 
+  it("calls a custom fetch with the standard global receiver", async () => {
+    const receivers: unknown[] = [];
+    const fetchImpl = function (this: unknown) {
+      receivers.push(this);
+      return Promise.resolve(new Response("ok"));
+    } as typeof globalThis.fetch;
+    const { opener } = fixture(fetchImpl);
+    await opener.start();
+    await opener.fetch();
+    expect(receivers).toEqual([globalThis]);
+    await opener.close();
+  });
+
   it("keeps caller cancellation active while the returned response body is read", async () => {
     const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const signal = init?.signal;
