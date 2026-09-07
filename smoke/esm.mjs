@@ -1,7 +1,13 @@
 // ESM consumer smoke test. Mirror of cjs.cjs through `exports.import`
 // via a package self-reference. Same scope as cjs.cjs — minimal happy-
 // path; full-surface drift is caught by smoke/parity.mjs.
-import { QURLClient, QURLError, ValidationError, VERSION } from "@layervai/qurl";
+import {
+  isApiKeyRequestScope,
+  QURLClient,
+  QURLError,
+  ValidationError,
+  VERSION,
+} from "@layervai/qurl";
 
 if (typeof QURLClient !== "function") {
   throw new Error("QURLClient is not a constructor");
@@ -11,6 +17,9 @@ if (typeof QURLError !== "function" || typeof ValidationError !== "function") {
 }
 if (typeof VERSION !== "string") {
   throw new Error("VERSION not exported");
+}
+if (!isApiKeyRequestScope("qurl:read") || isApiKeyRequestScope("future:scope")) {
+  throw new Error("request scope guard did not load");
 }
 
 const client = new QURLClient({ apiKey: "test-api-key" });

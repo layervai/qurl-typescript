@@ -1,4 +1,9 @@
-export { ConnectorResource, ProtectedResource, QURLClient } from "./client.js";
+export {
+  ConnectorResource,
+  isApiKeyRequestScope,
+  ProtectedResource,
+  QURLClient,
+} from "./client.js";
 export type { EnsureConnectorResourceResult } from "./client.js";
 export {
   AuthenticationError,
@@ -35,6 +40,7 @@ export type {
   AIAgentPolicy,
   ApiKey,
   ApiKeyListOutput,
+  ApiKeyRequestScope,
   ApiKeyScope,
   BatchCreateInput,
   BatchCreateOutput,
@@ -51,6 +57,8 @@ export type {
   CreateAccessCodeOutput,
   CreateApiKeyInput,
   CreateApiKeyOutput,
+  CreateDurableApiKeyInput,
+  CreateEnrollmentTokenInput,
   CreateBillingCheckoutInput,
   CreateInput,
   CreateOutput,
@@ -58,6 +66,11 @@ export type {
   CreateQurlForResourceInput,
   CreateResourceInput,
   CreateWebhookInput,
+  CredentialClaim,
+  CredentialClaimInput,
+  CredentialKind,
+  CredentialTarget,
+  CredentialTargetInput,
   Customer,
   CheckoutSession,
   DnsRecord,
