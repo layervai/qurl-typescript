@@ -12,7 +12,10 @@ import {
   PortalOpenerClosedError,
   PortalOpenerNotReadyError,
   PortalOpenerNotStartedError,
+  PortalRedirectError,
   PortalStateError,
+  PortalTargetChangedError,
+  PortalTooManyRedirectsError,
   PortalVerificationError,
   type CreatePortalOpenerOptions,
 } from "./portal-opener.js";
@@ -759,7 +762,7 @@ describe("native portal opener", () => {
     await expect(opener.fetch({ redirect: "follow" })).rejects.toBeInstanceOf(PortalStateError);
     await expect(
       opener.fetch(() => ({ method: "PATCH", body: "signed" }), { redirects: "error" }),
-    ).rejects.toThrow("fixed signed request");
+    ).rejects.toBeInstanceOf(PortalRedirectError);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     await opener.close();
   });
@@ -865,7 +868,7 @@ describe("native portal opener", () => {
     ) as unknown as typeof globalThis.fetch;
     const { opener } = fixture(fetchImpl);
     await opener.start();
-    await expect(opener.fetch()).rejects.toThrow("10-request redirect limit");
+    await expect(opener.fetch()).rejects.toBeInstanceOf(PortalTooManyRedirectsError);
     expect(fetchImpl).toHaveBeenCalledTimes(10);
     await opener.close();
   });
@@ -988,7 +991,7 @@ describe("native portal opener", () => {
     const { opener, knock, timers, timerDelays, setNow } = fixture(fetchImpl);
     knock
       .mockResolvedValueOnce(ack(10))
-      .mockResolvedValueOnce(ack(10, "0", "https://private.example.test/changed"));
+      .mockImplementation(async () => ack(10, "0", "https://private.example.test/changed"));
     await opener.start();
     setNow(6_000_000_000n);
     timers.shift()!();
@@ -1009,6 +1012,8 @@ describe("native portal opener", () => {
     await new Promise((resolve) => setImmediate(resolve));
     expect(opener.health()).toMatchObject({ state: "degraded", ready: false });
     expect(knock).toHaveBeenCalledTimes(2);
+    await expect(opener.start()).rejects.toBeInstanceOf(PortalTargetChangedError);
+    expect(knock).toHaveBeenCalledTimes(3);
     await opener.close();
   });
 

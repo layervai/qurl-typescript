@@ -184,10 +184,12 @@ must consume or cancel it. Local admission expiry is checked before the first
 request; the protected service remains authoritative while a permitted redirect
 chain is in progress.
 
-Each open has a whole-operation deadline that covers DNS and UDP. Set it with
-`openTimeoutMs`; the default is 15 seconds and the maximum is 60 seconds. A
-renewal also stops at the old grant's expiry. Pass an abort signal to `start()`
-when lifecycle code needs a shorter deadline.
+Each open has a whole-operation deadline that covers DNS and UDP.
+`openTimeoutMs` sets this ceiling; the default is 15 seconds and the maximum is
+60 seconds. Native DNS or address attempts can fail before this ceiling, so a
+larger value does not extend their internal timeouts. A renewal also stops at
+the old grant's expiry. Pass an abort signal to `start()` when lifecycle code
+needs a shorter deadline.
 Content requests use the caller's `RequestInit.signal`; `fetch()` does not add
 an independent application-request deadline. Set the opener's optional `fetch`
 when the protected request must use a custom Fetch implementation. Native NHP
@@ -210,20 +212,26 @@ names an unknown cell.
 
 Use `opener.health()` for the local `new`, `starting`, `ready`, `degraded`, or
 `closed` state. It reports absolute expiry, renewal, and last-success times, a
-secret-free failure class, and the consecutive failure count. A transient
-renewal failure keeps the state `ready` while the prior admission is usable. A
-changed authenticated target is not retried. It keeps the prior admission until
-expiry and then requires an explicit `start()` recovery. Other failures retry
-through the remaining admission window. This does not put an open or sleep on
-the `fetch()` path.
+secret-free failure class, and the consecutive failure count. The `starting`
+state is only for the first cold open; an explicit recovery from a failure
+reports `degraded` until it succeeds. Date fields describe the most recent
+successful grant, so use `ready` as the authority for current usability. A
+transient renewal failure keeps the state `ready` while the prior admission is
+usable. A changed authenticated target is not retried. It keeps the prior
+admission until expiry and then requires an explicit `start()` recovery. If the
+target change is intentional and permanent, create a new opener for the new
+qURL; the old opener stays bound to its first authenticated target. Other
+failures retry through the remaining admission window. This does not put an
+open or sleep on the `fetch()` path.
 
 Close cancels and waits for an active NHP open, then wipes the mutable
 private-key, visitor-secret, and session-token buffers. A protected request that
 already started owns its copied handle and continues during close; await such
 requests separately when shutdown policy requires it. JavaScript can create
 immutable string copies during JSON and HTTP processing, so the SDK cannot
-promise full memory zeroization before garbage collection. Never log the qURL,
-ACK body, request cookies, or request headers.
+promise full memory zeroization before garbage collection. The opener retains
+the immutable qURL string until close so it can verify each renewal. Never log
+the qURL, ACK body, request cookies, or request headers.
 
 A cold `start()` failure leaves health at `degraded`. Catch `PortalBusyError`
 for an authenticated COOKIE busy response and `PortalInvalidReplyError` for a
