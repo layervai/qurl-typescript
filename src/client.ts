@@ -350,6 +350,7 @@ const CREATE_PORTAL_OPTION_KEYS = [
   "oneTimeUse",
   "maxSessions",
   "sessionDuration",
+  "targetPath",
 ] as const satisfies readonly (keyof CreatePortalOptions)[];
 
 assertExhaustive<
@@ -1056,6 +1057,19 @@ function requireMaxLength(value: string | undefined, field: string, max: number)
   }
 }
 
+function requireMaxUtf8Bytes(value: string | undefined, field: string, max: number): void {
+  if (value === undefined) return;
+  if (typeof value !== "string") {
+    throw clientValidationError(
+      `${field}: must be a string (got ${value === null ? "null" : typeof value})`,
+    );
+  }
+  const bytes = TEXT_ENCODER.encode(value).byteLength;
+  if (bytes > max) {
+    throw clientValidationError(`${field}: must be ${max} UTF-8 bytes or fewer (got ${bytes})`);
+  }
+}
+
 function requireNonEmptyIfPresent(value: unknown, field: string): void {
   // Reject `""` so uninitialized form state doesn't reach the wire.
   if (value === "") {
@@ -1403,7 +1417,7 @@ function validateQurlTokenOptions(input: CreateQurlForResourceInput | undefined)
   // gate server-authoritative (`invalid_target_path`); a client-side regex
   // would create a drift surface. Keep max-before-empty consistent with label;
   // empty strings pass the length check and are rejected by the next guard.
-  requireMaxLength(input.target_path, "target_path", MAX_TARGET_PATH);
+  requireMaxUtf8Bytes(input.target_path, "target_path", MAX_TARGET_PATH);
   requireNonEmptyIfPresent(input.target_path, "target_path");
   requireBooleanIfPresent(input.one_time_use, "one_time_use");
   requireMaxSessionsInRange(input.max_sessions);
@@ -1887,10 +1901,8 @@ function buildCreatePortalBody(
   requireObjectInput(opts, method);
   requireNoUnknownFields(opts, CREATE_PORTAL_OPTION_KEYS, method);
   // null → omitted, via the SDK-wide normalizePatchFields convention.
-  const { validFor, label, oneTimeUse, maxSessions, sessionDuration } = normalizePatchFields(
-    opts,
-    CREATE_PORTAL_OPTION_KEYS,
-  ) as CreatePortalOptions;
+  const { validFor, label, oneTimeUse, maxSessions, sessionDuration, targetPath } =
+    normalizePatchFields(opts, CREATE_PORTAL_OPTION_KEYS) as CreatePortalOptions;
   if (label !== undefined) {
     requireMaxLength(label, "label", MAX_LABEL);
     // qurl-go's WithLabel rejects blank labels; the REST-shaped mintLink
@@ -1901,6 +1913,11 @@ function buildCreatePortalBody(
   }
   requireBooleanIfPresent(oneTimeUse, "oneTimeUse");
   requireMaxSessionsInRange(maxSessions, "maxSessions");
+  requireMaxUtf8Bytes(targetPath, "targetPath", MAX_TARGET_PATH);
+  requireNonEmptyIfPresent(targetPath, "targetPath");
+  if (targetPath !== undefined && method === "createPortalForUrl") {
+    throw clientValidationError("targetPath: requires an existing resource");
+  }
   const body: Record<string, unknown> = {};
   const expiresIn = serializeApiDuration(validFor, "validFor", MIN_PORTAL_VALID_FOR_SECONDS);
   if (expiresIn !== undefined) body.expires_in = expiresIn;
@@ -1914,6 +1931,7 @@ function buildCreatePortalBody(
     MIN_SESSION_DURATION_SECONDS,
   );
   if (wireSessionDuration !== undefined) body.session_duration = wireSessionDuration;
+  if (targetPath !== undefined) body.target_path = targetPath;
   return Object.keys(body).length > 0 ? body : undefined;
 }
 
@@ -2410,7 +2428,8 @@ export class QURLClient {
    * number of milliseconds with qurl-go's client-side guardrails: whole
    * seconds only, at least one minute for `validFor` and one second for
    * `sessionDuration`. `maxSessions: 0` is sent explicitly and means
-   * unlimited; blank labels are rejected.
+   * unlimited; blank labels are rejected. `targetPath` is valid only for an
+   * existing resource. The API owns its full grammar and tunnel-only gate.
    */
   async createPortal(
     resource: ProtectedResource | string,
@@ -2450,7 +2469,9 @@ export class QURLClient {
    * {@link protectUrl} when you need the full server-populated resource
    * metadata. Portal options match {@link createPortal}; `targetUrl` gets
    * the same malformed-URL and embedded-credentials rejection as
-   * {@link protectUrl}. REST-shaped equivalent: {@link create}.
+   * {@link protectUrl}. `targetPath` is rejected because this call creates a
+   * URL resource instead of addressing an existing resource. REST-shaped
+   * equivalent: {@link create}.
    */
   async createPortalForUrl(
     targetUrl: string,

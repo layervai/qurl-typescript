@@ -73,8 +73,16 @@ of calling `protectUrl`:
 
 ```typescript
 const resource = await client.connectorResource('prod-dashboard');
-const portal = await resource.createPortal({ validFor: '5m' });
+const portal = await resource.createPortal({
+  validFor: '5m',
+  targetPath: '/api/detect/eib_example',
+});
 ```
+
+`targetPath` is available only when minting for an existing resource. The SDK
+checks the non-empty 2048-byte boundary; the API remains authoritative for the
+path grammar and the tunnel-only resource gate. `createPortalForUrl` rejects
+this option because it creates a URL resource.
 
 If you persist the resource id, future calls do not need to recreate the
 handle (no API call is made until you mint):
@@ -104,6 +112,7 @@ const portal = await resource.createPortal({
   label: 'Alice from Acme',
   oneTimeUse: true,
   maxSessions: 1,
+  targetPath: '/api/detect/eib_example',
 });
 ```
 
@@ -168,16 +177,33 @@ async function uploadPrivateObject(uploadBody) {
 }
 ```
 
-The request builder receives a copy of the exact authenticated ACK target. The
+For a service whose ACK target is a base path, append only trusted raw path
+segments with `fetchDescendant()`. The opener rejects empty, dot, and delimiter
+segments and escapes each accepted segment before it sends the request:
+
+```javascript
+const response = await opener.fetchDescendant(
+  ['eib_example'],
+  (authenticatedTarget) => ({ method: 'POST' }),
+  { redirects: 'error' },
+);
+```
+
+The request builder receives a copy of the selected authenticated target. The
 opener ignores mutations to that copy and sends the initial request only to the
-fixed ACK URL. It adds the private `qurl_vsession` cookie, replaces a
-caller-supplied cookie with that name, and preserves other valid cookies,
-including duplicate `Cookie` entries that Node joins with semicolons. It does
-not accept a caller URL or path, and it rejects a caller-supplied `Host` header
-so Fetch derives the authority from that fixed URL. Use `redirects: 'error'` for
-a request whose signature binds its method, target, timestamp, or nonce. This
-mode closes a redirect response and does not replay the request. The default
-`follow` mode can then move within the authenticated origin. It permits at most
+fixed ACK URL or the validated descendant. A descendant call accepts raw path
+segments, not a URL or path string. It preserves the ACK target query and
+escapes each segment separately. It adds the private `qurl_vsession` cookie,
+replaces a caller-supplied cookie with that name, and preserves other valid
+cookies, including duplicate `Cookie` entries that Node joins with semicolons.
+It does not accept a caller URL, and it rejects a caller-supplied `Host` header
+so Fetch derives the authority from the pinned target. Both `fetch()` and
+`fetchDescendant()` use only the cached NHP 1.1 admission. Use
+`redirects: 'error'` to keep a descendant request at its initial target. The
+default `follow` mode can move outside that path subtree, but only within the
+authenticated origin. Also use `redirects: 'error'` for a request whose
+signature binds its method, target, timestamp, or nonce. This mode closes a
+redirect response and does not replay the request. Follow mode permits at most
 10 requests, including the initial request, and uses the standard 301/302/303
 method rewrite rules. As in Go, a 3xx response with no `Location` header, or a
 307/308 response whose streaming body cannot be replayed, is returned to the
@@ -308,8 +334,8 @@ console.log(`Access granted to ${access.target_url} for ${access.access_grant?.e
 | Method | Description |
 |--------|-------------|
 | `protectUrl(targetUrl, opts?)` | Protect a private URL → portal-minting `ProtectedResource` handle |
-| `resource.createPortal(opts?)` / `createPortal(resourceOrId, opts?)` | Mint a short-lived portal link (`Portal`) |
-| `createPortalForUrl(targetUrl, opts?)` | Protect + mint in one API call → `{ portal, resource }` |
+| `resource.createPortal(opts?)` / `createPortal(resourceOrId, opts?)` | Mint a short-lived portal link; existing resources can set `targetPath` |
+| `createPortalForUrl(targetUrl, opts?)` | Protect + mint a URL resource; rejects `targetPath` |
 | `connectorResource(connectorId)` | Handle for a service qURL Connector already protects |
 | `resourceById(id)` | Handle from a stored resource id (no API call) |
 | `enterPortal(linkOrToken)` | Open a qURL link programmatically → `ResourceHandle` |
