@@ -169,6 +169,49 @@ NHP UDP. It has no relay or HTTP-resolve fallback. Connector assignment and
 registration are separate producer operations and are not part of the portal
 opener.
 
+qURL Connector assignment and registration use native UDP through
+`qurl-connector` and `qurl-go`. This package does not expose an HTTP enrollment API.
+Like the Go SDK, credential minting uses HTTPS and token consumption uses
+native UDP. The Go SDK currently exposes minting through its restricted
+`RegisteredAgentResourceHTTPDoer` bridge; this SDK uses `createApiKey`.
+The service controls which credential kinds each caller can mint.
+It can mint the one-shot credential consumed by that native enrollment flow:
+
+```typescript
+const enrollment = await client.createApiKey({
+  kind: 'enrollment_token',
+  name: 'prod-dashboard enrollment',
+  target: 'connector',
+  claims: [{ type: 'connector', id: 'prod-dashboard' }],
+  expires_in: '15m',
+});
+if (!enrollment.api_key) throw new Error('Enrollment response omitted its one-time token');
+await deliverEnrollmentTokenSecurely(enrollment.api_key);
+```
+
+Durable `api_key` credentials require explicit scopes and do not accept
+`expires_in`; enrollment tokens derive their scopes from `target`/`claims` and
+expire within 24 hours. A connector claim's `id` is its immutable connector
+slug. Request enums are validated against the current service contract;
+response types remain additive for forward-compatible reads, and new request
+enum values require a matching SDK release. Use
+`isApiKeyRequestScope(scope)` to validate response scopes before writing them
+back. Reject unknown scopes; do not filter them out, which can remove permissions.
+When changing only a name, omit `scopes` from `updateApiKey`.
+
+```typescript
+import { isApiKeyRequestScope } from '@layervai/qurl';
+
+const scopes = key.scopes;
+if (!scopes?.length || !scopes.every(isApiKeyRequestScope)) {
+  throw new Error('Cannot reuse these scopes; check the current SDK contract');
+}
+await client.updateApiKey(keyId, { scopes });
+```
+
+This credential surface requires the kind-first qurl-service contract at or
+after commit `047cf31e1cdf545e3060e0f9294d738a19fb997b`.
+
 ## Opening Portals
 
 Most recipients open qURL links directly and do not use this SDK at all. If
