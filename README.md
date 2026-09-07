@@ -218,7 +218,9 @@ reports `degraded` until it succeeds. Date fields describe the most recent
 successful grant, so use `ready` as the authority for current usability. A
 transient renewal failure keeps the state `ready` while the prior admission is
 usable. A changed authenticated target is not retried. It keeps the prior
-admission until expiry and then requires an explicit `start()` recovery. If the
+admission until expiry. During that time, `start()` remains idempotent because
+the old admission is still usable; `health().lastFailureClass` reports the
+target change. After expiry, an explicit `start()` attempts recovery. If the
 target change is intentional and permanent, create a new opener for the new
 qURL; the old opener stays bound to its first authenticated target. Other
 failures retry through the remaining admission window. This does not put an

@@ -19,16 +19,16 @@ if (typeof PortalBusyError !== "function") {
 if (typeof PortalInvalidReplyError !== "function") {
   throw new Error("ESM Node entry does not export PortalInvalidReplyError");
 }
-for (const value of [
+for (const [name, value] of Object.entries({
   PortalOpenerClosedError,
   PortalOpenerNotReadyError,
   PortalOpenerNotStartedError,
   PortalRedirectError,
   PortalTargetChangedError,
   PortalTooManyRedirectsError,
-]) {
+})) {
   if (typeof value === "function") continue;
-  throw new Error("ESM Node entry does not export portal lifecycle errors");
+  throw new Error(`ESM Node entry does not export ${name}`);
 }
 
 console.log("node esm smoke ok");

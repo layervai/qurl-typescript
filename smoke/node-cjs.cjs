@@ -18,7 +18,7 @@ for (const name of [
   "PortalTooManyRedirectsError",
 ]) {
   if (typeof nodeSdk[name] === "function") continue;
-  throw new Error("CJS Node entry does not export portal lifecycle errors");
+  throw new Error(`CJS Node entry does not export ${name}`);
 }
 
 console.log("node cjs smoke ok");

@@ -242,6 +242,7 @@ class NativePortalOpener implements PortalOpener {
   #sessionSecret?: Buffer;
   #grant?: ActiveGrant;
   #boundResourceUrl?: string;
+  #startPromise?: Promise<void>;
   #openPromise?: Promise<void>;
   #openController?: AbortController;
   #closePromise?: Promise<void>;
@@ -276,15 +277,24 @@ class NativePortalOpener implements PortalOpener {
       return this.start(options);
     }
 
-    const sharedOpen = this.#openPromise;
-    if (sharedOpen) return waitForPromise(sharedOpen, options.signal);
+    const sharedStart = this.#startPromise;
+    if (sharedStart) return waitForPromise(sharedStart, options.signal);
 
+    let attempt!: Promise<void>;
+    attempt = this.#runStart(options.signal).finally(() => {
+      if (this.#startPromise === attempt) this.#startPromise = undefined;
+    });
+    this.#startPromise = attempt;
+    return attempt;
+  }
+
+  async #runStart(signal?: AbortSignal): Promise<void> {
     if (this.#renewalTimer) this.#runtime.clearTimer(this.#renewalTimer);
     this.#renewalTimer = undefined;
     this.#startingRecovery = this.#state === "degraded" || this.#state === "running";
     this.#state = "starting";
     try {
-      await this.#openSingleFlight(options.signal);
+      await this.#openSingleFlight(signal);
     } catch (error) {
       if (this.#isClosed()) throw new PortalOpenerClosedError();
       this.#state = "degraded";

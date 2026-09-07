@@ -539,6 +539,44 @@ describe("native portal opener", () => {
     await opener.close();
   });
 
+  it("keeps a failed Start single-flight through open-promise cleanup", async () => {
+    const failure = new Error("initial open failed");
+    const knock = vi.fn().mockRejectedValueOnce(failure).mockResolvedValueOnce(ack());
+    const follower = deferred<void>();
+    let scheduleFollower = true;
+    let opener!: ReturnType<typeof createPortalOpenerWithRuntime>;
+    opener = createPortalOpenerWithRuntime(
+      { qurl: matched.qurl, deployment: deployment() },
+      {
+        knock,
+        fetch,
+        nowNanos: () => 1_000_000_000n,
+        nowEpochMs: () => 1_000,
+        setTimer: setTimeout,
+        clearTimer: clearTimeout,
+        setDeadlineTimer: setTimeout,
+        clearDeadlineTimer: (timer) => {
+          clearTimeout(timer);
+          if (!scheduleFollower) return;
+          scheduleFollower = false;
+          globalThis.queueMicrotask(() => opener.start().then(follower.resolve, follower.reject));
+        },
+      },
+    );
+
+    const first = opener.start();
+    await expect(first).rejects.toBe(failure);
+    await expect(follower.promise).rejects.toBe(failure);
+    expect(knock).toHaveBeenCalledTimes(1);
+    expect(opener.health()).toMatchObject({
+      state: "degraded",
+      ready: false,
+      lastFailureClass: "open_failed",
+      consecutiveFailures: 1,
+    });
+    await opener.close();
+  });
+
   it("cancels and joins an initial open during close", async () => {
     let deviceKey: Uint8Array | undefined;
     let body: Uint8Array | undefined;
