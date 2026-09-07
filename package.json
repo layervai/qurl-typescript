@@ -1,12 +1,19 @@
 {
   "name": "@layervai/qurl",
-  "version": "0.3.1",
+  "version": "0.6.0",
   "description": "TypeScript SDK for the qURL™ API — secure, time-limited access links. Quantum URL is how you enter the hidden layer of the internet.",
   "type": "module",
   "sideEffects": false,
   "main": "./dist/cjs/index.js",
   "module": "./dist/esm/index.js",
   "types": "./dist/esm/index.d.ts",
+  "typesVersions": {
+    "*": {
+      "node": [
+        "./dist/esm/node.d.ts"
+      ]
+    }
+  },
   "exports": {
     ".": {
       "import": {
@@ -17,6 +24,16 @@
         "types": "./dist/cjs/index.d.ts",
         "default": "./dist/cjs/index.js"
       }
+    },
+    "./node": {
+      "import": {
+        "types": "./dist/esm/node.d.ts",
+        "default": "./dist/esm/node.js"
+      },
+      "require": {
+        "types": "./dist/cjs/node.d.ts",
+        "default": "./dist/cjs/node.js"
+      }
     }
   },
   "scripts": {
@@ -25,9 +42,9 @@
     "dev": "tsc -p tsconfig.json --watch",
     "test": "vitest run",
     "lint": "eslint src/",
-    "format": "prettier --write 'src/**/*.ts' 'smoke/**/*.{cjs,mjs}' 'scripts/**/*.mjs'",
-    "format:check": "prettier --check 'src/**/*.ts' 'smoke/**/*.{cjs,mjs}' 'scripts/**/*.mjs'",
-    "smoke:dist": "node smoke/cjs.cjs && node smoke/esm.mjs && node smoke/parity.mjs && node smoke/idempotency.mjs && node smoke/retired-agent-lifecycle.mjs",
+    "format": "prettier --write 'src/**/*.ts' 'smoke/**/*.{cjs,mjs,ts,json}' 'scripts/**/*.mjs'",
+    "format:check": "prettier --check 'src/**/*.ts' 'smoke/**/*.{cjs,mjs,ts,json}' 'scripts/**/*.mjs'",
+    "smoke:dist": "node smoke/cjs.cjs && node smoke/esm.mjs && node smoke/node-cjs.cjs && node smoke/node-esm.mjs && node smoke/node-no-global-fetch.mjs && node scripts/smoke-node-legacy-types.mjs && node smoke/parity.mjs && node smoke/idempotency.mjs && node smoke/response-hardening.mjs && node smoke/retired-agent-lifecycle.mjs",
     "prepublishOnly": "npm run build && npm run smoke:dist"
   },
   "keywords": [
@@ -45,7 +62,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@layervai/qurl-conformance": "0.13.0",
+    "@layervai/qurl-conformance": "0.15.0",
     "@types/node": "^26.0.1",
     "@typescript-eslint/eslint-plugin": "^8.60.0",
     "@typescript-eslint/parser": "^8.58.2",
@@ -57,7 +74,7 @@
     "yaml": "^2.9.0"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22.12"
   },
   "files": [
     "dist/"

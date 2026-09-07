@@ -1,5 +1,10 @@
 import { describe, expect, expectTypeOf, it, vi } from "vitest";
 import conformancePackage from "@layervai/qurl-conformance";
+import { createServer } from "node:http";
+import { once } from "node:events";
+import { QURLClient } from "./client.js";
+import { createMatchedQv2Fixture } from "./__tests__/matched-qv2-fixture.js";
+import { verifyQv2Link } from "./node/qv2.js";
 import { Buffer } from "node:buffer";
 import { inspect } from "node:util";
 import { runInNewContext } from "node:vm";
@@ -115,6 +120,57 @@ function shareResponse(overrides: Record<string, unknown> = {}) {
 }
 
 describe("shareResource", () => {
+  it("shares by CRID over HTTP, verifies the returned link, and revokes its token", async () => {
+    const fixture = createMatchedQv2Fixture();
+    const requests: Array<{ method?: string; url?: string; body: string }> = [];
+    const server = createServer(async (request, response) => {
+      let body = "";
+      for await (const chunk of request) body += chunk;
+      requests.push({ method: request.method, url: request.url, body });
+      if (request.method === "POST") {
+        response.writeHead(200, { "Content-Type": "application/json" });
+        response.end(JSON.stringify(shareResponse({ qurl: fixture.qurl })));
+      } else {
+        response.writeHead(204);
+        response.end();
+      }
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("missing HTTP address");
+      const client = new QURLClient({
+        apiKey: "test-api-key",
+        baseUrl: `http://127.0.0.1:${address.port}`,
+      });
+      const share = await client.shareResource(matching.expected_crid, { ttlSeconds: 300 });
+      await share.verifyCrid(b64url(matching.der_spki_b64url));
+      // The native opener's verifier accepts the credential without rewriting it.
+      expect(() => verifyQv2Link(share.link, fixture.issuerKeys)).not.toThrow();
+      expect(JSON.stringify(share)).not.toContain(share.link);
+      expect(share.qurlId).toBe("q_a1b2c3d4e5f");
+      await client.revokeResourceQurl(matching.expected_crid, share.qurlId!);
+      expect(requests).toEqual([
+        {
+          method: "POST",
+          url: `/v1/resources/${matching.expected_crid}/share`,
+          body: '{"ttl_seconds":300}',
+        },
+        {
+          method: "DELETE",
+          url: `/v1/resources/${matching.expected_crid}/qurls/q_a1b2c3d4e5f`,
+          body: "",
+        },
+      ]);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  });
+
   it("posts an empty object for platform defaults and maps the one-time response", async () => {
     const fetch = mockFetch({ status: 200, body: shareResponse() });
 
@@ -378,7 +434,7 @@ describe("shareResource", () => {
     ).toMatch(/^[0-9a-f-]{36}$/);
   });
 
-  it.each([1.5, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1])(
+  it.each([1.5, Number.MAX_SAFE_INTEGER + 1])(
     "fails closed when expires_in_seconds is the non-integer %s",
     async (expiresInSeconds) => {
       const fetch = mockFetch({

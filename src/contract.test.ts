@@ -130,10 +130,19 @@ function assertSdkCallMatches(
   }
 }
 
-const mockOk = (
-  body: unknown = { data: {}, meta: {} },
-  status: number = 200,
-): typeof globalThis.fetch => mockFetch({ status, body });
+const mockOk = (body: unknown, status: number = 200): typeof globalThis.fetch =>
+  mockFetch(body === undefined ? { status } : { status, body });
+
+const CONNECTOR_RESOURCE_CONTRACT_DATA = {
+  resource_id:
+    "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE2cTVv5_3eeYCcLLq5ROYCqcmY50HiKZ9ATglIkPnCji1E_S63UMtXba1moR8-Q6EV7oM6zwwh9_j2CDujzXvLA",
+  connector_routing_id: "c-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  knock_resource_id: "asp-resource-1",
+  type: "tunnel",
+  status: "active",
+  slug: "conn-x",
+  alias: "display-x",
+};
 
 // Single source of truth for the contract-covered methods. Each entry
 // is one SDK public method → the (verb, template) it must call + a
@@ -169,21 +178,43 @@ const METHOD_CASES: MethodCase[] = [
     invoke: (c) => c.protectUrl("https://example.com"),
   },
   {
-    method: "connectorResource",
+    method: "ensureConnectorResource",
+    verb: "POST",
+    template: "/v1/resources",
+    mockStatus: 201,
+    mockBody: {
+      data: CONNECTOR_RESOURCE_CONTRACT_DATA,
+      meta: { found_existing: false },
+    },
+    invoke: (c) => c.ensureConnectorResource("conn-x"),
+  },
+  {
+    method: "getConnectorResource",
+    verb: "GET",
+    template: "/v1/resources/{id}",
+    mockBody: { data: { resource: CONNECTOR_RESOURCE_CONTRACT_DATA } },
+    invoke: (c) => c.getConnectorResource(CONNECTOR_RESOURCE_CONTRACT_DATA.resource_id),
+  },
+  {
+    method: "getConnectorResourceBySlug",
     verb: "GET",
     template: "/v1/resources",
-    // connectorResource requires exactly one result whose alias matches
-    // the connector id, so the mock must satisfy both.
-    mockBody: {
-      data: [{ resource_id: "r_x", alias: "conn-x", target_url: "https://example.com" }],
-      meta: { has_more: false },
-    },
-    invoke: (c) => c.connectorResource("conn-x"),
+    mockBody: { data: [CONNECTOR_RESOURCE_CONTRACT_DATA] },
+    invoke: (c) => c.getConnectorResourceBySlug("conn-x"),
+  },
+  {
+    method: "deleteConnectorResource",
+    verb: "DELETE",
+    template: "/v1/resources/{id}",
+    mockStatus: 204,
+    mockBody: undefined,
+    invoke: (c) => c.deleteConnectorResource(CONNECTOR_RESOURCE_CONTRACT_DATA.resource_id),
   },
   {
     method: "createPortal",
     verb: "POST",
     template: "/v1/resources/{id}/qurls",
+    mockStatus: 201,
     mockBody: { data: { resource_id: "r_x", qurl_link: "https://qurl.link/#at_y" } },
     invoke: (c) => c.createPortal("r_x", { validFor: "5m" }),
   },
@@ -746,6 +777,7 @@ const NON_API_PROTOTYPE_METHODS: ReadonlySet<string> = new Set([
 // genuinely internal.
 const INTERNAL_HELPERS: ReadonlySet<string> = new Set([
   "request",
+  "requestNoContent",
   "rawRequest",
   "maskKey",
   "log",
@@ -754,6 +786,7 @@ const INTERNAL_HELPERS: ReadonlySet<string> = new Set([
   "paginateAll",
   "retryDelay",
   "classifyFetchError",
+  "classifyResponseReadError",
   "mapQurlsField",
   "validateBatchCreateResponse",
 ]);

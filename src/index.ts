@@ -1,12 +1,16 @@
-export { ProtectedResource, QURLClient } from "./client.js";
+export { ConnectorResource, ProtectedResource, QURLClient } from "./client.js";
+export type { EnsureConnectorResourceResult } from "./client.js";
 export { CRIDVerificationError, ShareLink } from "./share.js";
 export type { CRIDVerificationErrorCode, ShareLinkInit, ShareLinkJSON } from "./share.js";
 export {
   AuthenticationError,
   AuthorizationError,
+  ConnectorResourceOutcomeUnknownError,
   createError,
   ERROR_CODE_AMBIGUOUS_RESOURCE,
   ERROR_CODE_CLIENT_VALIDATION,
+  ERROR_CODE_CONNECTOR_RESOURCE_OUTCOME_UNKNOWN,
+  ERROR_CODE_CONNECTOR_RESOURCE_REVOKED,
   ERROR_CODE_CRID_MISMATCH,
   ERROR_CODE_INVALID_CRID,
   ERROR_CODE_INVALID_CRID_KEY,
