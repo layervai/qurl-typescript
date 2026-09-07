@@ -1,0 +1,417 @@
+import { describe, expect, it, vi } from "vitest";
+import { QURLClient } from "./client.js";
+import {
+  DelegatedBatchOutcomeUnknownError,
+  ERROR_CODE_DELEGATED_BATCH_OUTCOME_UNKNOWN,
+  ERROR_CODE_UNEXPECTED_RESPONSE,
+  NetworkError,
+  ValidationError,
+} from "./errors.js";
+import type { CreateDelegatedQurlBatchInput } from "./types.js";
+import { createClient, mockFetch, mockFetches } from "./__tests__/test-helpers.js";
+
+const BATCH_ID = `dqb_${"a".repeat(22)}`;
+const ETAG = `"dqb-${"a".repeat(32)}"`;
+const IDEMPOTENCY_KEY = "12345678-1234-1234-1234-123456789012";
+const SUBMITTED_AT = "2026-09-07T12:00:00Z";
+const COMMON_HEADERS = { "Cache-Control": "private, no-store", ETag: ETAG };
+const ACCEPTED_HEADERS = {
+  ...COMMON_HEADERS,
+  Location: `https://api.test.layerv.ai/v1/delegated-qurl-batches/${BATCH_ID}`,
+  "Retry-After": "2",
+};
+const INPUT: CreateDelegatedQurlBatchInput = {
+  mint_capability: "opaque-capability",
+  grants: [
+    {
+      expires_in: "1h",
+      label: "recipient",
+      one_time_use: true,
+      max_sessions: 1,
+      session_duration: "30m",
+      access_policy: {
+        geo_allowlist: ["US"],
+        ai_agent_policy: { deny_categories: ["new-agent-category"] },
+      },
+    },
+  ],
+};
+
+function acceptedBody(overrides: Record<string, unknown> = {}) {
+  return {
+    data: {
+      batch_id: BATCH_ID,
+      status: "queued",
+      item_count: 1,
+      submitted_at: SUBMITTED_AT,
+      ...overrides,
+    },
+    meta: { request_id: "req_create", forward_compatible: true },
+  };
+}
+
+function pendingBody(overrides: Record<string, unknown> = {}) {
+  return {
+    data: {
+      batch_id: BATCH_ID,
+      status: "running",
+      item_count: 2,
+      submitted_at: SUBMITTED_AT,
+      ...overrides,
+    },
+    meta: { request_id: "req_get" },
+  };
+}
+
+describe("delegated qURL batches", () => {
+  it("sends one exact create and returns the 202 polling contract", async () => {
+    const fetch = mockFetch({ status: 202, headers: ACCEPTED_HEADERS, body: acceptedBody() });
+    const result = await createClient(fetch).createDelegatedQurlBatch(INPUT, {
+      idempotencyKey: IDEMPOTENCY_KEY,
+    });
+
+    expect(result).toEqual({
+      http_status: 202,
+      batch_id: BATCH_ID,
+      status: "queued",
+      item_count: 1,
+      submitted_at: SUBMITTED_AT,
+      etag: ETAG,
+      retry_after: 2,
+      location: ACCEPTED_HEADERS.Location,
+      request_id: "req_create",
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const [url, init] = vi.mocked(fetch).mock.calls[0];
+    expect(url).toBe("https://api.test.layerv.ai/v1/delegated-qurl-batches");
+    expect(init).toMatchObject({ method: "POST", redirect: "manual" });
+    expect(init?.headers).toMatchObject({ "Idempotency-Key": IDEMPOTENCY_KEY });
+    expect(init?.body).toBe(JSON.stringify(INPUT));
+  });
+
+  it.each([
+    ["unknown request field", { ...INPUT, unexpected: true }, { idempotencyKey: IDEMPOTENCY_KEY }],
+    [
+      "unknown grant field",
+      { ...INPUT, grants: [{ ...INPUT.grants[0], unexpected: true }] },
+      { idempotencyKey: IDEMPOTENCY_KEY },
+    ],
+    [
+      "non-string policy category",
+      {
+        ...INPUT,
+        grants: [{ access_policy: { ai_agent_policy: { deny_categories: [42] } } }],
+      },
+      { idempotencyKey: IDEMPOTENCY_KEY },
+    ],
+    ["short idempotency key", INPUT, { idempotencyKey: "too-short" }],
+  ])("rejects %s before dispatch", async (_label, input, options) => {
+    const fetch = vi.fn();
+    await expect(
+      createClient(fetch as typeof globalThis.fetch).createDelegatedQurlBatch(
+        input as CreateDelegatedQurlBatchInput,
+        options,
+      ),
+    ).rejects.toBeInstanceOf(ValidationError);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("does not hide a mutation retry after a transport failure", async () => {
+    const fetch = vi.fn().mockRejectedValue(new TypeError("connection reset"));
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      maxRetries: 3,
+    });
+
+    const error = await client
+      .createDelegatedQurlBatch(INPUT, { idempotencyKey: IDEMPOTENCY_KEY })
+      .catch((caught: unknown) => caught as DelegatedBatchOutcomeUnknownError);
+
+    expect(error).toBeInstanceOf(DelegatedBatchOutcomeUnknownError);
+    expect(error).toMatchObject({
+      status: 0,
+      code: ERROR_CODE_DELEGATED_BATCH_OUTCOME_UNKNOWN,
+      cause: { status: 0 },
+    });
+    expect(error.cause).toBeInstanceOf(NetworkError);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(fetch).mock.calls[0][1]?.headers).toMatchObject({
+      "Idempotency-Key": IDEMPOTENCY_KEY,
+    });
+  });
+
+  it("accepts a Location under a path-prefixed API base URL", async () => {
+    const location = `https://api.test.layerv.ai/edge/v1/delegated-qurl-batches/${BATCH_ID}`;
+    const fetch = mockFetch({
+      status: 202,
+      headers: { ...ACCEPTED_HEADERS, Location: location },
+      body: acceptedBody(),
+    });
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai/edge",
+      fetch,
+    });
+
+    await expect(
+      client.createDelegatedQurlBatch(INPUT, { idempotencyKey: IDEMPOTENCY_KEY }),
+    ).resolves.toMatchObject({ location });
+    expect(fetch).toHaveBeenCalledWith(
+      "https://api.test.layerv.ai/edge/v1/delegated-qurl-batches",
+      expect.any(Object),
+    );
+  });
+
+  it.each([
+    ["missing Location", { "Cache-Control": "private, no-store", ETag: ETAG }, acceptedBody()],
+    ["weak ETag", { ...ACCEPTED_HEADERS, ETag: `W/${ETAG}` }, acceptedBody()],
+    ["unsafe Retry-After", { ...ACCEPTED_HEADERS, "Retry-After": "3601" }, acceptedBody()],
+    [
+      "foreign Location",
+      {
+        ...ACCEPTED_HEADERS,
+        Location: `https://other.test/v1/delegated-qurl-batches/${BATCH_ID}`,
+      },
+      acceptedBody(),
+    ],
+    ["unknown response field", ACCEPTED_HEADERS, acceptedBody({ unexpected: true })],
+    ["unknown top-level field", ACCEPTED_HEADERS, { ...acceptedBody(), unexpected: true }],
+  ])("classifies an accepted create with %s as outcome unknown", async (_label, headers, body) => {
+    const fetch = mockFetch({ status: 202, headers, body });
+    const error = await createClient(fetch)
+      .createDelegatedQurlBatch(INPUT, { idempotencyKey: IDEMPOTENCY_KEY })
+      .catch((caught: unknown) => caught as DelegatedBatchOutcomeUnknownError);
+
+    expect(error).toBeInstanceOf(DelegatedBatchOutcomeUnknownError);
+    expect(error.cause).toMatchObject({ status: 202, code: ERROR_CODE_UNEXPECTED_RESPONSE });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("classifies a server failure after dispatch as outcome unknown", async () => {
+    const fetch = mockFetch({
+      status: 500,
+      body: {
+        error: {
+          status: 500,
+          code: "internal_error",
+          title: "Internal Server Error",
+          detail: "Failed to create delegated batch",
+        },
+        meta: { request_id: "req_failed_create" },
+      },
+    });
+
+    const error = await createClient(fetch)
+      .createDelegatedQurlBatch(INPUT, { idempotencyKey: IDEMPOTENCY_KEY })
+      .catch((caught: unknown) => caught as DelegatedBatchOutcomeUnknownError);
+
+    expect(error).toBeInstanceOf(DelegatedBatchOutcomeUnknownError);
+    expect(error.cause).toMatchObject({ status: 500, requestId: "req_failed_create" });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns a definitive 4xx without an outcome-unknown wrapper", async () => {
+    const fetch = mockFetch({
+      status: 409,
+      body: {
+        error: {
+          status: 409,
+          code: "idempotency_conflict",
+          title: "Conflict",
+          detail: "The key belongs to another request",
+        },
+        meta: { request_id: "req_conflict" },
+      },
+    });
+
+    const error = await createClient(fetch)
+      .createDelegatedQurlBatch(INPUT, { idempotencyKey: IDEMPOTENCY_KEY })
+      .catch((caught: unknown) => caught);
+
+    expect(error).not.toBeInstanceOf(DelegatedBatchOutcomeUnknownError);
+    expect(error).toMatchObject({ status: 409, code: "idempotency_conflict" });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("classifies a debug callback failure after dispatch as outcome unknown", async () => {
+    const fetch = mockFetch({ status: 202, headers: ACCEPTED_HEADERS, body: acceptedBody() });
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch,
+      debug: (message) => {
+        if (message.includes("→ 202")) throw new Error("debug sink failed");
+      },
+    });
+
+    const error = await client
+      .createDelegatedQurlBatch(INPUT, { idempotencyKey: IDEMPOTENCY_KEY })
+      .catch((caught: unknown) => caught as DelegatedBatchOutcomeUnknownError);
+
+    expect(error).toBeInstanceOf(DelegatedBatchOutcomeUnknownError);
+    expect(error.cause).toBeInstanceOf(Error);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not report an outcome unknown before dispatch", async () => {
+    const fetch = vi.fn();
+    const debugFailure = new Error("debug sink failed");
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch: fetch as typeof globalThis.fetch,
+      debug: () => {
+        throw debugFailure;
+      },
+    });
+
+    await expect(
+      client.createDelegatedQurlBatch(INPUT, { idempotencyKey: IDEMPOTENCY_KEY }),
+    ).rejects.toBe(debugFailure);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("preserves 202 and 304 polling headers and sends If-None-Match", async () => {
+    const fetch = mockFetches([
+      {
+        status: 202,
+        headers: { ...COMMON_HEADERS, "Retry-After": "3" },
+        body: pendingBody(),
+      },
+      {
+        status: 304,
+        headers: { ...COMMON_HEADERS, "Retry-After": "4" },
+      },
+    ]);
+    const client = createClient(fetch);
+
+    await expect(client.getDelegatedQurlBatch(BATCH_ID, { etag: ETAG })).resolves.toEqual({
+      http_status: 202,
+      batch_id: BATCH_ID,
+      status: "running",
+      item_count: 2,
+      submitted_at: SUBMITTED_AT,
+      etag: ETAG,
+      retry_after: 3,
+      request_id: "req_get",
+    });
+    await expect(client.getDelegatedQurlBatch(BATCH_ID, { etag: ETAG })).resolves.toEqual({
+      http_status: 304,
+      etag: ETAG,
+      retry_after: 4,
+    });
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(fetch).mock.calls[0][1]?.headers).toMatchObject({ "If-None-Match": ETAG });
+    expect(vi.mocked(fetch).mock.calls[1][1]?.headers).toMatchObject({ "If-None-Match": ETAG });
+  });
+
+  it.each([
+    ["without a request ETag", undefined, ETAG],
+    ["with a changed response ETag", ETAG, '"different"'],
+  ])("rejects a 304 %s", async (_label, requestEtag, responseEtag) => {
+    const fetch = mockFetch({
+      status: 304,
+      headers: { ...COMMON_HEADERS, ETag: responseEtag, "Retry-After": "2" },
+    });
+
+    await expect(
+      createClient(fetch).getDelegatedQurlBatch(BATCH_ID, { etag: requestEtag }),
+    ).rejects.toMatchObject({ status: 304, code: ERROR_CODE_UNEXPECTED_RESPONSE });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns a strict, input-ordered terminal result", async () => {
+    const body = {
+      data: {
+        batch_id: BATCH_ID,
+        status: "partially_failed",
+        item_count: 2,
+        submitted_at: SUBMITTED_AT,
+        completed_at: "2026-09-07T12:00:01Z",
+        results: [
+          {
+            index: 0,
+            status: "succeeded",
+            qurl: {
+              qurl_id: "q_0123456789a",
+              qurl_link: "https://links.test/portal/#secret-a",
+              expires_at: "2026-09-07T13:00:00Z",
+            },
+          },
+          {
+            index: 1,
+            status: "failed",
+            error: { code: "creation_failed", message: "refused" },
+          },
+        ],
+      },
+      meta: { request_id: "req_terminal" },
+    };
+    const fetch = mockFetch({ status: 200, headers: COMMON_HEADERS, body });
+
+    await expect(createClient(fetch).getDelegatedQurlBatch(BATCH_ID)).resolves.toEqual({
+      http_status: 200,
+      ...body.data,
+      etag: ETAG,
+      request_id: "req_terminal",
+    });
+  });
+
+  it("rejects out-of-order terminal results", async () => {
+    const body = pendingBody({
+      item_count: 1,
+      status: "failed",
+      completed_at: "2026-09-07T12:00:01Z",
+      results: [{ index: 1, status: "failed", error: { code: "creation_failed", message: "x" } }],
+    });
+    const fetch = mockFetch({ status: 200, headers: COMMON_HEADERS, body });
+
+    await expect(createClient(fetch).getDelegatedQurlBatch(BATCH_ID)).rejects.toMatchObject({
+      status: 200,
+      code: ERROR_CODE_UNEXPECTED_RESPONSE,
+    });
+  });
+
+  it.each([
+    ["pending fields on 202", { completed_at: "2026-09-07T12:00:01Z", results: [] }],
+    ["terminal status on 202", { status: "succeeded" }],
+  ])("rejects %s in a read response", async (_label, overrides) => {
+    const body = pendingBody({ item_count: 1, ...overrides });
+    const fetch = mockFetch({
+      status: 202,
+      headers: { ...COMMON_HEADERS, "Retry-After": "1" },
+      body,
+    });
+
+    await expect(createClient(fetch).getDelegatedQurlBatch(BATCH_ID)).rejects.toMatchObject({
+      status: 202,
+      code: ERROR_CODE_UNEXPECTED_RESPONSE,
+    });
+  });
+
+  it("leaves retry count and total poll deadline to the caller", async () => {
+    const fetch = mockFetch({
+      status: 503,
+      body: {
+        error: {
+          status: 503,
+          code: "service_unavailable",
+          title: "Service Unavailable",
+          detail: "Try later",
+        },
+        meta: { request_id: "req_unavailable" },
+      },
+    });
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch,
+      maxRetries: 3,
+    });
+
+    await expect(client.getDelegatedQurlBatch(BATCH_ID)).rejects.toMatchObject({ status: 503 });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+});

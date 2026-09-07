@@ -40,6 +40,10 @@ paths:
   /v1/customer:
     get: {}
     patch: {}
+  /v1/delegated-qurl-batches:
+    post: {}
+  /v1/delegated-qurl-batches/{batch_id}:
+    get: {}
   /v1/domains:
     get: {}
     post: {}

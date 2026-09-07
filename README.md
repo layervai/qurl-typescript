@@ -259,6 +259,46 @@ await client.updateApiKey(keyId, { scopes });
 This credential surface requires the kind-first qurl-service contract at or
 after commit `047cf31e1cdf545e3060e0f9294d738a19fb997b`.
 
+## Delegated qURL batches
+
+Services with a delegated mint capability can create up to 100 ordered grants
+without an API call per recipient:
+
+```typescript
+import { DelegatedBatchOutcomeUnknownError, QURLClient } from '@layervai/qurl';
+
+const client = new QURLClient({ apiKey: process.env.QURL_API_KEY! });
+const key = crypto.randomUUID();
+const mintCapability = process.env.QURL_MINT_CAPABILITY!;
+const recipients = [{ name: 'Alice' }];
+
+let accepted;
+try {
+  accepted = await client.createDelegatedQurlBatch(
+    {
+      mint_capability: mintCapability,
+      grants: recipients.map((recipient) => ({ label: recipient.name, expires_in: '1h' })),
+    },
+    { idempotencyKey: key },
+  );
+} catch (error) {
+  if (error instanceof DelegatedBatchOutcomeUnknownError) {
+    // Reconcile first. A deliberate retry must reuse this key and exact body.
+  }
+  throw error;
+}
+
+const state = await client.getDelegatedQurlBatch(accepted.batch_id, {
+  etag: accepted.etag,
+});
+```
+
+One read makes one HTTP attempt. The caller owns the poll count, total deadline,
+and wait from `retry_after`. A `304` means the prior ETag is still current. A
+`200` contains the terminal, input-ordered results. Keep each returned qURL as
+an opaque bearer link and apply any deployment-specific origin check before
+publishing it.
+
 ## Opening Portals
 
 Most recipients open qURL links directly and do not use this SDK at all. If
@@ -585,6 +625,7 @@ try {
 | `ServerError` | 5xx | Server-side failure |
 | `NetworkError` | — | Connection failure |
 | `TimeoutError` | — | Request exceeded timeout |
+| `DelegatedBatchOutcomeUnknownError` | — | Dispatched batch create needs reconciliation |
 
 Client-detected failures use `status: 0` with a discriminating `code`:
 `"client_validation"` for bad input caught before a request, and — on the

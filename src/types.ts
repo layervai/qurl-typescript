@@ -459,6 +459,106 @@ export interface BatchCreateOutput {
   request_id?: string;
 }
 
+/** One recipient grant redeemed from an opaque delegated mint capability. */
+export interface DelegatedQurlGrant {
+  expires_in?: string;
+  label?: string;
+  one_time_use?: boolean;
+  /** Zero means unlimited. */
+  max_sessions?: number;
+  session_duration?: string;
+  access_policy?: AccessPolicy;
+}
+
+/** Input for one durable asynchronous delegated qURL batch. */
+export interface CreateDelegatedQurlBatchInput {
+  mint_capability: string;
+  /** One through 100 independent grants, preserved in input order. */
+  grants: DelegatedQurlGrant[];
+}
+
+/** A stable caller key is required because the mutation is never retried automatically. */
+export interface CreateDelegatedQurlBatchOptions {
+  idempotencyKey: string;
+}
+
+/** Optional strong validator from an earlier delegated batch response. */
+export interface GetDelegatedQurlBatchOptions {
+  etag?: string;
+}
+
+export type DelegatedQurlBatchStatus =
+  "queued" | "running" | "succeeded" | "partially_failed" | "failed";
+
+interface DelegatedQurlBatchBase {
+  batch_id: string;
+  item_count: number;
+  submitted_at: string;
+  etag: string;
+  request_id: string;
+}
+
+/** Exact HTTP 202 result from delegated batch creation. */
+export interface DelegatedQurlBatchAccepted extends DelegatedQurlBatchBase {
+  http_status: 202;
+  status: "queued";
+  location: string;
+  /** Positive Retry-After delta in seconds. */
+  retry_after: number;
+}
+
+export interface DelegatedQurlCreatedData {
+  qurl_id: string;
+  /** Fresh bearer link returned only in a terminal batch result. */
+  qurl_link: string;
+  expires_at: string;
+}
+
+export interface DelegatedQurlBatchItemSuccess {
+  index: number;
+  status: "succeeded";
+  qurl: DelegatedQurlCreatedData;
+}
+
+export interface DelegatedQurlBatchItemFailure {
+  index: number;
+  status: "failed";
+  error: {
+    code: "creation_failed";
+    message: string;
+  };
+}
+
+export type DelegatedQurlBatchItemResult =
+  DelegatedQurlBatchItemSuccess | DelegatedQurlBatchItemFailure;
+
+/** Exact HTTP 202 result for a queued or running batch. */
+export interface DelegatedQurlBatchPending extends DelegatedQurlBatchBase {
+  http_status: 202;
+  status: "queued" | "running";
+  /** Positive Retry-After delta in seconds. */
+  retry_after: number;
+}
+
+/** Exact HTTP 200 terminal result. */
+export interface DelegatedQurlBatchTerminal extends DelegatedQurlBatchBase {
+  http_status: 200;
+  status: "succeeded" | "partially_failed" | "failed";
+  completed_at: string;
+  results: DelegatedQurlBatchItemResult[];
+}
+
+/** Exact body-free HTTP 304 result for an unchanged non-terminal batch. */
+export interface DelegatedQurlBatchNotModified {
+  http_status: 304;
+  etag: string;
+  /** Positive Retry-After delta in seconds. */
+  retry_after: number;
+}
+
+export type GetDelegatedQurlBatchOutput =
+  DelegatedQurlBatchPending | DelegatedQurlBatchTerminal | DelegatedQurlBatchNotModified;
+
 /** Input for creating a resource directly. */
 export interface CreateResourceInput {
   type?: ResourceType;
