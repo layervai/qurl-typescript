@@ -69,7 +69,10 @@ for (const [name, sdk] of builds) {
       return new Response(null, { status: 204 });
     },
   });
-  assert.equal(await exactDeleteClient.delete("r_smoke12345"), undefined);
+  assert.equal(
+    await exactDeleteClient.delete("ahpviqz46qwcvx56glfatm3p3ooccwfcf2it4sdgjervwdkapykw3o3qdq2a"),
+    undefined,
+  );
   assert.equal(exactDeleteCalls, 1, `${name} exact HTTP 204 DELETE was replayed`);
 
   let rateLimitedDeleteCalls = 0;
@@ -93,7 +96,7 @@ for (const [name, sdk] of builds) {
     },
   });
   const rateLimitedDeleteError = await rateLimitedDeleteClient
-    .delete("r_smoke12345")
+    .delete("ahpviqz46qwcvx56glfatm3p3ooccwfcf2it4sdgjervwdkapykw3o3qdq2a")
     .catch((error) => error);
   assert.ok(rateLimitedDeleteError instanceof sdk.RateLimitError);
   assert.equal(rateLimitedDeleteError.status, 429);

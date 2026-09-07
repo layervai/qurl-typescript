@@ -219,7 +219,7 @@ describe("QURLClient", () => {
       (c: QURLClient): Promise<unknown> =>
         c.create({ target_url: "https://example.com", label: "" }),
     ],
-    ["mintLink", (c: QURLClient): Promise<unknown> => c.mintLink("r_abc", { label: "" })],
+    ["mintLink", (c: QURLClient): Promise<unknown> => c.mintLink(RESOURCE_CRID, { label: "" })],
   ])("%s rejects empty-string label client-side (server has minLength: 1)", async (_, call) => {
     const fetch = mockFetch({ status: 200, body: { data: {} } });
     const client = createClient(fetch);
@@ -463,7 +463,7 @@ describe("QURLClient", () => {
     expect(createError.detail).toContain('create: unknown field "ignored"');
 
     const updateError = await client
-      .update("r_x", {
+      .update(RESOURCE_CRID, {
         description: "primary",
         ignored: true,
       } as unknown as Parameters<QURLClient["update"]>[1])
@@ -472,7 +472,7 @@ describe("QURLClient", () => {
     expect(updateError.detail).toContain('update: unknown field "ignored"');
 
     const mintError = await client
-      .mintLink("r_x", {
+      .mintLink(RESOURCE_CRID, {
         expires_in: "1h",
         ignored: true,
       } as unknown as Parameters<QURLClient["mintLink"]>[1])
@@ -520,7 +520,7 @@ describe("QURLClient", () => {
     });
 
     const client = createClient(fetch);
-    const result = await client.get("r_abc123def45");
+    const result = await client.get(RESOURCE_CRID);
 
     expect(result.resource_id).toBe("r_abc123def45");
     expect(result.status).toBe("active");
@@ -548,7 +548,7 @@ describe("QURLClient", () => {
     });
 
     const client = createClient(fetch);
-    const result = await client.get("r_abc123def45");
+    const result = await client.get(RESOURCE_CRID);
 
     expect(result.resource_id).toBe("r_abc123def45");
     expect(result.qurl_count).toBe(0);
@@ -590,7 +590,7 @@ describe("QURLClient", () => {
     });
 
     const client = createClient(fetch);
-    const result = await client.get("r_dual");
+    const result = await client.get(RESOURCE_CRID);
 
     expect(result.access_tokens).toEqual(accessTokens);
     // Wire-format key stripped from consumer-facing object.
@@ -620,7 +620,7 @@ describe("QURLClient", () => {
     });
 
     const client = createClient(fetch);
-    const result = await client.get("r_empty_tokens");
+    const result = await client.get(RESOURCE_CRID);
 
     expect(result.resource_id).toBe("r_empty_tokens");
     expect(result.access_tokens).toEqual([]);
@@ -1163,34 +1163,36 @@ describe("QURLClient", () => {
     const client = createClient(fetch);
 
     await expect(client.getResource("")).rejects.toBeInstanceOf(ValidationError);
-    await expect(client.revokeResourceQurl("r_x", "")).rejects.toBeInstanceOf(ValidationError);
+    await expect(client.revokeResourceQurl(RESOURCE_CRID, "")).rejects.toBeInstanceOf(
+      ValidationError,
+    );
     await expect(client.listWebhookDeliveries("")).rejects.toBeInstanceOf(ValidationError);
     expect(fetch).not.toHaveBeenCalled();
   });
 
   // TODO(upstream-contract): Keep these path and error assertions aligned with
   // qurl-go Client.RevokePortal, the authoritative portal-revoke contract.
-  it.each([
-    ["public resource ID", PUBLIC_RESOURCE_ID],
-    ["CRID", RESOURCE_CRID],
-  ])("revokeResourceQurl accepts the Go SDK's %s identifier form", async (_label, resourceId) => {
-    const fetch = mockFetch({ status: 204 });
-    const client = createClient(fetch);
+  it.each([["CRID", RESOURCE_CRID]])(
+    "revokeResourceQurl accepts the Go SDK's %s identifier form",
+    async (_label, resourceId) => {
+      const fetch = mockFetch({ status: 204 });
+      const client = createClient(fetch);
 
-    await expect(client.revokeResourceQurl(resourceId, "q_0123456789a")).resolves.toBeUndefined();
-    expect(fetch).toHaveBeenCalledWith(
-      `https://api.test.layerv.ai/v1/resources/${resourceId}/qurls/q_0123456789a`,
-      expect.objectContaining({ method: "DELETE" }),
-    );
-  });
+      await expect(client.revokeResourceQurl(resourceId, "q_0123456789a")).resolves.toBeUndefined();
+      expect(fetch).toHaveBeenCalledWith(
+        `https://api.test.layerv.ai/v1/resources/${resourceId}/qurls/q_0123456789a`,
+        expect.objectContaining({ method: "DELETE" }),
+      );
+    },
+  );
 
   it("revokeResourceQurl keeps both IDs inside one encoded path segment", async () => {
     const fetch = mockFetch({ status: 204 });
     const client = createClient(fetch);
 
-    await expect(client.revokeResourceQurl("r?/#1", "q?/#2")).resolves.toBeUndefined();
+    await expect(client.revokeResourceQurl(RESOURCE_CRID, "q?/#2")).resolves.toBeUndefined();
     expect(fetch).toHaveBeenCalledWith(
-      "https://api.test.layerv.ai/v1/resources/r%3F%2F%231/qurls/q%3F%2F%232",
+      "https://api.test.layerv.ai/v1/resources/ahpviqz46qwcvx56glfatm3p3ooccwfcf2it4sdgjervwdkapykw3o3qdq2a/qurls/q%3F%2F%232",
       expect.objectContaining({ method: "DELETE" }),
     );
   });
@@ -1198,12 +1200,12 @@ describe("QURLClient", () => {
   it.each([
     ["empty resource ID", "", "q_0123456789a"],
     ["whitespace-only resource ID", "   ", "q_0123456789a"],
-    ["empty qURL ID", PUBLIC_RESOURCE_ID, ""],
-    ["whitespace-only qURL ID", PUBLIC_RESOURCE_ID, "   "],
+    ["empty qURL ID", RESOURCE_CRID, ""],
+    ["whitespace-only qURL ID", RESOURCE_CRID, "   "],
     ["dot-segment resource ID", ".", "q_0123456789a"],
-    ["dot-segment qURL ID", PUBLIC_RESOURCE_ID, ".."],
+    ["dot-segment qURL ID", RESOURCE_CRID, ".."],
     ["access-token resource ID", SENSITIVE_ACCESS_TOKEN, "q_0123456789a"],
-    ["access-token qURL ID", PUBLIC_RESOURCE_ID, SENSITIVE_ACCESS_TOKEN],
+    ["access-token qURL ID", RESOURCE_CRID, SENSITIVE_ACCESS_TOKEN],
   ])("revokeResourceQurl rejects a %s before fetch", async (_label, resourceId, qurlId) => {
     const fetch = mockFetch({ status: 204 });
     const client = createClient(fetch);
@@ -1229,7 +1231,7 @@ describe("QURLClient", () => {
     const client = createClient(fetch);
 
     const error = await client
-      .revokeResourceQurl(PUBLIC_RESOURCE_ID, "q_0123456789a")
+      .revokeResourceQurl(RESOURCE_CRID, "q_0123456789a")
       .catch((e: unknown) => e as QURLError);
 
     expect(error).toBeInstanceOf(QURLError);
@@ -1243,7 +1245,7 @@ describe("QURLClient", () => {
     const client = createClient(fetch);
 
     const error = await client
-      .createQurlForResource("r_x", { max_sessions: 1001 })
+      .createQurlForResource(RESOURCE_CRID, { max_sessions: 1001 })
       .catch((e: unknown) => e as ValidationError);
 
     expect(error).toBeInstanceOf(ValidationError);
@@ -1257,7 +1259,7 @@ describe("QURLClient", () => {
     const client = createClient(fetch);
 
     const error = await client
-      .createQurlForResource("r_x", { one_time_use: "yes" as unknown as boolean })
+      .createQurlForResource(RESOURCE_CRID, { one_time_use: "yes" as unknown as boolean })
       .catch((e: unknown) => e as ValidationError);
 
     expect(error).toBeInstanceOf(ValidationError);
@@ -1270,7 +1272,10 @@ describe("QURLClient", () => {
     const client = createClient(fetch);
 
     const error = await client
-      .createQurlForResource("r_x", [] as Parameters<QURLClient["createQurlForResource"]>[1])
+      .createQurlForResource(
+        RESOURCE_CRID,
+        [] as Parameters<QURLClient["createQurlForResource"]>[1],
+      )
       .catch((e: unknown) => e as ValidationError);
 
     expect(error).toBeInstanceOf(ValidationError);
@@ -1285,7 +1290,7 @@ describe("QURLClient", () => {
     });
     const client = createClient(fetch);
 
-    await client.createQurlForResource("r_x", {
+    await client.createQurlForResource(RESOURCE_CRID, {
       expires_in: "1h",
       label: null as unknown as string,
       one_time_use: null as unknown as boolean,
@@ -1305,10 +1310,12 @@ describe("QURLClient", () => {
     });
     const client = createClient(fetch);
 
-    await client.createQurlForResource("r_x", { target_path: "/api/detect" });
+    await client.createQurlForResource(RESOURCE_CRID, { target_path: "/api/detect" });
 
     const call = vi.mocked(fetch).mock.calls[0];
-    expect(new URL(call[0] as string).pathname).toBe("/v1/resources/r_x/qurls");
+    expect(new URL(call[0] as string).pathname).toBe(
+      "/v1/resources/ahpviqz46qwcvx56glfatm3p3ooccwfcf2it4sdgjervwdkapykw3o3qdq2a/qurls",
+    );
     const body = JSON.parse(call[1]?.body as string) as unknown;
     expect(body).toEqual({ target_path: "/api/detect" });
   });
@@ -1318,7 +1325,7 @@ describe("QURLClient", () => {
     const client = createClient(fetch);
 
     const error = await client
-      .createQurlForResource("r_x", { target_path: "" })
+      .createQurlForResource(RESOURCE_CRID, { target_path: "" })
       .catch((e: unknown) => e as ValidationError);
 
     expect(error).toBeInstanceOf(ValidationError);
@@ -1337,7 +1344,7 @@ describe("QURLClient", () => {
     const maxLengthTargetPath = `/${"é".repeat(1023)}a`;
     expect(new TextEncoder().encode(maxLengthTargetPath)).toHaveLength(TARGET_PATH_MAX_LENGTH);
 
-    await client.createQurlForResource("r_x", { target_path: maxLengthTargetPath });
+    await client.createQurlForResource(RESOURCE_CRID, { target_path: maxLengthTargetPath });
 
     const body = JSON.parse(vi.mocked(fetch).mock.calls[0][1]?.body as string) as unknown;
     expect(body).toEqual({ target_path: maxLengthTargetPath });
@@ -1350,7 +1357,7 @@ describe("QURLClient", () => {
     expect(new TextEncoder().encode(overlongTargetPath)).toHaveLength(TARGET_PATH_MAX_LENGTH + 1);
 
     const error = await client
-      .createQurlForResource("r_x", { target_path: overlongTargetPath })
+      .createQurlForResource(RESOURCE_CRID, { target_path: overlongTargetPath })
       .catch((e: unknown) => e as ValidationError);
 
     expect(error).toBeInstanceOf(ValidationError);
@@ -1365,7 +1372,7 @@ describe("QURLClient", () => {
     const client = createClient(fetch);
 
     const error = await client
-      .createQurlForResource("r_x", { target_path: 42 } as never)
+      .createQurlForResource(RESOURCE_CRID, { target_path: 42 } as never)
       .catch((e: unknown) => e as ValidationError);
 
     expect(error).toBeInstanceOf(ValidationError);
@@ -1378,7 +1385,7 @@ describe("QURLClient", () => {
     const client = createClient(fetch);
 
     const error = await client
-      .updateResourceQurl("r_x", "q_y", { max_sessions: 1001 })
+      .updateResourceQurl(RESOURCE_CRID, "q_y", { max_sessions: 1001 })
       .catch((e: unknown) => e as ValidationError);
 
     expect(error).toBeInstanceOf(ValidationError);
@@ -1430,7 +1437,7 @@ describe("QURLClient", () => {
       maxRetries: 0,
     });
 
-    const result = await client.terminateAllResourceSessions("r_x");
+    const result = await client.terminateAllResourceSessions(RESOURCE_CRID);
 
     expect(result.terminated).toBe(0);
     expect(result.request_id).toBe("req_x");
@@ -1445,13 +1452,13 @@ describe("QURLClient", () => {
     const client = createClient(fetch);
 
     const error = await client
-      .terminateAllResourceSessions("r_x")
+      .terminateAllResourceSessions(RESOURCE_CRID)
       .catch((e: unknown) => e as QURLError);
 
     expect(error).toBeInstanceOf(QURLError);
     expect(error.code).toBe(ERROR_CODE_UNEXPECTED_RESPONSE);
     expect(error.message).toContain(
-      "Unexpected 204 No Content from DELETE /v1/resources/r_x/sessions; expected response body",
+      "Unexpected 204 No Content from DELETE /v1/resources/ahpviqz46qwcvx56glfatm3p3ooccwfcf2it4sdgjervwdkapykw3o3qdq2a/sessions; expected response body",
     );
   });
 
@@ -1469,7 +1476,7 @@ describe("QURLClient", () => {
       debug,
     });
 
-    const sessions = await client.listResourceSessions("r_x");
+    const sessions = await client.listResourceSessions(RESOURCE_CRID);
     const accessCodes = await client.listAccessCodes();
 
     expect(sessions).toEqual({
@@ -1508,7 +1515,7 @@ describe("QURLClient", () => {
       debug,
     });
 
-    const sessions = await client.listResourceSessions("r_x");
+    const sessions = await client.listResourceSessions(RESOURCE_CRID);
     const accessCodes = await client.listAccessCodes();
 
     expect(sessions.has_more).toBe(false);
@@ -1527,7 +1534,7 @@ describe("QURLClient", () => {
     const fetch = mockFetch({ status: 204 });
     const client = createClient(fetch);
 
-    const sessions = await client.listResourceSessions("r_x");
+    const sessions = await client.listResourceSessions(RESOURCE_CRID);
     const accessCodes = await client.listAccessCodes();
 
     expect(sessions.sessions).toEqual([]);
@@ -1612,7 +1619,7 @@ describe("QURLClient", () => {
       elapsed_ms: null as unknown as number,
     });
     await client.createAccessCode({
-      resource_id: "r_x",
+      resource_id: "ahpviqz46qwcvx56glfatm3p3ooccwfcf2it4sdgjervwdkapykw3o3qdq2a",
       name: null as unknown as string,
       max_uses: null as unknown as number,
       expires_at: null as unknown as string,
@@ -1625,7 +1632,7 @@ describe("QURLClient", () => {
       { url: "https://example.com/hook", events: ["qurl.created"] },
       { kind: "api_key", name: "dashboard", scopes: ["qurl:read"] },
       { code: "invite-code" },
-      { resource_id: "r_x" },
+      { resource_id: RESOURCE_CRID },
     ]);
   });
 
@@ -1633,8 +1640,8 @@ describe("QURLClient", () => {
     const fetch = mockFetch({ status: 200, body: { data: {} } });
     const client = createClient(fetch);
 
-    await expect(client.updateResource("r_x", {})).rejects.toBeInstanceOf(ValidationError);
-    await expect(client.updateResourceQurl("r_x", "q_y", {})).rejects.toBeInstanceOf(
+    await expect(client.updateResource(RESOURCE_CRID, {})).rejects.toBeInstanceOf(ValidationError);
+    await expect(client.updateResourceQurl(RESOURCE_CRID, "q_y", {})).rejects.toBeInstanceOf(
       ValidationError,
     );
     await expect(client.updateWebhook("wh_x", {})).rejects.toBeInstanceOf(ValidationError);
@@ -1646,13 +1653,13 @@ describe("QURLClient", () => {
     const fetch = mockFetch({ status: 200, body: { data: {} } });
     const client = createClient(fetch);
 
-    await client.updateResource("r_x", {
+    await client.updateResource(RESOURCE_CRID, {
       description: "primary",
       tags: null as unknown as string[],
       custom_domain: null as unknown as string,
       preserve_host: null as unknown as boolean,
     });
-    await client.updateResourceQurl("r_x", "q_y", {
+    await client.updateResourceQurl(RESOURCE_CRID, "q_y", {
       extend_by: null as unknown as string,
       expires_at: "2026-04-01T00:00:00Z",
       label: null as unknown as string,
@@ -1683,10 +1690,10 @@ describe("QURLClient", () => {
     const client = createClient(fetch);
 
     await expect(
-      client.updateResource("r_x", { description: null as unknown as string }),
+      client.updateResource(RESOURCE_CRID, { description: null as unknown as string }),
     ).rejects.toBeInstanceOf(ValidationError);
     await expect(
-      client.updateResourceQurl("r_x", "q_y", { extend_by: null as unknown as string }),
+      client.updateResourceQurl(RESOURCE_CRID, "q_y", { extend_by: null as unknown as string }),
     ).rejects.toBeInstanceOf(ValidationError);
     await expect(
       client.updateWebhook("wh_x", { description: null as unknown as string }),
@@ -1701,7 +1708,7 @@ describe("QURLClient", () => {
     const fetch = mockFetch({ status: 200, body: { data: { resource_id: "r_x" } } });
     const client = createClient(fetch);
 
-    await client.updateResource("r_x", { alias: null });
+    await client.updateResource(RESOURCE_CRID, { alias: null });
 
     const body = JSON.parse(vi.mocked(fetch).mock.calls[0][1]?.body as string) as unknown;
     expect(body).toEqual({ alias: null });
@@ -1711,7 +1718,7 @@ describe("QURLClient", () => {
     const fetch = mockFetch({ status: 200, body: { data: { resource_id: "r_x" } } });
     const client = createClient(fetch);
 
-    await client.updateResource("r_x", { custom_domain: "" });
+    await client.updateResource(RESOURCE_CRID, { custom_domain: "" });
 
     const body = JSON.parse(vi.mocked(fetch).mock.calls[0][1]?.body as string) as unknown;
     expect(body).toEqual({ custom_domain: "" });
@@ -1722,7 +1729,7 @@ describe("QURLClient", () => {
     const client = createClient(fetch);
 
     const error = await client
-      .updateResource("r_x", {
+      .updateResource(RESOURCE_CRID, {
         description: "primary",
         target_url: "ftp://example.com",
       } as unknown as Parameters<QURLClient["updateResource"]>[1])
@@ -1740,7 +1747,7 @@ describe("QURLClient", () => {
       [
         "createQurlForResource",
         () =>
-          client.createQurlForResource("r_x", {
+          client.createQurlForResource(RESOURCE_CRID, {
             expires_in: "1h",
             ignored: true,
           } as unknown as Parameters<QURLClient["createQurlForResource"]>[1]),
@@ -1748,7 +1755,7 @@ describe("QURLClient", () => {
       [
         "updateResourceQurl",
         () =>
-          client.updateResourceQurl("r_x", "q_y", {
+          client.updateResourceQurl(RESOURCE_CRID, "q_y", {
             label: "primary",
             ignored: true,
           } as unknown as Parameters<QURLClient["updateResourceQurl"]>[2]),
@@ -1823,7 +1830,7 @@ describe("QURLClient", () => {
         "createAccessCode",
         () =>
           client.createAccessCode({
-            resource_id: "r_x",
+            resource_id: "ahpviqz46qwcvx56glfatm3p3ooccwfcf2it4sdgjervwdkapykw3o3qdq2a",
             ignored: true,
           } as unknown as Parameters<QURLClient["createAccessCode"]>[0]),
       ],
@@ -2483,7 +2490,7 @@ describe("QURLClient", () => {
       }),
     ).rejects.toBeInstanceOf(ValidationError);
     await expect(
-      client.updateResource("r_x", {
+      client.updateResource(RESOURCE_CRID, {
         description: "primary",
         preserve_host: "yes" as unknown as boolean,
       }),
@@ -2506,7 +2513,7 @@ describe("QURLClient", () => {
     expect(createError.detail).toContain("description: must be a string");
 
     const updateError = await client
-      .updateResource("r_x", {
+      .updateResource(RESOURCE_CRID, {
         custom_domain: { hostname: "example.com" } as unknown as string,
       })
       .catch((e: unknown) => e as ValidationError);
@@ -2585,7 +2592,7 @@ describe("QURLClient", () => {
 
     expect(result.foundExisting).toBe(true);
     expect(result.resource).toBeInstanceOf(ConnectorResource);
-    expect(result.resource.resourceId).toBe(CONNECTOR_RESOURCE_ID);
+    expect(result.resource.resourcePublicKey).toBe(CONNECTOR_RESOURCE_ID);
     expect(result.resource.connectorRoutingId).toBe(CONNECTOR_ROUTING_ID);
     expect(result.resource.knockResourceId).toBe("asp-resource-1");
     expect(result.resource.slug).toBe("prod-dashboard");
@@ -2611,6 +2618,7 @@ describe("QURLClient", () => {
         body: {
           data: {
             resource_id: CONNECTOR_RESOURCE_ID,
+            crid: RESOURCE_CRID,
             qurl_link: "https://qurl.link/#at_connector",
           },
         },
@@ -2621,7 +2629,7 @@ describe("QURLClient", () => {
     const { resource } = await client.ensureConnectorResource("prod-dashboard");
     const portal = await resource.createPortal({ validFor: "5m", targetPath: "/api/detect" });
 
-    expect(portal.resourceId).toBe(CONNECTOR_RESOURCE_ID);
+    expect(portal.crid).toBe(RESOURCE_CRID);
     expect(fetch).toHaveBeenNthCalledWith(
       2,
       `https://api.test.layerv.ai/v1/resources/${RESOURCE_CRID}/qurls`,
@@ -2985,7 +2993,7 @@ describe("QURLClient", () => {
 
     const resource = await client.getConnectorResource(RESOURCE_CRID);
 
-    expect(resource.resourceId).toBe(CONNECTOR_RESOURCE_ID);
+    expect(resource.resourcePublicKey).toBe(CONNECTOR_RESOURCE_ID);
     expect(fetch).toHaveBeenCalledWith(
       `https://api.test.layerv.ai/v1/resources/${RESOURCE_CRID}`,
       expect.objectContaining({ method: "GET" }),
@@ -3439,11 +3447,7 @@ describe("QURLClient", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it.each([
-    ["public resource ID", PUBLIC_RESOURCE_ID],
-    ["CRID", RESOURCE_CRID],
-    ["opaque resource ID containing at_", "future-at_-resource-id"],
-  ])("deletes a qURL by its %s", async (_label, resourceId) => {
+  it.each([["CRID", RESOURCE_CRID]])("deletes a qURL by its %s", async (_label, resourceId) => {
     const fetch = mockFetch({ status: 204 });
     const client = createClient(fetch);
 
@@ -3455,15 +3459,15 @@ describe("QURLClient", () => {
   });
 
   it.each([
-    ["delete", (client: QURLClient) => client.delete("r_abc123def45")],
-    ["deleteResource", (client: QURLClient) => client.deleteResource("r_abc123def45")],
+    ["delete", (client: QURLClient) => client.delete(RESOURCE_CRID)],
+    ["deleteResource", (client: QURLClient) => client.deleteResource(RESOURCE_CRID)],
     [
       "revokeResourceQurl",
-      (client: QURLClient) => client.revokeResourceQurl("r_abc123def45", "q_3a7f2c8e91b"),
+      (client: QURLClient) => client.revokeResourceQurl(RESOURCE_CRID, "q_3a7f2c8e91b"),
     ],
     [
       "terminateResourceSession",
-      (client: QURLClient) => client.terminateResourceSession("r_abc123def45", "session-1"),
+      (client: QURLClient) => client.terminateResourceSession(RESOURCE_CRID, "session-1"),
     ],
     ["deleteDomain", (client: QURLClient) => client.deleteDomain("app.example.com")],
     ["deleteWebhook", (client: QURLClient) => client.deleteWebhook("wh_abc")],
@@ -3484,7 +3488,7 @@ describe("QURLClient", () => {
   it("rejects HTTP 202 for a no-content DELETE contract", async () => {
     const fetch = mockFetch({ status: 202, body: { data: {} } });
 
-    await expect(createClient(fetch).delete("r_abc123def45")).rejects.toMatchObject({
+    await expect(createClient(fetch).delete(RESOURCE_CRID)).rejects.toMatchObject({
       status: 202,
       code: ERROR_CODE_UNEXPECTED_RESPONSE,
       detail: expect.stringContaining("received HTTP 202"),
@@ -3496,7 +3500,7 @@ describe("QURLClient", () => {
   it("rejects an empty HTTP 200 for a no-content DELETE contract", async () => {
     const fetch = mockFetch({ status: 200 });
 
-    await expect(createClient(fetch).delete("r_abc123def45")).rejects.toMatchObject({
+    await expect(createClient(fetch).delete(RESOURCE_CRID)).rejects.toMatchObject({
       status: 200,
       code: ERROR_CODE_UNEXPECTED_RESPONSE,
       detail: expect.stringContaining("received HTTP 200 with an empty body"),
@@ -3518,7 +3522,7 @@ describe("QURLClient", () => {
     const fetch = vi.fn().mockResolvedValue(response);
 
     await expect(
-      createClient(fetch as typeof globalThis.fetch).delete("r_abc123def45"),
+      createClient(fetch as typeof globalThis.fetch).delete(RESOURCE_CRID),
     ).rejects.toMatchObject({
       status: 204,
       code: ERROR_CODE_UNEXPECTED_RESPONSE,
@@ -3527,15 +3531,14 @@ describe("QURLClient", () => {
     });
   });
 
-  it("treats resource IDs as opaque and leaves endpoint grammar to the service", async () => {
+  it("rejects non-CRID addressing: treats resource IDs as opaque and leaves endpoint grammar to the service", async () => {
     const fetch = mockFetch({ status: 204 });
     const client = createClient(fetch);
 
-    await expect(client.delete("future-resource-id-format")).resolves.toBeUndefined();
-    expect(fetch).toHaveBeenCalledWith(
-      "https://api.test.layerv.ai/v1/qurls/future-resource-id-format",
-      expect.objectContaining({ method: "DELETE" }),
+    await expect(client.delete("future-resource-id-format")).rejects.toBeInstanceOf(
+      ValidationError,
     );
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("rejects qURL display IDs before a destructive whole-resource delete", async () => {
@@ -3547,7 +3550,7 @@ describe("QURLClient", () => {
 
     expect(error).toBeInstanceOf(ValidationError);
     expect((error as ValidationError).detail).toContain("qURL display ID");
-    expect((error as ValidationError).detail).toContain("revokeResourceQurl(resourceId, qurlId)");
+    expect((error as ValidationError).detail).toContain("revokeResourceQurl(crid, qurlId)");
     expect((error as ValidationError).detail).not.toContain(displayId);
     expect(fetch).not.toHaveBeenCalled();
   });
@@ -3562,7 +3565,7 @@ describe("QURLClient", () => {
     expect(error).toBeInstanceOf(ValidationError);
     expect((error as ValidationError).code).toBe(ERROR_CODE_CLIENT_VALIDATION);
     expect((error as ValidationError).detail).toContain("access token");
-    expect((error as ValidationError).detail).toContain("pass a resource ID returned by the API");
+    expect((error as ValidationError).detail).toContain("pass a CRID returned by the API");
     expect((error as ValidationError).detail).not.toContain(accessToken);
     expect(fetch).not.toHaveBeenCalled();
   });
@@ -3819,15 +3822,12 @@ describe("QURLClient", () => {
     },
   );
 
-  it("leaves input beyond the three-pass decode inspection bound to the service", async () => {
+  it("rejects non-CRID addressing: leaves input beyond the three-pass decode inspection bound to the service", async () => {
     const resourceId = "%2525252e";
     const fetch = mockFetch({ status: 204 });
 
-    await expect(createClient(fetch).delete(resourceId)).resolves.toBeUndefined();
-    expect(fetch).toHaveBeenCalledWith(
-      `https://api.test.layerv.ai/v1/qurls/${encodeURIComponent(resourceId)}`,
-      expect.objectContaining({ method: "DELETE" }),
-    );
+    await expect(createClient(fetch).delete(resourceId)).rejects.toBeInstanceOf(ValidationError);
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("rejects a pre-encoded qURL display ID before whole-resource deletion", async () => {
@@ -3875,8 +3875,10 @@ describe("QURLClient", () => {
   it("bounds path identifier inspection before repeated decoding", async () => {
     const accepted = "x".repeat(4096);
     const acceptedFetch = mockFetch({ status: 204 });
-    await expect(createClient(acceptedFetch).delete(accepted)).resolves.toBeUndefined();
-    expect(acceptedFetch).toHaveBeenCalledTimes(1);
+    await expect(createClient(acceptedFetch).delete(accepted)).rejects.toBeInstanceOf(
+      ValidationError,
+    );
+    expect(acceptedFetch).not.toHaveBeenCalled();
 
     const rejected = "x".repeat(4097);
     const rejectedFetch = mockFetch({ status: 204 });
@@ -3921,8 +3923,8 @@ describe("QURLClient", () => {
       "terminateResourceSession",
       (client: QURLClient, id: string) => client.terminateResourceSession(id, "session-1"),
     ],
-  ])("%s accepts current public resource identifiers", async (_name, invoke) => {
-    for (const id of [PUBLIC_RESOURCE_ID, RESOURCE_CRID]) {
+  ])("%s requires a CRID", async (_name, invoke) => {
+    for (const id of [RESOURCE_CRID]) {
       const fetch = mockFetch({ status: 204 });
       const responseError = await invoke(createClient(fetch), id).then(
         () => null,
@@ -3934,6 +3936,11 @@ describe("QURLClient", () => {
       expect(fetch).toHaveBeenCalledTimes(1);
       expect(vi.mocked(fetch).mock.calls[0][0]).toContain(encodeURIComponent(id));
     }
+    const fetch = mockFetch({ status: 204 });
+    for (const id of [PUBLIC_RESOURCE_ID, "r_old"]) {
+      await expect(invoke(createClient(fetch), id)).rejects.toBeInstanceOf(ValidationError);
+    }
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -3951,12 +3958,9 @@ describe("QURLClient", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it.each([PUBLIC_RESOURCE_ID, RESOURCE_CRID])(
-    "resourceById accepts current public resource identifier %s",
-    (id) => {
-      expect(() => createClient(mockFetch({ status: 204 })).resourceById(id)).not.toThrow();
-    },
-  );
+  it.each([RESOURCE_CRID])("resourceByCrid accepts current public resource identifier %s", (id) => {
+    expect(() => createClient(mockFetch({ status: 204 })).resourceByCrid(id)).not.toThrow();
+  });
 
   it.each([".", ".."])("delete rejects the URL dot-segment identifier %s", async (resourceId) => {
     const fetch = mockFetch({ status: 204 });
@@ -3970,15 +3974,12 @@ describe("QURLClient", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("keeps opaque resource IDs inside one encoded URL segment", async () => {
+  it("rejects non-CRID addressing: keeps opaque resource IDs inside one encoded URL segment", async () => {
     const fetch = mockFetch({ status: 204 });
     const client = createClient(fetch);
 
-    await expect(client.delete("a/../b?force=true")).resolves.toBeUndefined();
-    expect(fetch).toHaveBeenCalledWith(
-      "https://api.test.layerv.ai/v1/qurls/a%2F..%2Fb%3Fforce%3Dtrue",
-      expect.objectContaining({ method: "DELETE" }),
-    );
+    await expect(client.delete("a/../b?force=true")).rejects.toBeInstanceOf(ValidationError);
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("delete rejects non-string ids with a structured ValidationError (untyped-JS safety)", async () => {
@@ -4074,12 +4075,12 @@ describe("QURLClient", () => {
   it.each([
     [
       "revokeResourceQurl",
-      (client: QURLClient, id: string) => client.revokeResourceQurl("resource-id", id),
+      (client: QURLClient, id: string) => client.revokeResourceQurl(RESOURCE_CRID, id),
     ],
     [
       "updateResourceQurl",
       (client: QURLClient, id: string) =>
-        client.updateResourceQurl("resource-id", id, { extend_by: "1h" }),
+        client.updateResourceQurl(RESOURCE_CRID, id, { extend_by: "1h" }),
     ],
   ])("%s applies path safety and length bounds to secondary qURL IDs", async (_name, invoke) => {
     const fetch = mockFetch({ status: 204 });
@@ -4120,7 +4121,7 @@ describe("QURLClient", () => {
     await client.getWebhook("at_future-webhook-id");
     await client.updateApiKey("at_future-api-key-id", { name: "renamed" });
     vi.mocked(fetch).mockResolvedValueOnce(new Response(null, { status: 204 }));
-    await client.terminateResourceSession("resource-id", "at_future-session-id");
+    await client.terminateResourceSession(RESOURCE_CRID, "at_future-session-id");
 
     expect(fetch).toHaveBeenNthCalledWith(
       1,
@@ -4139,7 +4140,7 @@ describe("QURLClient", () => {
     );
     expect(fetch).toHaveBeenNthCalledWith(
       4,
-      "https://api.test.layerv.ai/v1/resources/resource-id/sessions/at_future-session-id",
+      "https://api.test.layerv.ai/v1/resources/ahpviqz46qwcvx56glfatm3p3ooccwfcf2it4sdgjervwdkapykw3o3qdq2a/sessions/at_future-session-id",
       expect.objectContaining({ method: "DELETE" }),
     );
   });
@@ -4160,7 +4161,7 @@ describe("QURLClient", () => {
     const client = createClient(fetch);
 
     const error = await client
-      .terminateResourceSession("resource-id", " ")
+      .terminateResourceSession(RESOURCE_CRID, " ")
       .catch((e: unknown) => e as ValidationError);
 
     expect(error).toBeInstanceOf(ValidationError);
@@ -4209,7 +4210,7 @@ describe("QURLClient", () => {
 
     for (const badInput of [null, undefined]) {
       const error = await client
-        .extend("r_abc", badInput as unknown as ExtendInput)
+        .extend(RESOURCE_CRID, badInput as unknown as ExtendInput)
         .catch((e: unknown) => e as ValidationError);
 
       expect(error).toBeInstanceOf(ValidationError);
@@ -4263,7 +4264,7 @@ describe("QURLClient", () => {
     });
 
     const client = createClient(fetch);
-    const result = await client.extend("r_abc123def45", { extend_by: "7d" });
+    const result = await client.extend(RESOURCE_CRID, { extend_by: "7d" });
 
     expect(result.expires_at).toBe("2026-03-20T10:00:00Z");
   });
@@ -4283,13 +4284,13 @@ describe("QURLClient", () => {
     });
 
     const client = createClient(fetch);
-    const result = await client.update("r_abc123def45", {
+    const result = await client.update(RESOURCE_CRID, {
       description: "Updated description",
     });
 
     expect(result.description).toBe("Updated description");
     expect(fetch).toHaveBeenCalledWith(
-      "https://api.test.layerv.ai/v1/qurls/r_abc123def45",
+      "https://api.test.layerv.ai/v1/qurls/ahpviqz46qwcvx56glfatm3p3ooccwfcf2it4sdgjervwdkapykw3o3qdq2a",
       expect.objectContaining({
         method: "PATCH",
         body: JSON.stringify({ description: "Updated description" }),
@@ -4306,7 +4307,7 @@ describe("QURLClient", () => {
     const client = createClient(fetch);
 
     const error = await client
-      .update("r_abc", { extend_by: "24h", expires_at: "2026-04-01T00:00:00Z" })
+      .update(RESOURCE_CRID, { extend_by: "24h", expires_at: "2026-04-01T00:00:00Z" })
       .catch((e: unknown) => e as ValidationError);
     expect(error).toBeInstanceOf(ValidationError);
     expect((error as ValidationError).code).toBe(ERROR_CODE_CLIENT_VALIDATION);
@@ -4322,7 +4323,7 @@ describe("QURLClient", () => {
     // unknown to simulate untyped JS callers and pin the runtime guard.
     const bothFields = { extend_by: "24h", expires_at: "2026-04-01T00:00:00Z" };
     const error = await client
-      .extend("r_abc", bothFields as unknown as Parameters<typeof client.extend>[1])
+      .extend(RESOURCE_CRID, bothFields as unknown as Parameters<typeof client.extend>[1])
       .catch((e: unknown) => e as ValidationError);
     expect(error).toBeInstanceOf(ValidationError);
     expect((error as ValidationError).code).toBe(ERROR_CODE_CLIENT_VALIDATION);
@@ -4339,7 +4340,7 @@ describe("QURLClient", () => {
     const client = createClient(fetch);
 
     const error = await client
-      .extend("r_abc", {} as unknown as Parameters<typeof client.extend>[1])
+      .extend(RESOURCE_CRID, {} as unknown as Parameters<typeof client.extend>[1])
       .catch((e: unknown) => e as ValidationError);
     expect(error).toBeInstanceOf(ValidationError);
     expect((error as ValidationError).code).toBe(ERROR_CODE_CLIENT_VALIDATION);
@@ -4358,7 +4359,7 @@ describe("QURLClient", () => {
     });
     const client = createClient(fetch);
 
-    await client.mintLink("r_abc", { expires_at: "2026-04-01T00:00:00Z" });
+    await client.mintLink(RESOURCE_CRID, { expires_at: "2026-04-01T00:00:00Z" });
 
     expect(fetch).toHaveBeenCalledTimes(1);
     const body = JSON.parse((fetch.mock.calls[0][1] as RequestInit).body as string);
@@ -4370,7 +4371,7 @@ describe("QURLClient", () => {
     const client = createClient(fetch);
 
     const error = await client
-      .mintLink("r_abc", { expires_in: "7d", expires_at: "2026-04-01T00:00:00Z" })
+      .mintLink(RESOURCE_CRID, { expires_in: "7d", expires_at: "2026-04-01T00:00:00Z" })
       .catch((e: unknown) => e as ValidationError);
     expect(error).toBeInstanceOf(ValidationError);
     expect((error as ValidationError).code).toBe(ERROR_CODE_CLIENT_VALIDATION);
@@ -4391,7 +4392,7 @@ describe("QURLClient", () => {
     });
     const client = createClient(fetch);
 
-    await client.mintLink("r_abc", {
+    await client.mintLink(RESOURCE_CRID, {
       expires_in: null as unknown as string,
       expires_at: "2026-04-01T00:00:00Z",
       label: null as unknown as string,
@@ -4415,9 +4416,9 @@ describe("QURLClient", () => {
     });
     const client = createClient(fetch);
 
-    await client.mintLink("r_abc", {});
-    await client.mintLink("r_abc");
-    await client.mintLink("r_abc", { expires_in: null as unknown as string });
+    await client.mintLink(RESOURCE_CRID, {});
+    await client.mintLink(RESOURCE_CRID);
+    await client.mintLink(RESOURCE_CRID, { expires_in: null as unknown as string });
 
     expect(fetch).toHaveBeenCalledTimes(3);
     for (const call of fetch.mock.calls) {
@@ -4433,7 +4434,7 @@ describe("QURLClient", () => {
     const client = createClient(fetch);
 
     const error = await client
-      .mintLink("r_abc", { label: "x".repeat(501) })
+      .mintLink(RESOURCE_CRID, { label: "x".repeat(501) })
       .catch((e: unknown) => e as ValidationError);
     expect(error).toBeInstanceOf(ValidationError);
     expect((error as ValidationError).detail).toContain("label");
@@ -4445,7 +4446,7 @@ describe("QURLClient", () => {
     const client = createClient(fetch);
 
     const error = await client
-      .mintLink("r_abc", { max_sessions: 5000 })
+      .mintLink(RESOURCE_CRID, { max_sessions: 5000 })
       .catch((e: unknown) => e as ValidationError);
     expect(error).toBeInstanceOf(ValidationError);
     expect((error as ValidationError).detail).toContain("max_sessions");
@@ -4468,7 +4469,7 @@ describe("QURLClient", () => {
     });
     const client = createClient(fetch);
 
-    await expect(client.mintLink("r_abc123def45")).resolves.toBeDefined();
+    await expect(client.mintLink(RESOURCE_CRID)).resolves.toBeDefined();
     // Body should be omitted (undefined) when no input is provided —
     // the server defaults fill in the unspecified fields.
     const calledBody = (fetch as ReturnType<typeof vi.fn>).mock.calls[0][1].body;
@@ -4480,7 +4481,7 @@ describe("QURLClient", () => {
     const client = createClient(fetch);
 
     const error = await client
-      .update("r_abc", { description: "x".repeat(501) })
+      .update(RESOURCE_CRID, { description: "x".repeat(501) })
       .catch((e: unknown) => e as ValidationError);
     expect(error).toBeInstanceOf(ValidationError);
     expect((error as ValidationError).detail).toContain("description");
@@ -4499,7 +4500,7 @@ describe("QURLClient", () => {
 
     for (const badDescription of [42, true, {}, []]) {
       const error = await client
-        .update("r_abc", { description: badDescription as unknown as string })
+        .update(RESOURCE_CRID, { description: badDescription as unknown as string })
         .catch((e: unknown) => e as ValidationError);
       expect(error).toBeInstanceOf(ValidationError);
       expect((error as ValidationError).code).toBe(ERROR_CODE_CLIENT_VALIDATION);
@@ -4515,7 +4516,7 @@ describe("QURLClient", () => {
     const client = createClient(fetch);
 
     const error = await client
-      .update("r_abc", { tags: Array.from({ length: 11 }, (_, i) => `tag${i}`) })
+      .update(RESOURCE_CRID, { tags: Array.from({ length: 11 }, (_, i) => `tag${i}`) })
       .catch((e: unknown) => e as ValidationError);
     expect(error).toBeInstanceOf(ValidationError);
     expect((error as ValidationError).detail).toContain("tags");
@@ -4527,7 +4528,7 @@ describe("QURLClient", () => {
     const client = createClient(fetch);
 
     const error = await client
-      .update("r_abc", { tags: ["x".repeat(51)] })
+      .update(RESOURCE_CRID, { tags: ["x".repeat(51)] })
       .catch((e: unknown) => e as ValidationError);
     expect(error).toBeInstanceOf(ValidationError);
     expect((error as ValidationError).detail).toContain("1-50 characters");
@@ -4540,7 +4541,7 @@ describe("QURLClient", () => {
 
     // Tags must start with an alphanumeric character.
     const error = await client
-      .update("r_abc", { tags: ["-leading-dash"] })
+      .update(RESOURCE_CRID, { tags: ["-leading-dash"] })
       .catch((e: unknown) => e as ValidationError);
     expect(error).toBeInstanceOf(ValidationError);
     expect((error as ValidationError).detail).toContain("alphanumeric");
@@ -4556,7 +4557,7 @@ describe("QURLClient", () => {
     const client = createClient(fetch);
 
     const error = await client
-      .update("r_abc", {
+      .update(RESOURCE_CRID, {
         tags: [
           "good-tag",
           "-leading-dash", // bad: pattern
@@ -4592,7 +4593,7 @@ describe("QURLClient", () => {
 
     // Plain object passed as tags (common untyped-JS mistake).
     const objError = await client
-      .update("r_abc", { tags: {} as unknown as string[] })
+      .update(RESOURCE_CRID, { tags: {} as unknown as string[] })
       .catch((e: unknown) => e as ValidationError);
     expect(objError).toBeInstanceOf(ValidationError);
     expect((objError as ValidationError).code).toBe(ERROR_CODE_CLIENT_VALIDATION);
@@ -4601,7 +4602,7 @@ describe("QURLClient", () => {
 
     // Number.
     const numError = await client
-      .update("r_abc", { tags: 42 as unknown as string[] })
+      .update(RESOURCE_CRID, { tags: 42 as unknown as string[] })
       .catch((e: unknown) => e as ValidationError);
     expect(numError).toBeInstanceOf(ValidationError);
     expect((numError as ValidationError).detail).toContain("number");
@@ -4609,7 +4610,7 @@ describe("QURLClient", () => {
     // String (also a common mistake — passing a single tag as a string
     // instead of wrapping in an array).
     const strError = await client
-      .update("r_abc", { tags: "single-tag" as unknown as string[] })
+      .update(RESOURCE_CRID, { tags: "single-tag" as unknown as string[] })
       .catch((e: unknown) => e as ValidationError);
     expect(strError).toBeInstanceOf(ValidationError);
     expect((strError as ValidationError).detail).toContain("string");
@@ -4630,7 +4631,7 @@ describe("QURLClient", () => {
     const client = createClient(fetch);
 
     const error = await client
-      .update("r_abc", {
+      .update(RESOURCE_CRID, {
         tags: [
           "good-tag",
           42 as unknown as string, // bad: number
@@ -4686,7 +4687,7 @@ describe("QURLClient", () => {
     // dropped from the request body — no ValidationError, no crash,
     // no `"tags": null` in the JSON wire body.
     await expect(
-      client.update("r_abc", {
+      client.update(RESOURCE_CRID, {
         description: "real update",
         tags: null as unknown as string[],
       }),
@@ -4713,7 +4714,7 @@ describe("QURLClient", () => {
     const client = createClient(fetch);
 
     const error = await client
-      .update("r_abc", { tags: null as unknown as string[] })
+      .update(RESOURCE_CRID, { tags: null as unknown as string[] })
       .catch((e: unknown) => e as ValidationError);
     expect(error).toBeInstanceOf(ValidationError);
     expect((error as ValidationError).detail).toContain("at least one field");
@@ -4745,7 +4746,7 @@ describe("QURLClient", () => {
     // a `string | undefined` field — the test specifically simulates
     // an untyped-JS caller bypassing the type system.
     await expect(
-      client.update("r_abc", {
+      client.update(RESOURCE_CRID, {
         extend_by: null as unknown as string,
         expires_at: "2026-04-01T00:00:00Z",
       }),
@@ -4767,7 +4768,9 @@ describe("QURLClient", () => {
     const fetch = mockFetch({ status: 200, body: { data: {} } });
     const client = createClient(fetch);
 
-    const error = await client.update("r_abc", {}).catch((e: unknown) => e as ValidationError);
+    const error = await client
+      .update(RESOURCE_CRID, {})
+      .catch((e: unknown) => e as ValidationError);
     expect(error).toBeInstanceOf(ValidationError);
     expect((error as ValidationError).code).toBe(ERROR_CODE_CLIENT_VALIDATION);
     expect((error as ValidationError).detail).toContain("at least one field");
@@ -4792,7 +4795,7 @@ describe("QURLClient", () => {
 
     for (const key of ["extend_by", "expires_at"] as const) {
       const error = await client
-        .update("r_abc", { [key]: "" } as unknown as Parameters<typeof client.update>[1])
+        .update(RESOURCE_CRID, { [key]: "" } as unknown as Parameters<typeof client.update>[1])
         .catch((e: unknown) => e as ValidationError);
       expect(error).toBeInstanceOf(ValidationError);
       const detail = (error as ValidationError).detail;
@@ -4819,7 +4822,7 @@ describe("QURLClient", () => {
       },
     });
     const client = createClient(fetch);
-    await client.update("r_abc", { description: "" });
+    await client.update(RESOURCE_CRID, { description: "" });
 
     expect(fetch).toHaveBeenCalledTimes(1);
     const body = JSON.parse((fetch as ReturnType<typeof vi.fn>).mock.calls[0][1].body as string);
@@ -4832,7 +4835,7 @@ describe("QURLClient", () => {
 
     for (const key of ["expires_in", "expires_at", "session_duration"] as const) {
       const error = await client
-        .mintLink("r_abc", { [key]: "" } as unknown as Parameters<typeof client.mintLink>[1])
+        .mintLink(RESOURCE_CRID, { [key]: "" } as unknown as Parameters<typeof client.mintLink>[1])
         .catch((e: unknown) => e as ValidationError);
       expect(error).toBeInstanceOf(ValidationError);
       const detail = (error as ValidationError).detail;
@@ -4860,7 +4863,7 @@ describe("QURLClient", () => {
     });
     const client = createClient(fetch);
 
-    await client.mintLink("r_abc", {
+    await client.mintLink(RESOURCE_CRID, {
       access_policy: {
         ip_allowlist: ["not-a-cidr"],
         geo_allowlist: ["XX"],
@@ -4923,7 +4926,7 @@ describe("QURLClient", () => {
     const client = createClient(fetch);
 
     const error = await client
-      .mintLink("r_abc", {
+      .mintLink(RESOURCE_CRID, {
         access_policy: { ip_allowlist: "10.0.0.0/8" },
       } as unknown as Parameters<typeof client.mintLink>[1])
       .catch((e: unknown) => e as ValidationError);
@@ -4941,7 +4944,7 @@ describe("QURLClient", () => {
     const client = createClient(fetch);
 
     const error = await client
-      .update("r_abc", { extend_by: undefined })
+      .update(RESOURCE_CRID, { extend_by: undefined })
       .catch((e: unknown) => e as ValidationError);
     expect(error).toBeInstanceOf(ValidationError);
     expect((error as ValidationError).detail).toContain("at least one field");
@@ -4957,7 +4960,7 @@ describe("QURLClient", () => {
     const client = createClient(fetch);
 
     const error = await client
-      .update("r_abc", { extend_by: undefined, expires_at: undefined })
+      .update(RESOURCE_CRID, { extend_by: undefined, expires_at: undefined })
       .catch((e: unknown) => e as ValidationError);
     expect(error).toBeInstanceOf(ValidationError);
     expect((error as ValidationError).detail).toContain("at least one field");
@@ -4978,7 +4981,7 @@ describe("QURLClient", () => {
       },
     });
     const client = createClient(fetch);
-    await expect(client.update("r_abc", { tags: [] })).resolves.toBeDefined();
+    await expect(client.update(RESOURCE_CRID, { tags: [] })).resolves.toBeDefined();
   });
 
   it("update maps qurls to access_tokens", async () => {
@@ -5009,7 +5012,7 @@ describe("QURLClient", () => {
     });
 
     const client = createClient(fetch);
-    const result = await client.update("r_abc123def45", { description: "Updated" });
+    const result = await client.update(RESOURCE_CRID, { description: "Updated" });
 
     expect(result.access_tokens).toHaveLength(1);
     expect(result.access_tokens![0].qurl_id).toBe("q_abc12345678");
@@ -5085,7 +5088,7 @@ describe("QURLClient", () => {
       debug: debugFn,
     });
 
-    const result = await client.get("r_dualfield");
+    const result = await client.get(RESOURCE_CRID);
 
     // `access_tokens` wins the merge — exactly one entry (from
     // access_tokens), not two (from qurls).
@@ -5133,7 +5136,7 @@ describe("QURLClient", () => {
       debug: debugFn,
     });
 
-    const result = await client.get("r_abc");
+    const result = await client.get(RESOURCE_CRID);
     expect((result as { qurls?: unknown }).qurls).toBeUndefined();
     expect((result as { access_tokens?: unknown }).access_tokens).toBeUndefined();
     const dropLog = debugFn.mock.calls.find(
@@ -5165,7 +5168,7 @@ describe("QURLClient", () => {
         debug: debugFn,
       });
 
-      const result = await client.get("r_x");
+      const result = await client.get(RESOURCE_CRID);
       expect((result as { qurls?: unknown }).qurls).toBeUndefined();
       const log = debugFn.mock.calls.find(
         (c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes(needle),
@@ -5222,7 +5225,7 @@ describe("QURLClient", () => {
     });
     const client = createClient(fetch);
 
-    const error = await client.get("r_abc").catch((e: unknown) => e as QURLError);
+    const error = await client.get(RESOURCE_CRID).catch((e: unknown) => e as QURLError);
     expect(error).toBeInstanceOf(QURLError);
     expect((error as QURLError).message).toContain("HTTP 404");
     expect((error as QURLError).message).not.toMatch(/^ \(/);
@@ -5320,7 +5323,7 @@ describe("QURLClient", () => {
           title: "Not Found",
           status: 404,
           detail: "qURL not found",
-          instance: "/v1/qurls/r_notfound0000",
+          instance: "/v1/qurls/ahpviqz46qwcvx56glfatm3p3ooccwfcf2it4sdgjervwdkapykw3o3qdq2a",
           code: "not_found",
         },
         meta: { request_id: "req_err" },
@@ -5330,7 +5333,7 @@ describe("QURLClient", () => {
     const client = createClient(fetch);
 
     try {
-      await client.get("r_notfound0000");
+      await client.get(RESOURCE_CRID);
       expect.fail("Expected QURLError");
     } catch (err) {
       expect(err).toBeInstanceOf(QURLError);
@@ -5340,7 +5343,9 @@ describe("QURLClient", () => {
       expect(qErr.requestId).toBe("req_err");
       // New: RFC 7807 type + instance surfaced on the error object.
       expect(qErr.type).toBe("https://api.qurl.link/problems/not_found");
-      expect(qErr.instance).toBe("/v1/qurls/r_notfound0000");
+      expect(qErr.instance).toBe(
+        "/v1/qurls/ahpviqz46qwcvx56glfatm3p3ooccwfcf2it4sdgjervwdkapykw3o3qdq2a",
+      );
     }
   });
 
@@ -5424,11 +5429,11 @@ describe("QURLClient", () => {
     });
 
     const client = createClient(fetch);
-    const result = await client.mintLink("r_abc123def45");
+    const result = await client.mintLink(RESOURCE_CRID);
 
     expect(result.qurl_link).toBe("https://qurl.link/#at_newtoken");
     expect(fetch).toHaveBeenCalledWith(
-      "https://api.test.layerv.ai/v1/qurls/r_abc123def45/mint_link",
+      "https://api.test.layerv.ai/v1/qurls/ahpviqz46qwcvx56glfatm3p3ooccwfcf2it4sdgjervwdkapykw3o3qdq2a/mint_link",
       expect.objectContaining({ method: "POST" }),
     );
   });
@@ -5653,12 +5658,12 @@ describe("QURLClient", () => {
       method: "PATCH",
       invoke: (client: QURLClient) =>
         client.update(
-          "r_abc123def45",
+          RESOURCE_CRID,
           { description: "updated" },
           { idempotencyKey: "redirect-patch" },
         ),
     },
-    { method: "DELETE", invoke: (client: QURLClient) => client.delete("r_abc123def45") },
+    { method: "DELETE", invoke: (client: QURLClient) => client.delete(RESOURCE_CRID) },
   ])("uses manual redirect handling and refuses a redirect for $method", async ({ invoke }) => {
     const fetch = vi.fn(async () => new Response(null, { status: 302 }));
 
@@ -5854,7 +5859,7 @@ describe("QURLClient", () => {
     } satisfies Partial<Response> as Response;
     const fetch = vi.fn().mockResolvedValue(response);
 
-    await expect(createClient(fetch).delete("r_abc123def45")).resolves.toBeUndefined();
+    await expect(createClient(fetch).delete(RESOURCE_CRID)).resolves.toBeUndefined();
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
@@ -5870,7 +5875,7 @@ describe("QURLClient", () => {
     } satisfies Partial<Response> as Response;
     const fetch = vi.fn().mockResolvedValue(response);
 
-    await expect(createClient(fetch).delete("r_abc123def45")).resolves.toBeUndefined();
+    await expect(createClient(fetch).delete(RESOURCE_CRID)).resolves.toBeUndefined();
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
@@ -6768,7 +6773,7 @@ describe("QURLClient", () => {
         maxRetries: 3,
       });
 
-      await expect(client.delete("r_abc123def45")).rejects.toBeInstanceOf(QURLError);
+      await expect(client.delete(RESOURCE_CRID)).rejects.toBeInstanceOf(QURLError);
       expect(fetch).toHaveBeenCalledTimes(1);
     },
   );
@@ -6877,7 +6882,7 @@ describe("QURLClient", () => {
     );
 
     await expect(
-      createClient(fetch as typeof globalThis.fetch).delete("r_abc123def45"),
+      createClient(fetch as typeof globalThis.fetch).delete(RESOURCE_CRID),
     ).resolves.toBeUndefined();
     expect(fetch).toHaveBeenCalledTimes(1);
   });
@@ -7024,7 +7029,7 @@ describe("QURLClient", () => {
     ["code", "bad\nrequest"],
     ["type", " https://errors.example/bad-request"],
     ["type", "https://errors.example/bad\u202Erequest"],
-    ["instance", "/v1/resources/r_test "],
+    ["instance", "/v1/resources/ahpviqz46qwcvx56glfatm3p3ooccwfcf2it4sdgjervwdkapykw3o3qdq2a "],
     ["instance", "/v1/resources/\u0000r_test"],
     ["request_id", " req_test"],
     ["request_id", "req\ttest"],
@@ -7035,7 +7040,7 @@ describe("QURLClient", () => {
         code: "bad_request",
         detail: "Invalid request",
         type: "https://errors.example/bad-request",
-        instance: "/v1/resources/r_test",
+        instance: "/v1/resources/ahpviqz46qwcvx56glfatm3p3ooccwfcf2it4sdgjervwdkapykw3o3qdq2a",
       },
       meta: { request_id: "req_test" },
     };
@@ -7794,7 +7799,7 @@ describe("QURLClient", () => {
     });
     const client = createClient(fetch);
 
-    const err = await client.get("r_missing").catch((e: unknown) => e);
+    const err = await client.get(RESOURCE_CRID).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(NotFoundError);
     expect(err).toBeInstanceOf(QURLError);
   });
@@ -8183,7 +8188,9 @@ describe("QURLClient", () => {
       maxRetries: 2,
     });
 
-    await expect(client.update("r_abc", { description: "test" })).rejects.toThrow(ServerError);
+    await expect(client.update(RESOURCE_CRID, { description: "test" })).rejects.toThrow(
+      ServerError,
+    );
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(callHeaders(fetch)["Idempotency-Key"]).toMatch(UUID_V7_RE);
   });
@@ -8217,7 +8224,7 @@ describe("QURLClient", () => {
     });
 
     const result = await client.update(
-      "r_abc",
+      RESOURCE_CRID,
       { description: "test" },
       { idempotencyKey: "upstream-patch-job-123" },
     );
@@ -8630,7 +8637,7 @@ describe("QURLClient", () => {
       maxRetries: 2,
     });
 
-    await expect(client.delete("r_abc123def45")).rejects.toBeInstanceOf(ServerError);
+    await expect(client.delete(RESOURCE_CRID)).rejects.toBeInstanceOf(ServerError);
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(callHeaders(fetch, 0)).not.toHaveProperty("Idempotency-Key");
   });
@@ -8657,7 +8664,7 @@ describe("QURLClient", () => {
       maxRetries: 2,
     });
 
-    await expect(client.delete("r_abc123def45")).rejects.toBeInstanceOf(RateLimitError);
+    await expect(client.delete(RESOURCE_CRID)).rejects.toBeInstanceOf(RateLimitError);
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
@@ -8680,7 +8687,7 @@ describe("QURLClient", () => {
       maxRetries: 2,
     });
 
-    await expect(client.terminateAllResourceSessions("r_abc123def45")).rejects.toBeInstanceOf(
+    await expect(client.terminateAllResourceSessions(RESOURCE_CRID)).rejects.toBeInstanceOf(
       ServerError,
     );
     expect(fetch).toHaveBeenCalledTimes(1);
@@ -8698,7 +8705,7 @@ describe("QURLClient", () => {
       maxRetries: 2,
     });
 
-    await expect(client.delete("r_abc123def45")).rejects.toBeInstanceOf(NetworkError);
+    await expect(client.delete(RESOURCE_CRID)).rejects.toBeInstanceOf(NetworkError);
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
@@ -10316,7 +10323,7 @@ describe("QURLClient", () => {
     });
     const client = createClient(fetch);
 
-    await client.mintLink("r_abc123def45", {
+    await client.mintLink(RESOURCE_CRID, {
       expires_in: "7d",
       label: "Alice from Acme",
       one_time_use: false,

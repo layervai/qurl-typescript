@@ -28,7 +28,11 @@ const server = createServer(async (req, res) => {
   } else if (req.method === "POST" && req.url === `${path}/qurls`) {
     res.writeHead(201).end(
       JSON.stringify({
-        data: { resource_id: resource.resource_id, qurl_link: "https://qurl.link/#at_smoke" },
+        data: {
+          resource_id: resource.resource_id,
+          crid: resource.crid,
+          qurl_link: "https://qurl.link/#at_smoke",
+        },
       }),
     );
   } else if (req.method === "DELETE" && req.url === path) {

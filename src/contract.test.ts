@@ -175,7 +175,13 @@ const METHOD_CASES: MethodCase[] = [
     method: "protectUrl",
     verb: "POST",
     template: "/v1/resources",
-    mockBody: { data: { resource_id: "r_x", target_url: "https://example.com" } },
+    mockBody: {
+      data: {
+        resource_id: CONNECTOR_RESOURCE_CONTRACT_DATA.resource_id,
+        crid: CONNECTOR_RESOURCE_CONTRACT_DATA.crid,
+        target_url: "https://example.com",
+      },
+    },
     invoke: (c) => c.protectUrl("https://example.com"),
   },
   {
@@ -216,14 +222,26 @@ const METHOD_CASES: MethodCase[] = [
     verb: "POST",
     template: "/v1/resources/{id}/qurls",
     mockStatus: 201,
-    mockBody: { data: { resource_id: "r_x", qurl_link: "https://qurl.link/#at_y" } },
-    invoke: (c) => c.createPortal("r_x", { validFor: "5m" }),
+    mockBody: {
+      data: {
+        resource_id: CONNECTOR_RESOURCE_CONTRACT_DATA.resource_id,
+        crid: CONNECTOR_RESOURCE_CONTRACT_DATA.crid,
+        qurl_link: "https://qurl.link/#at_y",
+      },
+    },
+    invoke: (c) => c.createPortal(CONNECTOR_RESOURCE_CONTRACT_DATA.crid, { validFor: "5m" }),
   },
   {
     method: "createPortalForUrl",
     verb: "POST",
     template: "/v1/qurls",
-    mockBody: { data: { resource_id: "r_x", qurl_link: "https://qurl.link/#at_y" } },
+    mockBody: {
+      data: {
+        resource_id: CONNECTOR_RESOURCE_CONTRACT_DATA.resource_id,
+        crid: CONNECTOR_RESOURCE_CONTRACT_DATA.crid,
+        qurl_link: "https://qurl.link/#at_y",
+      },
+    },
     invoke: (c) => c.createPortalForUrl("https://example.com"),
   },
   {
@@ -237,7 +255,13 @@ const METHOD_CASES: MethodCase[] = [
     method: "create",
     verb: "POST",
     template: "/v1/qurls",
-    mockBody: { data: { resource_id: "r_x", qurl_link: "https://qurl.link/#at_y" } },
+    mockBody: {
+      data: {
+        resource_id: CONNECTOR_RESOURCE_CONTRACT_DATA.resource_id,
+        crid: CONNECTOR_RESOURCE_CONTRACT_DATA.crid,
+        qurl_link: "https://qurl.link/#at_y",
+      },
+    },
     invoke: (c) => c.create({ target_url: "https://example.com" }),
   },
   {
@@ -245,7 +269,7 @@ const METHOD_CASES: MethodCase[] = [
     verb: "GET",
     template: "/v1/qurls/{id}",
     mockBody: { data: { resource_id: "r_x" } },
-    invoke: (c) => c.get("r_x"),
+    invoke: (c) => c.get(CONNECTOR_RESOURCE_CONTRACT_DATA.crid),
   },
   {
     method: "list",
@@ -271,7 +295,7 @@ const METHOD_CASES: MethodCase[] = [
     verb: "PATCH",
     template: "/v1/qurls/{id}",
     mockBody: { data: { resource_id: "r_x" } },
-    invoke: (c) => c.update("r_x", { extend_by: "24h" }),
+    invoke: (c) => c.update(CONNECTOR_RESOURCE_CONTRACT_DATA.crid, { extend_by: "24h" }),
   },
   {
     method: "extend",
@@ -282,7 +306,7 @@ const METHOD_CASES: MethodCase[] = [
     // against a future refactor silently rewiring the alias to a
     // different endpoint.
     mockBody: { data: { resource_id: "r_x" } },
-    invoke: (c) => c.extend("r_x", { extend_by: "24h" }),
+    invoke: (c) => c.extend(CONNECTOR_RESOURCE_CONTRACT_DATA.crid, { extend_by: "24h" }),
   },
   {
     method: "batchCreate",
@@ -300,7 +324,8 @@ const METHOD_CASES: MethodCase[] = [
           {
             index: 0,
             success: true,
-            resource_id: "r_x",
+            resource_id: CONNECTOR_RESOURCE_CONTRACT_DATA.resource_id,
+            crid: CONNECTOR_RESOURCE_CONTRACT_DATA.crid,
             qurl_link: "https://qurl.link/#at_y",
             qurl_site: "https://r_x.qurl.site",
           },
@@ -318,14 +343,14 @@ const METHOD_CASES: MethodCase[] = [
     // 204-branch in client.ts's rawRequest actually gets exercised.
     mockBody: undefined,
     mockStatus: 204,
-    invoke: (c) => c.delete("r_x"),
+    invoke: (c) => c.delete(CONNECTOR_RESOURCE_CONTRACT_DATA.crid),
   },
   {
     method: "mintLink",
     verb: "POST",
     template: "/v1/qurls/{id}/mint_link",
     mockBody: { data: { qurl_link: "https://qurl.link/#at_y" } },
-    invoke: (c) => c.mintLink("r_x"),
+    invoke: (c) => c.mintLink(CONNECTOR_RESOURCE_CONTRACT_DATA.crid),
   },
   {
     method: "resolve",
@@ -372,14 +397,14 @@ const METHOD_CASES: MethodCase[] = [
     verb: "GET",
     template: "/v1/resources/{id}",
     mockBody: { data: { resource: { resource_id: "r_x" }, qurls: [] } },
-    invoke: (c) => c.getResource("r_x"),
+    invoke: (c) => c.getResource(CONNECTOR_RESOURCE_CONTRACT_DATA.crid),
   },
   {
     method: "updateResource",
     verb: "PATCH",
     template: "/v1/resources/{id}",
     mockBody: { data: { resource_id: "r_x" } },
-    invoke: (c) => c.updateResource("r_x", { description: "x" }),
+    invoke: (c) => c.updateResource(CONNECTOR_RESOURCE_CONTRACT_DATA.crid, { description: "x" }),
   },
   {
     method: "deleteResource",
@@ -387,7 +412,7 @@ const METHOD_CASES: MethodCase[] = [
     template: "/v1/resources/{id}",
     mockBody: undefined,
     mockStatus: 204,
-    invoke: (c) => c.deleteResource("r_x"),
+    invoke: (c) => c.deleteResource(CONNECTOR_RESOURCE_CONTRACT_DATA.crid),
   },
   {
     method: "createQurlForResource",
@@ -396,12 +421,13 @@ const METHOD_CASES: MethodCase[] = [
     mockBody: {
       data: {
         qurl_id: "q_y",
-        resource_id: "r_x",
+        resource_id: CONNECTOR_RESOURCE_CONTRACT_DATA.resource_id,
+        crid: CONNECTOR_RESOURCE_CONTRACT_DATA.crid,
         qurl_link: "https://qurl.link/#at_y",
         qurl_site: "https://q_y.qurl.site",
       },
     },
-    invoke: (c) => c.createQurlForResource("r_x"),
+    invoke: (c) => c.createQurlForResource(CONNECTOR_RESOURCE_CONTRACT_DATA.crid),
   },
   {
     method: "shareResource",
@@ -426,28 +452,29 @@ const METHOD_CASES: MethodCase[] = [
     template: "/v1/resources/{id}/qurls/{qurl_id}",
     mockBody: undefined,
     mockStatus: 204,
-    invoke: (c) => c.revokeResourceQurl("r_x", "q_y"),
+    invoke: (c) => c.revokeResourceQurl(CONNECTOR_RESOURCE_CONTRACT_DATA.crid, "q_y"),
   },
   {
     method: "updateResourceQurl",
     verb: "PATCH",
     template: "/v1/resources/{id}/qurls/{qurl_id}",
     mockBody: { data: { qurl_id: "q_y" } },
-    invoke: (c) => c.updateResourceQurl("r_x", "q_y", { label: "Alice" }),
+    invoke: (c) =>
+      c.updateResourceQurl(CONNECTOR_RESOURCE_CONTRACT_DATA.crid, "q_y", { label: "Alice" }),
   },
   {
     method: "listResourceSessions",
     verb: "GET",
     template: "/v1/resources/{id}/sessions",
     mockBody: { data: [] },
-    invoke: (c) => c.listResourceSessions("r_x"),
+    invoke: (c) => c.listResourceSessions(CONNECTOR_RESOURCE_CONTRACT_DATA.crid),
   },
   {
     method: "terminateAllResourceSessions",
     verb: "DELETE",
     template: "/v1/resources/{id}/sessions",
     mockBody: { data: { terminated: 1 } },
-    invoke: (c) => c.terminateAllResourceSessions("r_x"),
+    invoke: (c) => c.terminateAllResourceSessions(CONNECTOR_RESOURCE_CONTRACT_DATA.crid),
   },
   {
     method: "terminateResourceSession",
@@ -455,7 +482,7 @@ const METHOD_CASES: MethodCase[] = [
     template: "/v1/resources/{id}/sessions/{session_id}",
     mockBody: undefined,
     mockStatus: 204,
-    invoke: (c) => c.terminateResourceSession("r_x", "sess_y"),
+    invoke: (c) => c.terminateResourceSession(CONNECTOR_RESOURCE_CONTRACT_DATA.crid, "sess_y"),
   },
   {
     method: "listConnectorInstallations",
@@ -740,7 +767,10 @@ const METHOD_CASES: MethodCase[] = [
     verb: "POST",
     template: "/v1/access-codes",
     mockBody: { data: { access_code_id: "acd_x", code: "ac_y" } },
-    invoke: (c) => c.createAccessCode({ resource_id: "r_x" }),
+    invoke: (c) =>
+      c.createAccessCode({
+        resource_id: "ahpviqz46qwcvx56glfatm3p3ooccwfcf2it4sdgjervwdkapykw3o3qdq2a",
+      }),
   },
   {
     method: "listAccessCodes",
@@ -760,7 +790,7 @@ const METHOD_CASES: MethodCase[] = [
 ];
 
 // `toJSON` is a diagnostic helper (used by console.log/JSON.stringify),
-// not an API call — intentionally outside the contract set. `resourceById`
+// not an API call — intentionally outside the contract set. `resourceByCrid`
 // constructs a portal-minting handle locally and never issues a request
 // (the request happens later, via createPortal, which has its own entry).
 // This set only covers string-keyed prototype members; symbol-keyed methods
@@ -770,7 +800,7 @@ const METHOD_CASES: MethodCase[] = [
 const NON_API_PROTOTYPE_METHODS: ReadonlySet<string> = new Set([
   "constructor",
   "toJSON",
-  "resourceById",
+  "resourceByCrid",
 ]);
 
 // Internal helpers on the prototype. TypeScript's `private`/`protected`

@@ -1287,19 +1287,9 @@ interface PathIdValidationOptions {
 }
 
 const REVOKE_INDIVIDUAL_QURL_RECOVERY =
-  "revoke individual tokens with revokeResourceQurl(resourceId, qurlId)";
+  "revoke individual tokens with revokeResourceQurl(crid, qurlId)";
 const DELETE_RESOURCE_RECOVERY =
-  "pass a resource ID returned by the API; to revoke one qURL, call revokeResourceQurl(resourceId, qurlId)";
-
-const RESOURCE_ID_PATH_OPTIONS: PathIdValidationOptions = {
-  // Today's resource forms (P-256 SPKI and CRID) cannot collide
-  // with lowercase `at_` because they have fixed structural prefixes. This is
-  // credential-leak defense in depth, not a general resource-ID grammar;
-  // ponytail: fixed current prefixes; revisit this guard if resource keys or
-  // credentials change format. Do not infer a general opaque-ID grammar.
-  rejectBareAccessToken: true,
-  accessTokenRecovery: "pass a resource ID returned by the API",
-};
+  "pass a CRID returned by the API; to revoke one qURL, call revokeResourceQurl(crid, qurlId)";
 
 const RESOURCE_OR_QURL_ID_PATH_OPTIONS: PathIdValidationOptions = {
   rejectBareAccessToken: true,
@@ -1309,18 +1299,6 @@ const RESOURCE_OR_QURL_ID_PATH_OPTIONS: PathIdValidationOptions = {
 const QURL_ID_PATH_OPTIONS: PathIdValidationOptions = {
   rejectBareAccessToken: true,
   accessTokenRecovery: "pass the qURL display ID, not its access token",
-};
-
-const DELETE_QURL_RESOURCE_ID_PATH_OPTIONS: PathIdValidationOptions = {
-  rejectBareAccessToken: true,
-  accessTokenRecovery: DELETE_RESOURCE_RECOVERY,
-  // Current resource IDs have fixed public-key/CRID prefixes, so q_ is an
-  // unambiguous display-ID mix-up. Guard the reserved prefix rather than the
-  // current display-ID suffix grammar: a future display-ID extension must not
-  // silently turn an individual revoke into whole-resource deletion. This is
-  // applied to both whole-resource DELETE routes. The service also rejects
-  // display IDs there; read routes can resolve them to a parent resource.
-  rejectQurlDisplayId: true,
 };
 
 /**
@@ -1336,6 +1314,14 @@ function validatePathId(
   field = "id",
   options: PathIdValidationOptions = {},
 ): void {
+  if (
+    options === RESOURCE_OR_QURL_ID_PATH_OPTIONS &&
+    typeof id === "string" &&
+    !id.startsWith("q_")
+  ) {
+    requireResourceCrid(id, method);
+    return;
+  }
   // `.trim()` catches whitespace-only and padded IDs before they round-trip as
   // `%20...%20` paths that the server can only reject with a less useful 404.
   // The pre-flight error is more actionable than the 404.
@@ -1490,13 +1476,15 @@ function requireConnectorSubtleCrypto(method: string): void {
   }
 }
 
-function requireConnectorCrid(crid: string, method: string): void {
-  if (typeof crid !== "string") {
-    throw clientValidationError(
-      `${method}: crid is required (got ${crid === null ? "null" : typeof crid})`,
-    );
-  }
-  if (!parseCrid(crid)) throw clientValidationError(`${method}: requires a valid CRID`);
+function requireResourceCrid(crid: string, method: string, field = "id"): void {
+  if (parseCrid(crid)) return;
+  // Keep actionable paste errors without inspecting valid CRIDs twice.
+  validatePathId(crid, method, field, {
+    rejectBareAccessToken: true,
+    rejectQurlDisplayId: true,
+    accessTokenRecovery: DELETE_RESOURCE_RECOVERY,
+  });
+  throw clientValidationError(`${method}: requires a valid CRID`);
 }
 
 async function importsAsConnectorPublicKey(der: Uint8Array): Promise<boolean> {
@@ -1529,6 +1517,29 @@ function containsControlCharacter(value: string): boolean {
   });
 }
 
+async function verifyResourceIdentity(
+  resource: { resource_id?: unknown; crid?: unknown } | undefined,
+  method: string,
+  expectedCrid?: string,
+): Promise<void> {
+  if (!resource || typeof resource.resource_id !== "string") {
+    throw unexpectedResponseError(`${method}: response has missing or invalid resource_id`);
+  }
+  const resourceKey = decodeCanonicalBase64Url(resource.resource_id);
+  requireConnectorSubtleCrypto(method);
+  if (!resourceKey || !(await importsAsConnectorPublicKey(resourceKey))) {
+    throw unexpectedResponseError(`${method}: response has missing or invalid resource_id`);
+  }
+  if (expectedCrid !== undefined && resource.crid !== expectedCrid) {
+    throw unexpectedResponseError(`${method}: response crid does not match the request`);
+  }
+  if (!(await cridKeyMatches(resource.crid, resourceKey))) {
+    throw unexpectedResponseError(
+      `${method}: response has missing, invalid, or public-key-mismatched crid`,
+    );
+  }
+}
+
 async function parseConnectorResource(
   client: QURLClient,
   value: unknown,
@@ -1539,22 +1550,7 @@ async function parseConnectorResource(
     throw unexpectedResponseError(`${method}: response is missing connector resource data`);
   }
   const resource = value as Resource;
-  if (typeof resource.resource_id !== "string") {
-    throw unexpectedResponseError(`${method}: response has missing or invalid resource_id`);
-  }
-  const resourceKey = decodeCanonicalBase64Url(resource.resource_id);
-  requireConnectorSubtleCrypto(method);
-  if (!resourceKey || !(await importsAsConnectorPublicKey(resourceKey))) {
-    throw unexpectedResponseError(`${method}: response has missing or invalid resource_id`);
-  }
-  if (expectation.crid !== undefined && resource.crid !== expectation.crid) {
-    throw unexpectedResponseError(`${method}: response crid does not match the request`);
-  }
-  if (!(await cridKeyMatches(resource.crid, resourceKey))) {
-    throw unexpectedResponseError(
-      `${method}: response has missing, invalid, or public-key-mismatched crid`,
-    );
-  }
+  await verifyResourceIdentity(resource, method, expectation.crid);
   if (
     typeof resource.connector_routing_id !== "string" ||
     !CONNECTOR_ROUTING_ID_PATTERN.test(resource.connector_routing_id)
@@ -2353,6 +2349,7 @@ function parseApiDate(value: string | undefined): Date | undefined {
 /** Wire shape shared by the two portal-minting endpoints. */
 type PortalWireResponse = {
   resource_id?: string;
+  crid?: string;
   qurl_link?: string;
   qurl_site?: string;
   expires_at?: string;
@@ -2366,15 +2363,21 @@ type PortalWireResponse = {
  * check; everything else is optional because the two mint endpoints differ
  * in which ancillary fields they return.
  */
-function parsePortal(data: PortalWireResponse | undefined, method: string): Portal {
+async function parsePortal(
+  data: PortalWireResponse | undefined,
+  method: string,
+  expectedCrid?: string,
+): Promise<Portal> {
   if (typeof data?.resource_id !== "string" || data.resource_id.trim() === "") {
     throw unexpectedResponseError(`${method}: response is missing resource_id`);
   }
   if (typeof data.qurl_link !== "string" || data.qurl_link.trim() === "") {
     throw unexpectedResponseError(`${method}: response is missing qurl_link`);
   }
+  await verifyResourceIdentity(data, method, expectedCrid);
   return {
-    resourceId: data.resource_id,
+    crid: data.crid as string,
+    resourcePublicKey: data.resource_id,
     link: data.qurl_link,
     site: data.qurl_site,
     expiresAt: parseApiDate(data.expires_at),
@@ -2827,12 +2830,10 @@ export class QURLClient {
     if (normalized.alias !== undefined) body.alias = normalized.alias;
     validateResourceWriteFields(body);
     const resource = await this.request<Resource>("POST", "/v1/resources", body, requestOptions);
-    if (typeof resource?.resource_id !== "string" || resource.resource_id.trim() === "") {
-      throw unexpectedResponseError("protectUrl: response is missing resource_id");
-    }
+    await verifyResourceIdentity(resource, "protectUrl");
     return new ProtectedResource(
       this,
-      resource.resource_id,
+      resource.crid as string,
       // Some resource types redact target_url in responses; fall back to
       // the caller-supplied URL so the handle stays useful.
       resource.target_url || targetUrl,
@@ -2841,22 +2842,22 @@ export class QURLClient {
   }
 
   /**
-   * Return a portal-minting handle for a stored resource id, without an API
+   * Return a portal-minting handle for a stored CRID, without an API
    * call.
    *
-   * Use when you persisted a LayerV resource id and want to mint more
-   * portals for it (qurl-go: `Client.ResourceByID`):
+   * Use when you persisted a LayerV CRID and want to mint more
+   * portals for it (qurl-go: `Client.ResourceByCRID`):
    *
    * ```ts
-   * const resource = client.resourceById(storedResourceId);
+   * const resource = client.resourceByCrid(storedCrid);
    * const portal = await resource.createPortal({ validFor: "1h" });
    * ```
    *
    * The handle carries no server metadata; use {@link getResource} when you
    * need the full resource details.
    */
-  resourceById(id: string): ProtectedResource {
-    validatePathId(id, "resourceById", "id", RESOURCE_ID_PATH_OPTIONS);
+  resourceByCrid(id: string): ProtectedResource {
+    requireResourceCrid(id, "resourceByCrid");
     return new ProtectedResource(this, id);
   }
 
@@ -2929,7 +2930,7 @@ export class QURLClient {
 
   /** Fetch a qURL Connector resource by its CRID. */
   async getConnectorResource(crid: string): Promise<ConnectorResource> {
-    requireConnectorCrid(crid, "getConnectorResource");
+    requireResourceCrid(crid, "getConnectorResource");
     requireConnectorSubtleCrypto("getConnectorResource");
     const { data, __http_status } = await this.rawRequest<ResourceDetail>(
       "GET",
@@ -2998,7 +2999,7 @@ export class QURLClient {
    * outcome-unknown failure, reconcile by ID before issuing a deliberate retry.
    */
   async deleteConnectorResource(crid: string): Promise<void> {
-    requireConnectorCrid(crid, "deleteConnectorResource");
+    requireResourceCrid(crid, "deleteConnectorResource");
     try {
       await this.requestNoContent(`/v1/resources/${encodeURIComponent(crid)}`);
     } catch (error) {
@@ -3013,7 +3014,7 @@ export class QURLClient {
    * reach one private resource. Recipients open `portal.link` directly and
    * need no LayerV credentials. Prefer short lifetimes such as
    * `{ validFor: "5m" }`. Accepts a {@link ProtectedResource} handle or a
-   * public resource ID string. REST-shaped equivalents: {@link mintLink} /
+   * CRID string. REST-shaped equivalents: {@link mintLink} /
    * {@link createQurlForResource}.
    *
    * Duration options take a string (`"5m"`, `"24h"`; server-validated) or a
@@ -3035,13 +3036,13 @@ export class QURLClient {
       if (!ProtectedResource.isBoundTo(resource, this)) {
         throw clientValidationError("createPortal: resource is bound to a different client");
       }
-      resourceId = resource.id;
+      resourceId = resource.crid;
     } else {
       throw clientValidationError(
-        `createPortal: resource must be a ProtectedResource handle or a resource id string (got ${describeShape(resource)})`,
+        `createPortal: resource must be a ProtectedResource handle or a CRID string (got ${describeShape(resource)})`,
       );
     }
-    validatePathId(resourceId, "createPortal", "resource id", RESOURCE_ID_PATH_OPTIONS);
+    requireResourceCrid(resourceId, "createPortal");
     const body = buildCreatePortalBody(opts, "createPortal");
     const data = await this.request<PortalWireResponse>(
       "POST",
@@ -3049,7 +3050,7 @@ export class QURLClient {
       body,
       requestOptions,
     );
-    return parsePortal(data, "createPortal");
+    return parsePortal(data, "createPortal", resourceId);
   }
 
   /**
@@ -3057,7 +3058,7 @@ export class QURLClient {
    *
    * Convenience for one-off scripts (qurl-go: `Client.CreatePortalForURL`).
    * The returned resource handle is reusable for minting more portals but
-   * carries only the resource id and the caller-supplied target URL; use
+   * carries the CRID, verification key, and the caller-supplied target URL; use
    * {@link protectUrl} when you need the full server-populated resource
    * metadata. Portal options match {@link createPortal}; `targetUrl` gets
    * the same malformed-URL and embedded-credentials rejection as
@@ -3076,10 +3077,10 @@ export class QURLClient {
       ...buildCreatePortalBody(opts, "createPortalForUrl"),
     };
     const data = await this.request<PortalWireResponse>("POST", "/v1/qurls", body, requestOptions);
-    const portal = parsePortal(data, "createPortalForUrl");
+    const portal = await parsePortal(data, "createPortalForUrl");
     return {
       portal,
-      resource: new ProtectedResource(this, portal.resourceId, targetUrl),
+      resource: new ProtectedResource(this, portal.crid, targetUrl),
     };
   }
 
@@ -3116,7 +3117,7 @@ export class QURLClient {
     return {
       resourceUrl: resolved.target_url,
       openSeconds: resolved.access_grant?.expires_in ?? 0,
-      resourceId: resolved.resource_id,
+      resourcePublicKey: resolved.resource_id,
     };
   }
 
@@ -3283,7 +3284,7 @@ export class QURLClient {
   /**
    * Get a qURL resource and its access tokens.
    *
-   * Accepts a current public resource ID, CRID, or qURL
+   * Accepts a CRID or qURL
    * display ID (`q_` prefix); the API resolves display IDs to the parent
    * resource automatically.
    */
@@ -3350,30 +3351,20 @@ export class QURLClient {
   /**
    * Delete (revoke) a qURL resource and all its access tokens.
    *
-   * Accepts the public resource ID or CRID returned
-   * by the API. The service owns identifier grammar so the SDK remains
-   * compatible when public resource identifiers evolve.
-   * Consequently, even an implausibly short non-secret ID is sent for the
-   * service to classify rather than rejected using a stale client grammar.
+   * Requires a CRID returned by the API. To revoke one qURL, use
+   * {@link revokeResourceQurl} instead.
    *
-   * qURL display IDs are rejected because this legacy endpoint deletes the
-   * whole parent resource; use {@link revokeResourceQurl} for one qURL.
-   *
-   * @throws {ValidationError} If `id` is blank, padded with whitespace, too
-   * long, a URL dot segment, URL-shaped, contains an access token, or is a qURL
-   * display ID. URL dot-segment and credential checks inspect at most three
-   * rounds of percent decoding; more deeply encoded input is left to the
-   * authoritative service after safe single-segment encoding.
+   * @throws {ValidationError} If `id` is not a canonical CRID.
    */
   async delete(id: string): Promise<void> {
-    validatePathId(id, "delete", "id", DELETE_QURL_RESOURCE_ID_PATH_OPTIONS);
+    requireResourceCrid(id, "delete");
     await this.requestNoContent(`/v1/qurls/${encodeURIComponent(id)}`);
   }
 
   /**
    * Extend a qURL's expiration.
    *
-   * Accepts a current public resource ID, CRID, or qURL
+   * Accepts a CRID or qURL
    * display ID (`q_` prefix). Delegates to {@link update} with only the
    * expiration fields. `ExtendInput` shares its `extend_by` / `expires_at`
    * fields with `UpdateInput` but is *narrower in two ways*: (1) exactly
@@ -3403,7 +3394,7 @@ export class QURLClient {
   /**
    * Update a qURL — extend expiration, change description, rename tags.
    *
-   * Accepts a current public resource ID, CRID, or qURL
+   * Accepts a CRID or qURL
    * display ID (`q_` prefix); the API resolves display IDs to the parent
    * resource automatically.
    */
@@ -3448,7 +3439,7 @@ export class QURLClient {
    *
    * Portal-flow equivalent: {@link createPortal}.
    *
-   * Accepts a current public resource ID, CRID, or qURL
+   * Accepts a CRID or qURL
    * display ID (`q_` prefix); the API resolves display IDs to the parent
    * resource automatically.
    *
@@ -3606,7 +3597,7 @@ export class QURLClient {
 
   /** Get one resource plus its bounded qURL preview. */
   async getResource(id: string): Promise<ResourceDetail> {
-    validatePathId(id, "getResource", "id", RESOURCE_ID_PATH_OPTIONS);
+    requireResourceCrid(id, "getResource");
     return this.request<ResourceDetail>("GET", `/v1/resources/${encodeURIComponent(id)}`);
   }
 
@@ -3616,7 +3607,7 @@ export class QURLClient {
     input: UpdateResourceInput,
     options?: RequestOptions,
   ): Promise<Resource> {
-    validatePathId(id, "updateResource", "id", RESOURCE_ID_PATH_OPTIONS);
+    requireResourceCrid(id, "updateResource");
     requireObjectInput(input, "updateResource");
     requireNoUnknownFields(input, UPDATE_RESOURCE_FIELD_KEYS, "updateResource");
     const validationInput = normalizePatchFields(
@@ -3644,7 +3635,7 @@ export class QURLClient {
 
   /** Revoke a resource and all of its qURLs. */
   async deleteResource(id: string): Promise<void> {
-    validatePathId(id, "deleteResource", "id", DELETE_QURL_RESOURCE_ID_PATH_OPTIONS);
+    requireResourceCrid(id, "deleteResource");
     await this.requestNoContent(`/v1/resources/${encodeURIComponent(id)}`);
   }
 
@@ -3658,7 +3649,7 @@ export class QURLClient {
     input?: CreateQurlForResourceInput,
     options?: RequestOptions,
   ): Promise<CreateOutput> {
-    validatePathId(id, "createQurlForResource", "id", RESOURCE_ID_PATH_OPTIONS);
+    requireResourceCrid(id, "createQurlForResource");
     let normalized: CreateQurlForResourceInput | undefined = input;
     if (input !== undefined) {
       requireObjectInput(input, "createQurlForResource");
@@ -3689,7 +3680,7 @@ export class QURLClient {
     options: ShareResourceOptions = {},
     requestOptions?: RequestOptions,
   ): Promise<ShareLink> {
-    requireConnectorCrid(id, "shareResource");
+    requireResourceCrid(id, "shareResource");
     requireObjectInput(options, "shareResource");
     requireNoUnknownFields(options, SHARE_RESOURCE_OPTION_KEYS, "shareResource");
     const body: { ttl_seconds?: number } = {};
@@ -3768,7 +3759,7 @@ export class QURLClient {
 
   /** Revoke a specific qURL token on a resource. */
   async revokeResourceQurl(id: string, qurlId: string): Promise<void> {
-    validatePathId(id, "revokeResourceQurl", "id", RESOURCE_ID_PATH_OPTIONS);
+    requireResourceCrid(id, "revokeResourceQurl");
     validatePathId(qurlId, "revokeResourceQurl", "qurl id", QURL_ID_PATH_OPTIONS);
     await this.requestNoContent(
       `/v1/resources/${encodeURIComponent(id)}/qurls/${encodeURIComponent(qurlId)}`,
@@ -3782,7 +3773,7 @@ export class QURLClient {
     input: UpdateResourceQurlInput,
     options?: RequestOptions,
   ): Promise<QurlSummary> {
-    validatePathId(id, "updateResourceQurl", "id", RESOURCE_ID_PATH_OPTIONS);
+    requireResourceCrid(id, "updateResourceQurl");
     validatePathId(qurlId, "updateResourceQurl", "qurl id", QURL_ID_PATH_OPTIONS);
     requireObjectInput(input, "updateResourceQurl");
     requireNoUnknownFields(input, UPDATE_RESOURCE_QURL_FIELD_KEYS, "updateResourceQurl");
@@ -3812,7 +3803,7 @@ export class QURLClient {
    * this page and emits a debug log rather than pretending it fetched all pages.
    */
   async listResourceSessions(id: string): Promise<SessionListOutput> {
-    validatePathId(id, "listResourceSessions", "id", RESOURCE_ID_PATH_OPTIONS);
+    requireResourceCrid(id, "listResourceSessions");
     const { data, meta } = await this.rawRequest<Session[]>(
       "GET",
       `/v1/resources/${encodeURIComponent(id)}/sessions`,
@@ -3833,7 +3824,7 @@ export class QURLClient {
 
   /** Terminate all active sessions for a resource and return the server count. */
   async terminateAllResourceSessions(id: string): Promise<SessionTerminateOutput> {
-    validatePathId(id, "terminateAllResourceSessions", "id", RESOURCE_ID_PATH_OPTIONS);
+    requireResourceCrid(id, "terminateAllResourceSessions");
     const path = `/v1/resources/${encodeURIComponent(id)}/sessions`;
     const { data, meta, __http_status } = await this.rawRequest<{ terminated?: number }>(
       "DELETE",
@@ -3854,7 +3845,7 @@ export class QURLClient {
 
   /** Terminate a specific resource session. */
   async terminateResourceSession(id: string, sessionId: string): Promise<void> {
-    validatePathId(id, "terminateResourceSession", "id", RESOURCE_ID_PATH_OPTIONS);
+    requireResourceCrid(id, "terminateResourceSession");
     validatePathId(sessionId, "terminateResourceSession", "session id");
     await this.requestNoContent(
       `/v1/resources/${encodeURIComponent(id)}/sessions/${encodeURIComponent(sessionId)}`,
@@ -4386,7 +4377,7 @@ export class QURLClient {
       CREATE_ACCESS_CODE_FIELD_KEYS,
     );
     const normalized = normalizedRecord as unknown as CreateAccessCodeInput;
-    requireNonEmptyStringField(normalizedRecord, "resource_id", "createAccessCode");
+    requireResourceCrid(normalizedRecord.resource_id as string, "createAccessCode", "resource_id");
     return this.request<CreateAccessCodeOutput>("POST", "/v1/access-codes", normalized, options);
   }
 
@@ -4971,7 +4962,7 @@ export class QURLClient {
 /**
  * A LayerV-protected resource, bound to the client that produced it.
  *
- * Obtained from {@link QURLClient.protectUrl} or {@link QURLClient.resourceById} —
+ * Obtained from {@link QURLClient.protectUrl} or {@link QURLClient.resourceByCrid} —
  * not constructed directly. Mint short-lived access links for the resource
  * with {@link createPortal} (qurl-go: `qurl.Resource`).
  */
@@ -4980,20 +4971,20 @@ export class ProtectedResource {
   // CONTRIBUTING.md's dual-build rule bars) so the binding stays on the
   // instance and out of Object.keys/JSON.stringify output.
   readonly #client: QURLClient;
-  /** The LayerV public resource ID. */
-  readonly id: string;
+  /** The public resource CRID. */
+  readonly crid: string;
   /** The private URL protected by this resource, when known. */
   readonly targetUrl?: string;
   /**
    * Full server-populated {@link Resource} metadata when the handle came
-   * from an API response; `undefined` for {@link QURLClient.resourceById}
+   * from an API response; `undefined` for {@link QURLClient.resourceByCrid}
    * handles and for the one-call {@link QURLClient.createPortalForUrl} path.
    */
   readonly details?: Resource;
 
   constructor(client: QURLClient, id: string, targetUrl?: string, details?: Resource) {
     this.#client = client;
-    this.id = id;
+    this.crid = id;
     this.targetUrl = targetUrl;
     this.details = details;
   }
@@ -5037,7 +5028,7 @@ const CONNECTOR_RESOURCE_CONSTRUCTOR_TOKEN = Symbol("validated ConnectorResource
  */
 export class ConnectorResource {
   readonly #client: QURLClient;
-  readonly resourceId: string;
+  readonly resourcePublicKey: string;
   /** Required public identifier, verified against the returned resource key. */
   readonly crid: string;
   readonly connectorRoutingId: string;
@@ -5057,7 +5048,7 @@ export class ConnectorResource {
       );
     }
     this.#client = client;
-    this.resourceId = details.resource_id;
+    this.resourcePublicKey = details.resource_id;
     this.crid = details.crid!;
     this.connectorRoutingId = details.connector_routing_id as string;
     this.knockResourceId = details.knock_resource_id as string;
