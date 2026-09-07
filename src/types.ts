@@ -106,7 +106,7 @@ export interface QurlSummary {
 export interface QURL {
   resource_id: string;
   /** Public resource locator; the resource_id field carries key metadata. */
-  crid: string;
+  crid?: string;
   type?: ResourceType;
   target_url: string;
   status: "active" | "revoked";
@@ -154,7 +154,7 @@ export interface CreateOutput {
   qurl_id: string;
   resource_id: string;
   /** Public resource locator; the resource_id field carries key metadata. */
-  crid: string;
+  crid?: string;
   qurl_link: string;
   branded_domain?: string;
   qurl_site: string;
@@ -434,7 +434,7 @@ export interface BatchItemSuccess {
   success: true;
   resource_id: string;
   /** Public resource locator; the resource_id field carries key metadata. */
-  crid: string;
+  crid?: string;
   qurl_link: string;
   branded_domain?: string;
   qurl_site: string;
@@ -486,7 +486,7 @@ export interface UpdateResourceInput {
 export interface Resource {
   resource_id: string;
   /** Cryptographic Resource ID derived from the resource public key. */
-  crid: string;
+  crid?: string;
   type?: ResourceType;
   target_url?: string;
   knock_resource_id?: string;

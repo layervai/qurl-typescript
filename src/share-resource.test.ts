@@ -239,6 +239,7 @@ describe("shareResource", () => {
       expiresAt: new Date(Number.NaN),
     });
 
+    expect(share.expiresAt).toBeUndefined();
     expect(share.toJSON()).toMatchObject({ link: "[redacted]", expiresAt: undefined });
     expect(JSON.stringify(share)).not.toContain(share.link);
     expect(inspect(share)).not.toContain(share.link);
@@ -258,7 +259,7 @@ describe("shareResource", () => {
     expect((init.headers as Record<string, string>)["Idempotency-Key"]).toBe("share-job-1");
   });
 
-  it.each(["", "   ", matching.der_spki_b64url, "r_private"])(
+  it.each(["", "   ", matching.der_spki_b64url, "r_private", "q_example"])(
     "rejects the non-CRID identifier %j before the request",
     async (resourceId) => {
       const fetch = mockFetch({ status: 200, body: shareResponse() });

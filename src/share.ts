@@ -80,7 +80,8 @@ export class ShareLink {
     this.qurlId = init.qurlId;
     this.crid = init.crid;
     this.type = init.type;
-    this.#expiresAtEpochMs = init.expiresAt?.getTime();
+    const expiresAtEpochMs = init.expiresAt?.getTime();
+    this.#expiresAtEpochMs = Number.isFinite(expiresAtEpochMs) ? expiresAtEpochMs : undefined;
     this.expiresInSeconds = init.expiresInSeconds;
     this.singleUse = init.singleUse;
     Object.freeze(this);

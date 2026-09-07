@@ -1284,6 +1284,7 @@ interface PathIdValidationOptions {
   accessTokenRecovery?: string;
   /** Reject qURL display IDs where the operation requires a parent resource. */
   rejectQurlDisplayId?: boolean;
+  requireCridUnlessQurlDisplayId?: boolean;
 }
 
 const REVOKE_INDIVIDUAL_QURL_RECOVERY =
@@ -1292,6 +1293,7 @@ const DELETE_RESOURCE_RECOVERY =
   "pass a CRID returned by the API; to revoke one qURL, call revokeResourceQurl(crid, qurlId)";
 
 const RESOURCE_OR_QURL_ID_PATH_OPTIONS: PathIdValidationOptions = {
+  requireCridUnlessQurlDisplayId: true,
   rejectBareAccessToken: true,
   accessTokenRecovery: "pass a resource or qURL display ID returned by the API",
 };
@@ -1314,12 +1316,8 @@ function validatePathId(
   field = "id",
   options: PathIdValidationOptions = {},
 ): void {
-  if (
-    options === RESOURCE_OR_QURL_ID_PATH_OPTIONS &&
-    typeof id === "string" &&
-    !id.startsWith("q_")
-  ) {
-    requireResourceCrid(id, method);
+  if (options.requireCridUnlessQurlDisplayId && typeof id === "string" && !id.startsWith("q_")) {
+    requireResourceCrid(id, method, field);
     return;
   }
   // `.trim()` catches whitespace-only and padded IDs before they round-trip as
@@ -1482,7 +1480,10 @@ function requireResourceCrid(crid: string, method: string, field = "id"): void {
   validatePathId(crid, method, field, {
     rejectBareAccessToken: true,
     rejectQurlDisplayId: true,
-    accessTokenRecovery: DELETE_RESOURCE_RECOVERY,
+    accessTokenRecovery:
+      method === "delete" || method === "deleteResource"
+        ? DELETE_RESOURCE_RECOVERY
+        : "pass a CRID returned by the API",
   });
   throw clientValidationError(`${method}: requires a valid CRID`);
 }

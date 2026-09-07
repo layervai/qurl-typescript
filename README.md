@@ -477,7 +477,7 @@ console.log(`Access granted to ${access.target_url} for ${access.access_grant?.e
 | `ensureConnectorResource(slug, requestOptions?)` | Find or create an active Connector resource by immutable slug |
 | `getConnectorResource(crid)` / `getConnectorResourceBySlug(slug)` | Load a validated Connector resource by immutable identity |
 | `deleteConnectorResource(crid)` | Revoke a Connector resource by CRID |
-| `resourceByCrid(id)` | Handle from a stored CRID (no API call) |
+| `resourceByCrid(crid)` | Handle from a stored CRID (no API call) |
 | `enterPortal(linkOrToken)` | Open a qURL link programmatically → `ResourceHandle` |
 
 ### REST-shaped methods
@@ -752,3 +752,7 @@ When upgrading, check the release notes for migration guidance — recent breaki
 ## License
 
 MIT
+
+Resource verification requires Web Crypto (`crypto.subtle`). In browsers, use
+an HTTPS page or localhost. Raw REST response types keep `crid` optional;
+resource handles and portals require a validated CRID.
