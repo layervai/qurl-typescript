@@ -514,7 +514,7 @@ describe("native portal opener", () => {
     await opener.close();
   });
 
-  it("lets the first Start signal cancel the shared initial open", async () => {
+  it("lets the first Start signal cancel the shared initial open without a health failure", async () => {
     const { opener, knock } = fixture();
     knock.mockImplementationOnce((_cell, _key, _body, options) => {
       return new Promise<NHPMessage>((_resolve, reject) => {
@@ -530,11 +530,67 @@ describe("native portal opener", () => {
     controller.abort(reason);
     await expect(first).rejects.toBe(reason);
     await expect(second).rejects.toBe(reason);
-    expect(opener.health()).toMatchObject({
+    expect(opener.health()).toEqual({
+      state: "new",
+      ready: false,
+      expiresAt: undefined,
+      renewAt: undefined,
+      lastOpenSucceededAt: undefined,
+      lastFailureClass: "",
+      consecutiveFailures: 0,
+    });
+    await opener.close();
+  });
+
+  it("preserves degraded health when the first caller cancels recovery", async () => {
+    const initialFailure = new Error("initial open failed");
+    const { opener, knock } = fixture();
+    knock.mockRejectedValueOnce(initialFailure).mockImplementationOnce(
+      (_cell, _key, _body, options) =>
+        new Promise<NHPMessage>((_resolve, reject) => {
+          options.signal?.addEventListener("abort", () => reject(options.signal?.reason), {
+            once: true,
+          });
+        }),
+    );
+    await expect(opener.start()).rejects.toBe(initialFailure);
+    const beforeRecovery = opener.health();
+    expect(beforeRecovery).toMatchObject({
       state: "degraded",
       ready: false,
       lastFailureClass: "open_failed",
       consecutiveFailures: 1,
+    });
+
+    const controller = new AbortController();
+    const reason = new Error("recovery canceled");
+    const recovery = opener.start({ signal: controller.signal });
+    controller.abort(reason);
+    await expect(recovery).rejects.toBe(reason);
+    expect(opener.health()).toEqual(beforeRecovery);
+    expect(knock).toHaveBeenCalledTimes(2);
+    await opener.close();
+  });
+
+  it("lets a joined Start signal cancel only that caller's wait", async () => {
+    const pending = deferred<NHPMessage>();
+    const { opener, knock } = fixture();
+    knock.mockImplementationOnce(() => pending.promise);
+    const first = opener.start();
+    const controller = new AbortController();
+    const reason = new Error("joined wait canceled");
+    const joined = opener.start({ signal: controller.signal });
+    controller.abort(reason);
+
+    await expect(joined).rejects.toBe(reason);
+    pending.resolve(ack());
+    await expect(first).resolves.toBeUndefined();
+    expect(knock).toHaveBeenCalledTimes(1);
+    expect(opener.health()).toMatchObject({
+      state: "ready",
+      ready: true,
+      lastFailureClass: "",
+      consecutiveFailures: 0,
     });
     await opener.close();
   });
@@ -1295,7 +1351,51 @@ describe("native portal opener", () => {
     expect(opener.health()).toMatchObject({ state: "closed", ready: false });
   });
 
-  it("does not cancel an in-flight protected redirect chain during close", async () => {
+  it("aborts a protected request that is on the wire during close", async () => {
+    let requestSignal: AbortSignal | null | undefined;
+    const fetchImpl = vi.fn(
+      async (_url: string | URL | Request, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          requestSignal = init?.signal;
+          requestSignal?.addEventListener("abort", () => reject(requestSignal?.reason), {
+            once: true,
+          });
+        }),
+    ) as unknown as typeof globalThis.fetch;
+    const { opener } = fixture(fetchImpl);
+    await opener.start();
+    const response = opener.fetch();
+    await new Promise((resolve) => setImmediate(resolve));
+    const rejected = expect(response).rejects.toBeInstanceOf(PortalOpenerClosedError);
+    await opener.close();
+    expect(requestSignal?.aborted).toBe(true);
+    await rejected;
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps caller cancellation on the protected request without closing the opener", async () => {
+    const fetchImpl = vi.fn(
+      async (_url: string | URL | Request, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), {
+            once: true,
+          });
+        }),
+    ) as unknown as typeof globalThis.fetch;
+    const { opener } = fixture(fetchImpl);
+    await opener.start();
+    const controller = new AbortController();
+    const reason = new Error("content request canceled");
+    const response = opener.fetch({ signal: controller.signal });
+    await new Promise((resolve) => setImmediate(resolve));
+    controller.abort(reason);
+    await expect(response).rejects.toBe(reason);
+    expect(opener.health()).toMatchObject({ state: "ready", ready: true });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    await opener.close();
+  });
+
+  it("does not start a redirect leg after close when custom fetch ignores abort", async () => {
     const first = deferred<Response>();
     const fetchImpl = vi
       .fn()
@@ -1317,8 +1417,8 @@ describe("native portal opener", () => {
     });
     await closing;
     first.resolve(new Response(null, { status: 302, headers: { location: "/done" } }));
-    await expect(response).resolves.toBeInstanceOf(Response);
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    await expect(response).rejects.toBeInstanceOf(PortalOpenerClosedError);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it.each([

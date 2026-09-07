@@ -291,15 +291,20 @@ class NativePortalOpener implements PortalOpener {
   async #runStart(signal?: AbortSignal): Promise<void> {
     if (this.#renewalTimer) this.#runtime.clearTimer(this.#renewalTimer);
     this.#renewalTimer = undefined;
-    this.#startingRecovery = this.#state === "degraded" || this.#state === "running";
+    const recovery = this.#state === "degraded" || this.#state === "running";
+    this.#startingRecovery = recovery;
     this.#state = "starting";
     try {
       await this.#openSingleFlight(signal);
     } catch (error) {
       if (this.#isClosed()) throw new PortalOpenerClosedError();
-      this.#state = "degraded";
       this.#clearGrant();
-      this.#recordFailure(error);
+      if (signal?.aborted && error === signal.reason) {
+        this.#state = recovery ? "degraded" : "new";
+      } else {
+        this.#state = "degraded";
+        this.#recordFailure(error);
+      }
       throw error;
     } finally {
       this.#startingRecovery = false;
@@ -349,64 +354,88 @@ class NativePortalOpener implements PortalOpener {
         "portal fetch owns the Host derived from the authenticated target",
       );
     }
-    for (let requestCount = 1; ; requestCount++) {
-      const requestHeaders = authorizeHeaders(headers, sessionToken);
-      const response = await this.#fetch(currentUrl, {
-        ...init,
-        method,
-        body,
-        headers: requestHeaders,
-        redirect: "manual",
-      });
-      if (response.redirected === true || !responseMatchesRequestUrl(response.url, currentUrl)) {
-        await discardResponseBody(response);
-        throw new PortalRedirectError(
-          "portal fetch refused a response that bypassed its manual redirect policy",
-        );
-      }
-      if (![301, 302, 303, 307, 308].includes(response.status)) return response;
-      const location = response.headers.get("location");
-      if (!location) return response;
-      if (options.redirects === "error") {
-        await discardResponseBody(response);
-        throw new PortalRedirectError("portal fetch refused a redirect for a fixed signed request");
-      }
-      if (requestCount >= MAX_REDIRECT_REQUESTS) {
-        await discardResponseBody(response);
-        throw new PortalTooManyRedirectsError();
-      }
-      let next: URL;
-      try {
-        next = new URL(location, currentUrl);
-      } catch {
-        await discardResponseBody(response);
-        throw new PortalRedirectError("portal fetch refused an invalid redirect target");
-      }
-      let nextOrigin: string;
-      try {
-        nextOrigin = normalizedHttpsOrigin(next);
-      } catch {
-        await discardResponseBody(response);
-        throw new PortalRedirectError("portal fetch refused an invalid redirect target");
-      }
-      if (nextOrigin !== grant.origin) {
-        await discardResponseBody(response);
-        throw new PortalRedirectError(
-          "portal fetch refused a redirect outside the authenticated origin",
-        );
-      }
+    const requestController = new AbortController();
+    const removeLifecycleAbort = linkAbortSignal(
+      this.#lifecycleController.signal,
+      requestController,
+    );
+    const removeCallerAbort = linkAbortSignal(init.signal ?? undefined, requestController);
+    try {
+      for (let requestCount = 1; ; requestCount++) {
+        this.#requireOpen();
+        throwIfAborted(requestController.signal);
+        const requestHeaders = authorizeHeaders(headers, sessionToken);
+        const response = await this.#fetch(currentUrl, {
+          ...init,
+          method,
+          body,
+          headers: requestHeaders,
+          redirect: "manual",
+          signal: requestController.signal,
+        });
+        if (requestController.signal.aborted) {
+          await discardResponseBody(response);
+          throwIfAborted(requestController.signal);
+        }
+        if (response.redirected === true || !responseMatchesRequestUrl(response.url, currentUrl)) {
+          await discardResponseBody(response);
+          throw new PortalRedirectError(
+            "portal fetch refused a response that bypassed its manual redirect policy",
+          );
+        }
+        if (![301, 302, 303, 307, 308].includes(response.status)) return response;
+        const location = response.headers.get("location");
+        if (!location) return response;
+        if (options.redirects === "error") {
+          await discardResponseBody(response);
+          throw new PortalRedirectError(
+            "portal fetch refused a redirect for a fixed signed request",
+          );
+        }
+        if (requestCount >= MAX_REDIRECT_REQUESTS) {
+          await discardResponseBody(response);
+          throw new PortalTooManyRedirectsError();
+        }
+        let next: URL;
+        try {
+          next = new URL(location, currentUrl);
+        } catch {
+          await discardResponseBody(response);
+          throw new PortalRedirectError("portal fetch refused an invalid redirect target");
+        }
+        let nextOrigin: string;
+        try {
+          nextOrigin = normalizedHttpsOrigin(next);
+        } catch {
+          await discardResponseBody(response);
+          throw new PortalRedirectError("portal fetch refused an invalid redirect target");
+        }
+        if (nextOrigin !== grant.origin) {
+          await discardResponseBody(response);
+          throw new PortalRedirectError(
+            "portal fetch refused a redirect outside the authenticated origin",
+          );
+        }
 
-      if ([301, 302, 303].includes(response.status) && method !== "GET" && method !== "HEAD") {
-        method = "GET";
-        body = undefined;
-        headers = new Headers(headers);
-        headers.delete("content-length");
-        headers.delete("content-type");
-      } else if ((response.status === 307 || response.status === 308) && body !== undefined) {
-        if (!isReplayableBody(body)) return response;
+        if ([301, 302, 303].includes(response.status) && method !== "GET" && method !== "HEAD") {
+          method = "GET";
+          body = undefined;
+          headers = new Headers(headers);
+          headers.delete("content-length");
+          headers.delete("content-type");
+        } else if ((response.status === 307 || response.status === 308) && body !== undefined) {
+          if (!isReplayableBody(body)) return response;
+        }
+        await discardResponseBody(response);
+        currentUrl = next.href;
       }
-      await discardResponseBody(response);
-      currentUrl = next.href;
+    } catch (error) {
+      await discardRequestBody(body);
+      if (this.#isClosed()) throw new PortalOpenerClosedError();
+      throw error;
+    } finally {
+      removeCallerAbort();
+      removeLifecycleAbort();
     }
   }
 
@@ -1003,6 +1032,10 @@ function responseMatchesRequestUrl(responseUrl: string, requestUrl: string): boo
   } catch {
     return false;
   }
+}
+
+function throwIfAborted(signal: AbortSignal): void {
+  if (signal.aborted) throw signal.reason ?? new DOMException("Aborted", "AbortError");
 }
 
 function linkAbortSignal(signal: AbortSignal | undefined, controller: AbortController): () => void {

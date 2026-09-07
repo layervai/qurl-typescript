@@ -189,7 +189,11 @@ Each open has a whole-operation deadline that covers DNS and UDP.
 60 seconds. Native DNS or address attempts can fail before this ceiling, so a
 larger value does not extend their internal timeouts. A renewal also stops at
 the old grant's expiry. Pass an abort signal to `start()` when lifecycle code
-needs a shorter deadline.
+needs a shorter deadline. Concurrent `start()` calls share one attempt. The
+first caller's signal owns that attempt, so its abort fails all waiters but does
+not count as an open failure in health. A cold cancellation restores `new`; a
+recovery cancellation preserves its prior `degraded` health. A later waiter's
+abort stops only that wait.
 Content requests use the caller's `RequestInit.signal`; `fetch()` does not add
 an independent application-request deadline. Set the opener's optional `fetch`
 when the protected request must use a custom Fetch implementation. Native NHP
@@ -227,13 +231,13 @@ failures retry through the remaining admission window. This does not put an
 open or sleep on the `fetch()` path.
 
 Close cancels and waits for an active NHP open, then wipes the mutable
-private-key, visitor-secret, and session-token buffers. A protected request that
-already started owns its copied handle and continues during close; await such
-requests separately when shutdown policy requires it. JavaScript can create
-immutable string copies during JSON and HTTP processing, so the SDK cannot
-promise full memory zeroization before garbage collection. The opener retains
-the immutable qURL string until close so it can verify each renewal. Never log
-the qURL, ACK body, request cookies, or request headers.
+private-key, visitor-secret, and session-token buffers. Close also aborts a
+protected request that is on the wire and prevents another redirect leg from
+starting. JavaScript can create immutable string copies during JSON and HTTP
+processing, so the SDK cannot promise full memory zeroization before garbage
+collection. The opener retains the immutable qURL string until close so it can
+verify each renewal. Never log the qURL, ACK body, request cookies, or request
+headers.
 
 A cold `start()` failure leaves health at `degraded`. Catch `PortalBusyError`
 for an authenticated COOKIE busy response and `PortalInvalidReplyError` for a
