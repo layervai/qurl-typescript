@@ -345,7 +345,7 @@ class NativePortalOpener implements PortalOpener {
       options.redirects !== "follow" &&
       options.redirects !== "error"
     ) {
-      throw new PortalStateError("portal fetch redirects must be follow or error");
+      throw new PortalConfigurationError("portal fetch redirects must be follow or error");
     }
     if (this.#state === "new" || (this.#state === "starting" && !this.#startingRecovery)) {
       throw new PortalOpenerNotStartedError();
@@ -360,11 +360,11 @@ class NativePortalOpener implements PortalOpener {
     const sessionToken = grant.token.toString("ascii");
     const init = typeof input === "function" ? input(new URL(grant.resourceUrl)) : input;
     if (!init || typeof init !== "object") {
-      throw new PortalStateError("portal request builder must return RequestInit");
+      throw new PortalConfigurationError("portal request builder must return RequestInit");
     }
     if (Object.prototype.hasOwnProperty.call(init, "redirect") && init.redirect !== undefined) {
       await discardRequestBody(init.body);
-      throw new PortalStateError(
+      throw new PortalConfigurationError(
         "portal fetch owns redirect handling; redirect overrides are not allowed",
       );
     }
@@ -374,7 +374,7 @@ class NativePortalOpener implements PortalOpener {
     let headers = new Headers(init.headers);
     if (headers.has("host")) {
       await discardRequestBody(body);
-      throw new PortalStateError(
+      throw new PortalConfigurationError(
         "portal fetch owns the Host derived from the authenticated target",
       );
     }
@@ -523,7 +523,7 @@ class NativePortalOpener implements PortalOpener {
     const deadlineMs = Math.min(this.#openTimeoutMs, remainingMs);
     if (deadlineMs <= 0) {
       removeAbortListener();
-      return Promise.reject(new PortalOpenerNotReadyError());
+      return Promise.reject(new PortalOpenTimeoutError());
     }
     const deadline = this.#runtime.setDeadlineTimer(() => {
       controller.abort(new PortalOpenTimeoutError());
@@ -1029,7 +1029,7 @@ function isReplayableBody(body: RequestInit["body"]): boolean {
     body instanceof ArrayBuffer ||
     ArrayBuffer.isView(body) ||
     body instanceof Blob ||
-    (typeof FormData !== "undefined" && body instanceof FormData)
+    body instanceof FormData
   );
 }
 

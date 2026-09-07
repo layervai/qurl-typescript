@@ -801,8 +801,19 @@ describe("native portal opener", () => {
     const fetchImpl = vi.fn() as unknown as typeof globalThis.fetch;
     const { opener } = fixture(fetchImpl);
     await opener.start();
-    await expect(opener.fetch({}, { redirects: "manual" as never })).rejects.toThrow(
-      "must be follow or error",
+    await expect(opener.fetch({}, { redirects: "manual" as never })).rejects.toBeInstanceOf(
+      PortalConfigurationError,
+    );
+    expect(fetchImpl).not.toHaveBeenCalled();
+    await opener.close();
+  });
+
+  it("rejects an invalid request builder result as caller configuration", async () => {
+    const fetchImpl = vi.fn() as unknown as typeof globalThis.fetch;
+    const { opener } = fixture(fetchImpl);
+    await opener.start();
+    await expect(opener.fetch(() => undefined as never)).rejects.toBeInstanceOf(
+      PortalConfigurationError,
     );
     expect(fetchImpl).not.toHaveBeenCalled();
     await opener.close();
@@ -824,7 +835,7 @@ describe("native portal opener", () => {
       const { opener } = fixture(fetchImpl);
       await opener.start();
       await expect(opener.fetch({ ...invalid, method: "POST", body })).rejects.toBeInstanceOf(
-        PortalStateError,
+        PortalConfigurationError,
       );
       expect(canceled).toBe(true);
       expect(fetchImpl).not.toHaveBeenCalled();
@@ -878,7 +889,9 @@ describe("native portal opener", () => {
     ) as unknown as typeof globalThis.fetch;
     const { opener } = fixture(fetchImpl);
     await opener.start();
-    await expect(opener.fetch({ redirect: "follow" })).rejects.toBeInstanceOf(PortalStateError);
+    await expect(opener.fetch({ redirect: "follow" })).rejects.toBeInstanceOf(
+      PortalConfigurationError,
+    );
     await expect(
       opener.fetch(() => ({ method: "PATCH", body: "signed" }), { redirects: "error" }),
     ).rejects.toBeInstanceOf(PortalRedirectError);
@@ -1254,6 +1267,31 @@ describe("native portal opener", () => {
       ready: false,
       lastFailureClass: "",
       consecutiveFailures: 0,
+    });
+    await opener.close();
+  });
+
+  it("classifies a renewal bound exhausted between readiness checks as a timeout", async () => {
+    const { opener, knock, timers, setNowReader } = fixture();
+    knock.mockResolvedValueOnce(ack(10));
+    await opener.start();
+    const readings = [
+      6_000_000_000n,
+      10_999_999_999n,
+      11_000_000_000n,
+      11_000_000_000n,
+      11_000_000_000n,
+    ];
+    let read = 0;
+    setNowReader(() => readings[Math.min(read++, readings.length - 1)]);
+    timers.shift()!();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(knock).toHaveBeenCalledTimes(1);
+    expect(opener.health()).toMatchObject({
+      state: "degraded",
+      ready: false,
+      lastFailureClass: "open_failed",
+      consecutiveFailures: 1,
     });
     await opener.close();
   });

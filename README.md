@@ -39,7 +39,9 @@ endpoint in front of the same service:
 npm install @layervai/qurl
 ```
 
-Requires Node.js 20+ and has **no runtime dependencies**. Both `import { QURLClient } from '@layervai/qurl'` (ESM) and `const { QURLClient } = require('@layervai/qurl')` (CJS) work.
+Requires Node.js 20.3+ and has **no runtime dependencies**. Both
+`import { QURLClient } from '@layervai/qurl'` (ESM) and
+`const { QURLClient } = require('@layervai/qurl')` (CJS) work.
 
 ## Quickstart
 
@@ -200,7 +202,10 @@ returned response body is read. Set the opener's optional `fetch` when the
 protected request must use a custom Fetch implementation. Native NHP opening
 never uses this function. The custom function receives the `qurl_vsession`
 bearer cookie and is inside the credential boundary. It must implement standard
-Fetch signal behavior and must not log or forward protected request headers.
+Fetch signal behavior and honor `redirect: 'manual'`. An unfollowed synthetic
+response can leave `Response.url` empty. Otherwise, it must report
+`Response.url` and `Response.redirected` accurately. It must not log or forward
+protected request headers.
 
 TypeScript consumers of `@layervai/qurl/node` must provide Node and Fetch API
 declarations, for example current `@types/node`, or a configuration that includes
@@ -217,12 +222,13 @@ names an unknown cell.
 
 Use `opener.health()` for the local `new`, `starting`, `ready`, `degraded`, or
 `closed` state. It reports absolute expiry, renewal, and last-success times, a
-secret-free failure class, and the consecutive failure count. The `starting`
-state is only for the first cold open; an explicit recovery from a failure
-reports `degraded` until it succeeds. Date fields describe the most recent
-successful grant, so use `ready` as the authority for current usability. A
-transient renewal failure keeps the state `ready` while the prior admission is
-usable. A changed authenticated target is not retried. It keeps the prior
+secret-free failure class, and the number of consecutive unsuccessful open
+attempts. A renewal window can contain more than one such attempt. The
+`starting` state is only for the first cold open; an explicit recovery from a
+failure reports `degraded` until it succeeds. Date fields describe the most
+recent successful grant, so use `ready` as the authority for current usability.
+A transient renewal failure keeps the state `ready` while the prior admission
+is usable. A changed authenticated target is not retried. It keeps the prior
 admission until expiry. During that time, `start()` remains idempotent because
 the old admission is still usable; `health().lastFailureClass` reports the
 target change. After expiry, an explicit `start()` attempts recovery. If the
