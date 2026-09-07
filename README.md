@@ -195,15 +195,16 @@ not count as an open failure in health. A cold cancellation restores `new`; a
 recovery cancellation preserves its prior `degraded` health. A later waiter's
 abort stops only that wait.
 Content requests use the caller's `RequestInit.signal`; `fetch()` does not add
-an independent application-request deadline. Set the opener's optional `fetch`
-when the protected request must use a custom Fetch implementation. Native NHP
-opening never uses this function. The custom function receives the
-`qurl_vsession` bearer cookie and is inside the credential boundary. It must not
-log or forward protected request headers.
+an independent application-request deadline. The signal stays active while the
+returned response body is read. Set the opener's optional `fetch` when the
+protected request must use a custom Fetch implementation. Native NHP opening
+never uses this function. The custom function receives the `qurl_vsession`
+bearer cookie and is inside the credential boundary. It must implement standard
+Fetch signal behavior and must not log or forward protected request headers.
 
 TypeScript consumers of `@layervai/qurl/node` must provide Node and Fetch API
 declarations, for example current `@types/node`, or a configuration that includes
-the `DOM` library for Fetch types.
+the `DOM` library for Fetch types. The native opener requires Node 20.3 or later.
 
 Native opening requires public deployment trust. Set `QURL_DEPLOYMENT` to one
 strict JSON object or to a path that contains that object. The object must have
@@ -232,16 +233,17 @@ open or sleep on the `fetch()` path.
 
 Close cancels and waits for an active NHP open, then wipes the mutable
 private-key, visitor-secret, and session-token buffers. Close also aborts a
-protected request that is on the wire and prevents another redirect leg from
-starting. JavaScript can create immutable string copies during JSON and HTTP
-processing, so the SDK cannot promise full memory zeroization before garbage
+protected request and its returned response body, and prevents another redirect
+leg from starting. JavaScript can create immutable string copies during JSON
+and HTTP processing, so the SDK cannot promise full memory zeroization before garbage
 collection. The opener retains the immutable qURL string until close so it can
 verify each renewal. Never log the qURL, ACK body, request cookies, or request
 headers.
 
 A cold `start()` failure leaves health at `degraded`. Catch `PortalBusyError`
 for an authenticated COOKIE busy response and `PortalInvalidReplyError` for a
-malformed authenticated reply. The thrown typed error is the cold-start
+malformed authenticated reply. An open deadline throws `PortalOpenTimeoutError`.
+The thrown typed error is the cold-start
 diagnostic; health does not expose its message or secret values.
 
 Local qv2 verification checks the signed bytes, trust, and clock-free claim

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import conformancePackage from "@layervai/qurl-conformance";
+import { getEventListeners } from "node:events";
 import { createMatchedQv2Fixture } from "../__tests__/matched-qv2-fixture.js";
 import { fingerprintKey, loadPortalDeployment } from "./deployment.js";
 import {
@@ -12,6 +13,7 @@ import {
   PortalOpenerClosedError,
   PortalOpenerNotReadyError,
   PortalOpenerNotStartedError,
+  PortalOpenTimeoutError,
   PortalRedirectError,
   PortalStateError,
   PortalTargetChangedError,
@@ -499,6 +501,27 @@ describe("native portal opener", () => {
     expect(knock).not.toHaveBeenCalled();
   });
 
+  it("loads without global Fetch when the caller supplies protected-content Fetch", async () => {
+    const savedFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", undefined);
+    vi.resetModules();
+    try {
+      const isolated = await import("./portal-opener.js");
+      const customFetch = vi.fn(async () => new Response("ok")) as typeof globalThis.fetch;
+      const opener = isolated.createPortalOpener({
+        qurl: matched.qurl,
+        deployment: deployment(),
+        fetch: customFetch,
+      });
+      expect(opener.health()).toMatchObject({ state: "new", ready: false });
+      expect(customFetch).not.toHaveBeenCalled();
+      await opener.close();
+    } finally {
+      vi.stubGlobal("fetch", savedFetch);
+      vi.resetModules();
+    }
+  });
+
   it("shares one initial open and reports starting health", async () => {
     const pending = deferred<NHPMessage>();
     const { opener, knock } = fixture();
@@ -649,7 +672,9 @@ describe("native portal opener", () => {
     const start = opener.start();
     await new Promise((resolve) => setImmediate(resolve));
     await opener.close();
-    await expect(start).rejects.toBeInstanceOf(PortalOpenerClosedError);
+    const closed = await start.catch((error: unknown) => error);
+    expect(closed).toBeInstanceOf(PortalOpenerClosedError);
+    expect((closed as Error).cause).toBeInstanceOf(PortalOpenerClosedError);
     expect(deviceKey).toEqual(Buffer.alloc(32));
     expect(body).toEqual(Buffer.alloc(body?.byteLength ?? 0));
     expect(opener.health()).toMatchObject({
@@ -676,7 +701,7 @@ describe("native portal opener", () => {
     await new Promise((resolve) => setImmediate(resolve));
     expect(deadlineDelays).toEqual([15_000]);
     deadlineTimers.shift()!();
-    await expect(start).rejects.toThrow("overall deadline");
+    await expect(start).rejects.toBeInstanceOf(PortalOpenTimeoutError);
     expect(opener.health()).toMatchObject({ state: "degraded", ready: false });
     await opener.close();
   });
@@ -1373,6 +1398,21 @@ describe("native portal opener", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
+  it("preserves the request failure that races with close", async () => {
+    const pending = deferred<Response>();
+    const failure = new Error("protected transport failed during close");
+    const fetchImpl = vi.fn(() => pending.promise) as unknown as typeof globalThis.fetch;
+    const { opener } = fixture(fetchImpl);
+    await opener.start();
+    const request = opener.fetch();
+    await new Promise((resolve) => setImmediate(resolve));
+    await opener.close();
+    pending.reject(failure);
+    const closed = await request.catch((error: unknown) => error);
+    expect(closed).toBeInstanceOf(PortalOpenerClosedError);
+    expect((closed as Error).cause).toBe(failure);
+  });
+
   it("keeps caller cancellation on the protected request without closing the opener", async () => {
     const fetchImpl = vi.fn(
       async (_url: string | URL | Request, init?: RequestInit) =>
@@ -1392,6 +1432,71 @@ describe("native portal opener", () => {
     await expect(response).rejects.toBe(reason);
     expect(opener.health()).toMatchObject({ state: "ready", ready: true });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
+    await opener.close();
+  });
+
+  it("keeps caller cancellation active while the returned response body is read", async () => {
+    const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const signal = init?.signal;
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            signal?.addEventListener("abort", () => controller.error(signal.reason), {
+              once: true,
+            });
+          },
+        }),
+      );
+    }) as unknown as typeof globalThis.fetch;
+    const { opener } = fixture(fetchImpl);
+    await opener.start();
+    const controller = new AbortController();
+    const reason = new Error("body read canceled");
+    const response = await opener.fetch({ signal: controller.signal });
+    const read = response.body!.getReader().read();
+    controller.abort(reason);
+    await expect(read).rejects.toBe(reason);
+    expect(opener.health()).toMatchObject({ state: "ready", ready: true });
+    await opener.close();
+  });
+
+  it("aborts a returned response body when the opener closes", async () => {
+    const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const signal = init?.signal;
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            signal?.addEventListener("abort", () => controller.error(signal.reason), {
+              once: true,
+            });
+          },
+        }),
+      );
+    }) as unknown as typeof globalThis.fetch;
+    const { opener } = fixture(fetchImpl);
+    await opener.start();
+    const response = await opener.fetch();
+    const read = response.body!.getReader().read();
+    await opener.close();
+    await expect(read).rejects.toBeInstanceOf(PortalOpenerClosedError);
+  });
+
+  it("does not fan out listeners on shared signals for concurrent requests", async () => {
+    const pending: Array<ReturnType<typeof deferred<Response>>> = [];
+    const fetchImpl = vi.fn(() => {
+      const request = deferred<Response>();
+      pending.push(request);
+      return request.promise;
+    }) as unknown as typeof globalThis.fetch;
+    const { opener } = fixture(fetchImpl);
+    await opener.start();
+    const controller = new AbortController();
+    const requests = Array.from({ length: 20 }, () => opener.fetch({ signal: controller.signal }));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(fetchImpl).toHaveBeenCalledTimes(20);
+    expect(getEventListeners(controller.signal, "abort")).toHaveLength(0);
+    for (const request of pending) request.resolve(new Response("ok"));
+    await expect(Promise.all(requests)).resolves.toHaveLength(20);
     await opener.close();
   });
 

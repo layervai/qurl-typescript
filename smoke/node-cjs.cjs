@@ -13,6 +13,7 @@ for (const name of [
   "PortalOpenerClosedError",
   "PortalOpenerNotReadyError",
   "PortalOpenerNotStartedError",
+  "PortalOpenTimeoutError",
   "PortalRedirectError",
   "PortalTargetChangedError",
   "PortalTooManyRedirectsError",

@@ -121,9 +121,16 @@ export class PortalOpenerNotReadyError extends PortalStateError {
 }
 
 export class PortalOpenerClosedError extends PortalStateError {
-  constructor() {
-    super("portal opener is closed");
+  constructor(options?: ErrorOptions) {
+    super("portal opener is closed", options);
     this.name = "PortalOpenerClosedError";
+  }
+}
+
+export class PortalOpenTimeoutError extends PortalStateError {
+  constructor() {
+    super("native NHP open exceeded its overall deadline");
+    this.name = "PortalOpenTimeoutError";
   }
 }
 
@@ -143,7 +150,7 @@ export class PortalRedirectError extends PortalStateError {
 
 export class PortalTooManyRedirectsError extends PortalStateError {
   constructor() {
-    super("portal fetch stopped at the 10-request redirect limit");
+    super(`portal fetch stopped at the ${MAX_REDIRECT_REQUESTS}-request redirect limit`);
     this.name = "PortalTooManyRedirectsError";
   }
 }
@@ -178,9 +185,23 @@ interface PortalRuntime {
   readonly clearDeadlineTimer: (timer: NodeJS.Timeout) => void;
 }
 
+const defaultContentFetch: typeof globalThis.fetch = (input, init) => {
+  // Resolve lazily so importing the Node entry point does not require global
+  // Fetch when a consumer supplies its own protected-content implementation.
+  const implementation = globalThis.fetch as typeof globalThis.fetch | undefined;
+  if (typeof implementation !== "function") {
+    return Promise.reject(
+      new PortalConfigurationError(
+        "portal fetch requires global Fetch or CreatePortalOpenerOptions.fetch",
+      ),
+    );
+  }
+  return implementation.call(globalThis, input, init);
+};
+
 const defaultRuntime: PortalRuntime = {
   knock: nativeKnock,
-  fetch: globalThis.fetch.bind(globalThis),
+  fetch: defaultContentFetch,
   nowNanos: () => process.hrtime.bigint(),
   nowEpochMs: () => Date.now(),
   setTimer: (callback, delayMs) => setTimeout(callback, delayMs),
@@ -289,6 +310,9 @@ class NativePortalOpener implements PortalOpener {
   }
 
   async #runStart(signal?: AbortSignal): Promise<void> {
+    // A pending renewal wait always has a ready grant, so public start() returns
+    // before reaching this explicit-open path. Keep that invariant if start()
+    // admission rules change: clearing its timer would strand #renewalCycle.
     if (this.#renewalTimer) this.#runtime.clearTimer(this.#renewalTimer);
     this.#renewalTimer = undefined;
     const recovery = this.#state === "degraded" || this.#state === "running";
@@ -297,7 +321,7 @@ class NativePortalOpener implements PortalOpener {
     try {
       await this.#openSingleFlight(signal);
     } catch (error) {
-      if (this.#isClosed()) throw new PortalOpenerClosedError();
+      if (this.#isClosed()) throw new PortalOpenerClosedError({ cause: error });
       this.#clearGrant();
       if (signal?.aborted && error === signal.reason) {
         this.#state = recovery ? "degraded" : "new";
@@ -354,16 +378,18 @@ class NativePortalOpener implements PortalOpener {
         "portal fetch owns the Host derived from the authenticated target",
       );
     }
-    const requestController = new AbortController();
-    const removeLifecycleAbort = linkAbortSignal(
-      this.#lifecycleController.signal,
-      requestController,
+    // A native composite signal avoids one listener per request on the shared
+    // lifecycle signal. It also remains active after headers arrive, so caller
+    // cancellation and close retain standard Fetch response-body semantics.
+    const requestSignal = AbortSignal.any(
+      init.signal
+        ? [init.signal, this.#lifecycleController.signal]
+        : [this.#lifecycleController.signal],
     );
-    const removeCallerAbort = linkAbortSignal(init.signal ?? undefined, requestController);
     try {
       for (let requestCount = 1; ; requestCount++) {
         this.#requireOpen();
-        throwIfAborted(requestController.signal);
+        throwIfAborted(requestSignal);
         const requestHeaders = authorizeHeaders(headers, sessionToken);
         const response = await this.#fetch(currentUrl, {
           ...init,
@@ -371,11 +397,11 @@ class NativePortalOpener implements PortalOpener {
           body,
           headers: requestHeaders,
           redirect: "manual",
-          signal: requestController.signal,
+          signal: requestSignal,
         });
-        if (requestController.signal.aborted) {
+        if (requestSignal.aborted) {
           await discardResponseBody(response);
-          throwIfAborted(requestController.signal);
+          throwIfAborted(requestSignal);
         }
         if (response.redirected === true || !responseMatchesRequestUrl(response.url, currentUrl)) {
           await discardResponseBody(response);
@@ -431,11 +457,8 @@ class NativePortalOpener implements PortalOpener {
       }
     } catch (error) {
       await discardRequestBody(body);
-      if (this.#isClosed()) throw new PortalOpenerClosedError();
+      if (this.#isClosed()) throw new PortalOpenerClosedError({ cause: error });
       throw error;
-    } finally {
-      removeCallerAbort();
-      removeLifecycleAbort();
     }
   }
 
@@ -503,7 +526,7 @@ class NativePortalOpener implements PortalOpener {
       return Promise.reject(new PortalOpenerNotReadyError());
     }
     const deadline = this.#runtime.setDeadlineTimer(() => {
-      controller.abort(new Error("native NHP open exceeded its overall deadline"));
+      controller.abort(new PortalOpenTimeoutError());
     }, deadlineMs);
     deadline.unref?.();
     const current = this.#performOpen(controller.signal).finally(() => {
@@ -922,6 +945,8 @@ function validateSessionToken(
   value: string,
   decode: (part: string) => Buffer = (part) => Buffer.from(part, "base64url"),
 ): void {
+  // This is a defense-in-depth capability bound. The ACK envelope limit above
+  // currently makes it unreachable, but this validator also has direct tests.
   if (value.length > 4_096 || value.trim() !== value || hasUnsafeTokenByte(value)) {
     throw new PortalInvalidReplyError("ACK application token has an invalid shape");
   }

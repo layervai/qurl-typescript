@@ -2,6 +2,7 @@ import {
   createPortalOpener,
   PortalBusyError,
   PortalInvalidReplyError,
+  PortalOpenTimeoutError,
   PortalOpenerNotReadyError,
   PortalTargetChangedError,
   type CreatePortalOpenerOptions,
@@ -18,6 +19,7 @@ const options: CreatePortalOpenerOptions = {
 const opener: PortalOpener = createPortalOpener(options);
 const busy: Error = new PortalBusyError();
 const invalidReply: Error = new PortalInvalidReplyError("invalid reply");
+const openTimeout: Error = new PortalOpenTimeoutError();
 const notReady: Error = new PortalOpenerNotReadyError();
 const targetChanged: Error = new PortalTargetChangedError();
 const health: PortalOpenerHealth = opener.health();
@@ -26,6 +28,7 @@ const client: QURLClient = new QURLClient({ apiKey: "test" });
 void opener;
 void busy;
 void invalidReply;
+void openTimeout;
 void notReady;
 void targetChanged;
 void health;

@@ -7,6 +7,7 @@ export {
   PortalOpenerClosedError,
   PortalOpenerNotReadyError,
   PortalOpenerNotStartedError,
+  PortalOpenTimeoutError,
   PortalRedirectError,
   PortalStateError,
   PortalTargetChangedError,
