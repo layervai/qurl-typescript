@@ -1,10 +1,14 @@
-export { ProtectedResource, QURLClient } from "./client.js";
+export { ConnectorResource, ProtectedResource, QURLClient } from "./client.js";
+export type { EnsureConnectorResourceResult } from "./client.js";
 export {
   AuthenticationError,
   AuthorizationError,
+  ConnectorResourceOutcomeUnknownError,
   createError,
   ERROR_CODE_AMBIGUOUS_RESOURCE,
   ERROR_CODE_CLIENT_VALIDATION,
+  ERROR_CODE_CONNECTOR_RESOURCE_OUTCOME_UNKNOWN,
+  ERROR_CODE_CONNECTOR_RESOURCE_REVOKED,
   ERROR_CODE_NETWORK,
   ERROR_CODE_RESOURCE_NOT_FOUND,
   ERROR_CODE_RUNTIME,

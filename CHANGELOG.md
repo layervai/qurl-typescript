@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### ⚠ BREAKING CHANGES
+
+- **client:** replace alias-based `connectorResource(connectorId)` with the
+  explicit Connector lifecycle methods below.
+
+### Features
+
+- **client:** add qurl-go-compatible Connector resource management by immutable
+  slug and canonical public resource ID. Connector identity, reverse routing,
+  and NHP admission IDs are validated and exposed separately.
+
+### Bug Fixes
+
+- **client:** keep slug-idempotent Connector ensure off the generic automatic
+  idempotency path, and treat a consumed bootstrap key as outcome-unknown.
+- **client:** send the required `{}` body for a default portal mint.
+
 ## [0.5.0](https://github.com/layervai/qurl-typescript/compare/qurl-v0.4.0...qurl-v0.5.0) (2026-09-07)
 
 
