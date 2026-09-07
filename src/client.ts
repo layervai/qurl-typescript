@@ -1251,6 +1251,8 @@ function pageFromMeta<T extends Record<string, unknown>>(
 const PATH_EMBEDDED_ACCESS_TOKEN_RE = /[?&#=:\s]at_/i;
 const PATH_PREFIXED_ACCESS_TOKEN_RE = /\/at_/i;
 const QURL_LINK_URL_RE = /^(?:https?:\/\/)?(?:[a-z0-9-]+\.)*qurl\.link(?::\d{1,5})?(?:\/|[?#])/i;
+// ponytail: today's 22-character token suffix only improves URL-paste diagnostics;
+// other lengths are still rejected as URLs without echoing the input.
 const URL_EMBEDDED_ACCESS_TOKEN_RE = /[?&#=:/]at_[a-z0-9_-]{22}(?:$|[?&#:/])/i;
 // A host without a slash can be a legitimate domain identifier. Require the
 // path boundary so shared validation does not break the domain namespace.
@@ -1304,8 +1306,8 @@ const DELETE_QURL_RESOURCE_ID_PATH_OPTIONS: PathIdValidationOptions = {
   // unambiguous display-ID mix-up. Guard the reserved prefix rather than the
   // current display-ID suffix grammar: a future display-ID extension must not
   // silently turn an individual revoke into whole-resource deletion. This is
-  // specific to legacy DELETE /v1/qurls/{id}, matching its service-side
-  // q_/at_ rejection. Read routes can resolve display IDs to their parent.
+  // applied to both whole-resource DELETE routes. The service also rejects
+  // display IDs there; read routes can resolve them to a parent resource.
   rejectQurlDisplayId: true,
 };
 
@@ -1470,17 +1472,6 @@ function decodeCanonicalBase64Url(value: string): Uint8Array | undefined {
   }
 }
 
-async function isValidConnectorResourceId(value: string): Promise<boolean> {
-  const der = decodeCanonicalBase64Url(value);
-  if (!der) return false;
-  if (!globalThis.crypto?.subtle) {
-    throw new RuntimeError(
-      "qURL Connector resource validation requires the Web Crypto SubtleCrypto API",
-    );
-  }
-  return importsAsConnectorPublicKey(der);
-}
-
 function requireConnectorSubtleCrypto(method: string): void {
   if (!globalThis.crypto?.subtle) {
     throw new RuntimeError(`${method}: requires the Web Crypto SubtleCrypto API`);
@@ -1488,6 +1479,11 @@ function requireConnectorSubtleCrypto(method: string): void {
 }
 
 function requireConnectorCrid(crid: string, method: string): void {
+  if (typeof crid !== "string") {
+    throw clientValidationError(
+      `${method}: crid is required (got ${crid === null ? "null" : typeof crid})`,
+    );
+  }
   if (!parseCrid(crid)) throw clientValidationError(`${method}: requires a valid CRID`);
 }
 
@@ -1534,13 +1530,15 @@ async function parseConnectorResource(
   if (typeof resource.resource_id !== "string") {
     throw unexpectedResponseError(`${method}: response has missing or invalid resource_id`);
   }
-  if (!(await isValidConnectorResourceId(resource.resource_id))) {
+  const resourceKey = decodeCanonicalBase64Url(resource.resource_id);
+  requireConnectorSubtleCrypto(method);
+  if (!resourceKey || !(await importsAsConnectorPublicKey(resourceKey))) {
     throw unexpectedResponseError(`${method}: response has missing or invalid resource_id`);
   }
   if (expectation.crid !== undefined && resource.crid !== expectation.crid) {
     throw unexpectedResponseError(`${method}: response crid does not match the request`);
   }
-  if (!(await cridKeyMatches(resource.crid, decodeCanonicalBase64Url(resource.resource_id)!))) {
+  if (!(await cridKeyMatches(resource.crid, resourceKey))) {
     throw unexpectedResponseError(
       `${method}: response has missing, invalid, or public-key-mismatched crid`,
     );
@@ -3634,7 +3632,7 @@ export class QURLClient {
 
   /** Revoke a resource and all of its qURLs. */
   async deleteResource(id: string): Promise<void> {
-    validatePathId(id, "deleteResource", "id", RESOURCE_ID_PATH_OPTIONS);
+    validatePathId(id, "deleteResource", "id", DELETE_QURL_RESOURCE_ID_PATH_OPTIONS);
     await this.requestNoContent(`/v1/resources/${encodeURIComponent(id)}`);
   }
 

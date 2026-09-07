@@ -2963,6 +2963,19 @@ describe("QURLClient", () => {
     },
   );
 
+  it("deletes a Connector by CRID without SubtleCrypto", async () => {
+    const fetch = mockFetch({ status: 204 });
+    vi.stubGlobal("crypto", undefined);
+    try {
+      await expect(
+        createClient(fetch).deleteConnectorResource(RESOURCE_CRID),
+      ).resolves.toBeUndefined();
+      expect(fetch).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("gets a connector resource by CRID from the detail envelope", async () => {
     const fetch = mockFetch({
       status: 200,
@@ -3827,14 +3840,13 @@ describe("QURLClient", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("deleteResource leaves qURL display-ID resolution to the service", async () => {
+  it("deleteResource rejects qURL display IDs before whole-resource deletion", async () => {
     const fetch = mockFetch({ status: 204 });
-
-    await expect(createClient(fetch).deleteResource("q_0123456789a")).resolves.toBeUndefined();
-    expect(fetch).toHaveBeenCalledWith(
-      "https://api.test.layerv.ai/v1/resources/q_0123456789a",
-      expect.objectContaining({ method: "DELETE" }),
-    );
+    await expect(createClient(fetch).deleteResource("q_0123456789a")).rejects.toMatchObject({
+      code: ERROR_CODE_CLIENT_VALIDATION,
+      detail: expect.stringContaining("qURL display ID"),
+    });
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("rejects future q_-prefixed display IDs before whole-resource deletion", async () => {

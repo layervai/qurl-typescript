@@ -29,7 +29,7 @@ try {
       maxRetries: 3,
     });
     status = 204;
-    for (const id of [publicId, crid, "resource/with?reserved#bytes"]) {
+    for (const id of [publicId, crid, "resource/with?reserved#bytes", "%", "%zz"]) {
       const before = calls.length;
       await client.delete(id);
       assert.equal(calls.length, before + 1);
@@ -43,7 +43,8 @@ try {
       await assert.rejects(client.delete(id), { code: sdk.ERROR_CODE_CLIENT_VALIDATION });
     }
     assert.equal(calls.length, before, "invalid identifiers reached the server");
-    for (status of [200, 429, 503]) {
+    for (const nextStatus of [200, 429, 503]) {
+      status = nextStatus;
       const before = calls.length;
       await assert.rejects(client.delete(publicId), { status });
       assert.equal(calls.length, before + 1, "DELETE was replayed");

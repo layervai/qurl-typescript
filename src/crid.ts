@@ -1,4 +1,6 @@
 // CRID v1 local gate and delivered-key binding, matching qurl-go/crid.
+// The byte selects a version/environment/digest width, not a new hash scheme.
+// All key matches use the v1 domain separator, as in qurl-go/crid.KeyMatches.
 // Unknown nonzero versions remain forwardable; the service owns activation.
 const ALPHABET = "abcdefghijklmnopqrstuvwxyz234567";
 
