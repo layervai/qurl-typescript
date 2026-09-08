@@ -46,22 +46,22 @@ Requires Node.js 22.12+ and has **no runtime dependencies**. Both
 ## Quickstart
 
 ```typescript
-import { QURLClient } from '@layervai/qurl';
+import { QURLClient } from "@layervai/qurl";
 
-const client = new QURLClient({ apiKey: 'YOUR_API_KEY' });
+const client = new QURLClient({ apiKey: "YOUR_API_KEY" });
 
-const resource = await client.protectUrl('https://internal.example.com/dashboard');
-const portal = await resource.createPortal({ validFor: '5m' });
+const resource = await client.protectUrl("https://internal.example.com/dashboard");
+const portal = await resource.createPortal({ validFor: "5m" });
 
 console.log(portal.link); // Share this link — recipients need no credentials
 ```
 
 That is the core flow:
 
-| Step | Call | What you provide |
-| --- | --- | --- |
-| Protect a private URL | `client.protectUrl` | The target URL you already know |
-| Mint a short-lived access link | `resource.createPortal` | The returned resource handle |
+| Step                           | Call                    | What you provide                |
+| ------------------------------ | ----------------------- | ------------------------------- |
+| Protect a private URL          | `client.protectUrl`     | The target URL you already know |
+| Mint a short-lived access link | `resource.createPortal` | The returned resource handle    |
 
 `protectUrl` is idempotent for the same account and target URL: protecting the
 same URL again returns the existing resource. `validFor` accepts a duration
@@ -72,14 +72,13 @@ If qURL Connector protects the service, address its management-plane resource
 by immutable slug instead of calling `protectUrl`:
 
 ```typescript
-const { resource, foundExisting } = await client.ensureConnectorResource(
-  'prod-dashboard',
-  { idempotencyKey: 'connector-bootstrap-prod-dashboard' },
-);
-console.log(foundExisting ? 'Using existing connector resource' : 'Created connector resource');
+const { resource, foundExisting } = await client.ensureConnectorResource("prod-dashboard", {
+  idempotencyKey: "connector-bootstrap-prod-dashboard",
+});
+console.log(foundExisting ? "Using existing connector resource" : "Created connector resource");
 const portal = await resource.createPortal({
-  validFor: '5m',
-  targetPath: '/api/detect/eib_example',
+  validFor: "5m",
+  targetPath: "/api/detect/eib_example",
 });
 ```
 
@@ -132,7 +131,7 @@ handle (no API call is made until you mint):
 async function createPortalForStoredResource(storedCrid: string) {
   // Pass the CRID previously returned by the API.
   const resource = client.resourceByCrid(storedCrid);
-  return resource.createPortal({ validFor: '1h' });
+  return resource.createPortal({ validFor: "1h" });
 }
 ```
 
@@ -143,8 +142,8 @@ server-populated resource metadata:
 
 ```typescript
 const { portal, resource } = await client.createPortalForUrl(
-  'https://internal.example.com/dashboard',
-  { validFor: '5m' },
+  "https://internal.example.com/dashboard",
+  { validFor: "5m" },
 );
 ```
 
@@ -153,10 +152,10 @@ Portal options mirror qurl-go:
 ```typescript
 const portal = await resource.createPortal({
   validFor: 5 * 60 * 1000, // milliseconds work too
-  label: 'Alice from Acme',
+  label: "Alice from Acme",
   oneTimeUse: true,
   maxSessions: 1,
-  targetPath: '/api/detect/eib_example',
+  targetPath: "/api/detect/eib_example",
 });
 ```
 
@@ -188,7 +187,10 @@ The opener verifies the issuer signature and CRID/key binding before each
 native access request, including renewals. Empty, malformed, unsupported,
 and mismatched CRIDs fail closed. Omitting the option retains link-only access.
 This verifies resource identity, not content or current revocation state.
-See the native opener example above.
+The access-binding check accepts only locally registered versions and their
+registered digest widths, matching the Go SDK and browser agent. Upgrade the
+SDK when a new version is activated. This is stricter than the forwarding
+and supplied-key helper below. See the native opener example below.
 `verifyCrid` does not open the link or make a network request.
 
 `verifyCrid` verifies that the response CRID derives from the trusted resource
@@ -232,13 +234,13 @@ It can mint the one-shot credential consumed by that native enrollment flow:
 
 ```typescript
 const enrollment = await client.createApiKey({
-  kind: 'enrollment_token',
-  name: 'prod-dashboard enrollment',
-  target: 'connector',
-  claims: [{ type: 'connector', id: 'prod-dashboard' }],
-  expires_in: '15m',
+  kind: "enrollment_token",
+  name: "prod-dashboard enrollment",
+  target: "connector",
+  claims: [{ type: "connector", id: "prod-dashboard" }],
+  expires_in: "15m",
 });
-if (!enrollment.api_key) throw new Error('Enrollment response omitted its one-time token');
+if (!enrollment.api_key) throw new Error("Enrollment response omitted its one-time token");
 await deliverEnrollmentTokenSecurely(enrollment.api_key);
 ```
 
@@ -253,11 +255,11 @@ back. Reject unknown scopes; do not filter them out, which can remove permission
 When changing only a name, omit `scopes` from `updateApiKey`.
 
 ```typescript
-import { isApiKeyRequestScope } from '@layervai/qurl';
+import { isApiKeyRequestScope } from "@layervai/qurl";
 
 const scopes = key.scopes;
 if (!scopes?.length || !scopes.every(isApiKeyRequestScope)) {
-  throw new Error('Cannot reuse these scopes; check the current SDK contract');
+  throw new Error("Cannot reuse these scopes; check the current SDK contract");
 }
 await client.updateApiKey(keyId, { scopes });
 ```
@@ -271,24 +273,24 @@ Services with a delegated mint capability can create up to 100 ordered grants
 without an API call per recipient:
 
 ```typescript
-import { DelegatedBatchOutcomeUnknownError, QURLClient } from '@layervai/qurl';
+import { DelegatedBatchOutcomeUnknownError, QURLClient } from "@layervai/qurl";
 
 const client = new QURLClient({ apiKey: process.env.QURL_API_KEY! });
 const key = crypto.randomUUID();
 const mintCapability = process.env.QURL_MINT_CAPABILITY!;
-const recipients = [{ name: 'Alice' }];
+const recipients = [{ name: "Alice" }];
 
 const accepted = await client
   .createDelegatedQurlBatch(
     {
       mint_capability: mintCapability,
-      grants: recipients.map((recipient) => ({ label: recipient.name, expires_in: '1h' })),
+      grants: recipients.map((recipient) => ({ label: recipient.name, expires_in: "1h" })),
     },
     { idempotencyKey: key },
   )
   .catch((error: unknown) => {
     if (error instanceof DelegatedBatchOutcomeUnknownError && error.batchId) {
-      console.error('Poll the accepted batch before retrying', { batchId: error.batchId });
+      console.error("Poll the accepted batch before retrying", { batchId: error.batchId });
     }
     // A deliberate retry must reuse this key and exact body.
     throw error;
@@ -310,9 +312,9 @@ for (let polls = 0; polls < 30 && Date.now() < deadline; polls++) {
   }
 }
 
-if (state?.http_status !== 200) throw new Error('Delegated qURL batch did not finish');
+if (state?.http_status !== 200) throw new Error("Delegated qURL batch did not finish");
 
-if (state.results[0]?.status === 'succeeded') {
+if (state.results[0]?.status === "succeeded") {
   const qurlId = state.results[0].qurl.qurl_id;
   const metadata = await client.getDelegatedQurl(qurlId);
   console.log(metadata.status);
@@ -367,21 +369,22 @@ a background attempt and `start()` is the explicit recovery path. Production
 admissions should be longer than this minimum gap.
 
 ```javascript
-const { createPortalOpener } = require('@layervai/qurl/node');
+const { createPortalOpener } = require("@layervai/qurl/node");
 
 async function uploadPrivateObject(uploadBody) {
   const opener = createPortalOpener({
     qurl: process.env.PRIVATE_UPLOAD_QURL,
+    expectedCRID: process.env.PRIVATE_UPLOAD_CRID ?? "", // Independently held; missing fails closed.
   });
   try {
     await opener.start();
     return await opener.fetch(
       (authenticatedTarget) => ({
-        method: 'POST',
+        method: "POST",
         headers: signUploadForExactTarget(authenticatedTarget),
         body: uploadBody,
       }),
-      { redirects: 'error' },
+      { redirects: "error" },
     );
   } finally {
     await opener.close();
@@ -395,9 +398,9 @@ segments and escapes each accepted segment before it sends the request:
 
 ```javascript
 const response = await opener.fetchDescendant(
-  ['eib_example'],
-  (authenticatedTarget) => ({ method: 'POST' }),
-  { redirects: 'error' },
+  ["eib_example"],
+  (authenticatedTarget) => ({ method: "POST" }),
+  { redirects: "error" },
 );
 ```
 
@@ -516,14 +519,14 @@ if you already build on them:
 ```typescript
 // Create a protected link (portal equivalent: createPortalForUrl)
 const result = await client.create({
-  target_url: 'https://api.example.com/data',
-  expires_in: '24h',
-  label: 'API access for agent',
+  target_url: "https://api.example.com/data",
+  expires_in: "24h",
+  label: "API access for agent",
 });
 console.log(result.qurl_link);
 
 // Resolve a token headlessly (portal equivalent: enterPortal)
-const access = await client.resolve('at_k8xqp9h2sj9lx7r4a');
+const access = await client.resolve("at_k8xqp9h2sj9lx7r4a");
 console.log(`Access granted to ${access.target_url} for ${access.access_grant?.expires_in}s`);
 ```
 
@@ -531,60 +534,60 @@ console.log(`Access granted to ${access.target_url} for ${access.access_grant?.e
 
 ### `new QURLClient(options)`
 
-| Option | Required | Default |
-|--------|----------|---------|
-| `apiKey` | Yes | — |
-| `baseUrl` | No | `https://api.layerv.ai` |
-| `maxRetries` | No | `3` |
-| `timeout` | No | `30000` (ms) — *per attempt*, not total |
-| `fetch` | No | `globalThis.fetch` |
-| `userAgent` | No | `qurl-typescript/<version>` |
-| `debug` | No | `false` |
+| Option       | Required | Default                                 |
+| ------------ | -------- | --------------------------------------- |
+| `apiKey`     | Yes      | —                                       |
+| `baseUrl`    | No       | `https://api.layerv.ai`                 |
+| `maxRetries` | No       | `3`                                     |
+| `timeout`    | No       | `30000` (ms) — _per attempt_, not total |
+| `fetch`      | No       | `globalThis.fetch`                      |
+| `userAgent`  | No       | `qurl-typescript/<version>`             |
+| `debug`      | No       | `false`                                 |
 
 ### Portal methods
 
-| Method | Description |
-|--------|-------------|
-| `protectUrl(targetUrl, opts?)` | Protect a private URL → portal-minting `ProtectedResource` handle |
+| Method                                                               | Description                                                             |
+| -------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `protectUrl(targetUrl, opts?)`                                       | Protect a private URL → portal-minting `ProtectedResource` handle       |
 | `resource.createPortal(opts?)` / `createPortal(resourceOrId, opts?)` | Mint a short-lived portal link; existing resources can set `targetPath` |
-| `createPortalForUrl(targetUrl, opts?)` | Protect + mint a URL resource; rejects `targetPath` |
-| `ensureConnectorResource(slug, requestOptions?)` | Find or create an active Connector resource by immutable slug |
-| `getConnectorResource(crid)` / `getConnectorResourceBySlug(slug)` | Load a validated Connector resource by immutable identity |
-| `deleteConnectorResource(crid)` | Revoke a Connector resource by CRID |
-| `resourceByCrid(crid)` | Handle from a stored CRID (no API call) |
-| `enterPortal(linkOrToken)` | Open a qURL link programmatically → `ResourceHandle` |
+| `createPortalForUrl(targetUrl, opts?)`                               | Protect + mint a URL resource; rejects `targetPath`                     |
+| `ensureConnectorResource(slug, requestOptions?)`                     | Find or create an active Connector resource by immutable slug           |
+| `getConnectorResource(crid)` / `getConnectorResourceBySlug(slug)`    | Load a validated Connector resource by immutable identity               |
+| `deleteConnectorResource(crid)`                                      | Revoke a Connector resource by CRID                                     |
+| `resourceByCrid(crid)`                                               | Handle from a stored CRID (no API call)                                 |
+| `enterPortal(linkOrToken)`                                           | Open a qURL link programmatically → `ResourceHandle`                    |
 
 ### REST-shaped methods
 
-| Method | Description |
-|--------|-------------|
-| `create(input)` | Create a protected link |
-| `batchCreate(input)` | Create up to 100 protected links in one request |
-| `get(id)` | Get qURL details |
-| `list(input?)` | List qURLs (single page) |
-| `listAll(input?)` | Iterate all qURLs (auto-paginating) |
-| `delete(id)` | Revoke a qURL resource and all its tokens |
-| `extend(id, input)` | Extend expiration |
-| `update(id, input)` | Update qURL resource properties |
-| `mintLink(id, input?)` | Mint a new access link |
-| `resolve(input)` | Resolve token + grant network access |
-| `getQuota()` | Get quota/usage info |
-| `listResources(input?)` / `listAllResources(input?)` / `createResource(input)` / `getResource(id)` | Resource management |
-| `updateResource(id, input)` / `deleteResource(id)` | Update or revoke resources |
-| `createQurlForResource(id, input?)` | Mint a qURL for an existing resource |
-| `updateResourceQurl(id, qurlId, input)` / `revokeResourceQurl(id, qurlId)` | Manage one token on a resource |
-| `listResourceSessions(id)` / `terminateAllResourceSessions(id)` / `terminateResourceSession(id, sessionId)` | Inspect or terminate active sessions |
-| `listConnectorInstallations(input?)` / `listAllConnectorInstallations(input?)` | List connector installations |
-| `getUsageCurrentPeriod()` / `getUsageDaily()` | Usage reporting |
-| `getCustomer()` / `updateCustomer(input)` | Customer settings |
-| `createBillingCheckout(input)` / `createBillingPortal()` / `listBillingInvoices(input?)` / `listAllBillingInvoices(input?)` | Billing flows |
-| `registerDomain(input)` / `listDomains(input?)` / `listAllDomains(input?)` / `getDomain(domain)` | Custom domain management |
-| `verifyDomain(domain)` / `regenerateDomainToken(domain)` / `deleteDomain(domain)` | Domain verification and removal |
-| `listWebhooks(input?)` / `listAllWebhooks(input?)` / `createWebhook(input)` / `getWebhook(id)` | Webhook management |
-| `updateWebhook(id, input)` / `deleteWebhook(id)` / `regenerateWebhookSecret(id)` | Webhook updates and secret rotation |
-| `listWebhookEventTypes()` / `listWebhookDeliveries(id, input?)` / `listAllWebhookDeliveries(id, input?)` | Webhook metadata and delivery history |
-| `createApiKey(input)` / `listApiKeys(input?)` / `listAllApiKeys(input?)` / `updateApiKey(id, input)` / `revokeApiKey(id)` | API key management |
-| `createAccessCode(input)` / `listAccessCodes()` / `redeemAccessCode(input)` / `revokeAccessCode(id)` | Access code management |
+| Method                                                                                                                      | Description                                     |
+| --------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
+| `create(input)`                                                                                                             | Create a protected link                         |
+| `batchCreate(input)`                                                                                                        | Create up to 100 protected links in one request |
+| `get(id)`                                                                                                                   | Get qURL details                                |
+| `list(input?)`                                                                                                              | List qURLs (single page)                        |
+| `listAll(input?)`                                                                                                           | Iterate all qURLs (auto-paginating)             |
+| `delete(id)`                                                                                                                | Revoke a qURL resource and all its tokens       |
+| `extend(id, input)`                                                                                                         | Extend expiration                               |
+| `update(id, input)`                                                                                                         | Update qURL resource properties                 |
+| `mintLink(id, input?)`                                                                                                      | Mint a new access link                          |
+| `resolve(input)`                                                                                                            | Resolve token + grant network access            |
+| `getQuota()`                                                                                                                | Get quota/usage info                            |
+| `listResources(input?)` / `listAllResources(input?)` / `createResource(input)` / `getResource(id)`                          | Resource management                             |
+| `updateResource(id, input)` / `deleteResource(id)`                                                                          | Update or revoke resources                      |
+| `createQurlForResource(id, input?)`                                                                                         | Mint a qURL for an existing resource            |
+| `updateResourceQurl(id, qurlId, input)` / `revokeResourceQurl(id, qurlId)`                                                  | Manage one token on a resource                  |
+| `listResourceSessions(id)` / `terminateAllResourceSessions(id)` / `terminateResourceSession(id, sessionId)`                 | Inspect or terminate active sessions            |
+| `listConnectorInstallations(input?)` / `listAllConnectorInstallations(input?)`                                              | List connector installations                    |
+| `getUsageCurrentPeriod()` / `getUsageDaily()`                                                                               | Usage reporting                                 |
+| `getCustomer()` / `updateCustomer(input)`                                                                                   | Customer settings                               |
+| `createBillingCheckout(input)` / `createBillingPortal()` / `listBillingInvoices(input?)` / `listAllBillingInvoices(input?)` | Billing flows                                   |
+| `registerDomain(input)` / `listDomains(input?)` / `listAllDomains(input?)` / `getDomain(domain)`                            | Custom domain management                        |
+| `verifyDomain(domain)` / `regenerateDomainToken(domain)` / `deleteDomain(domain)`                                           | Domain verification and removal                 |
+| `listWebhooks(input?)` / `listAllWebhooks(input?)` / `createWebhook(input)` / `getWebhook(id)`                              | Webhook management                              |
+| `updateWebhook(id, input)` / `deleteWebhook(id)` / `regenerateWebhookSecret(id)`                                            | Webhook updates and secret rotation             |
+| `listWebhookEventTypes()` / `listWebhookDeliveries(id, input?)` / `listAllWebhookDeliveries(id, input?)`                    | Webhook metadata and delivery history           |
+| `createApiKey(input)` / `listApiKeys(input?)` / `listAllApiKeys(input?)` / `updateApiKey(id, input)` / `revokeApiKey(id)`   | API key management                              |
+| `createAccessCode(input)` / `listAccessCodes()` / `redeemAccessCode(input)` / `revokeAccessCode(id)`                        | Access code management                          |
 
 `listResourceSessions(id)` and `listAccessCodes()` reflect currently unpaginated service endpoints. Their outputs always return `has_more: false`; if the service starts surfacing cursor metadata, the SDK emits a debug log rather than exposing an unactionable next-page signal.
 
@@ -597,8 +600,8 @@ Create up to 100 qURLs in a single request. **Does not throw on partial or total
 ```typescript
 const result = await client.batchCreate({
   items: [
-    { target_url: 'https://api.example.com/data', expires_in: '24h' },
-    { target_url: 'https://api.example.com/admin', expires_in: '1h' },
+    { target_url: "https://api.example.com/data", expires_in: "24h" },
+    { target_url: "https://api.example.com/admin", expires_in: "1h" },
   ],
 });
 
@@ -630,36 +633,36 @@ import {
   NotFoundError,
   RateLimitError,
   ValidationError,
-} from '@layervai/qurl';
+} from "@layervai/qurl";
 
 try {
-  await client.enterPortal('https://qurl.link/#at_k8xqp9h2sj9lx7r4a');
+  await client.enterPortal("https://qurl.link/#at_k8xqp9h2sj9lx7r4a");
 } catch (err) {
   if (err instanceof AuthenticationError) {
-    console.error('Bad API key');
+    console.error("Bad API key");
   } else if (err instanceof NotFoundError) {
-    console.error('Portal doesn\'t exist or already expired');
+    console.error("Portal doesn't exist or already expired");
   } else if (err instanceof RateLimitError) {
     console.error(`Rate limited — retry after ${err.retryAfter}s`);
   } else if (err instanceof ValidationError) {
-    console.error('Invalid input:', err.detail, err.invalidFields);
+    console.error("Invalid input:", err.detail, err.invalidFields);
   } else if (err instanceof QURLError) {
     console.error(`API error [${err.code}]: ${err.detail}`);
   }
 }
 ```
 
-| Error Class | HTTP Status | When |
-|-------------|-------------|------|
-| `AuthenticationError` | 401 | Invalid or missing API key |
-| `AuthorizationError` | 403 | Key lacks required scope |
-| `NotFoundError` | 404 | Resource doesn't exist |
-| `ValidationError` | 400, 422 | Invalid request body |
-| `RateLimitError` | 429 | Too many requests |
-| `ServerError` | 5xx | Server-side failure |
-| `NetworkError` | — | Connection failure |
-| `TimeoutError` | — | Request exceeded timeout |
-| `DelegatedBatchOutcomeUnknownError` | — | Dispatched batch create needs reconciliation |
+| Error Class                         | HTTP Status | When                                         |
+| ----------------------------------- | ----------- | -------------------------------------------- |
+| `AuthenticationError`               | 401         | Invalid or missing API key                   |
+| `AuthorizationError`                | 403         | Key lacks required scope                     |
+| `NotFoundError`                     | 404         | Resource doesn't exist                       |
+| `ValidationError`                   | 400, 422    | Invalid request body                         |
+| `RateLimitError`                    | 429         | Too many requests                            |
+| `ServerError`                       | 5xx         | Server-side failure                          |
+| `NetworkError`                      | —           | Connection failure                           |
+| `TimeoutError`                      | —           | Request exceeded timeout                     |
+| `DelegatedBatchOutcomeUnknownError` | —           | Dispatched batch create needs reconciliation |
 
 Client-detected failures use `status: 0` with a discriminating `code`:
 `"client_validation"` for bad input caught before a request, and — on the
@@ -672,10 +675,10 @@ and `"unexpected_response"` when a response is missing required fields (e.g.
 
 ```typescript
 // Single page
-const page = await client.list({ limit: 10, status: 'active' });
+const page = await client.list({ limit: 10, status: "active" });
 
 // Auto-paginate through all results
-for await (const qurl of client.listAll({ status: 'active' })) {
+for await (const qurl of client.listAll({ status: "active" })) {
   if (!qurl.crid) throw new Error("The API response has no resource CRID");
   console.log(qurl.crid);
 }
@@ -687,11 +690,11 @@ Enable debug output to see all HTTP requests and retries:
 
 ```typescript
 // Log to console
-const client = new QURLClient({ apiKey: 'YOUR_API_KEY', debug: true });
+const client = new QURLClient({ apiKey: "YOUR_API_KEY", debug: true });
 
 // Custom logger
 const clientWithLogger = new QURLClient({
-  apiKey: 'YOUR_API_KEY',
+  apiKey: "YOUR_API_KEY",
   debug: (message, data) => myLogger.debug(message, data),
 });
 ```
@@ -742,14 +745,14 @@ When DELETE returns `RateLimitError`, use `retryAfter` for scheduling but
 reconcile current resource state before issuing a deliberate retry; the SDK
 does not assume the rejected response proves the mutation never ran.
 
-> **Worst-case latency**: `timeout` is enforced per *attempt*, not for the whole request. Total worst-case latency is roughly `timeout × (maxRetries + 1) + sum(retry delays)`. Operators tuning `timeout` should account for this when sizing health-check budgets.
+> **Worst-case latency**: `timeout` is enforced per _attempt_, not for the whole request. Total worst-case latency is roughly `timeout × (maxRetries + 1) + sum(retry delays)`. Operators tuning `timeout` should account for this when sizing health-check budgets.
 
 For POST/PATCH requests, the SDK generates a UUIDv7 `Idempotency-Key` once per logical call and reuses it across SDK-managed retries, so the API can return the original result instead of creating duplicate resources. If your application catches an error and calls the SDK again, pass a stable override so the new call deduplicates with the first one. Caller-provided keys must be non-empty printable ASCII strings of at most 256 characters and must not start or end with spaces. Use a unique key for each logical operation; reusing one key for a different request can return the first cached response. To tie retries to your own upstream job or request ID, pass a per-call override:
 
 ```typescript
 await client.create(
-  { target_url: 'https://api.example.com/data' },
-  { idempotencyKey: 'job_12345_create_qurl' },
+  { target_url: "https://api.example.com/data" },
+  { idempotencyKey: "job_12345_create_qurl" },
 );
 ```
 

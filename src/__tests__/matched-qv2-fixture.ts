@@ -36,10 +36,13 @@ export function createMatchedQv2Fixture(
   options: { readonly jti?: string; readonly resourceSpki?: Uint8Array } = {},
 ): MatchedQv2Fixture {
   const issuerPair = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
-  const resourcePair = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
   const issuerSpki = issuerPair.publicKey.export({ format: "der", type: "spki" });
   const resourceSpki =
-    options.resourceSpki ?? resourcePair.publicKey.export({ format: "der", type: "spki" });
+    options.resourceSpki ??
+    generateKeyPairSync("ec", { namedCurve: "prime256v1" }).publicKey.export({
+      format: "der",
+      type: "spki",
+    });
   const devicePrivateKey = Buffer.alloc(32, 9);
   // Pinned X25519 public output for the fixed raw private input. Do not derive
   // this with the verifier under test or an incorrect derivation can agree

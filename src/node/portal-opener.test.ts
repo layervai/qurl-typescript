@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import conformancePackage from "@layervai/qurl-conformance";
 import { getEventListeners } from "node:events";
 import { Readable } from "node:stream";
@@ -2043,7 +2045,39 @@ it("rejects a valid foreign-resource qURL before native access", async () => {
   const { opener, knock } = fixture(undefined, {
     expectedCRID: "qe4jqpd7eaoslq7jinmjv4yikgzmcxgpjfsuobiniqnko32lpw742pueoujq",
   });
-  await expect(opener.start()).rejects.toBeInstanceOf(PortalVerificationError);
+  await expect(opener.start()).rejects.toMatchObject({
+    cause: { message: "qURL resource key does not match the expected CRID" },
+  });
   expect(knock).not.toHaveBeenCalled();
   await opener.close();
+});
+
+it("opens and renews with an independently held matching CRID", async () => {
+  const vectors = JSON.parse(
+    readFileSync(
+      createRequire(import.meta.url).resolve("@layervai/qurl-conformance/crid_v1_vectors.json"),
+      "utf8",
+    ),
+  );
+  const vector = vectors.producer_cases[0];
+  const link = createMatchedQv2Fixture({
+    resourceSpki: Buffer.from(vector.der_spki_b64url, "base64url"),
+  });
+  const { opener, knock, timers, setNow } = fixture(undefined, {
+    qurl: link.qurl,
+    expectedCRID: vector.expected_crid,
+    deployment: { ...deployment(), issuers: [link.issuer] },
+  });
+  knock.mockResolvedValue(ack(10));
+  try {
+    await opener.start();
+    expect(knock).toHaveBeenCalledTimes(1);
+    setNow(6_000_000_000n);
+    timers.shift()!();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(knock).toHaveBeenCalledTimes(2);
+    expect(opener.health().ready).toBe(true);
+  } finally {
+    await opener.close();
+  }
 });
