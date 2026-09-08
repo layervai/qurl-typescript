@@ -1187,6 +1187,7 @@ const MAX_AUTO_PAGINATION_PAGES = 10_000;
 const MIN_DELEGATED_BATCH_IDEMPOTENCY_KEY = 32;
 const MAX_DELEGATED_MINT_CAPABILITY = 8192;
 const MAX_DELEGATED_ETAG = 96;
+const MAX_DELEGATED_BATCH_ITEMS = 100;
 const DELEGATED_BATCH_ID_PATTERN = /^dqb_[A-Za-z0-9_-]{22}$/;
 const DELEGATED_QURL_ID_PATTERN = /^q_[0-9a-f]{11}$/;
 const STRONG_ETAG_PATTERN = /^"[\x21\x23-\x7e]+"$/;
@@ -1825,8 +1826,14 @@ function validateCreateDelegatedQurlBatchInput(
       `createDelegatedQurlBatch: mint_capability must be a string of 1-${MAX_DELEGATED_MINT_CAPABILITY} characters`,
     );
   }
-  if (!Array.isArray(typed.grants) || typed.grants.length < 1 || typed.grants.length > 100) {
-    throw clientValidationError("createDelegatedQurlBatch: grants must contain 1-100 items");
+  if (
+    !Array.isArray(typed.grants) ||
+    typed.grants.length < 1 ||
+    typed.grants.length > MAX_DELEGATED_BATCH_ITEMS
+  ) {
+    throw clientValidationError(
+      `createDelegatedQurlBatch: grants must contain 1-${MAX_DELEGATED_BATCH_ITEMS} items`,
+    );
   }
   for (const [index, grant] of typed.grants.entries()) {
     const field = `createDelegatedQurlBatch: grants[${index}]`;
@@ -1954,6 +1961,14 @@ function requiredDelegatedHeader(
   return value;
 }
 
+function hasDelegatedNoStore(value: string | null): boolean {
+  if (value === null) return false;
+  const directives = new Set(
+    value.split(",").map((directive) => directive.trim().split("=", 1)[0].toLowerCase()),
+  );
+  return directives.has("private") && directives.has("no-store");
+}
+
 function delegatedResponseHeaders(
   envelope: ApiResponse<unknown>,
   status: number,
@@ -1962,10 +1977,7 @@ function delegatedResponseHeaders(
 ): { etag: string; retryAfter?: number } {
   const cacheControl = envelope.__http_headers?.get("Cache-Control") ?? null;
   if (cacheControl !== null) {
-    const cacheDirectives = new Set(
-      cacheControl.split(",").map((directive) => directive.trim().split("=", 1)[0].toLowerCase()),
-    );
-    if (!cacheDirectives.has("private") || !cacheDirectives.has("no-store")) {
+    if (!hasDelegatedNoStore(cacheControl)) {
       throw delegatedResponseError(status, "response has invalid Cache-Control", requestId);
     }
   } else if (status !== 304) {
@@ -2016,7 +2028,7 @@ function delegatedBatchBase(
   if (
     !Number.isInteger(data.item_count) ||
     Number(data.item_count) < 1 ||
-    Number(data.item_count) > 100
+    Number(data.item_count) > MAX_DELEGATED_BATCH_ITEMS
   ) {
     throw delegatedResponseError(status, "response has invalid item_count", requestId);
   }
@@ -2108,7 +2120,7 @@ function validateDelegatedQurl(
   ) {
     throw delegatedResponseError(status, "response has invalid qURL metadata", requestId);
   }
-  return data as unknown as DelegatedQurl;
+  return { ...(data as unknown as DelegatedQurl), request_id: requestId };
 }
 
 function validateDelegatedBatchResults(
@@ -3907,6 +3919,12 @@ export class QURLClient {
     // This is the caller's only copy of the bearer links. Do not discard a
     // valid terminal body because an intermediary removed a cache validator;
     // qurl-service owns the required no-store response policy.
+    const cacheControl = envelope.__http_headers?.get("Cache-Control") ?? null;
+    if (!hasDelegatedNoStore(cacheControl)) {
+      this.log("delegated batch terminal response is missing private, no-store", {
+        batch_id: base.batchId,
+      });
+    }
     const etag = envelope.__http_headers?.get("ETag") ?? undefined;
     const terminalEtag =
       etag !== undefined && etag.length <= MAX_DELEGATED_ETAG && STRONG_ETAG_PATTERN.test(etag)

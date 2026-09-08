@@ -564,6 +564,7 @@ export type GetDelegatedQurlBatchOutput =
 
 /** Owner-visible metadata for one delegated qURL. The bearer link is never returned here. */
 export interface DelegatedQurl {
+  request_id: string;
   qurl_id: string;
   status: "active" | "consumed" | "expired" | "revoked";
   expires_at: string;

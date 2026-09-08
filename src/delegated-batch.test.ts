@@ -458,12 +458,23 @@ describe("delegated qURL batches", () => {
       meta: { request_id: "req_terminal" },
     };
     const fetch = mockFetch({ status: 200, body });
+    const debug = vi.fn();
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch,
+      debug,
+    });
 
-    await expect(createClient(fetch).getDelegatedQurlBatch(BATCH_ID)).resolves.toEqual({
+    await expect(client.getDelegatedQurlBatch(BATCH_ID)).resolves.toEqual({
       http_status: 200,
       ...body.data,
       request_id: "req_terminal",
     });
+    expect(debug).toHaveBeenCalledWith(
+      "delegated batch terminal response is missing private, no-store",
+      { batch_id: BATCH_ID },
+    );
   });
 
   it("accepts clock skew, fractional timestamps, and a forward-compatible failure code", async () => {
@@ -619,7 +630,10 @@ describe("delegated qURL batches", () => {
       maxRetries: 3,
     });
 
-    await expect(client.getDelegatedQurl(QURL_ID)).resolves.toMatchObject({ qurl_id: QURL_ID });
+    await expect(client.getDelegatedQurl(QURL_ID)).resolves.toMatchObject({
+      qurl_id: QURL_ID,
+      request_id: "req_get_qurl",
+    });
     await expect(client.deleteDelegatedQurl(QURL_ID)).rejects.toMatchObject({
       status: 503,
       code: "mutation_outcome_unknown",
