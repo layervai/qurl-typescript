@@ -182,7 +182,13 @@ console.log(share.qurlId); // Safe handle for revoking only this link later
 `shareResource` returns the current share-safe `#qv2t1...` link. Recipients
 open that URL in the qURL browser flow. For native TypeScript opening, pass
 `share.link` to `createPortalOpener` from `@layervai/qurl/node` with trusted
-`QURL_DEPLOYMENT` configuration. See the native opener example above.
+`QURL_DEPLOYMENT` configuration and `expectedCRID: advertisedCRID`.
+Obtain `advertisedCRID` independently of the response carrying the link.
+The opener verifies the issuer signature and CRID/key binding before each
+native access request, including renewals. Empty, malformed, unsupported,
+and mismatched CRIDs fail closed. Omitting the option retains link-only access.
+This verifies resource identity, not content or current revocation state.
+See the native opener example above.
 `verifyCrid` does not open the link or make a network request.
 
 `verifyCrid` verifies that the response CRID derives from the trusted resource

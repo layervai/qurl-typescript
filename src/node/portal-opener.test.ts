@@ -2038,3 +2038,12 @@ describe("native portal opener", () => {
     await opener.close();
   });
 });
+
+it("rejects a valid foreign-resource qURL before native access", async () => {
+  const { opener, knock } = fixture(undefined, {
+    expectedCRID: "qe4jqpd7eaoslq7jinmjv4yikgzmcxgpjfsuobiniqnko32lpw742pueoujq",
+  });
+  await expect(opener.start()).rejects.toBeInstanceOf(PortalVerificationError);
+  expect(knock).not.toHaveBeenCalled();
+  await opener.close();
+});

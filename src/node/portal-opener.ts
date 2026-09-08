@@ -31,6 +31,8 @@ const UINT64_MAX = (1n << 64n) - 1n;
 export interface CreatePortalOpenerOptions {
   /** Full qv2t1 qURL. The opener re-verifies it before each native open. */
   readonly qurl: string;
+  /** Independently obtained CRID. When supplied, checked before every native open. */
+  readonly expectedCRID?: string;
   /** Public deployment trust. Omit to load QURL_DEPLOYMENT on the first start. */
   readonly deployment?: PortalDeployment;
   /** Whole-operation deadline for each NHP open. The default is 15 seconds. */
@@ -274,6 +276,7 @@ class NativePortalOpener implements PortalOpener {
   readonly #fetch: typeof globalThis.fetch;
   readonly #explicitDeployment?: PortalDeployment;
   readonly #openTimeoutMs: number;
+  readonly #expectedCRID?: string;
   #qurl: string;
   #resolvedDeployment?: ValidatedDeployment;
   #sessionSecret?: Buffer;
@@ -296,6 +299,7 @@ class NativePortalOpener implements PortalOpener {
 
   constructor(options: CreatePortalOpenerOptions, runtime: PortalRuntime) {
     this.#qurl = options.qurl;
+    this.#expectedCRID = options.expectedCRID;
     this.#explicitDeployment = options.deployment;
     this.#runtime = runtime;
     this.#fetch = options.fetch ?? runtime.fetch;
@@ -800,7 +804,7 @@ class NativePortalOpener implements PortalOpener {
 
   #verifyLink(deployment: ValidatedDeployment): VerifiedQv2Link {
     try {
-      return verifyQv2Link(this.#qurl, deployment.issuers);
+      return verifyQv2Link(this.#qurl, deployment.issuers, this.#expectedCRID);
     } catch (error) {
       throw new PortalVerificationError("native qURL credential validation failed", {
         cause: error,

@@ -1,6 +1,14 @@
-import { createPublicKey, createPrivateKey, timingSafeEqual, verify } from "node:crypto";
+import {
+  createPublicKey,
+  createPrivateKey,
+  createHash,
+  timingSafeEqual,
+  verify,
+} from "node:crypto";
 import type { KeyObject } from "node:crypto";
 import { isStrictJsonObject, parseStrictJson, type StrictJsonValue } from "./strict-json.js";
+
+import { parseCrid } from "../crid.js";
 
 const TRANSPORT_PREFIX = "qv2t1";
 const FRAGMENT_PREFIX = "qv2";
@@ -41,6 +49,7 @@ export interface VerifiedQv2Link {
 export function verifyQv2Link(
   qurl: string,
   issuers: ReadonlyMap<string, KeyObject>,
+  expectedCRID?: string,
 ): VerifiedQv2Link {
   const hash = qurl.indexOf("#");
   if (hash < 0) throw new Error("qURL link has no credential fragment");
@@ -55,6 +64,22 @@ export function verifyQv2Link(
   const claims = parseClaims(decodeCanonicalBase64Url(claimsB64));
   const secret = parseAndWipeSecret(decodeCanonicalBase64Url(secretB64));
   verifyIssuerClaims(claimsB64, signatureB64, issuers, claims);
+  if (expectedCRID !== undefined) {
+    const expected = parseCrid(expectedCRID);
+    const alphabet = "abcdefghijklmnopqrstuvwxyz234567";
+    const version =
+      (alphabet.indexOf(expectedCRID[0]) << 3) | (alphabet.indexOf(expectedCRID[1]) >> 2);
+    const width =
+      version === 1 || version === 0x81 ? 32 : version === 2 || version === 0x82 ? 24 : 0;
+    if (!expected || expected.length !== width)
+      throw new Error("invalid or unsupported expected CRID");
+    const digest = createHash("sha256")
+      .update("NHP-QURL-CRID-V1\0")
+      .update(decodeCanonicalBase64Url(claims.resourcePublicKeyB64))
+      .digest();
+    if (!timingSafeEqual(expected, digest.subarray(0, width)))
+      throw new Error("qURL resource key does not match the expected CRID");
+  }
   const privateKey = decodeCanonicalBase64Url(secret.qurlUserPrivateKeyB64);
   let retainPrivateKey = false;
   try {
