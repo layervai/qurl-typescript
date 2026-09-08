@@ -1191,9 +1191,6 @@ const DELEGATED_BATCH_ID_PATTERN = /^dqb_[A-Za-z0-9_-]{22}$/;
 const DELEGATED_QURL_ID_PATTERN = /^q_[0-9a-f]{11}$/;
 const STRONG_ETAG_PATTERN = /^"[\x21\x23-\x7e]+"$/;
 const UTC_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
-const DEFINITIVE_DELEGATED_CREATE_STATUSES = new Set([
-  400, 401, 403, 404, 405, 409, 413, 415, 422, 429, 501,
-]);
 // Keep these identity contracts aligned with qurl-go and the public API.
 const CONNECTOR_SLUG_PATTERN = /^[a-z][a-z0-9-]{1,62}[a-z0-9]$/;
 // Current service schemas intentionally share this grammar, but keep the
@@ -2194,7 +2191,7 @@ function classifyDelegatedBatchCreateFailure(error: unknown, batchId?: string): 
       batchId,
     );
   }
-  if (DEFINITIVE_DELEGATED_CREATE_STATUSES.has(error.status)) {
+  if ((error.status >= 400 && error.status < 500 && error.status !== 408) || error.status === 501) {
     throw error;
   }
   throw new DelegatedBatchOutcomeUnknownError(error, batchId);
@@ -3901,6 +3898,9 @@ export class QURLClient {
       status,
       requestId,
     );
+    // This is the caller's only copy of the bearer links. Do not discard a
+    // valid terminal body because an intermediary removed a cache validator;
+    // qurl-service owns the required no-store response policy.
     const etag = envelope.__http_headers?.get("ETag") ?? undefined;
     const terminalEtag =
       etag !== undefined && etag.length <= MAX_DELEGATED_ETAG && STRONG_ETAG_PATTERN.test(etag)

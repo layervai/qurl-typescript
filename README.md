@@ -314,6 +314,9 @@ if (state.results[0]?.status === 'succeeded') {
 }
 ```
 
+The idempotency key must contain 32–256 visible ASCII characters. A UUID meets
+this requirement.
+
 One read makes one HTTP attempt. The caller owns the poll count, total deadline,
 and wait from `retry_after`. A `304` means the prior ETag is still current. A
 `200` contains the terminal, input-ordered results. Keep each returned qURL as

@@ -283,7 +283,7 @@ describe("delegated qURL batches", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
-  it.each([404, 409, 422])(
+  it.each([402, 404, 409, 422, 451])(
     "returns a definitive %i without an outcome-unknown wrapper",
     async (status) => {
       const fetch = mockFetch({
@@ -482,6 +482,59 @@ describe("delegated qURL batches", () => {
   });
 
   it.each([
+    [
+      "duplicate bearer data",
+      pendingBody({
+        status: "succeeded",
+        completed_at: "2026-09-07T12:00:01Z",
+        results: [
+          {
+            index: 0,
+            status: "succeeded",
+            qurl: {
+              qurl_id: QURL_ID,
+              qurl_link: "https://links.test/#same-secret",
+              expires_at: "2026-09-07T13:00:00Z",
+            },
+          },
+          {
+            index: 1,
+            status: "succeeded",
+            qurl: {
+              qurl_id: QURL_ID,
+              qurl_link: "https://links.test/#same-secret",
+              expires_at: "2026-09-07T13:00:00Z",
+            },
+          },
+        ],
+      }),
+    ],
+    [
+      "a status that disagrees with its results",
+      pendingBody({
+        status: "succeeded",
+        completed_at: "2026-09-07T12:00:01Z",
+        results: [
+          {
+            index: 0,
+            status: "succeeded",
+            qurl: {
+              qurl_id: QURL_ID,
+              qurl_link: "https://links.test/#secret",
+              expires_at: "2026-09-07T13:00:00Z",
+            },
+          },
+          { index: 1, status: "failed", error: { code: "creation_failed", message: "no" } },
+        ],
+      }),
+    ],
+  ])("rejects a terminal response with %s", async (_label, body) => {
+    await expect(
+      createClient(mockFetch({ status: 200, body })).getDelegatedQurlBatch(BATCH_ID),
+    ).rejects.toMatchObject({ status: 200, code: ERROR_CODE_UNEXPECTED_RESPONSE });
+  });
+
+  it.each([
     "http://links.test/#secret",
     "https://user:pass@links.test/#secret",
     "https://links.test/",
@@ -504,7 +557,7 @@ describe("delegated qURL batches", () => {
     ).rejects.toMatchObject({ status: 200, code: ERROR_CODE_UNEXPECTED_RESPONSE });
   });
 
-  it("gets and deletes delegated qURLs without hidden retries", async () => {
+  it("gets delegated qURLs and does not retry DELETE", async () => {
     const fetch = mockFetches([
       {
         status: 200,
