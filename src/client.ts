@@ -3784,11 +3784,11 @@ export class QURLClient {
         throw delegatedResponseError(status, "create returned an unexpected success status");
       }
       const { data, requestId } = delegatedEnvelope(envelope, status);
+      // Keep a valid identity when a stricter acceptance-field check fails.
       if (typeof data.batch_id === "string" && DELEGATED_BATCH_ID_PATTERN.test(data.batch_id)) {
         acceptedBatchId = data.batch_id;
       }
       const base = delegatedBatchBase(data, status, requestId);
-      acceptedBatchId = base.batchId;
       if (data.status !== "queued" || base.itemCount !== input.grants.length) {
         throw delegatedResponseError(status, "acceptance data is inconsistent", requestId);
       }
