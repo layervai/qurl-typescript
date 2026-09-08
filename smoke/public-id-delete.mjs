@@ -29,7 +29,7 @@ try {
       maxRetries: 3,
     });
     status = 204;
-    for (const id of [publicId, crid, "resource/with?reserved#bytes", "%", "%zz"]) {
+    for (const id of [crid]) {
       const before = calls.length;
       await client.delete(id);
       assert.equal(calls.length, before + 1);
@@ -39,17 +39,27 @@ try {
       });
     }
     const before = calls.length;
-    for (const id of ["q_0123456789a", "%71_0123456789a", "at_smoke", "..", "%252e%252e"]) {
+    for (const id of [
+      publicId,
+      "resource/with?reserved#bytes",
+      "%",
+      "%zz",
+      "q_0123456789a",
+      "%71_0123456789a",
+      "at_smoke",
+      "..",
+      "%252e%252e",
+    ]) {
       await assert.rejects(client.delete(id), { code: sdk.ERROR_CODE_CLIENT_VALIDATION });
     }
     assert.equal(calls.length, before, "invalid identifiers reached the server");
     for (const nextStatus of [200, 429, 503]) {
       status = nextStatus;
       const before = calls.length;
-      await assert.rejects(client.delete(publicId), { status });
+      await assert.rejects(client.delete(crid), { status });
       assert.equal(calls.length, before + 1, "DELETE was replayed");
     }
-    console.log(`${name}: public-ID DELETE native HTTP smoke passed`);
+    console.log(`${name}: CRID DELETE native HTTP smoke passed`);
   }
 } finally {
   server.closeAllConnections();

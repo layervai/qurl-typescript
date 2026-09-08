@@ -24,7 +24,9 @@ const conformance = conformancePackage as typeof import("@layervai/qurl-conforma
 const MIN_CREDENTIAL_SEGMENT_LENGTH = 8;
 
 const RESOURCE_DATA = {
-  resource_id: "r_abc123def45",
+  resource_id:
+    "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE2cTVv5_3eeYCcLLq5ROYCqcmY50HiKZ9ATglIkPnCji1E_S63UMtXba1moR8-Q6EV7oM6zwwh9_j2CDujzXvLA",
+  crid: "ahpviqz46qwcvx56glfatm3p3ooccwfcf2it4sdgjervwdkapykw3o3qdq2a",
   target_url: "https://internal.example.com/dashboard",
   status: "active",
   alias: "prod-dashboard",
@@ -33,9 +35,11 @@ const RESOURCE_DATA = {
 };
 
 const PORTAL_DATA = {
-  resource_id: "r_abc123def45",
+  resource_id:
+    "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE2cTVv5_3eeYCcLLq5ROYCqcmY50HiKZ9ATglIkPnCji1E_S63UMtXba1moR8-Q6EV7oM6zwwh9_j2CDujzXvLA",
+  crid: "ahpviqz46qwcvx56glfatm3p3ooccwfcf2it4sdgjervwdkapykw3o3qdq2a",
   qurl_link: "https://qurl.link/#at_portal1",
-  qurl_site: "https://r_abc123def45.qurl.site",
+  qurl_site: "https://ahpviqz46qwcvx56glfatm3p3ooccwfcf2it4sdgjervwdkapykw3o3qdq2a.qurl.site",
   expires_at: "2026-03-10T10:05:00Z",
   qurl_id: "q_portal1",
   label: "Alice from Acme",
@@ -43,7 +47,8 @@ const PORTAL_DATA = {
 
 const RESOLVE_DATA = {
   target_url: "https://internal.example.com/dashboard",
-  resource_id: "r_abc123def45",
+  resource_id:
+    "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE2cTVv5_3eeYCcLLq5ROYCqcmY50HiKZ9ATglIkPnCji1E_S63UMtXba1moR8-Q6EV7oM6zwwh9_j2CDujzXvLA",
   access_grant: {
     expires_in: 305,
     granted_at: "2026-03-10T15:30:00Z",
@@ -97,7 +102,7 @@ describe("protectUrl", () => {
     // Mutating portal verbs carry an auto-generated idempotency key.
     expect(callHeaders(fetch)["Idempotency-Key"]).toBeTruthy();
     expect(resource).toBeInstanceOf(ProtectedResource);
-    expect(resource.id).toBe("r_abc123def45");
+    expect(resource.crid).toBe("ahpviqz46qwcvx56glfatm3p3ooccwfcf2it4sdgjervwdkapykw3o3qdq2a");
     expect(resource.targetUrl).toBe("https://internal.example.com/dashboard");
     expect(resource.details?.status).toBe("active");
     expect(resource.details?.alias).toBe("prod-dashboard");
@@ -175,7 +180,7 @@ describe("protectUrl", () => {
       createClient(fetch).protectUrl("https://internal.example.com/dashboard"),
     ).rejects.toMatchObject({
       code: "unexpected_response",
-      detail: expect.stringContaining("missing resource_id"),
+      detail: expect.stringContaining("resource_id"),
     });
   });
 });
@@ -198,7 +203,9 @@ describe("createPortal", () => {
     });
 
     const { url } = callRequest(fetch, 1);
-    expect(new URL(url).pathname).toBe("/v1/resources/r_abc123def45/qurls");
+    expect(new URL(url).pathname).toBe(
+      "/v1/resources/ahpviqz46qwcvx56glfatm3p3ooccwfcf2it4sdgjervwdkapykw3o3qdq2a/qurls",
+    );
     expect(callBody(fetch, 1)).toEqual({
       expires_in: "5m",
       label: "Alice from Acme",
@@ -207,9 +214,11 @@ describe("createPortal", () => {
       max_sessions: 0,
       target_path: "/api/detect/eib_example",
     });
-    expect(portal.resourceId).toBe("r_abc123def45");
+    expect(portal.crid).toBe("ahpviqz46qwcvx56glfatm3p3ooccwfcf2it4sdgjervwdkapykw3o3qdq2a");
     expect(portal.link).toBe("https://qurl.link/#at_portal1");
-    expect(portal.site).toBe("https://r_abc123def45.qurl.site");
+    expect(portal.site).toBe(
+      "https://ahpviqz46qwcvx56glfatm3p3ooccwfcf2it4sdgjervwdkapykw3o3qdq2a.qurl.site",
+    );
     expect(portal.qurlId).toBe("q_portal1");
     expect(portal.label).toBe("Alice from Acme");
     expect(portal.expiresAt).toBeInstanceOf(Date);
@@ -221,7 +230,7 @@ describe("createPortal", () => {
     const client = createClient(fetch);
 
     const portal = await client.createPortal(
-      "r_abc123def45",
+      "ahpviqz46qwcvx56glfatm3p3ooccwfcf2it4sdgjervwdkapykw3o3qdq2a",
       { validFor: "45m" },
       { idempotencyKey: "mint-alice-1" },
     );
@@ -235,7 +244,9 @@ describe("createPortal", () => {
     const fetch = mockFetch({ status: 201, body: { data: PORTAL_DATA } });
     const client = createClient(fetch);
 
-    await client.resourceById("r_abc123def45").createPortal();
+    await client
+      .resourceByCrid("ahpviqz46qwcvx56glfatm3p3ooccwfcf2it4sdgjervwdkapykw3o3qdq2a")
+      .createPortal();
     expect(callBody(fetch)).toEqual({});
     expect(callHeaders(fetch)["Content-Type"]).toBe("application/json");
   });
@@ -243,7 +254,9 @@ describe("createPortal", () => {
   it("keeps a valid portal result from an alternate 2xx status", async () => {
     const fetch = mockFetch({ status: 200, body: { data: PORTAL_DATA } });
 
-    const portal = await createClient(fetch).createPortal("r_abc123def45");
+    const portal = await createClient(fetch).createPortal(
+      "ahpviqz46qwcvx56glfatm3p3ooccwfcf2it4sdgjervwdkapykw3o3qdq2a",
+    );
 
     expect(portal.link).toBe("https://qurl.link/#at_portal1");
     expect(fetch).toHaveBeenCalledTimes(1);
@@ -253,7 +266,9 @@ describe("createPortal", () => {
     const client = createClient(mockFetch({ status: 201, body: { data: PORTAL_DATA } }));
     const other = createClient(mockFetch({ status: 201, body: { data: PORTAL_DATA } }));
 
-    const resource = other.resourceById("r_abc123def45");
+    const resource = other.resourceByCrid(
+      "ahpviqz46qwcvx56glfatm3p3ooccwfcf2it4sdgjervwdkapykw3o3qdq2a",
+    );
     await expect(client.createPortal(resource)).rejects.toMatchObject({
       code: "client_validation",
       detail: expect.stringContaining("bound to a different client"),
@@ -280,7 +295,11 @@ describe("createPortal", () => {
     const fetch = mockFetch({ status: 201, body: { data: PORTAL_DATA } });
     const client = createClient(fetch);
 
-    await expect(client.resourceById("r_abc123def45").createPortal(options)).rejects.toMatchObject({
+    await expect(
+      client
+        .resourceByCrid("ahpviqz46qwcvx56glfatm3p3ooccwfcf2it4sdgjervwdkapykw3o3qdq2a")
+        .createPortal(options),
+    ).rejects.toMatchObject({
       code: "client_validation",
       detail: expect.stringContaining(message),
     });
@@ -296,13 +315,19 @@ describe("createPortal", () => {
     ["36h", "36h"],
   ])("validFor %s serializes to %s with hours as the largest unit", async (validFor, expected) => {
     const fetch = mockFetch({ status: 201, body: { data: PORTAL_DATA } });
-    await createClient(fetch).createPortal("r_abc123def45", { validFor });
+    await createClient(fetch).createPortal(
+      "ahpviqz46qwcvx56glfatm3p3ooccwfcf2it4sdgjervwdkapykw3o3qdq2a",
+      { validFor },
+    );
     expect(callBody(fetch)).toEqual({ expires_in: expected });
   });
 
   it("serializes sessionDuration onto the wire with the same grammar", async () => {
     const fetch = mockFetch({ status: 201, body: { data: PORTAL_DATA } });
-    await createClient(fetch).createPortal("r_abc123def45", { sessionDuration: 90_000 });
+    await createClient(fetch).createPortal(
+      "ahpviqz46qwcvx56glfatm3p3ooccwfcf2it4sdgjervwdkapykw3o3qdq2a",
+      { sessionDuration: 90_000 },
+    );
     expect(callBody(fetch)).toEqual({ session_duration: "90s" });
   });
 
@@ -311,12 +336,18 @@ describe("createPortal", () => {
     const targetPath = `/${"é".repeat(1023)}a`;
     expect(new TextEncoder().encode(targetPath)).toHaveLength(2048);
 
-    await createClient(fetch).createPortal("r_abc123def45", { targetPath });
+    await createClient(fetch).createPortal(
+      "ahpviqz46qwcvx56glfatm3p3ooccwfcf2it4sdgjervwdkapykw3o3qdq2a",
+      { targetPath },
+    );
     expect(callBody(fetch)).toEqual({ target_path: targetPath });
 
     const overlong = `/${"é".repeat(1024)}`;
     await expect(
-      createClient(fetch).createPortal("r_abc123def45", { targetPath: overlong }),
+      createClient(fetch).createPortal(
+        "ahpviqz46qwcvx56glfatm3p3ooccwfcf2it4sdgjervwdkapykw3o3qdq2a",
+        { targetPath: overlong },
+      ),
     ).rejects.toMatchObject({
       code: "client_validation",
       detail: expect.stringContaining("targetPath: must be 2048 UTF-8 bytes or fewer"),
@@ -327,7 +358,10 @@ describe("createPortal", () => {
   it("rejects unknown option fields, catching REST-shaped spellings", async () => {
     const fetch = mockFetch({ status: 201, body: { data: PORTAL_DATA } });
     await expect(
-      createClient(fetch).createPortal("r_abc123def45", { valid_for: "5m" } as never),
+      createClient(fetch).createPortal(
+        "ahpviqz46qwcvx56glfatm3p3ooccwfcf2it4sdgjervwdkapykw3o3qdq2a",
+        { valid_for: "5m" } as never,
+      ),
     ).rejects.toMatchObject({
       code: "client_validation",
       detail: expect.stringContaining('unknown field "valid_for"'),
@@ -336,8 +370,21 @@ describe("createPortal", () => {
   });
 
   it("fails closed when the mint response is missing qurl_link", async () => {
-    const fetch = mockFetch({ status: 201, body: { data: { resource_id: "r_abc123def45" } } });
-    await expect(createClient(fetch).createPortal("r_abc123def45")).rejects.toMatchObject({
+    const fetch = mockFetch({
+      status: 201,
+      body: {
+        data: {
+          resource_id:
+            "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE2cTVv5_3eeYCcLLq5ROYCqcmY50HiKZ9ATglIkPnCji1E_S63UMtXba1moR8-Q6EV7oM6zwwh9_j2CDujzXvLA",
+          crid: "ahpviqz46qwcvx56glfatm3p3ooccwfcf2it4sdgjervwdkapykw3o3qdq2a",
+        },
+      },
+    });
+    await expect(
+      createClient(fetch).createPortal(
+        "ahpviqz46qwcvx56glfatm3p3ooccwfcf2it4sdgjervwdkapykw3o3qdq2a",
+      ),
+    ).rejects.toMatchObject({
       code: "unexpected_response",
       detail: expect.stringContaining("missing qurl_link"),
     });
@@ -348,27 +395,34 @@ describe("createPortal", () => {
       status: 201,
       body: { data: { ...PORTAL_DATA, expires_at: "soon-ish" } },
     });
-    const portal = await createClient(fetch).createPortal("r_abc123def45");
+    const portal = await createClient(fetch).createPortal(
+      "ahpviqz46qwcvx56glfatm3p3ooccwfcf2it4sdgjervwdkapykw3o3qdq2a",
+    );
     expect(portal.expiresAt).toBeUndefined();
     expect(portal.link).toBe("https://qurl.link/#at_portal1");
   });
 });
 
-describe("resourceById", () => {
+describe("resourceByCrid", () => {
   it("returns a handle without making a request", () => {
     const fetch = mockFetch({ status: 200, body: { data: {} } });
-    const resource = createClient(fetch).resourceById("r_abc123def45");
+    const resource = createClient(fetch).resourceByCrid(
+      "ahpviqz46qwcvx56glfatm3p3ooccwfcf2it4sdgjervwdkapykw3o3qdq2a",
+    );
     expect(resource).toBeInstanceOf(ProtectedResource);
-    expect(resource.id).toBe("r_abc123def45");
+    expect(resource.crid).toBe("ahpviqz46qwcvx56glfatm3p3ooccwfcf2it4sdgjervwdkapykw3o3qdq2a");
     expect(resource.targetUrl).toBeUndefined();
     expect(resource.details).toBeUndefined();
     expect(vi.mocked(fetch).mock.calls.length).toBe(0);
   });
 
-  it.each([[""], ["   "], [" r_abc123def45 "]])("rejects invalid id %j", (id) => {
-    const client = createClient(mockFetch({ status: 200, body: { data: {} } }));
-    expect(() => client.resourceById(id)).toThrow(ValidationError);
-  });
+  it.each([[""], ["   "], [" ahpviqz46qwcvx56glfatm3p3ooccwfcf2it4sdgjervwdkapykw3o3qdq2a "]])(
+    "rejects invalid id %j",
+    (id) => {
+      const client = createClient(mockFetch({ status: 200, body: { data: {} } }));
+      expect(() => client.resourceByCrid(id)).toThrow(ValidationError);
+    },
+  );
 });
 
 describe("createPortalForUrl", () => {
@@ -390,14 +444,16 @@ describe("createPortalForUrl", () => {
       expires_in: "5m",
     });
     expect(portal.link).toBe("https://qurl.link/#at_portal1");
-    expect(resource.id).toBe("r_abc123def45");
+    expect(resource.crid).toBe("ahpviqz46qwcvx56glfatm3p3ooccwfcf2it4sdgjervwdkapykw3o3qdq2a");
     expect(resource.targetUrl).toBe("https://internal.example.com/dashboard");
     // Only id + caller-supplied target URL are populated on this path.
     expect(resource.details).toBeUndefined();
 
     // The returned handle mints more portals without re-protecting.
     await resource.createPortal({ validFor: "1h" });
-    expect(new URL(callRequest(fetch, 1).url).pathname).toBe("/v1/resources/r_abc123def45/qurls");
+    expect(new URL(callRequest(fetch, 1).url).pathname).toBe(
+      "/v1/resources/ahpviqz46qwcvx56glfatm3p3ooccwfcf2it4sdgjervwdkapykw3o3qdq2a/qurls",
+    );
     expect(callBody(fetch, 1)).toEqual({ expires_in: "1h" });
   });
 
@@ -439,7 +495,7 @@ describe("enterPortal", () => {
     expect(callBody(fetch)).toEqual({ access_token: "at_k8xqp9h2sj9lx7r4a" });
     expect(handle.resourceUrl).toBe("https://internal.example.com/dashboard");
     expect(handle.openSeconds).toBe(305);
-    expect(handle.resourceId).toBe("r_abc123def45");
+    expect(handle.resourcePublicKey).toBe(RESOLVE_DATA.resource_id);
   });
 
   it("accepts a bare access token", async () => {
@@ -501,7 +557,16 @@ describe("enterPortal", () => {
   });
 
   it("fails closed when access is granted but no resource URL comes back", async () => {
-    const fetch = mockFetch({ status: 200, body: { data: { resource_id: "r_abc123def45" } } });
+    const fetch = mockFetch({
+      status: 200,
+      body: {
+        data: {
+          resource_id:
+            "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE2cTVv5_3eeYCcLLq5ROYCqcmY50HiKZ9ATglIkPnCji1E_S63UMtXba1moR8-Q6EV7oM6zwwh9_j2CDujzXvLA",
+          crid: "ahpviqz46qwcvx56glfatm3p3ooccwfcf2it4sdgjervwdkapykw3o3qdq2a",
+        },
+      },
+    });
     await expect(createClient(fetch).enterPortal("at_k8xqp9h2sj9lx7r4a")).rejects.toMatchObject({
       code: "unexpected_response",
       detail: expect.stringContaining("no resource URL"),
@@ -514,7 +579,9 @@ describe("enterPortal", () => {
       body: {
         data: {
           target_url: "https://internal.example.com/dashboard",
-          resource_id: "r_abc123def45",
+          resource_id:
+            "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE2cTVv5_3eeYCcLLq5ROYCqcmY50HiKZ9ATglIkPnCji1E_S63UMtXba1moR8-Q6EV7oM6zwwh9_j2CDujzXvLA",
+          crid: "ahpviqz46qwcvx56glfatm3p3ooccwfcf2it4sdgjervwdkapykw3o3qdq2a",
         },
       },
     });
@@ -528,7 +595,9 @@ describe("enterPortal", () => {
       body: {
         data: {
           target_url: "https://internal.example.com/dashboard",
-          resource_id: "r_abc123def45",
+          resource_id:
+            "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE2cTVv5_3eeYCcLLq5ROYCqcmY50HiKZ9ATglIkPnCji1E_S63UMtXba1moR8-Q6EV7oM6zwwh9_j2CDujzXvLA",
+          crid: "ahpviqz46qwcvx56glfatm3p3ooccwfcf2it4sdgjervwdkapykw3o3qdq2a",
           access_grant: { granted_at: "2026-03-10T15:30:00Z", src_ip: "203.0.113.42" },
         },
       },

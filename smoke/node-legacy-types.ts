@@ -26,9 +26,12 @@ const targetChanged: Error = new PortalTargetChangedError();
 const health: PortalOpenerHealth = opener.health();
 const state: PortalOpenerState = opener.health().state;
 const client: QURLClient = new QURLClient({ apiKey: "test" });
-const portal: ReturnType<QURLClient["createPortal"]> = client.createPortal("r_example", {
-  targetPath: "/api/detect/eib_example",
-});
+const portal: ReturnType<QURLClient["createPortal"]> = client.createPortal(
+  "ae4jqpd7eaoslq7jinmjv4yikgzmcxgpjfsuobiniqnko32lpw743ivbeyha",
+  {
+    targetPath: "/api/detect/eib_example",
+  },
+);
 void opener;
 void descendant;
 void busy;

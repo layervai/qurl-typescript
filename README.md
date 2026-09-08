@@ -92,9 +92,8 @@ this option because it creates a URL resource.
 and portal minting use it with no public-key or private-ID fallback. The SDK
 checks that the returned public key matches the CRID.
 
-`resource.resourceId`, `resource.connectorRoutingId`, and
-`resource.knockResourceId` are three distinct server-issued values for public
-identity, reverse routing, and NHP admission. Consume each verbatim; never
+`resource.resourcePublicKey`, `resource.connectorRoutingId`, and
+`resource.knockResourceId` are three distinct server-issued values for verification, reverse routing, and NHP admission. Consume each verbatim; never
 derive or substitute one for another. Use `getConnectorResource(crid)`
 or `getConnectorResourceBySlug(slug)` for read-only lookup and
 `deleteConnectorResource(crid)` to revoke it. This replaces the old
@@ -105,7 +104,7 @@ returns them only after validating the complete response contract.
 `ensureConnectorResource` and `deleteConnectorResource` throw
 `ConnectorResourceOutcomeUnknownError` when a dispatched mutation may have
 committed but its response cannot prove the result. Reconcile by immutable slug
-or resource ID before deciding whether to retry. The wrapper deliberately uses
+or CRID before deciding whether to retry. The wrapper deliberately uses
 `status: 0`; the original typed error is available as `cause`, including its
 observed HTTP status.
 
@@ -126,13 +125,13 @@ deliberate retry. A valid exact-201 resource missing only `meta.found_existing`
 is known to have selected that row but still fails as an unwrapped
 `unexpected_response` because required ensure metadata is absent.
 
-If you persist the resource id, future calls do not need to recreate the
+If you persist the CRID, future calls do not need to recreate the
 handle (no API call is made until you mint):
 
 ```typescript
-async function createPortalForStoredResource(storedResourceId: string) {
-  // Pass the exact opaque resource_id previously returned by the API.
-  const resource = client.resourceById(storedResourceId);
+async function createPortalForStoredResource(storedCrid: string) {
+  // Pass the CRID previously returned by the API.
+  const resource = client.resourceByCrid(storedCrid);
   return resource.createPortal({ validFor: '1h' });
 }
 ```
@@ -168,6 +167,54 @@ The Node-only `@layervai/qurl/node` entry opens received qv2 links with native
 NHP UDP. It has no relay or HTTP-resolve fallback. Connector assignment and
 registration are separate producer operations and are not part of the portal
 opener.
+
+If you already hold a CRID, mint a fresh share link directly:
+
+```typescript
+const share = await client.shareResource(crid, { ttlSeconds: 300 });
+// Optional: verify the response CRID against DER SPKI bytes you already trust
+// before the secret leaves this process.
+await share.verifyCrid(resourcePublicKeyDer);
+await deliverToRecipient(share.link); // Secret; returned once and not retrievable
+console.log(share.qurlId); // Safe handle for revoking only this link later
+```
+
+`shareResource` returns the current share-safe `#qv2t1...` link. Recipients
+open that URL in the qURL browser flow. For native TypeScript opening, pass
+`share.link` to `createPortalOpener` from `@layervai/qurl/node` with trusted
+`QURL_DEPLOYMENT` configuration. See the native opener example above.
+`verifyCrid` does not open the link or make a network request.
+
+`verifyCrid` verifies that the response CRID derives from the trusted resource
+key; it does not independently bind the secret link fragment to that key.
+It intentionally follows qurl-go's environment-agnostic key-match rule: CRID
+version zero is rejected as reserved, while every other structurally valid
+version is accepted and environment classification is not part of key-to-digest
+verification. It compares all 32 digest bytes for a full CRID and all 24 for
+a truncated CRID; the response determines the digest width. CRIDs use their canonical lowercase base32 spelling; uppercase or
+mixed-case spellings fail closed. Binary inputs of any length are hashed;
+`invalid_crid_key` is reserved for non-binary or unreadable (detached) runtime
+values, and a readable binary key that does not match reports `crid_mismatch`.
+Use `error instanceof CRIDVerificationError` (or `error.status === 0`) to
+distinguish these local verification failures from a server error that happens
+to use the same problem code.
+`qurlId` and `singleUse` are undefined when omitted by the service.
+`ShareLink` keeps `.link` directly readable but redacts it from JSON, Node
+inspection, and object spread to reduce accidental credential logging. Read
+`.link` directly before delivery; do not spread or clone a `ShareLink`, because
+those operations deliberately omit the credential. Browser developer consoles
+can still display non-enumerable properties, so do not log the object there.
+The constructor snapshots a caller-provided expiry, and the `ShareLink`
+properties are frozen. Each `expiresAt` read returns a defensive `Date` copy;
+changing that copy does not change the share metadata.
+
+Omitting `ttlSeconds` matches qurl-go's zero-value behavior and requests the
+platform default. TypeScript additionally rejects an explicit zero so a
+computed countdown cannot silently become a longer-lived default credential.
+A response can report `expiresInSeconds: 0`; do not reuse that value as a
+request TTL. Expiry parsing uses the SDK's shared API date parser.
+
+The service chooses single-use policy; this matches the Go SDK options.
 
 qURL Connector assignment and registration use native UDP through
 `qurl-connector` and `qurl-go`. This package does not expose an HTTP enrollment API.
@@ -430,7 +477,7 @@ console.log(`Access granted to ${access.target_url} for ${access.access_grant?.e
 | `ensureConnectorResource(slug, requestOptions?)` | Find or create an active Connector resource by immutable slug |
 | `getConnectorResource(crid)` / `getConnectorResourceBySlug(slug)` | Load a validated Connector resource by immutable identity |
 | `deleteConnectorResource(crid)` | Revoke a Connector resource by CRID |
-| `resourceById(id)` | Handle from a stored resource id (no API call) |
+| `resourceByCrid(crid)` | Handle from a stored CRID (no API call) |
 | `enterPortal(linkOrToken)` | Open a qURL link programmatically → `ResourceHandle` |
 
 ### REST-shaped methods
@@ -492,7 +539,7 @@ if (result.failed > 0) {
 
 Non-400 errors (401, 403, 429, 5xx, and unexpected 400 body shapes) still throw the appropriate `QURLError` subclass.
 
-**Slimmer per-item shape** — `BatchItemSuccess` returns `{ resource_id, qurl_link, qurl_site, expires_at? }` per item. Unlike single `client.create()`, the batch response intentionally **omits `qurl_id` and `label`** to keep the payload compact. If you migrate a per-item `create()` loop to `batchCreate` and rely on `qurl_id` for downstream addressing, fetch each via `client.get(resource_id)` after the batch (or stay on the single-create path).
+**Slimmer per-item shape** — `BatchItemSuccess` returns `{ crid, resource_id, qurl_link, qurl_site, expires_at? }` per item. Unlike single `client.create()`, the batch response intentionally **omits `qurl_id` and `label`** to keep the payload compact. If you migrate a per-item `create()` loop to `batchCreate` and rely on `qurl_id` for downstream addressing, check `item.crid` is present, then fetch each via `client.get(item.crid)` after the batch (or stay on the single-create path).
 
 **Result ordering** — `result.results` is **not** guaranteed to be sorted by `index`. Each entry's `index` field carries the position in the original `items` array, so build per-input-position state by keying on `r.index` (e.g., `for (const r of result.results) { byInputIndex[r.index] = r; }`) rather than relying on iteration order.
 
@@ -554,7 +601,8 @@ const page = await client.list({ limit: 10, status: 'active' });
 
 // Auto-paginate through all results
 for await (const qurl of client.listAll({ status: 'active' })) {
-  console.log(qurl.resource_id);
+  if (!qurl.crid) throw new Error("The API response has no resource CRID");
+  console.log(qurl.crid);
 }
 ```
 
@@ -705,3 +753,7 @@ When upgrading, check the release notes for migration guidance — recent breaki
 ## License
 
 MIT
+
+Resource verification requires Web Crypto (`crypto.subtle`). In browsers, use
+an HTTPS page or localhost. Raw REST response types keep `crid` optional;
+resource handles and portals require a validated CRID.

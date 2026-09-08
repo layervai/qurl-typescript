@@ -105,6 +105,8 @@ export interface QurlSummary {
  */
 export interface QURL {
   resource_id: string;
+  /** Raw REST metadata; check presence before use, or use a validated resource handle. */
+  crid?: string;
   type?: ResourceType;
   target_url: string;
   status: "active" | "revoked";
@@ -151,6 +153,8 @@ export interface CreateInput {
 export interface CreateOutput {
   qurl_id: string;
   resource_id: string;
+  /** Raw REST metadata; check presence before use, or use a validated resource handle. */
+  crid?: string;
   qurl_link: string;
   branded_domain?: string;
   qurl_site: string;
@@ -330,7 +334,9 @@ export interface CreatePortalOptions {
  */
 export interface Portal {
   /** Identifies the protected resource this link opens. */
-  resourceId: string;
+  crid: string;
+  /** Public key used for verification. */
+  resourcePublicKey: string;
   /** The shareable qURL link. */
   link: string;
   /** The qURL-hosted site for this resource, when returned by the API. */
@@ -347,7 +353,7 @@ export interface Portal {
  * Result of a successful `enterPortal`: the reachable resource.
  *
  * Carries the reachable resource URL and the access lifetime reported by
- * qURL (`openSeconds` is `0` when the API does not report one). `resourceId`
+ * qURL (`openSeconds` is `0` when the API does not report one). `resourcePublicKey`
  * is populated by this SDK's API-backed opener; the field does not exist on
  * qurl-go's offline `ResourceHandle`.
  */
@@ -356,8 +362,8 @@ export interface ResourceHandle {
   resourceUrl: string;
   /** How long access stays open in seconds, as reported by qURL. */
   openSeconds: number;
-  /** The LayerV resource id behind the portal, when reported. */
-  resourceId?: string;
+  /** The verification key behind the portal, when reported. */
+  resourcePublicKey?: string;
 }
 
 /** Input for headless qURL resolution. */
@@ -420,13 +426,15 @@ export interface BatchCreateInput {
  * A successfully created item in a batch create response.
  *
  * This shape is intentionally slimmer than {@link CreateOutput}: batch items do
- * not include `qurl_id` or `label`. Use the returned `resource_id` to fetch more
+ * not include `qurl_id` or `label`. Use the returned `crid` to fetch more
  * detail when per-token identifiers are needed.
  */
 export interface BatchItemSuccess {
   index: number;
   success: true;
   resource_id: string;
+  /** Raw REST metadata; check presence before use, or use a validated resource handle. */
+  crid?: string;
   qurl_link: string;
   branded_domain?: string;
   qurl_site: string;
@@ -519,6 +527,16 @@ export interface ResourceListInput {
 
 export interface ResourceListOutput extends PaginatedOutput {
   resources: Resource[];
+}
+
+/** Options for minting a fresh share link from an existing CRID. */
+export interface ShareResourceOptions {
+  /**
+   * Requested lifetime in positive whole seconds. Omit to use the platform
+   * default; an explicit zero is rejected to avoid silently lengthening a
+   * computed lifetime.
+   */
+  ttlSeconds?: number;
 }
 
 /** Input for minting a qURL against an existing resource. */
@@ -958,6 +976,7 @@ export interface RedeemAccessCodeOutput {
 }
 
 export interface CreateAccessCodeInput {
+  /** The resource CRID; the wire field retains its API name. */
   resource_id: string;
   name?: string;
   max_uses?: number;

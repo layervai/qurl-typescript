@@ -14,12 +14,17 @@ const esm = await import("@layervai/qurl");
 const expectedRuntimeExports = [
   "AuthenticationError",
   "AuthorizationError",
+  "CRIDVerificationError",
   "ConnectorResource",
   "ConnectorResourceOutcomeUnknownError",
   "ERROR_CODE_AMBIGUOUS_RESOURCE",
   "ERROR_CODE_CLIENT_VALIDATION",
   "ERROR_CODE_CONNECTOR_RESOURCE_OUTCOME_UNKNOWN",
   "ERROR_CODE_CONNECTOR_RESOURCE_REVOKED",
+  "ERROR_CODE_CRID_MISMATCH",
+  "ERROR_CODE_INVALID_CRID",
+  "ERROR_CODE_INVALID_CRID_KEY",
+  "ERROR_CODE_MISSING_CRID",
   "ERROR_CODE_NETWORK",
   "ERROR_CODE_RESOURCE_NOT_FOUND",
   "ERROR_CODE_RUNTIME",
@@ -34,6 +39,7 @@ const expectedRuntimeExports = [
   "RateLimitError",
   "RuntimeError",
   "ServerError",
+  "ShareLink",
   "TimeoutError",
   "VERSION",
   "ValidationError",
@@ -61,6 +67,7 @@ for (const method of [
   "resolve",
   "listResources",
   "createResource",
+  "shareResource",
   "listConnectorInstallations",
 ]) {
   assert.equal(typeof client[method], "function", `retained QURLClient.${method} is missing`);

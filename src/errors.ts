@@ -15,6 +15,14 @@ export const ERROR_CODE_UNEXPECTED_RESPONSE = "unexpected_response";
 export const ERROR_CODE_NETWORK = "network_error";
 export const ERROR_CODE_TIMEOUT = "timeout";
 export const ERROR_CODE_RUNTIME = "runtime_error";
+/** A share response omitted the CRID required for delivered-key verification. */
+export const ERROR_CODE_MISSING_CRID = "missing_crid";
+/** A held CRID failed the local CRID v1 validation gate. */
+export const ERROR_CODE_INVALID_CRID = "invalid_crid";
+/** A caller supplied a non-binary runtime value where DER SPKI bytes are required. */
+export const ERROR_CODE_INVALID_CRID_KEY = "invalid_crid_key";
+/** A delivered key does not derive the held CRID. */
+export const ERROR_CODE_CRID_MISMATCH = "crid_mismatch";
 /** A dispatched Connector resource mutation could have committed and must be reconciled. */
 export const ERROR_CODE_CONNECTOR_RESOURCE_OUTCOME_UNKNOWN = "connector_resource_outcome_unknown";
 /** A by-ID Connector resource lookup found a revoked lifecycle row. */
@@ -30,8 +38,8 @@ export const ERROR_CODE_UNKNOWN = "unknown";
  * Base error thrown by the qURL API client. Catch this to handle all SDK errors.
  *
  * **`status: 0` convention:** Client-only validation, runtime, network, and
- * timeout failures use `status: 0` because no HTTP status applies. Logical
- * response-shape guards can also use zero. An `unexpected_response` tied to a
+ * timeout failures and local CRID verification failures use `status: 0`
+ * because no HTTP status applies. Logical response-shape guards can also use zero. An `unexpected_response` tied to a
  * concrete HTTP contract violation (redirect, oversized body, wrong
  * no-content status/body) instead preserves the observed status. Branch on
  * `.code` first and then `.status`; see {@link ValidationError}.
