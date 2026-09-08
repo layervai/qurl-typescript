@@ -291,7 +291,8 @@ try {
 let etag = accepted.etag;
 let retryAfter = accepted.retry_after;
 let state;
-for (;;) {
+const deadline = Date.now() + 60_000;
+for (let polls = 0; polls < 30 && Date.now() < deadline; polls++) {
   await new Promise((resolve) => setTimeout(resolve, retryAfter * 1000));
   state = await client.getDelegatedQurlBatch(accepted.batch_id, { etag });
   if (state.http_status === 304) {
@@ -303,10 +304,13 @@ for (;;) {
   }
 }
 
-if (state.http_status === 200 && state.results[0]?.status === 'succeeded') {
+if (state?.http_status !== 200) throw new Error('Delegated qURL batch did not finish');
+
+if (state.results[0]?.status === 'succeeded') {
   const qurlId = state.results[0].qurl.qurl_id;
   const metadata = await client.getDelegatedQurl(qurlId);
-  await client.deleteDelegatedQurl(metadata.qurl_id);
+  console.log(metadata.status);
+  await client.deleteDelegatedQurl(qurlId);
 }
 ```
 

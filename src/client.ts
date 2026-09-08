@@ -1191,7 +1191,9 @@ const DELEGATED_BATCH_ID_PATTERN = /^dqb_[A-Za-z0-9_-]{22}$/;
 const DELEGATED_QURL_ID_PATTERN = /^q_[0-9a-f]{11}$/;
 const STRONG_ETAG_PATTERN = /^"[\x21\x23-\x7e]+"$/;
 const UTC_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
-const DEFINITIVE_DELEGATED_CREATE_STATUSES = new Set([400, 401, 403, 409, 413, 429]);
+const DEFINITIVE_DELEGATED_CREATE_STATUSES = new Set([
+  400, 401, 403, 404, 405, 409, 413, 415, 422, 429, 501,
+]);
 // Keep these identity contracts aligned with qurl-go and the public API.
 const CONNECTOR_SLUG_PATTERN = /^[a-z][a-z0-9-]{1,62}[a-z0-9]$/;
 // Current service schemas intentionally share this grammar, but keep the
@@ -2066,6 +2068,37 @@ function validateDelegatedQurlLink(value: unknown): value is string {
   } catch {
     return false;
   }
+}
+
+function validateDelegatedQurl(value: unknown, expectedQurlId: string): DelegatedQurl {
+  const data = delegatedResponseObject(value, 200, "response data");
+  if (data.qurl_id !== expectedQurlId || !DELEGATED_QURL_ID_PATTERN.test(expectedQurlId)) {
+    throw delegatedResponseError(200, "response has invalid qurl_id");
+  }
+  if (
+    data.status !== "active" &&
+    data.status !== "consumed" &&
+    data.status !== "expired" &&
+    data.status !== "revoked"
+  ) {
+    throw delegatedResponseError(200, "response has invalid status");
+  }
+  if (
+    !isUtcTimestamp(data.expires_at) ||
+    typeof data.one_time_use !== "boolean" ||
+    !Number.isInteger(data.max_sessions) ||
+    Number(data.max_sessions) < 0 ||
+    !Number.isInteger(data.session_duration) ||
+    Number(data.session_duration) <= 0 ||
+    (data.label !== undefined && typeof data.label !== "string") ||
+    (data.access_policy !== undefined &&
+      (typeof data.access_policy !== "object" ||
+        data.access_policy === null ||
+        Array.isArray(data.access_policy)))
+  ) {
+    throw delegatedResponseError(200, "response has invalid qURL metadata");
+  }
+  return data as unknown as DelegatedQurl;
 }
 
 function validateDelegatedBatchResults(
@@ -3876,7 +3909,11 @@ export class QURLClient {
         "getDelegatedQurl: qurlId must match q_ plus 11 lowercase hexadecimal characters",
       );
     }
-    return this.request<DelegatedQurl>("GET", `/v1/delegated-qurls/${encodeURIComponent(qurlId)}`);
+    const data = await this.request<unknown>(
+      "GET",
+      `/v1/delegated-qurls/${encodeURIComponent(qurlId)}`,
+    );
+    return validateDelegatedQurl(data, qurlId);
   }
 
   /**

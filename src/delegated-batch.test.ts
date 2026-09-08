@@ -262,28 +262,31 @@ describe("delegated qURL batches", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
-  it("returns a definitive 4xx without an outcome-unknown wrapper", async () => {
-    const fetch = mockFetch({
-      status: 409,
-      body: {
-        error: {
-          status: 409,
-          code: "idempotency_conflict",
-          title: "Conflict",
-          detail: "The key belongs to another request",
+  it.each([404, 409, 422])(
+    "returns a definitive %i without an outcome-unknown wrapper",
+    async (status) => {
+      const fetch = mockFetch({
+        status,
+        body: {
+          error: {
+            status,
+            code: "invalid_request",
+            title: "Request Rejected",
+            detail: "The request did not commit",
+          },
+          meta: { request_id: "req_rejected" },
         },
-        meta: { request_id: "req_conflict" },
-      },
-    });
+      });
 
-    const error = await createClient(fetch)
-      .createDelegatedQurlBatch(INPUT, { idempotencyKey: IDEMPOTENCY_KEY })
-      .catch((caught: unknown) => caught);
+      const error = await createClient(fetch)
+        .createDelegatedQurlBatch(INPUT, { idempotencyKey: IDEMPOTENCY_KEY })
+        .catch((caught: unknown) => caught);
 
-    expect(error).not.toBeInstanceOf(DelegatedBatchOutcomeUnknownError);
-    expect(error).toMatchObject({ status: 409, code: "idempotency_conflict" });
-    expect(fetch).toHaveBeenCalledTimes(1);
-  });
+      expect(error).not.toBeInstanceOf(DelegatedBatchOutcomeUnknownError);
+      expect(error).toMatchObject({ status, code: "invalid_request" });
+      expect(fetch).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it("classifies a debug callback failure after dispatch as outcome unknown", async () => {
     const fetch = mockFetch({ status: 202, headers: ACCEPTED_HEADERS, body: acceptedBody() });
@@ -476,6 +479,33 @@ describe("delegated qURL batches", () => {
       code: "mutation_outcome_unknown",
     });
     expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ["a different qURL ID", { qurl_id: "q_aaaaaaaaaaa" }],
+    ["an unknown status", { status: "unknown" }],
+    ["a non-numeric session duration", { session_duration: "3600" }],
+  ])("rejects delegated qURL metadata with %s", async (_label, override) => {
+    const fetch = mockFetch({
+      status: 200,
+      body: {
+        data: {
+          qurl_id: QURL_ID,
+          status: "active",
+          expires_at: "2026-09-07T13:00:00Z",
+          one_time_use: false,
+          max_sessions: 0,
+          session_duration: 3600,
+          ...override,
+        },
+        meta: { request_id: "req_get_qurl" },
+      },
+    });
+
+    await expect(createClient(fetch).getDelegatedQurl(QURL_ID)).rejects.toMatchObject({
+      status: 200,
+      code: ERROR_CODE_UNEXPECTED_RESPONSE,
+    });
   });
 
   it.each(["q_ABCDEF01234", "q_too-short"])(
