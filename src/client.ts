@@ -3783,11 +3783,14 @@ export class QURLClient {
       if (status !== 202) {
         throw delegatedResponseError(status, "create returned an unexpected success status");
       }
-      const { data, requestId } = delegatedEnvelope(envelope, status);
-      // Keep a valid identity when a stricter acceptance-field check fails.
-      if (typeof data.batch_id === "string" && DELEGATED_BATCH_ID_PATTERN.test(data.batch_id)) {
-        acceptedBatchId = data.batch_id;
+      const rawData = envelope.data;
+      if (typeof rawData === "object" && rawData !== null && !Array.isArray(rawData)) {
+        const candidate = (rawData as Record<string, unknown>).batch_id;
+        if (typeof candidate === "string" && DELEGATED_BATCH_ID_PATTERN.test(candidate)) {
+          acceptedBatchId = candidate;
+        }
       }
+      const { data, requestId } = delegatedEnvelope(envelope, status);
       const base = delegatedBatchBase(data, status, requestId);
       if (data.status !== "queued" || base.itemCount !== input.grants.length) {
         throw delegatedResponseError(status, "acceptance data is inconsistent", requestId);
@@ -3934,6 +3937,9 @@ export class QURLClient {
       `/v1/delegated-qurls/${encodeURIComponent(qurlId)}`,
     );
     const status = envelope.__http_status ?? 0;
+    if (status !== 200) {
+      throw delegatedResponseError(status, "read returned an unexpected success status");
+    }
     const { data, requestId } = delegatedEnvelope(envelope, status);
     return validateDelegatedQurl(data, qurlId, status, requestId);
   }

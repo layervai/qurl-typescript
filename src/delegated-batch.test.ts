@@ -254,6 +254,18 @@ describe("delegated qURL batches", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
+  it("preserves an accepted batch ID when response metadata is malformed", async () => {
+    const body = acceptedBody();
+    body.meta = { request_id: 42, forward_compatible: true };
+    const error = await createClient(mockFetch({ status: 202, headers: ACCEPTED_HEADERS, body }))
+      .createDelegatedQurlBatch(INPUT, { idempotencyKey: IDEMPOTENCY_KEY })
+      .catch((caught: unknown) => caught as DelegatedBatchOutcomeUnknownError);
+
+    expect(error).toBeInstanceOf(DelegatedBatchOutcomeUnknownError);
+    expect(error.batchId).toBe(BATCH_ID);
+    expect(error.cause).toMatchObject({ status: 202, code: ERROR_CODE_UNEXPECTED_RESPONSE });
+  });
+
   it("classifies a server failure after dispatch as outcome unknown", async () => {
     const fetch = mockFetch({
       status: 500,
@@ -640,6 +652,28 @@ describe("delegated qURL batches", () => {
       status: 200,
       code: ERROR_CODE_UNEXPECTED_RESPONSE,
       requestId: "req_get_qurl",
+    });
+  });
+
+  it("rejects an unexpected delegated qURL success status", async () => {
+    const fetch = mockFetch({
+      status: 203,
+      body: {
+        data: {
+          qurl_id: QURL_ID,
+          status: "active",
+          expires_at: "2026-09-07T13:00:00Z",
+          one_time_use: false,
+          max_sessions: 0,
+          session_duration: 3600,
+        },
+        meta: { request_id: "req_get_qurl" },
+      },
+    });
+
+    await expect(createClient(fetch).getDelegatedQurl(QURL_ID)).rejects.toMatchObject({
+      status: 203,
+      code: ERROR_CODE_UNEXPECTED_RESPONSE,
     });
   });
 
