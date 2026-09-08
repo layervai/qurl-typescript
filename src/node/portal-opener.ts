@@ -12,6 +12,7 @@ import {
 import { nativeKnock, type NativeExchangeOptions } from "./native-udp.js";
 import { isStrictJsonObject, parseStrictJson, type StrictJsonValue } from "./strict-json.js";
 import { verifyQv2Link, type VerifiedQv2Link } from "./qv2.js";
+import { parseCrid } from "../crid.js";
 
 const SESSION_COOKIE = "qurl_vsession";
 const MAX_REDIRECT_REQUESTS = 10;
@@ -241,6 +242,11 @@ export function createPortalOpenerWithRuntime(
   }
   if (typeof options.qurl !== "string" || options.qurl.trim() === "") {
     throw new PortalConfigurationError("native portal opener qurl must be a non-empty string");
+  }
+  if (options.expectedCRID !== undefined && !parseCrid(options.expectedCRID, true)) {
+    throw new PortalConfigurationError(
+      "native portal opener expectedCRID is invalid or unsupported",
+    );
   }
   if (
     options.openTimeoutMs !== undefined &&

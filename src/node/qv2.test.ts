@@ -188,5 +188,10 @@ it.each([
     .filter((v) => v.name.startsWith("accept_unknown"))
     .map((v) => v.value),
 ])("rejects unsupported held CRID %s", (expected) => {
-  expect(() => verifyQv2Link(matched.qurl, matched.issuerKeys, expected)).toThrow("expected CRID");
+  const link = createMatchedQv2Fixture({
+    resourceSpki: Buffer.from(cridVectors.producer_cases[0].der_spki_b64url, "base64url"),
+  });
+  expect(() => verifyQv2Link(link.qurl, link.issuerKeys, expected)).toThrow(
+    "invalid or unsupported expected CRID",
+  );
 });

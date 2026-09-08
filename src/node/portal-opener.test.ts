@@ -2041,6 +2041,10 @@ describe("native portal opener", () => {
   });
 });
 
+it.each(["", "invalid"])("rejects invalid expectedCRID at construction: %s", (expectedCRID) => {
+  expect(() => fixture(undefined, { expectedCRID })).toThrow(PortalConfigurationError);
+});
+
 it("rejects a valid foreign-resource qURL before native access", async () => {
   const { opener, knock } = fixture(undefined, {
     expectedCRID: "qe4jqpd7eaoslq7jinmjv4yikgzmcxgpjfsuobiniqnko32lpw742pueoujq",
