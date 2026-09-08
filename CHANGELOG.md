@@ -46,6 +46,21 @@
   idempotency path, and treat a consumed bootstrap key as outcome-unknown.
 - **client:** send the required `{}` body for a default portal mint.
 
+## [0.7.0](https://github.com/layervai/qurl-typescript/compare/qurl-v0.6.0...qurl-v0.7.0) (2026-09-08)
+
+
+### ⚠ BREAKING CHANGES
+
+* share resources and use CRID resource addresses ([#246](https://github.com/layervai/qurl-typescript/issues/246))
+* **client:** use Connector CRIDs and fix resource deletion ([#244](https://github.com/layervai/qurl-typescript/issues/244))
+* **client:** adopt the kind-first credential API ([#223](https://github.com/layervai/qurl-typescript/issues/223))
+
+### Features
+
+* **client:** adopt the kind-first credential API ([#223](https://github.com/layervai/qurl-typescript/issues/223)) ([6a4bbf7](https://github.com/layervai/qurl-typescript/commit/6a4bbf7221dde0b6537fc64b470765d3cdcb880f))
+* **client:** use Connector CRIDs and fix resource deletion ([#244](https://github.com/layervai/qurl-typescript/issues/244)) ([9cbca42](https://github.com/layervai/qurl-typescript/commit/9cbca425f3b6d277575d4c722c43633925beaaba))
+* share resources and use CRID resource addresses ([#246](https://github.com/layervai/qurl-typescript/issues/246)) ([a624566](https://github.com/layervai/qurl-typescript/commit/a6245664cf1d24f62a89ac52e15445519a32e151))
+
 ## [0.6.0](https://github.com/layervai/qurl-typescript/compare/qurl-v0.5.0...qurl-v0.6.0) (2026-09-07)
 
 
