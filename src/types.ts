@@ -494,7 +494,8 @@ interface DelegatedQurlBatchBase {
   batch_id: string;
   item_count: number;
   submitted_at: string;
-  etag: string;
+  /** Strong validator when the response provides one. */
+  etag?: string;
   request_id: string;
 }
 
@@ -502,6 +503,7 @@ interface DelegatedQurlBatchBase {
 export interface DelegatedQurlBatchAccepted extends DelegatedQurlBatchBase {
   http_status: 202;
   status: "queued";
+  etag: string;
   location: string;
   /** Positive Retry-After delta in seconds. */
   retry_after: number;
@@ -536,6 +538,7 @@ export type DelegatedQurlBatchItemResult =
 export interface DelegatedQurlBatchPending extends DelegatedQurlBatchBase {
   http_status: 202;
   status: "queued" | "running";
+  etag: string;
   /** Positive Retry-After delta in seconds. */
   retry_after: number;
 }

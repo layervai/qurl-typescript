@@ -272,23 +272,21 @@ const key = crypto.randomUUID();
 const mintCapability = process.env.QURL_MINT_CAPABILITY!;
 const recipients = [{ name: 'Alice' }];
 
-let accepted;
-try {
-  accepted = await client.createDelegatedQurlBatch(
+const accepted = await client
+  .createDelegatedQurlBatch(
     {
       mint_capability: mintCapability,
       grants: recipients.map((recipient) => ({ label: recipient.name, expires_in: '1h' })),
     },
     { idempotencyKey: key },
-  );
-} catch (error) {
-  if (error instanceof DelegatedBatchOutcomeUnknownError) {
-    // A valid accepted body keeps its batch ID for direct reconciliation.
-    if (error.batchId) await client.getDelegatedQurlBatch(error.batchId);
-    // Otherwise, a deliberate retry must reuse this key and exact body.
-  }
-  throw error;
-}
+  )
+  .catch((error: unknown) => {
+    if (error instanceof DelegatedBatchOutcomeUnknownError && error.batchId) {
+      console.error('Poll the accepted batch before retrying', { batchId: error.batchId });
+    }
+    // A deliberate retry must reuse this key and exact body.
+    throw error;
+  });
 
 let etag = accepted.etag;
 let retryAfter = accepted.retry_after;

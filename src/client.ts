@@ -2078,10 +2078,15 @@ function validateDelegatedQurlLink(value: unknown): value is string {
   }
 }
 
-function validateDelegatedQurl(value: unknown, expectedQurlId: string): DelegatedQurl {
-  const data = delegatedResponseObject(value, 200, "response data");
-  if (data.qurl_id !== expectedQurlId || !DELEGATED_QURL_ID_PATTERN.test(expectedQurlId)) {
-    throw delegatedResponseError(200, "response has invalid qurl_id");
+function validateDelegatedQurl(
+  value: unknown,
+  expectedQurlId: string,
+  status: number,
+  requestId: string,
+): DelegatedQurl {
+  const data = delegatedResponseObject(value, status, "response data", requestId);
+  if (data.qurl_id !== expectedQurlId) {
+    throw delegatedResponseError(status, "response has invalid qurl_id", requestId);
   }
   if (
     data.status !== "active" &&
@@ -2089,7 +2094,7 @@ function validateDelegatedQurl(value: unknown, expectedQurlId: string): Delegate
     data.status !== "expired" &&
     data.status !== "revoked"
   ) {
-    throw delegatedResponseError(200, "response has invalid status");
+    throw delegatedResponseError(status, "response has invalid status", requestId);
   }
   if (
     !isUtcTimestamp(data.expires_at) ||
@@ -2104,7 +2109,7 @@ function validateDelegatedQurl(value: unknown, expectedQurlId: string): Delegate
         data.access_policy === null ||
         Array.isArray(data.access_policy)))
   ) {
-    throw delegatedResponseError(200, "response has invalid qURL metadata");
+    throw delegatedResponseError(status, "response has invalid qURL metadata", requestId);
   }
   return data as unknown as DelegatedQurl;
 }
@@ -2128,7 +2133,7 @@ function validateDelegatedBatchResults(
       throw delegatedResponseError(status, `result ${index} has invalid index`, requestId);
     }
     if (item.status === "succeeded") {
-      if ("error" in item) {
+      if (item.error !== undefined && item.error !== null) {
         throw delegatedResponseError(status, `result ${index} has conflicting fields`, requestId);
       }
       const qurl = delegatedResponseObject(item.qurl, status, `result ${index} qurl`, requestId);
@@ -2155,7 +2160,7 @@ function validateDelegatedBatchResults(
         },
       };
     }
-    if (item.status !== "failed" || "qurl" in item) {
+    if (item.status !== "failed" || (item.qurl !== undefined && item.qurl !== null)) {
       throw delegatedResponseError(status, `result ${index} has invalid status`, requestId);
     }
     const error = delegatedResponseObject(item.error, status, `result ${index} error`, requestId);
@@ -3886,10 +3891,7 @@ export class QURLClient {
     ) {
       throw delegatedResponseError(status, "terminal data has a non-terminal status", requestId);
     }
-    if (
-      !isUtcTimestamp(data.completed_at) ||
-      Date.parse(data.completed_at) < Date.parse(base.submittedAt)
-    ) {
+    if (!isUtcTimestamp(data.completed_at)) {
       throw delegatedResponseError(status, "terminal data has invalid completed_at", requestId);
     }
     const results = validateDelegatedBatchResults(
@@ -3899,7 +3901,11 @@ export class QURLClient {
       status,
       requestId,
     );
-    const responseHeaders = delegatedResponseHeaders(envelope, status, false, requestId);
+    const etag = envelope.__http_headers?.get("ETag") ?? undefined;
+    const terminalEtag =
+      etag !== undefined && etag.length <= MAX_DELEGATED_ETAG && STRONG_ETAG_PATTERN.test(etag)
+        ? etag
+        : undefined;
     return {
       http_status: 200,
       batch_id: base.batchId,
@@ -3908,7 +3914,7 @@ export class QURLClient {
       submitted_at: base.submittedAt,
       completed_at: data.completed_at,
       results,
-      etag: responseHeaders.etag,
+      ...(terminalEtag === undefined ? {} : { etag: terminalEtag }),
       request_id: requestId,
     };
   }
@@ -3920,11 +3926,13 @@ export class QURLClient {
         "getDelegatedQurl: qurlId must match q_ plus 11 lowercase hexadecimal characters",
       );
     }
-    const data = await this.request<unknown>(
+    const envelope = await this.rawRequest<unknown>(
       "GET",
       `/v1/delegated-qurls/${encodeURIComponent(qurlId)}`,
     );
-    return validateDelegatedQurl(data, qurlId);
+    const status = envelope.__http_status ?? 0;
+    const { data, requestId } = delegatedEnvelope(envelope, status);
+    return validateDelegatedQurl(data, qurlId, status, requestId);
   }
 
   /**

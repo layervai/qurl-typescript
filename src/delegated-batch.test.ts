@@ -431,31 +431,77 @@ describe("delegated qURL batches", () => {
       },
       meta: { request_id: "req_terminal" },
     };
-    const fetch = mockFetch({ status: 200, headers: COMMON_HEADERS, body });
+    const fetch = mockFetch({ status: 200, body });
 
     await expect(createClient(fetch).getDelegatedQurlBatch(BATCH_ID)).resolves.toEqual({
       http_status: 200,
       ...body.data,
-      etag: ETAG,
       request_id: "req_terminal",
     });
   });
 
-  it("accepts fractional timestamps and a forward-compatible failure code", async () => {
+  it("accepts clock skew, fractional timestamps, and a forward-compatible failure code", async () => {
     const body = pendingBody({
       status: "failed",
       item_count: 1,
-      submitted_at: "2026-09-07T12:00:00.125Z",
-      completed_at: "2026-09-07T12:00:01.5Z",
+      submitted_at: "2026-09-07T12:00:01.125Z",
+      completed_at: "2026-09-07T12:00:00.5Z",
       results: [{ index: 0, status: "failed", error: { code: "policy_denied", message: "no" } }],
     });
     const fetch = mockFetch({ status: 200, headers: COMMON_HEADERS, body });
 
     await expect(createClient(fetch).getDelegatedQurlBatch(BATCH_ID)).resolves.toMatchObject({
-      submitted_at: "2026-09-07T12:00:00.125Z",
-      completed_at: "2026-09-07T12:00:01.5Z",
+      submitted_at: "2026-09-07T12:00:01.125Z",
+      completed_at: "2026-09-07T12:00:00.5Z",
       results: [{ error: { code: "policy_denied" } }],
     });
+  });
+
+  it("accepts explicit null for the inactive terminal result field", async () => {
+    const body = pendingBody({
+      status: "succeeded",
+      item_count: 1,
+      completed_at: "2026-09-07T12:00:01Z",
+      results: [
+        {
+          index: 0,
+          status: "succeeded",
+          error: null,
+          qurl: {
+            qurl_id: QURL_ID,
+            qurl_link: "https://links.test/#secret",
+            expires_at: "2026-09-07T13:00:00Z",
+          },
+        },
+      ],
+    });
+
+    await expect(
+      createClient(mockFetch({ status: 200, body })).getDelegatedQurlBatch(BATCH_ID),
+    ).resolves.toMatchObject({ status: "succeeded", results: [{ status: "succeeded" }] });
+  });
+
+  it.each([
+    "http://links.test/#secret",
+    "https://user:pass@links.test/#secret",
+    "https://links.test/",
+  ])("rejects unsafe delegated bearer link %s", async (qurlLink) => {
+    const body = pendingBody({
+      status: "succeeded",
+      item_count: 1,
+      completed_at: "2026-09-07T12:00:01Z",
+      results: [
+        {
+          index: 0,
+          status: "succeeded",
+          qurl: { qurl_id: QURL_ID, qurl_link: qurlLink, expires_at: "2026-09-07T13:00:00Z" },
+        },
+      ],
+    });
+
+    await expect(
+      createClient(mockFetch({ status: 200, body })).getDelegatedQurlBatch(BATCH_ID),
+    ).rejects.toMatchObject({ status: 200, code: ERROR_CODE_UNEXPECTED_RESPONSE });
   });
 
   it("gets and deletes delegated qURLs without hidden retries", async () => {
@@ -526,6 +572,7 @@ describe("delegated qURL batches", () => {
     await expect(createClient(fetch).getDelegatedQurl(QURL_ID)).rejects.toMatchObject({
       status: 200,
       code: ERROR_CODE_UNEXPECTED_RESPONSE,
+      requestId: "req_get_qurl",
     });
   });
 
