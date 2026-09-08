@@ -1,6 +1,14 @@
-import { createPublicKey, createPrivateKey, timingSafeEqual, verify } from "node:crypto";
+import {
+  createPublicKey,
+  createPrivateKey,
+  createHash,
+  timingSafeEqual,
+  verify,
+} from "node:crypto";
 import type { KeyObject } from "node:crypto";
 import { isStrictJsonObject, parseStrictJson, type StrictJsonValue } from "./strict-json.js";
+
+import { CRID_DOMAIN, parseCrid } from "../crid.js";
 
 const TRANSPORT_PREFIX = "qv2t1";
 const FRAGMENT_PREFIX = "qv2";
@@ -41,6 +49,7 @@ export interface VerifiedQv2Link {
 export function verifyQv2Link(
   qurl: string,
   issuers: ReadonlyMap<string, KeyObject>,
+  expectedCRID?: string,
 ): VerifiedQv2Link {
   const hash = qurl.indexOf("#");
   if (hash < 0) throw new Error("qURL link has no credential fragment");
@@ -55,6 +64,17 @@ export function verifyQv2Link(
   const claims = parseClaims(decodeCanonicalBase64Url(claimsB64));
   const secret = parseAndWipeSecret(decodeCanonicalBase64Url(secretB64));
   verifyIssuerClaims(claimsB64, signatureB64, issuers, claims);
+  if (expectedCRID !== undefined) {
+    const expected = parseCrid(expectedCRID, true);
+    if (!expected) throw new Error("invalid or unsupported expected CRID");
+    // The native verifier is synchronous; the portable helper uses WebCrypto.
+    const digest = createHash("sha256")
+      .update(CRID_DOMAIN)
+      .update(decodeCanonicalBase64Url(claims.resourcePublicKeyB64))
+      .digest();
+    if (!timingSafeEqual(expected, digest.subarray(0, expected.length)))
+      throw new Error("qURL resource key does not match the expected CRID");
+  }
   const privateKey = decodeCanonicalBase64Url(secret.qurlUserPrivateKeyB64);
   let retainPrivateKey = false;
   try {

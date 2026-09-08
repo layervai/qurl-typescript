@@ -182,7 +182,16 @@ console.log(share.qurlId); // Safe handle for revoking only this link later
 `shareResource` returns the current share-safe `#qv2t1...` link. Recipients
 open that URL in the qURL browser flow. For native TypeScript opening, pass
 `share.link` to `createPortalOpener` from `@layervai/qurl/node` with trusted
-`QURL_DEPLOYMENT` configuration. See the native opener example above.
+`QURL_DEPLOYMENT` configuration and `expectedCRID: advertisedCRID`.
+Obtain `advertisedCRID` independently of the response carrying the link.
+The opener verifies the issuer signature and CRID/key binding before each
+native access request, including renewals. Empty, malformed, unsupported,
+and mismatched CRIDs fail closed. Omitting the option retains link-only access.
+This verifies resource identity, not content or current revocation state.
+The access-binding check accepts only locally registered versions and their
+registered digest widths, matching the Go SDK and browser agent. Upgrade the
+SDK when a new version is activated. This is stricter than the forwarding
+and supplied-key helper below. See the native opener example below.
 `verifyCrid` does not open the link or make a network request.
 
 `verifyCrid` verifies that the response CRID derives from the trusted resource
@@ -366,6 +375,7 @@ const { createPortalOpener } = require('@layervai/qurl/node');
 async function uploadPrivateObject(uploadBody) {
   const opener = createPortalOpener({
     qurl: process.env.PRIVATE_UPLOAD_QURL,
+    expectedCRID: process.env.PRIVATE_UPLOAD_CRID ?? '', // Independently held; missing fails closed.
   });
   try {
     await opener.start();
