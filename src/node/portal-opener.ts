@@ -243,7 +243,7 @@ export function createPortalOpenerWithRuntime(
   if (typeof options.qurl !== "string" || options.qurl.trim() === "") {
     throw new PortalConfigurationError("native portal opener qurl must be a non-empty string");
   }
-  if (options.expectedCRID !== undefined && !parseCrid(options.expectedCRID, true)) {
+  if ("expectedCRID" in options && !parseCrid(options.expectedCRID, true)) {
     throw new PortalConfigurationError(
       "native portal opener expectedCRID is invalid or unsupported",
     );
