@@ -1963,12 +1963,16 @@ function delegatedResponseHeaders(
   requireRetryAfter: boolean,
   requestId?: string,
 ): { etag: string; retryAfter?: number } {
-  const cacheControl = requiredDelegatedHeader(envelope, "Cache-Control", status, requestId);
-  const cacheDirectives = new Set(
-    cacheControl.split(",").map((directive) => directive.trim().split("=", 1)[0].toLowerCase()),
-  );
-  if (!cacheDirectives.has("private") || !cacheDirectives.has("no-store")) {
-    throw delegatedResponseError(status, "response has invalid Cache-Control", requestId);
+  const cacheControl = envelope.__http_headers?.get("Cache-Control") ?? null;
+  if (cacheControl !== null) {
+    const cacheDirectives = new Set(
+      cacheControl.split(",").map((directive) => directive.trim().split("=", 1)[0].toLowerCase()),
+    );
+    if (!cacheDirectives.has("private") || !cacheDirectives.has("no-store")) {
+      throw delegatedResponseError(status, "response has invalid Cache-Control", requestId);
+    }
+  } else if (status !== 304) {
+    requiredDelegatedHeader(envelope, "Cache-Control", status, requestId);
   }
   const etag = requiredDelegatedHeader(envelope, "ETag", status, requestId);
   if (etag.length > MAX_DELEGATED_ETAG || !STRONG_ETAG_PATTERN.test(etag)) {
@@ -2038,7 +2042,11 @@ function validateDelegatedLocation(
 ): string {
   let location: URL;
   try {
-    location = new URL(value, `${baseUrl}/`);
+    const base = new URL(`${baseUrl}/`);
+    const relative = value.startsWith("/v1/delegated-qurl-batches/")
+      ? `${base.pathname.replace(/\/$/, "")}${value}`
+      : value;
+    location = new URL(relative, base);
   } catch {
     throw delegatedResponseError(status, "response has invalid Location", requestId);
   }
@@ -2174,16 +2182,17 @@ function validateDelegatedBatchResults(
   return results;
 }
 
-function classifyDelegatedBatchCreateFailure(error: unknown): never {
+function classifyDelegatedBatchCreateFailure(error: unknown, batchId?: string): never {
   if (!(error instanceof QURLError)) {
     throw new DelegatedBatchOutcomeUnknownError(
       new RuntimeError("Unexpected failure after delegated batch dispatch", { cause: error }),
+      batchId,
     );
   }
   if (DEFINITIVE_DELEGATED_CREATE_STATUSES.has(error.status)) {
     throw error;
   }
-  throw new DelegatedBatchOutcomeUnknownError(error);
+  throw new DelegatedBatchOutcomeUnknownError(error, batchId);
 }
 
 // `format: uri` in the OpenAPI spec allows schemes the SDK doesn't
@@ -3757,6 +3766,7 @@ export class QURLClient {
     validateDelegatedBatchCreateOptions(options);
 
     let dispatched = false;
+    let acceptedBatchId: string | undefined;
     try {
       const envelope = await this.rawRequest<unknown>("POST", "/v1/delegated-qurl-batches", input, {
         requestOptions: options,
@@ -3773,6 +3783,7 @@ export class QURLClient {
       }
       const { data, requestId } = delegatedEnvelope(envelope, status);
       const base = delegatedBatchBase(data, status, requestId);
+      acceptedBatchId = base.batchId;
       if (data.status !== "queued" || base.itemCount !== input.grants.length) {
         throw delegatedResponseError(status, "acceptance data is inconsistent", requestId);
       }
@@ -3797,7 +3808,7 @@ export class QURLClient {
       };
     } catch (error) {
       if (!dispatched) throw error;
-      classifyDelegatedBatchCreateFailure(error);
+      classifyDelegatedBatchCreateFailure(error, acceptedBatchId);
     }
   }
 

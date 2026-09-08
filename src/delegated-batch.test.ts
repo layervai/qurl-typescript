@@ -184,6 +184,26 @@ describe("delegated qURL batches", () => {
     });
   });
 
+  it("resolves relative Location under a path-prefixed API base URL", async () => {
+    const location = `/v1/delegated-qurl-batches/${BATCH_ID}`;
+    const fetch = mockFetch({
+      status: 202,
+      headers: { ...ACCEPTED_HEADERS, Location: location },
+      body: acceptedBody(),
+    });
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai/edge",
+      fetch,
+    });
+
+    await expect(
+      client.createDelegatedQurlBatch(INPUT, { idempotencyKey: IDEMPOTENCY_KEY }),
+    ).resolves.toMatchObject({
+      location: `https://api.test.layerv.ai/edge${location}`,
+    });
+  });
+
   it("ignores additive response fields", async () => {
     const fetch = mockFetch({
       status: 202,
@@ -215,6 +235,7 @@ describe("delegated qURL batches", () => {
       .catch((caught: unknown) => caught as DelegatedBatchOutcomeUnknownError);
 
     expect(error).toBeInstanceOf(DelegatedBatchOutcomeUnknownError);
+    expect(error.batchId).toBe(BATCH_ID);
     expect(error.cause).toMatchObject({ status: 202, code: ERROR_CODE_UNEXPECTED_RESPONSE });
     expect(fetch).toHaveBeenCalledTimes(1);
   });
@@ -360,8 +381,8 @@ describe("delegated qURL batches", () => {
     expect(vi.mocked(fetch).mock.calls[1][1]?.headers).toMatchObject({ "If-None-Match": ETAG });
   });
 
-  it("accepts a 304 without Retry-After", async () => {
-    const fetch = mockFetch({ status: 304, headers: COMMON_HEADERS });
+  it("accepts a 304 without optional response headers", async () => {
+    const fetch = mockFetch({ status: 304, headers: { ETag: ETAG } });
 
     await expect(
       createClient(fetch).getDelegatedQurlBatch(BATCH_ID, { etag: ETAG }),

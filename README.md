@@ -283,7 +283,9 @@ try {
   );
 } catch (error) {
   if (error instanceof DelegatedBatchOutcomeUnknownError) {
-    // Reconcile first. A deliberate retry must reuse this key and exact body.
+    // A valid accepted body keeps its batch ID for direct reconciliation.
+    if (error.batchId) await client.getDelegatedQurlBatch(error.batchId);
+    // Otherwise, a deliberate retry must reuse this key and exact body.
   }
   throw error;
 }

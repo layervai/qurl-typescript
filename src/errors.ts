@@ -213,8 +213,10 @@ export class ConnectorResourceOutcomeUnknownError extends QURLError {
 export class DelegatedBatchOutcomeUnknownError extends QURLError {
   declare readonly code: typeof ERROR_CODE_DELEGATED_BATCH_OUTCOME_UNKNOWN;
   declare readonly cause: QURLError;
+  /** Valid accepted batch identity, when the response body provided one. */
+  readonly batchId?: string;
 
-  constructor(cause: QURLError) {
+  constructor(cause: QURLError, batchId?: string) {
     super({
       status: 0,
       code: ERROR_CODE_DELEGATED_BATCH_OUTCOME_UNKNOWN,
@@ -223,6 +225,7 @@ export class DelegatedBatchOutcomeUnknownError extends QURLError {
       request_id: cause.requestId,
     });
     this.name = "DelegatedBatchOutcomeUnknownError";
+    this.batchId = batchId;
     attachErrorCause(this, { cause });
   }
 }
