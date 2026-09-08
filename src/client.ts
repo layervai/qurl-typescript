@@ -55,6 +55,7 @@ import type {
   Domain,
   DomainListOutput,
   DomainVerifyResult,
+  DelegatedQurl,
   DelegatedQurlBatchAccepted,
   DelegatedQurlBatchItemResult,
   DelegatedQurlGrant,
@@ -172,8 +173,8 @@ type RawRequestOptions = {
   /** When false, forward a caller key but do not create one for this operation. */
   generateIdempotencyKey?: boolean;
   ifNoneMatch?: string;
-  /** Retain headers and original JSON keys for endpoint-specific response checks. */
-  captureResponseContract?: boolean;
+  /** Retain headers for endpoint-specific response checks. */
+  captureResponseHeaders?: boolean;
   /** Mark the point after local preparation and immediately before fetch. */
   onDispatch?: () => void;
 };
@@ -1185,17 +1186,12 @@ const MAX_TAG_LENGTH = 50;
 const MAX_AUTO_PAGINATION_PAGES = 10_000;
 const MIN_DELEGATED_BATCH_IDEMPOTENCY_KEY = 32;
 const MAX_DELEGATED_MINT_CAPABILITY = 8192;
-const MAX_DELEGATED_POLICY_LIST_ITEMS = 10;
-// Delegated AccessPolicy keeps this OpenAPI maxItems bound even though
-// category values remain forward-compatible.
-const MAX_DELEGATED_AI_CATEGORIES = 13;
-const MAX_DELEGATED_IP_ENTRY = 43;
-const MAX_DELEGATED_ERROR_MESSAGE = 500;
 const MAX_DELEGATED_ETAG = 96;
 const DELEGATED_BATCH_ID_PATTERN = /^dqb_[A-Za-z0-9_-]{22}$/;
 const DELEGATED_QURL_ID_PATTERN = /^q_[0-9a-f]{11}$/;
-const STRONG_ETAG_PATTERN = /^"[\x21\x23-\x7e]*"$/;
-const CANONICAL_UTC_SECOND_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
+const STRONG_ETAG_PATTERN = /^"[\x21\x23-\x7e]+"$/;
+const UTC_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
+const DEFINITIVE_DELEGATED_CREATE_STATUSES = new Set([400, 401, 403, 409, 413, 429]);
 // Keep these identity contracts aligned with qurl-go and the public API.
 const CONNECTOR_SLUG_PATTERN = /^[a-z][a-z0-9-]{1,62}[a-z0-9]$/;
 // Current service schemas intentionally share this grammar, but keep the
@@ -1755,28 +1751,6 @@ const AI_AGENT_POLICY_LIST_FIELDS = [
   "allow_categories",
 ] as const satisfies readonly (keyof AIAgentPolicy)[];
 
-const DELEGATED_ACCESS_POLICY_KEYS = [
-  ...ACCESS_POLICY_LIST_FIELDS,
-  ...ACCESS_POLICY_STRING_FIELDS,
-  "ai_agent_policy",
-] as const satisfies readonly (keyof AccessPolicy)[];
-
-const DELEGATED_AI_AGENT_POLICY_KEYS = [
-  "block_all",
-  ...AI_AGENT_POLICY_LIST_FIELDS,
-] as const satisfies readonly (keyof AIAgentPolicy)[];
-
-assertExhaustive<
-  Exclude<keyof AccessPolicy, (typeof DELEGATED_ACCESS_POLICY_KEYS)[number]> extends never
-    ? true
-    : never
->(true);
-assertExhaustive<
-  Exclude<keyof AIAgentPolicy, (typeof DELEGATED_AI_AGENT_POLICY_KEYS)[number]> extends never
-    ? true
-    : never
->(true);
-
 function requireValidAccessPolicy(policy: AccessPolicy | null | undefined): void {
   // null/undefined → "don't touch". Server is authoritative on CIDR /
   // ISO-3166 / regex grammar; this guard catches only the shape errors
@@ -1829,91 +1803,6 @@ function requireValidAccessPolicy(policy: AccessPolicy | null | undefined): void
   }
 }
 
-function validateDelegatedAccessPolicy(policy: unknown, field: string): void {
-  if (typeof policy !== "object" || policy === null || Array.isArray(policy)) {
-    throw clientValidationError(`${field}: must be an object (got ${describeShape(policy)})`);
-  }
-  const typed = policy as AccessPolicy;
-  requireNoUnknownFields(
-    typed as unknown as Record<string, unknown>,
-    DELEGATED_ACCESS_POLICY_KEYS,
-    field,
-  );
-  requireValidAccessPolicy(typed);
-
-  for (const listField of ["ip_allowlist", "ip_denylist"] as const) {
-    const values = typed[listField];
-    if (values === undefined) continue;
-    if (values.length > MAX_DELEGATED_POLICY_LIST_ITEMS) {
-      throw clientValidationError(
-        `${field}.${listField}: must contain at most ${MAX_DELEGATED_POLICY_LIST_ITEMS} items`,
-      );
-    }
-    for (const [index, value] of values.entries()) {
-      if (typeof value !== "string" || value.length > MAX_DELEGATED_IP_ENTRY) {
-        throw clientValidationError(
-          `${field}.${listField}[${index}]: must be a string of at most ${MAX_DELEGATED_IP_ENTRY} characters`,
-        );
-      }
-    }
-  }
-
-  for (const listField of ["geo_allowlist", "geo_denylist"] as const) {
-    const values = typed[listField];
-    if (values === undefined) continue;
-    if (values.length > MAX_DELEGATED_POLICY_LIST_ITEMS) {
-      throw clientValidationError(
-        `${field}.${listField}: must contain at most ${MAX_DELEGATED_POLICY_LIST_ITEMS} items`,
-      );
-    }
-    for (const [index, value] of values.entries()) {
-      if (typeof value !== "string" || !/^[A-Z]{2}$/.test(value)) {
-        throw clientValidationError(
-          `${field}.${listField}[${index}]: must be an uppercase two-letter country code`,
-        );
-      }
-    }
-  }
-
-  for (const stringField of ACCESS_POLICY_STRING_FIELDS) {
-    const value = typed[stringField];
-    if (value !== undefined && value.length > 256) {
-      throw clientValidationError(`${field}.${stringField}: must be 256 characters or fewer`);
-    }
-  }
-
-  const aiPolicy = typed.ai_agent_policy;
-  if (aiPolicy === undefined) return;
-  requireNoUnknownFields(
-    aiPolicy as unknown as Record<string, unknown>,
-    DELEGATED_AI_AGENT_POLICY_KEYS,
-    `${field}.ai_agent_policy`,
-  );
-  for (const listField of AI_AGENT_POLICY_LIST_FIELDS) {
-    const values = aiPolicy[listField];
-    if (values === undefined) continue;
-    if (values.length > MAX_DELEGATED_AI_CATEGORIES) {
-      throw clientValidationError(
-        `${field}.ai_agent_policy.${listField}: must contain at most ${MAX_DELEGATED_AI_CATEGORIES} items`,
-      );
-    }
-    const seen = new Set<string>();
-    for (const [index, value] of values.entries()) {
-      if (typeof value !== "string") {
-        throw clientValidationError(
-          `${field}.ai_agent_policy.${listField}[${index}]: must be a string`,
-        );
-      }
-      if (seen.has(value)) {
-        throw clientValidationError(
-          `${field}.ai_agent_policy.${listField}: must not contain duplicate categories`,
-        );
-      }
-      seen.add(value);
-    }
-  }
-}
-
 function validateCreateDelegatedQurlBatchInput(
   input: unknown,
 ): asserts input is CreateDelegatedQurlBatchInput {
@@ -1960,7 +1849,7 @@ function validateCreateDelegatedQurlBatchInput(
       }
     }
     if (grant.access_policy !== undefined) {
-      validateDelegatedAccessPolicy(grant.access_policy, `${field}.access_policy`);
+      requireValidAccessPolicy(grant.access_policy);
     }
   }
 }
@@ -2022,19 +1911,14 @@ function delegatedResponseError(
   return unexpectedResponseError(`Delegated qURL batch ${detail}`, { status, requestId });
 }
 
-function exactResponseObject(
+function delegatedResponseObject(
   value: unknown,
-  allowedKeys: readonly string[],
   status: number,
   label: string,
   requestId?: string,
 ): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw delegatedResponseError(status, `${label} is not an object`, requestId);
-  }
-  const unknown = Object.keys(value).filter((key) => !allowedKeys.includes(key));
-  if (unknown.length > 0) {
-    throw delegatedResponseError(status, `${label} has unknown fields`, requestId);
   }
   return value as Record<string, unknown>;
 }
@@ -2043,15 +1927,6 @@ function delegatedEnvelope(
   envelope: ApiResponse<unknown>,
   status: number,
 ): { data: Record<string, unknown>; requestId: string } {
-  const jsonKeys = envelope.__http_json_keys;
-  if (
-    !Array.isArray(jsonKeys) ||
-    jsonKeys.length !== 2 ||
-    !jsonKeys.includes("data") ||
-    !jsonKeys.includes("meta")
-  ) {
-    throw delegatedResponseError(status, "response has invalid top-level fields");
-  }
   if (typeof envelope.meta !== "object" || envelope.meta === null || Array.isArray(envelope.meta)) {
     throw delegatedResponseError(status, "response meta is not an object");
   }
@@ -2059,13 +1934,7 @@ function delegatedEnvelope(
   if (typeof meta.request_id !== "string") {
     throw delegatedResponseError(status, "response meta has invalid request_id");
   }
-  const data = exactResponseObject(
-    envelope.data,
-    ["batch_id", "status", "item_count", "submitted_at", "completed_at", "results"],
-    status,
-    "response data",
-    meta.request_id,
-  );
+  const data = delegatedResponseObject(envelope.data, status, "response data", meta.request_id);
   return { data, requestId: meta.request_id };
 }
 
@@ -2093,16 +1962,23 @@ function delegatedResponseHeaders(
   requestId?: string,
 ): { etag: string; retryAfter?: number } {
   const cacheControl = requiredDelegatedHeader(envelope, "Cache-Control", status, requestId);
-  if (cacheControl !== "private, no-store") {
+  const cacheDirectives = new Set(
+    cacheControl.split(",").map((directive) => directive.trim().split("=", 1)[0].toLowerCase()),
+  );
+  if (!cacheDirectives.has("private") || !cacheDirectives.has("no-store")) {
     throw delegatedResponseError(status, "response has invalid Cache-Control", requestId);
   }
   const etag = requiredDelegatedHeader(envelope, "ETag", status, requestId);
   if (etag.length > MAX_DELEGATED_ETAG || !STRONG_ETAG_PATTERN.test(etag)) {
     throw delegatedResponseError(status, "response has invalid strong ETag", requestId);
   }
-  if (!requireRetryAfter) return { etag };
-
-  const rawRetryAfter = requiredDelegatedHeader(envelope, "Retry-After", status, requestId);
+  const rawRetryAfter = envelope.__http_headers?.get("Retry-After") ?? null;
+  if (rawRetryAfter === null) {
+    if (requireRetryAfter) {
+      throw delegatedResponseError(status, "response is missing Retry-After", requestId);
+    }
+    return { etag };
+  }
   if (!/^[1-9]\d*$/.test(rawRetryAfter)) {
     throw delegatedResponseError(status, "response has invalid Retry-After", requestId);
   }
@@ -2113,10 +1989,12 @@ function delegatedResponseHeaders(
   return { etag, retryAfter };
 }
 
-function isCanonicalUtcSecond(value: unknown): value is string {
-  if (typeof value !== "string" || !CANONICAL_UTC_SECOND_PATTERN.test(value)) return false;
-  const parsed = Date.parse(value);
-  return Number.isFinite(parsed) && new Date(parsed).toISOString().replace(".000Z", "Z") === value;
+function isUtcTimestamp(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    UTC_TIMESTAMP_PATTERN.test(value) &&
+    Number.isFinite(Date.parse(value))
+  );
 }
 
 function delegatedBatchBase(
@@ -2139,7 +2017,7 @@ function delegatedBatchBase(
   ) {
     throw delegatedResponseError(status, "response has invalid item_count", requestId);
   }
-  if (!isCanonicalUtcSecond(data.submitted_at)) {
+  if (!isUtcTimestamp(data.submitted_at)) {
     throw delegatedResponseError(status, "response has invalid submitted_at", requestId);
   }
   return {
@@ -2158,7 +2036,7 @@ function validateDelegatedLocation(
 ): string {
   let location: URL;
   try {
-    location = new URL(value);
+    location = new URL(value, `${baseUrl}/`);
   } catch {
     throw delegatedResponseError(status, "response has invalid Location", requestId);
   }
@@ -2183,7 +2061,6 @@ function validateDelegatedQurlLink(value: unknown): value is string {
       link.protocol === "https:" &&
       link.username === "" &&
       link.password === "" &&
-      link.search === "" &&
       link.hash.length > 1
     );
   } catch {
@@ -2205,13 +2082,7 @@ function validateDelegatedBatchResults(
   const qurlIds = new Set<string>();
   const links = new Set<string>();
   const results = value.map((raw, index): DelegatedQurlBatchItemResult => {
-    const item = exactResponseObject(
-      raw,
-      ["index", "status", "qurl", "error"],
-      status,
-      `result ${index}`,
-      requestId,
-    );
+    const item = delegatedResponseObject(raw, status, `result ${index}`, requestId);
     if (item.index !== index) {
       throw delegatedResponseError(status, `result ${index} has invalid index`, requestId);
     }
@@ -2219,18 +2090,12 @@ function validateDelegatedBatchResults(
       if ("error" in item) {
         throw delegatedResponseError(status, `result ${index} has conflicting fields`, requestId);
       }
-      const qurl = exactResponseObject(
-        item.qurl,
-        ["qurl_id", "qurl_link", "expires_at"],
-        status,
-        `result ${index} qurl`,
-        requestId,
-      );
+      const qurl = delegatedResponseObject(item.qurl, status, `result ${index} qurl`, requestId);
       if (
         typeof qurl.qurl_id !== "string" ||
         !DELEGATED_QURL_ID_PATTERN.test(qurl.qurl_id) ||
         !validateDelegatedQurlLink(qurl.qurl_link) ||
-        !isCanonicalUtcSecond(qurl.expires_at) ||
+        !isUtcTimestamp(qurl.expires_at) ||
         qurlIds.has(qurl.qurl_id) ||
         links.has(qurl.qurl_link)
       ) {
@@ -2252,24 +2117,18 @@ function validateDelegatedBatchResults(
     if (item.status !== "failed" || "qurl" in item) {
       throw delegatedResponseError(status, `result ${index} has invalid status`, requestId);
     }
-    const error = exactResponseObject(
-      item.error,
-      ["code", "message"],
-      status,
-      `result ${index} error`,
-      requestId,
-    );
+    const error = delegatedResponseObject(item.error, status, `result ${index} error`, requestId);
     if (
-      error.code !== "creation_failed" ||
-      typeof error.message !== "string" ||
-      TEXT_ENCODER.encode(error.message).byteLength > MAX_DELEGATED_ERROR_MESSAGE
+      typeof error.code !== "string" ||
+      error.code.length === 0 ||
+      typeof error.message !== "string"
     ) {
       throw delegatedResponseError(status, `result ${index} has invalid error`, requestId);
     }
     return {
       index,
       status: "failed",
-      error: { code: "creation_failed", message: error.message },
+      error: { code: error.code, message: error.message },
     };
   });
   if (
@@ -2288,7 +2147,7 @@ function classifyDelegatedBatchCreateFailure(error: unknown): never {
       new RuntimeError("Unexpected failure after delegated batch dispatch", { cause: error }),
     );
   }
-  if (error.status >= 400 && error.status < 500) {
+  if (DEFINITIVE_DELEGATED_CREATE_STATUSES.has(error.status)) {
     throw error;
   }
   throw new DelegatedBatchOutcomeUnknownError(error);
@@ -3026,8 +2885,6 @@ interface ApiResponse<T> {
   __http_body_empty?: boolean;
   /** SDK-injected response headers used by exact endpoint contracts. */
   __http_headers?: Headers;
-  /** SDK-injected original JSON keys used by closed response contracts. */
-  __http_json_keys?: string[];
 }
 
 interface ApiErrorEnvelope {
@@ -3872,7 +3729,7 @@ export class QURLClient {
         requestOptions: options,
         retry: false,
         generateIdempotencyKey: false,
-        captureResponseContract: true,
+        captureResponseHeaders: true,
         onDispatch: () => {
           dispatched = true;
         },
@@ -3882,13 +3739,6 @@ export class QURLClient {
         throw delegatedResponseError(status, "create returned an unexpected success status");
       }
       const { data, requestId } = delegatedEnvelope(envelope, status);
-      exactResponseObject(
-        data,
-        ["batch_id", "status", "item_count", "submitted_at"],
-        status,
-        "acceptance data",
-        requestId,
-      );
       const base = delegatedBatchBase(data, status, requestId);
       if (data.status !== "queued" || base.itemCount !== input.grants.length) {
         throw delegatedResponseError(status, "acceptance data is inconsistent", requestId);
@@ -3942,7 +3792,7 @@ export class QURLClient {
         allowEmptyPassthroughBody: true,
         ifNoneMatch: options?.etag,
         retry: false,
-        captureResponseContract: true,
+        captureResponseHeaders: true,
       },
     );
     const status = envelope.__http_status ?? 0;
@@ -3950,14 +3800,16 @@ export class QURLClient {
       if (envelope.__http_body_empty !== true || options?.etag === undefined) {
         throw delegatedResponseError(status, "304 response is inconsistent");
       }
-      const responseHeaders = delegatedResponseHeaders(envelope, status, true);
+      const responseHeaders = delegatedResponseHeaders(envelope, status, false);
       if (responseHeaders.etag !== options.etag) {
         throw delegatedResponseError(status, "304 response changed the ETag");
       }
       return {
         http_status: 304,
         etag: responseHeaders.etag,
-        retry_after: responseHeaders.retryAfter!,
+        ...(responseHeaders.retryAfter === undefined
+          ? {}
+          : { retry_after: responseHeaders.retryAfter }),
       };
     }
     if (status !== 200 && status !== 202) {
@@ -3967,13 +3819,6 @@ export class QURLClient {
     const { data, requestId } = delegatedEnvelope(envelope, status);
     const base = delegatedBatchBase(data, status, requestId, batchId);
     if (status === 202) {
-      exactResponseObject(
-        data,
-        ["batch_id", "status", "item_count", "submitted_at"],
-        status,
-        "pending data",
-        requestId,
-      );
       if (data.status !== "queued" && data.status !== "running") {
         throw delegatedResponseError(status, "pending data has a terminal status", requestId);
       }
@@ -3998,7 +3843,7 @@ export class QURLClient {
       throw delegatedResponseError(status, "terminal data has a non-terminal status", requestId);
     }
     if (
-      !isCanonicalUtcSecond(data.completed_at) ||
+      !isUtcTimestamp(data.completed_at) ||
       Date.parse(data.completed_at) < Date.parse(base.submittedAt)
     ) {
       throw delegatedResponseError(status, "terminal data has invalid completed_at", requestId);
@@ -4022,6 +3867,29 @@ export class QURLClient {
       etag: responseHeaders.etag,
       request_id: requestId,
     };
+  }
+
+  /** Read owner-visible metadata for one delegated qURL. */
+  async getDelegatedQurl(qurlId: string): Promise<DelegatedQurl> {
+    if (typeof qurlId !== "string" || !DELEGATED_QURL_ID_PATTERN.test(qurlId)) {
+      throw clientValidationError(
+        "getDelegatedQurl: qurlId must match q_ plus 11 lowercase hexadecimal characters",
+      );
+    }
+    return this.request<DelegatedQurl>("GET", `/v1/delegated-qurls/${encodeURIComponent(qurlId)}`);
+  }
+
+  /**
+   * Revoke one delegated qURL. DELETE is never retried automatically. A 503
+   * `mutation_outcome_unknown` is safe to retry with the same qURL ID.
+   */
+  async deleteDelegatedQurl(qurlId: string): Promise<void> {
+    if (typeof qurlId !== "string" || !DELEGATED_QURL_ID_PATTERN.test(qurlId)) {
+      throw clientValidationError(
+        "deleteDelegatedQurl: qurlId must match q_ plus 11 lowercase hexadecimal characters",
+      );
+    }
+    await this.requestNoContent(`/v1/delegated-qurls/${encodeURIComponent(qurlId)}`);
   }
 
   /**
@@ -5218,7 +5086,7 @@ export class QURLClient {
       retry = true,
       generateIdempotencyKey = true,
       ifNoneMatch,
-      captureResponseContract = false,
+      captureResponseHeaders = false,
       onDispatch,
     } = rawOptions;
     const idempotencyKey = idempotencyKeyForRequest(method, requestOptions, generateIdempotencyKey);
@@ -5466,7 +5334,7 @@ export class QURLClient {
             data: undefined as unknown as T,
             __http_status: response.status,
             __http_body_empty: responseBody.length === 0,
-            __http_headers: captureResponseContract ? response.headers : undefined,
+            __http_headers: captureResponseHeaders ? response.headers : undefined,
           };
         }
         // Exact no-content helpers must inspect both axes of the success
@@ -5481,7 +5349,7 @@ export class QURLClient {
             data: undefined as unknown as T,
             __http_status: response.status,
             __http_body_empty: true,
-            __http_headers: captureResponseContract ? response.headers : undefined,
+            __http_headers: captureResponseHeaders ? response.headers : undefined,
           };
         }
         try {
@@ -5491,11 +5359,7 @@ export class QURLClient {
             __http_status: response.status,
             // JSON.parse("") throws, so parsed JSON is necessarily non-empty.
             __http_body_empty: false,
-            __http_headers: captureResponseContract ? response.headers : undefined,
-            __http_json_keys:
-              captureResponseContract && typeof json === "object" && json !== null
-                ? Object.keys(json)
-                : undefined,
+            __http_headers: captureResponseHeaders ? response.headers : undefined,
           };
         } catch {
           // Non-JSON body on a 2xx response (server contract violation)

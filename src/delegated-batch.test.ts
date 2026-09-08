@@ -13,6 +13,7 @@ import { createClient, mockFetch, mockFetches } from "./__tests__/test-helpers.j
 const BATCH_ID = `dqb_${"a".repeat(22)}`;
 const ETAG = `"dqb-${"a".repeat(32)}"`;
 const IDEMPOTENCY_KEY = "12345678-1234-1234-1234-123456789012";
+const QURL_ID = "q_0123456789a";
 const SUBMITTED_AT = "2026-09-07T12:00:00Z";
 const COMMON_HEADERS = { "Cache-Control": "private, no-store", ETag: ETAG };
 const ACCEPTED_HEADERS = {
@@ -97,10 +98,10 @@ describe("delegated qURL batches", () => {
       { idempotencyKey: IDEMPOTENCY_KEY },
     ],
     [
-      "non-string policy category",
+      "invalid policy shape",
       {
         ...INPUT,
-        grants: [{ access_policy: { ai_agent_policy: { deny_categories: [42] } } }],
+        grants: [{ access_policy: { geo_allowlist: "US" } }],
       },
       { idempotencyKey: IDEMPOTENCY_KEY },
     ],
@@ -164,6 +165,37 @@ describe("delegated qURL batches", () => {
     );
   });
 
+  it("accepts relative Location and unordered Cache-Control directives", async () => {
+    const location = `/v1/delegated-qurl-batches/${BATCH_ID}`;
+    const fetch = mockFetch({
+      status: 202,
+      headers: {
+        ...ACCEPTED_HEADERS,
+        "Cache-Control": "no-store, max-age=0, private",
+        Location: location,
+      },
+      body: acceptedBody(),
+    });
+
+    await expect(
+      createClient(fetch).createDelegatedQurlBatch(INPUT, { idempotencyKey: IDEMPOTENCY_KEY }),
+    ).resolves.toMatchObject({
+      location: `https://api.test.layerv.ai${location}`,
+    });
+  });
+
+  it("ignores additive response fields", async () => {
+    const fetch = mockFetch({
+      status: 202,
+      headers: ACCEPTED_HEADERS,
+      body: { ...acceptedBody({ trace: "new" }), extension: true },
+    });
+
+    await expect(
+      createClient(fetch).createDelegatedQurlBatch(INPUT, { idempotencyKey: IDEMPOTENCY_KEY }),
+    ).resolves.toMatchObject({ batch_id: BATCH_ID });
+  });
+
   it.each([
     ["missing Location", { "Cache-Control": "private, no-store", ETag: ETAG }, acceptedBody()],
     ["weak ETag", { ...ACCEPTED_HEADERS, ETag: `W/${ETAG}` }, acceptedBody()],
@@ -176,8 +208,6 @@ describe("delegated qURL batches", () => {
       },
       acceptedBody(),
     ],
-    ["unknown response field", ACCEPTED_HEADERS, acceptedBody({ unexpected: true })],
-    ["unknown top-level field", ACCEPTED_HEADERS, { ...acceptedBody(), unexpected: true }],
   ])("classifies an accepted create with %s as outcome unknown", async (_label, headers, body) => {
     const fetch = mockFetch({ status: 202, headers, body });
     const error = await createClient(fetch)
@@ -209,6 +239,26 @@ describe("delegated qURL batches", () => {
 
     expect(error).toBeInstanceOf(DelegatedBatchOutcomeUnknownError);
     expect(error.cause).toMatchObject({ status: 500, requestId: "req_failed_create" });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("classifies an ambiguous 408 after dispatch as outcome unknown", async () => {
+    const fetch = mockFetch({
+      status: 408,
+      body: {
+        error: {
+          status: 408,
+          code: "request_timeout",
+          title: "Request Timeout",
+          detail: "The service may have accepted the batch",
+        },
+        meta: { request_id: "req_timed_out" },
+      },
+    });
+
+    await expect(
+      createClient(fetch).createDelegatedQurlBatch(INPUT, { idempotencyKey: IDEMPOTENCY_KEY }),
+    ).rejects.toBeInstanceOf(DelegatedBatchOutcomeUnknownError);
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
@@ -307,6 +357,14 @@ describe("delegated qURL batches", () => {
     expect(vi.mocked(fetch).mock.calls[1][1]?.headers).toMatchObject({ "If-None-Match": ETAG });
   });
 
+  it("accepts a 304 without Retry-After", async () => {
+    const fetch = mockFetch({ status: 304, headers: COMMON_HEADERS });
+
+    await expect(
+      createClient(fetch).getDelegatedQurlBatch(BATCH_ID, { etag: ETAG }),
+    ).resolves.toEqual({ http_status: 304, etag: ETAG });
+  });
+
   it.each([
     ["without a request ETag", undefined, ETAG],
     ["with a changed response ETag", ETAG, '"different"'],
@@ -336,7 +394,7 @@ describe("delegated qURL batches", () => {
             status: "succeeded",
             qurl: {
               qurl_id: "q_0123456789a",
-              qurl_link: "https://links.test/portal/#secret-a",
+              qurl_link: "https://links.test/portal/?source=batch#secret-a",
               expires_at: "2026-09-07T13:00:00Z",
             },
           },
@@ -359,6 +417,79 @@ describe("delegated qURL batches", () => {
     });
   });
 
+  it("accepts fractional timestamps and a forward-compatible failure code", async () => {
+    const body = pendingBody({
+      status: "failed",
+      item_count: 1,
+      submitted_at: "2026-09-07T12:00:00.125Z",
+      completed_at: "2026-09-07T12:00:01.5Z",
+      results: [{ index: 0, status: "failed", error: { code: "policy_denied", message: "no" } }],
+    });
+    const fetch = mockFetch({ status: 200, headers: COMMON_HEADERS, body });
+
+    await expect(createClient(fetch).getDelegatedQurlBatch(BATCH_ID)).resolves.toMatchObject({
+      submitted_at: "2026-09-07T12:00:00.125Z",
+      completed_at: "2026-09-07T12:00:01.5Z",
+      results: [{ error: { code: "policy_denied" } }],
+    });
+  });
+
+  it("gets and deletes delegated qURLs without hidden retries", async () => {
+    const fetch = mockFetches([
+      {
+        status: 200,
+        body: {
+          data: {
+            qurl_id: QURL_ID,
+            status: "active",
+            expires_at: "2026-09-07T13:00:00Z",
+            one_time_use: false,
+            max_sessions: 0,
+            session_duration: 3600,
+          },
+          meta: { request_id: "req_get_qurl" },
+        },
+      },
+      {
+        status: 503,
+        body: {
+          error: {
+            status: 503,
+            code: "mutation_outcome_unknown",
+            title: "Service Unavailable",
+            detail: "Retry the same DELETE",
+          },
+          meta: { request_id: "req_delete_qurl" },
+        },
+      },
+    ]);
+    const client = new QURLClient({
+      apiKey: "test-api-key",
+      baseUrl: "https://api.test.layerv.ai",
+      fetch,
+      maxRetries: 3,
+    });
+
+    await expect(client.getDelegatedQurl(QURL_ID)).resolves.toMatchObject({ qurl_id: QURL_ID });
+    await expect(client.deleteDelegatedQurl(QURL_ID)).rejects.toMatchObject({
+      status: 503,
+      code: "mutation_outcome_unknown",
+    });
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["q_ABCDEF01234", "q_too-short"])(
+    "rejects malformed delegated qURL ID %s before dispatch",
+    async (qurlId) => {
+      const fetch = vi.fn();
+      const client = createClient(fetch as typeof globalThis.fetch);
+
+      await expect(client.getDelegatedQurl(qurlId)).rejects.toBeInstanceOf(ValidationError);
+      await expect(client.deleteDelegatedQurl(qurlId)).rejects.toBeInstanceOf(ValidationError);
+      expect(fetch).not.toHaveBeenCalled();
+    },
+  );
+
   it("rejects out-of-order terminal results", async () => {
     const body = pendingBody({
       item_count: 1,
@@ -374,10 +505,8 @@ describe("delegated qURL batches", () => {
     });
   });
 
-  it.each([
-    ["pending fields on 202", { completed_at: "2026-09-07T12:00:01Z", results: [] }],
-    ["terminal status on 202", { status: "succeeded" }],
-  ])("rejects %s in a read response", async (_label, overrides) => {
+  it("rejects a terminal status on a 202 read response", async () => {
+    const overrides = { status: "succeeded" };
     const body = pendingBody({ item_count: 1, ...overrides });
     const fetch = mockFetch({
       status: 202,

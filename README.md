@@ -288,9 +288,26 @@ try {
   throw error;
 }
 
-const state = await client.getDelegatedQurlBatch(accepted.batch_id, {
-  etag: accepted.etag,
-});
+let etag = accepted.etag;
+let retryAfter = accepted.retry_after;
+let state;
+for (;;) {
+  await new Promise((resolve) => setTimeout(resolve, retryAfter * 1000));
+  state = await client.getDelegatedQurlBatch(accepted.batch_id, { etag });
+  if (state.http_status === 304) {
+    retryAfter = state.retry_after ?? retryAfter;
+  } else if (state.http_status === 202) {
+    ({ etag, retry_after: retryAfter } = state);
+  } else {
+    break;
+  }
+}
+
+if (state.http_status === 200 && state.results[0]?.status === 'succeeded') {
+  const qurlId = state.results[0].qurl.qurl_id;
+  const metadata = await client.getDelegatedQurl(qurlId);
+  await client.deleteDelegatedQurl(metadata.qurl_id);
+}
 ```
 
 One read makes one HTTP attempt. The caller owns the poll count, total deadline,
@@ -298,6 +315,10 @@ and wait from `retry_after`. A `304` means the prior ETag is still current. A
 `200` contains the terminal, input-ordered results. Keep each returned qURL as
 an opaque bearer link and apply any deployment-specific origin check before
 publishing it.
+
+Delegated DELETE calls are not retried automatically. After a transport failure
+or `503 mutation_outcome_unknown`, retry the same qURL ID until the service
+returns `204`.
 
 ## Opening Portals
 

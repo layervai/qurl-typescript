@@ -524,7 +524,7 @@ export interface DelegatedQurlBatchItemFailure {
   index: number;
   status: "failed";
   error: {
-    code: "creation_failed";
+    code: string;
     message: string;
   };
 }
@@ -552,12 +552,24 @@ export interface DelegatedQurlBatchTerminal extends DelegatedQurlBatchBase {
 export interface DelegatedQurlBatchNotModified {
   http_status: 304;
   etag: string;
-  /** Positive Retry-After delta in seconds. */
-  retry_after: number;
+  /** Positive Retry-After delta in seconds, when the batch is still pending. */
+  retry_after?: number;
 }
 
 export type GetDelegatedQurlBatchOutput =
   DelegatedQurlBatchPending | DelegatedQurlBatchTerminal | DelegatedQurlBatchNotModified;
+
+/** Owner-visible metadata for one delegated qURL. The bearer link is never returned here. */
+export interface DelegatedQurl {
+  qurl_id: string;
+  status: "active" | "consumed" | "expired" | "revoked";
+  expires_at: string;
+  label?: string;
+  one_time_use: boolean;
+  max_sessions: number;
+  session_duration: number;
+  access_policy?: AccessPolicy;
+}
 
 /** Input for creating a resource directly. */
 export interface CreateResourceInput {

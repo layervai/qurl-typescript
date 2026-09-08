@@ -174,6 +174,7 @@ type MethodCase = {
 
 const DELEGATED_BATCH_ID = `dqb_${"a".repeat(22)}`;
 const DELEGATED_BATCH_ETAG = `"dqb-${"a".repeat(32)}"`;
+const DELEGATED_QURL_ID = "q_0123456789a";
 const DELEGATED_BATCH_HEADERS = {
   "Cache-Control": "private, no-store",
   ETag: DELEGATED_BATCH_ETAG,
@@ -388,6 +389,31 @@ const METHOD_CASES: MethodCase[] = [
       meta: { request_id: "req_delegated_get" },
     },
     invoke: (c) => c.getDelegatedQurlBatch(DELEGATED_BATCH_ID),
+  },
+  {
+    method: "getDelegatedQurl",
+    verb: "GET",
+    template: "/v1/delegated-qurls/{qurl_id}",
+    mockBody: {
+      data: {
+        qurl_id: DELEGATED_QURL_ID,
+        status: "active",
+        expires_at: "2026-09-07T13:00:00Z",
+        one_time_use: false,
+        max_sessions: 0,
+        session_duration: 3600,
+      },
+      meta: { request_id: "req_delegated_qurl" },
+    },
+    invoke: (c) => c.getDelegatedQurl(DELEGATED_QURL_ID),
+  },
+  {
+    method: "deleteDelegatedQurl",
+    verb: "DELETE",
+    template: "/v1/delegated-qurls/{qurl_id}",
+    mockBody: undefined,
+    mockStatus: 204,
+    invoke: (c) => c.deleteDelegatedQurl(DELEGATED_QURL_ID),
   },
   {
     method: "delete",

@@ -88,6 +88,7 @@ export type {
   DomainCheckDetail,
   DomainListOutput,
   DomainVerifyResult,
+  DelegatedQurl,
   DelegatedQurlBatchAccepted,
   DelegatedQurlBatchItemFailure,
   DelegatedQurlBatchItemResult,
