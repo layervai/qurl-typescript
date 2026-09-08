@@ -158,14 +158,23 @@ const cridVectors = JSON.parse(
   producer_cases: { expected_crid: string; der_spki_b64url: string }[];
   consumer_value_cases: { name: string; value: string }[];
 };
-it.each(cridVectors.producer_cases)("binds a signed link to $expected_crid", (vector) => {
+// Registered v2/0x82 truncations of the first released producer key.
+// Frozen independently with Python hashlib + CRC32C; 24 digest bytes.
+const bindingVectors = [
+  ...cridVectors.producer_cases,
+  ...[
+    "ai4jqpd7eaoslq7jinmjv4yikgzmcxgpjfsuobinv2mxyhi",
+    "qi4jqpd7eaoslq7jinmjv4yikgzmcxgpjfsuobin6o7j2wq",
+  ].map((expected_crid) => ({ ...cridVectors.producer_cases[0], expected_crid })),
+];
+it.each(bindingVectors)("binds a signed link to $expected_crid", (vector) => {
   const link = createMatchedQv2Fixture({
     resourceSpki: Buffer.from(vector.der_spki_b64url, "base64url"),
   });
   const verified = verifyQv2Link(link.qurl, link.issuerKeys, vector.expected_crid);
   verified.devicePrivateKey.fill(0);
   expect(() => verifyQv2Link(matched.qurl, matched.issuerKeys, vector.expected_crid)).toThrow(
-    "does not match",
+    "does not match the expected CRID",
   );
   expect(() =>
     verifyQv2Link(link.tamperedSignedPublicKeyQurl, link.issuerKeys, vector.expected_crid),
