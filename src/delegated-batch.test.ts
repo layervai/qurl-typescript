@@ -90,6 +90,19 @@ describe("delegated qURL batches", () => {
     expect(init?.body).toBe(JSON.stringify(INPUT));
   });
 
+  it("accepts max_sessions zero", async () => {
+    const fetch = mockFetch({ status: 202, headers: ACCEPTED_HEADERS, body: acceptedBody() });
+    const input = {
+      ...INPUT,
+      grants: [{ ...INPUT.grants[0], max_sessions: 0 }],
+    };
+
+    await expect(
+      createClient(fetch).createDelegatedQurlBatch(input, { idempotencyKey: IDEMPOTENCY_KEY }),
+    ).resolves.toMatchObject({ batch_id: BATCH_ID });
+    expect(vi.mocked(fetch).mock.calls[0][1]?.body).toBe(JSON.stringify(input));
+  });
+
   it.each([
     ["unknown request field", { ...INPUT, unexpected: true }, { idempotencyKey: IDEMPOTENCY_KEY }],
     [
@@ -220,6 +233,7 @@ describe("delegated qURL batches", () => {
     ["missing Location", { "Cache-Control": "private, no-store", ETag: ETAG }, acceptedBody()],
     ["weak ETag", { ...ACCEPTED_HEADERS, ETag: `W/${ETAG}` }, acceptedBody()],
     ["unsafe Retry-After", { ...ACCEPTED_HEADERS, "Retry-After": "3601" }, acceptedBody()],
+    ["invalid submitted_at", ACCEPTED_HEADERS, acceptedBody({ submitted_at: "invalid" })],
     [
       "foreign Location",
       {
