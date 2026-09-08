@@ -25,6 +25,8 @@ export const ERROR_CODE_INVALID_CRID_KEY = "invalid_crid_key";
 export const ERROR_CODE_CRID_MISMATCH = "crid_mismatch";
 /** A dispatched Connector resource mutation could have committed and must be reconciled. */
 export const ERROR_CODE_CONNECTOR_RESOURCE_OUTCOME_UNKNOWN = "connector_resource_outcome_unknown";
+/** A delegated batch create was dispatched but no valid acceptance was received. */
+export const ERROR_CODE_DELEGATED_BATCH_OUTCOME_UNKNOWN = "delegated_batch_outcome_unknown";
 /** A by-ID Connector resource lookup found a revoked lifecycle row. */
 export const ERROR_CODE_CONNECTOR_RESOURCE_REVOKED = "connector_resource_revoked";
 /** A Connector slug lookup found no active resource (client-detected, `status: 0`). */
@@ -123,9 +125,10 @@ export class NotFoundError extends QURLError {
  *
  * `instanceof ValidationError` catches both on ordinary client/response
  * paths. A Connector mutation wraps a post-dispatch `unexpected_response`
- * in {@link ConnectorResourceOutcomeUnknownError}; inspect that error's
- * typed `cause` before deciding whether to retry. To distinguish them, check
- * `.code` rather than using `instanceof` alone.
+ * in {@link ConnectorResourceOutcomeUnknownError} or
+ * {@link DelegatedBatchOutcomeUnknownError}; inspect the wrapper's typed
+ * `cause` before deciding whether to retry. To distinguish them, check `.code`
+ * rather than using `instanceof` alone.
  *
  * **`.status` asymmetry within `code: "unexpected_response"`:**
  * - Shape-guard failure on a parsed JSON body (wrong field types,
@@ -198,6 +201,31 @@ export class ConnectorResourceOutcomeUnknownError extends QURLError {
       request_id: cause.requestId,
     });
     this.name = "ConnectorResourceOutcomeUnknownError";
+    attachErrorCause(this, { cause });
+  }
+}
+
+/**
+ * A delegated batch create may have committed. Retry only with the same
+ * idempotency key and semantic body. The original typed failure is in `cause`.
+ * The wrapper uses `status: 0` so generic HTTP retry code cannot replay it.
+ */
+export class DelegatedBatchOutcomeUnknownError extends QURLError {
+  declare readonly code: typeof ERROR_CODE_DELEGATED_BATCH_OUTCOME_UNKNOWN;
+  declare readonly cause: QURLError;
+  /** Valid accepted batch identity, when the response body provided one. */
+  readonly batchId?: string;
+
+  constructor(cause: QURLError, batchId?: string) {
+    super({
+      status: 0,
+      code: ERROR_CODE_DELEGATED_BATCH_OUTCOME_UNKNOWN,
+      title: "Delegated Batch Outcome Unknown",
+      detail: `Mutation outcome is unknown; retry only with the same idempotency key and body. ${cause.detail}`,
+      request_id: cause.requestId,
+    });
+    this.name = "DelegatedBatchOutcomeUnknownError";
+    this.batchId = batchId;
     attachErrorCause(this, { cause });
   }
 }

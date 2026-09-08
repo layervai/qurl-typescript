@@ -2,6 +2,7 @@ import { parseCrid, cridKeyMatches } from "./crid.js";
 import {
   ConnectorResourceOutcomeUnknownError,
   createError,
+  DelegatedBatchOutcomeUnknownError,
   ERROR_CODE_AMBIGUOUS_RESOURCE,
   ERROR_CODE_CLIENT_VALIDATION,
   ERROR_CODE_RESOURCE_NOT_FOUND,
@@ -37,6 +38,8 @@ import type {
   CreateApiKeyInput,
   CreateApiKeyOutput,
   CreateBillingCheckoutInput,
+  CreateDelegatedQurlBatchInput,
+  CreateDelegatedQurlBatchOptions,
   CreateDurableApiKeyInput,
   CreateEnrollmentTokenInput,
   CreateInput,
@@ -52,6 +55,12 @@ import type {
   Domain,
   DomainListOutput,
   DomainVerifyResult,
+  DelegatedQurl,
+  DelegatedQurlBatchAccepted,
+  DelegatedQurlBatchItemResult,
+  DelegatedQurlGrant,
+  GetDelegatedQurlBatchOptions,
+  GetDelegatedQurlBatchOutput,
   ExtendInput,
   Invoice,
   ListInput,
@@ -159,9 +168,15 @@ type RawRequestOptions = {
   passthroughStatuses?: readonly number[];
   requestOptions?: RequestOptions;
   allowEmptySuccessBody?: boolean;
+  allowEmptyPassthroughBody?: boolean;
   retry?: boolean;
   /** When false, forward a caller key but do not create one for this operation. */
   generateIdempotencyKey?: boolean;
+  ifNoneMatch?: string;
+  /** Retain headers for endpoint-specific response checks. */
+  captureResponseHeaders?: boolean;
+  /** Mark the point after local preparation and immediately before fetch. */
+  onDispatch?: () => void;
 };
 
 class ResponseBodyTooLargeError extends Error {
@@ -187,6 +202,7 @@ class ResponseBodyMaterializationError extends Error {
 
 const NO_PASSTHROUGH_STATUSES: readonly number[] = [];
 const BATCH_PASSTHROUGH_STATUSES: readonly number[] = [400];
+const DELEGATED_BATCH_PASSTHROUGH_STATUSES: readonly number[] = [304];
 
 /** Allowlist of known query-param keys for the `list()` endpoint. */
 const LIST_PARAM_KEYS = [
@@ -203,6 +219,28 @@ const LIST_PARAM_KEYS = [
 
 const REQUEST_OPTION_KEYS = ["idempotencyKey"] as const satisfies readonly (keyof RequestOptions)[];
 
+const DELEGATED_BATCH_INPUT_KEYS = [
+  "mint_capability",
+  "grants",
+] as const satisfies readonly (keyof CreateDelegatedQurlBatchInput)[];
+
+const DELEGATED_BATCH_GRANT_KEYS = [
+  "expires_in",
+  "label",
+  "one_time_use",
+  "max_sessions",
+  "session_duration",
+  "access_policy",
+] as const satisfies readonly (keyof DelegatedQurlGrant)[];
+
+const DELEGATED_BATCH_CREATE_OPTION_KEYS = [
+  "idempotencyKey",
+] as const satisfies readonly (keyof CreateDelegatedQurlBatchOptions)[];
+
+const DELEGATED_BATCH_GET_OPTION_KEYS = [
+  "etag",
+] as const satisfies readonly (keyof GetDelegatedQurlBatchOptions)[];
+
 // Compile-time witness: `Exclude<keyof X, (typeof KEYS)[number]>` is
 // `never` iff KEYS lists every key of X. Paired with the
 // `satisfies readonly (keyof X)[]` clause on the array (which catches
@@ -217,6 +255,39 @@ assertExhaustive<
 
 assertExhaustive<
   Exclude<keyof RequestOptions, (typeof REQUEST_OPTION_KEYS)[number]> extends never ? true : never
+>(true);
+
+assertExhaustive<
+  Exclude<
+    keyof CreateDelegatedQurlBatchInput,
+    (typeof DELEGATED_BATCH_INPUT_KEYS)[number]
+  > extends never
+    ? true
+    : never
+>(true);
+
+assertExhaustive<
+  Exclude<keyof DelegatedQurlGrant, (typeof DELEGATED_BATCH_GRANT_KEYS)[number]> extends never
+    ? true
+    : never
+>(true);
+
+assertExhaustive<
+  Exclude<
+    keyof CreateDelegatedQurlBatchOptions,
+    (typeof DELEGATED_BATCH_CREATE_OPTION_KEYS)[number]
+  > extends never
+    ? true
+    : never
+>(true);
+
+assertExhaustive<
+  Exclude<
+    keyof GetDelegatedQurlBatchOptions,
+    (typeof DELEGATED_BATCH_GET_OPTION_KEYS)[number]
+  > extends never
+    ? true
+    : never
 >(true);
 
 const CREATE_FIELD_KEYS = [
@@ -1113,6 +1184,14 @@ const MAX_TARGET_PATH = 2048;
 const MAX_TAGS = 10;
 const MAX_TAG_LENGTH = 50;
 const MAX_AUTO_PAGINATION_PAGES = 10_000;
+const MIN_DELEGATED_BATCH_IDEMPOTENCY_KEY = 32;
+const MAX_DELEGATED_MINT_CAPABILITY = 8192;
+const MAX_DELEGATED_ETAG = 96;
+const MAX_DELEGATED_BATCH_ITEMS = 100;
+const DELEGATED_BATCH_ID_PATTERN = /^dqb_[A-Za-z0-9_-]{22}$/;
+const DELEGATED_QURL_ID_PATTERN = /^q_[0-9a-f]{11}$/;
+const STRONG_ETAG_PATTERN = /^"[\x21\x23-\x7e]+"$/;
+const UTC_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
 // Keep these identity contracts aligned with qurl-go and the public API.
 const CONNECTOR_SLUG_PATTERN = /^[a-z][a-z0-9-]{1,62}[a-z0-9]$/;
 // Current service schemas intentionally share this grammar, but keep the
@@ -1722,6 +1801,412 @@ function requireValidAccessPolicy(policy: AccessPolicy | null | undefined): void
       }
     }
   }
+}
+
+function validateCreateDelegatedQurlBatchInput(
+  input: unknown,
+): asserts input is CreateDelegatedQurlBatchInput {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) {
+    throw clientValidationError(
+      `createDelegatedQurlBatch: input must be an object (got ${describeShape(input)})`,
+    );
+  }
+  const typed = input as CreateDelegatedQurlBatchInput;
+  requireNoUnknownFields(
+    typed as unknown as Record<string, unknown>,
+    DELEGATED_BATCH_INPUT_KEYS,
+    "createDelegatedQurlBatch",
+  );
+  if (
+    typeof typed.mint_capability !== "string" ||
+    typed.mint_capability.length < 1 ||
+    typed.mint_capability.length > MAX_DELEGATED_MINT_CAPABILITY
+  ) {
+    throw clientValidationError(
+      `createDelegatedQurlBatch: mint_capability must be a string of 1-${MAX_DELEGATED_MINT_CAPABILITY} characters`,
+    );
+  }
+  if (
+    !Array.isArray(typed.grants) ||
+    typed.grants.length < 1 ||
+    typed.grants.length > MAX_DELEGATED_BATCH_ITEMS
+  ) {
+    throw clientValidationError(
+      `createDelegatedQurlBatch: grants must contain 1-${MAX_DELEGATED_BATCH_ITEMS} items`,
+    );
+  }
+  for (const [index, grant] of typed.grants.entries()) {
+    const field = `createDelegatedQurlBatch: grants[${index}]`;
+    if (typeof grant !== "object" || grant === null || Array.isArray(grant)) {
+      throw clientValidationError(`${field}: must be an object (got ${describeShape(grant)})`);
+    }
+    requireNoUnknownFields(
+      grant as unknown as Record<string, unknown>,
+      DELEGATED_BATCH_GRANT_KEYS,
+      field,
+    );
+    requireMaxUtf8Bytes(grant.label, `${field}.label`, MAX_LABEL);
+    requireBooleanIfPresent(grant.one_time_use, `${field}.one_time_use`);
+    requireMaxSessionsInRange(grant.max_sessions, `${field}.max_sessions`);
+    for (const durationField of ["expires_in", "session_duration"] as const) {
+      const value = grant[durationField];
+      if (value !== undefined && (typeof value !== "string" || value.length === 0)) {
+        throw clientValidationError(`${field}.${durationField}: must be a non-empty string`);
+      }
+    }
+    if (grant.access_policy !== undefined) {
+      requireValidAccessPolicy(grant.access_policy);
+    }
+  }
+}
+
+function validateDelegatedBatchCreateOptions(
+  options: unknown,
+): asserts options is CreateDelegatedQurlBatchOptions {
+  if (typeof options !== "object" || options === null || Array.isArray(options)) {
+    throw clientValidationError("createDelegatedQurlBatch: options are required");
+  }
+  requireNoUnknownFields(
+    options as Record<string, unknown>,
+    DELEGATED_BATCH_CREATE_OPTION_KEYS,
+    "createDelegatedQurlBatch options",
+  );
+  const key = (options as CreateDelegatedQurlBatchOptions).idempotencyKey;
+  if (
+    typeof key !== "string" ||
+    key.length < MIN_DELEGATED_BATCH_IDEMPOTENCY_KEY ||
+    key.length > MAX_IDEMPOTENCY_KEY ||
+    !/^[!-~]+$/.test(key)
+  ) {
+    throw clientValidationError(
+      `createDelegatedQurlBatch: idempotencyKey must contain ${MIN_DELEGATED_BATCH_IDEMPOTENCY_KEY}-${MAX_IDEMPOTENCY_KEY} visible ASCII characters`,
+    );
+  }
+}
+
+function validateGetDelegatedQurlBatchOptions(
+  options: unknown,
+): asserts options is GetDelegatedQurlBatchOptions | undefined {
+  if (options === undefined) return;
+  if (typeof options !== "object" || options === null || Array.isArray(options)) {
+    throw clientValidationError(
+      `getDelegatedQurlBatch: options must be an object (got ${describeShape(options)})`,
+    );
+  }
+  requireNoUnknownFields(
+    options as Record<string, unknown>,
+    DELEGATED_BATCH_GET_OPTION_KEYS,
+    "getDelegatedQurlBatch options",
+  );
+  const etag = (options as GetDelegatedQurlBatchOptions).etag;
+  if (
+    etag !== undefined &&
+    (typeof etag !== "string" ||
+      etag.length > MAX_DELEGATED_ETAG ||
+      !STRONG_ETAG_PATTERN.test(etag))
+  ) {
+    throw clientValidationError("getDelegatedQurlBatch: etag must be a valid strong ETag");
+  }
+}
+
+function delegatedResponseError(
+  status: number,
+  detail: string,
+  requestId?: string,
+): ValidationError {
+  return unexpectedResponseError(`Delegated qURL batch ${detail}`, { status, requestId });
+}
+
+function delegatedResponseObject(
+  value: unknown,
+  status: number,
+  label: string,
+  requestId?: string,
+): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw delegatedResponseError(status, `${label} is not an object`, requestId);
+  }
+  return value as Record<string, unknown>;
+}
+
+function delegatedEnvelope(
+  envelope: ApiResponse<unknown>,
+  status: number,
+): { data: Record<string, unknown>; requestId: string } {
+  if (typeof envelope.meta !== "object" || envelope.meta === null || Array.isArray(envelope.meta)) {
+    throw delegatedResponseError(status, "response meta is not an object");
+  }
+  const meta = envelope.meta as Record<string, unknown>;
+  if (typeof meta.request_id !== "string") {
+    throw delegatedResponseError(status, "response meta has invalid request_id");
+  }
+  const data = delegatedResponseObject(envelope.data, status, "response data", meta.request_id);
+  return { data, requestId: meta.request_id };
+}
+
+function requiredDelegatedHeader(
+  envelope: ApiResponse<unknown>,
+  name: string,
+  status: number,
+  requestId?: string,
+): string {
+  const headers = envelope.__http_headers;
+  if (!headers || typeof headers.get !== "function") {
+    throw delegatedResponseError(status, "response headers are unavailable", requestId);
+  }
+  const value = headers.get(name);
+  if (value === null) {
+    throw delegatedResponseError(status, `response is missing ${name}`, requestId);
+  }
+  return value;
+}
+
+function hasDelegatedNoStore(value: string | null): boolean {
+  if (value === null) return false;
+  const directives = new Set(
+    value.split(",").map((directive) => directive.trim().split("=", 1)[0].toLowerCase()),
+  );
+  return directives.has("private") && directives.has("no-store");
+}
+
+function delegatedResponseHeaders(
+  envelope: ApiResponse<unknown>,
+  status: number,
+  requireRetryAfter: boolean,
+  requestId?: string,
+): { etag: string; retryAfter?: number } {
+  const cacheControl = envelope.__http_headers?.get("Cache-Control") ?? null;
+  if (cacheControl !== null) {
+    if (!hasDelegatedNoStore(cacheControl)) {
+      throw delegatedResponseError(status, "response has invalid Cache-Control", requestId);
+    }
+  } else if (status !== 304) {
+    requiredDelegatedHeader(envelope, "Cache-Control", status, requestId);
+  }
+  const etag = requiredDelegatedHeader(envelope, "ETag", status, requestId);
+  if (etag.length > MAX_DELEGATED_ETAG || !STRONG_ETAG_PATTERN.test(etag)) {
+    throw delegatedResponseError(status, "response has invalid strong ETag", requestId);
+  }
+  const rawRetryAfter = envelope.__http_headers?.get("Retry-After") ?? null;
+  if (rawRetryAfter === null) {
+    if (requireRetryAfter) {
+      throw delegatedResponseError(status, "response is missing Retry-After", requestId);
+    }
+    return { etag };
+  }
+  if (!/^[1-9]\d*$/.test(rawRetryAfter)) {
+    throw delegatedResponseError(status, "response has invalid Retry-After", requestId);
+  }
+  const retryAfter = Number(rawRetryAfter);
+  if (!Number.isSafeInteger(retryAfter) || retryAfter > RETRY_AFTER_PARSE_LIMIT_S) {
+    throw delegatedResponseError(status, "response has invalid Retry-After", requestId);
+  }
+  return { etag, retryAfter };
+}
+
+function isUtcTimestamp(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    UTC_TIMESTAMP_PATTERN.test(value) &&
+    Number.isFinite(Date.parse(value))
+  );
+}
+
+function delegatedBatchBase(
+  data: Record<string, unknown>,
+  status: number,
+  requestId: string,
+  expectedBatchId?: string,
+): { batchId: string; itemCount: number; submittedAt: string } {
+  if (
+    typeof data.batch_id !== "string" ||
+    !DELEGATED_BATCH_ID_PATTERN.test(data.batch_id) ||
+    (expectedBatchId !== undefined && data.batch_id !== expectedBatchId)
+  ) {
+    throw delegatedResponseError(status, "response has invalid batch_id", requestId);
+  }
+  if (
+    !Number.isInteger(data.item_count) ||
+    Number(data.item_count) < 1 ||
+    Number(data.item_count) > MAX_DELEGATED_BATCH_ITEMS
+  ) {
+    throw delegatedResponseError(status, "response has invalid item_count", requestId);
+  }
+  if (!isUtcTimestamp(data.submitted_at)) {
+    throw delegatedResponseError(status, "response has invalid submitted_at", requestId);
+  }
+  return {
+    batchId: data.batch_id,
+    itemCount: Number(data.item_count),
+    submittedAt: data.submitted_at,
+  };
+}
+
+function validateDelegatedLocation(
+  value: string,
+  baseUrl: string,
+  batchId: string,
+  status: number,
+  requestId: string,
+): string {
+  let location: URL;
+  try {
+    const base = new URL(`${baseUrl}/`);
+    const relative = value.startsWith("/v1/delegated-qurl-batches/")
+      ? `${base.pathname.replace(/\/$/, "")}${value}`
+      : value;
+    location = new URL(relative, base);
+  } catch {
+    throw delegatedResponseError(status, "response has invalid Location", requestId);
+  }
+  const expected = new URL(`${baseUrl}/v1/delegated-qurl-batches/${batchId}`);
+  if (
+    location.username !== "" ||
+    location.password !== "" ||
+    location.search !== "" ||
+    location.hash !== "" ||
+    location.href !== expected.href
+  ) {
+    throw delegatedResponseError(status, "response has invalid Location", requestId);
+  }
+  return location.href;
+}
+
+function validateDelegatedQurlLink(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  try {
+    const link = new URL(value);
+    return (
+      link.protocol === "https:" &&
+      link.username === "" &&
+      link.password === "" &&
+      link.hash.length > 1
+    );
+  } catch {
+    return false;
+  }
+}
+
+function validateDelegatedQurl(
+  value: unknown,
+  expectedQurlId: string,
+  status: number,
+  requestId: string,
+): DelegatedQurl {
+  const data = delegatedResponseObject(value, status, "response data", requestId);
+  if (data.qurl_id !== expectedQurlId) {
+    throw delegatedResponseError(status, "response has invalid qurl_id", requestId);
+  }
+  if (
+    data.status !== "active" &&
+    data.status !== "consumed" &&
+    data.status !== "expired" &&
+    data.status !== "revoked"
+  ) {
+    throw delegatedResponseError(status, "response has invalid status", requestId);
+  }
+  if (
+    !isUtcTimestamp(data.expires_at) ||
+    typeof data.one_time_use !== "boolean" ||
+    !Number.isInteger(data.max_sessions) ||
+    Number(data.max_sessions) < 0 ||
+    !Number.isInteger(data.session_duration) ||
+    Number(data.session_duration) <= 0 ||
+    (data.label !== undefined && typeof data.label !== "string") ||
+    (data.access_policy !== undefined &&
+      (typeof data.access_policy !== "object" ||
+        data.access_policy === null ||
+        Array.isArray(data.access_policy)))
+  ) {
+    throw delegatedResponseError(status, "response has invalid qURL metadata", requestId);
+  }
+  return { ...(data as unknown as DelegatedQurl), request_id: requestId };
+}
+
+function validateDelegatedBatchResults(
+  value: unknown,
+  itemCount: number,
+  batchStatus: "succeeded" | "partially_failed" | "failed",
+  status: number,
+  requestId: string,
+): DelegatedQurlBatchItemResult[] {
+  if (!Array.isArray(value) || value.length !== itemCount) {
+    throw delegatedResponseError(status, "terminal response has invalid results", requestId);
+  }
+  let succeeded = 0;
+  const qurlIds = new Set<string>();
+  const links = new Set<string>();
+  const results = value.map((raw, index): DelegatedQurlBatchItemResult => {
+    const item = delegatedResponseObject(raw, status, `result ${index}`, requestId);
+    if (item.index !== index) {
+      throw delegatedResponseError(status, `result ${index} has invalid index`, requestId);
+    }
+    if (item.status === "succeeded") {
+      if (item.error !== undefined && item.error !== null) {
+        throw delegatedResponseError(status, `result ${index} has conflicting fields`, requestId);
+      }
+      const qurl = delegatedResponseObject(item.qurl, status, `result ${index} qurl`, requestId);
+      if (
+        typeof qurl.qurl_id !== "string" ||
+        !DELEGATED_QURL_ID_PATTERN.test(qurl.qurl_id) ||
+        !validateDelegatedQurlLink(qurl.qurl_link) ||
+        !isUtcTimestamp(qurl.expires_at) ||
+        qurlIds.has(qurl.qurl_id) ||
+        links.has(qurl.qurl_link)
+      ) {
+        throw delegatedResponseError(status, `result ${index} has invalid qurl`, requestId);
+      }
+      qurlIds.add(qurl.qurl_id);
+      links.add(qurl.qurl_link);
+      succeeded++;
+      return {
+        index,
+        status: "succeeded",
+        qurl: {
+          qurl_id: qurl.qurl_id,
+          qurl_link: qurl.qurl_link,
+          expires_at: qurl.expires_at,
+        },
+      };
+    }
+    if (item.status !== "failed" || (item.qurl !== undefined && item.qurl !== null)) {
+      throw delegatedResponseError(status, `result ${index} has invalid status`, requestId);
+    }
+    const error = delegatedResponseObject(item.error, status, `result ${index} error`, requestId);
+    if (
+      typeof error.code !== "string" ||
+      error.code.length === 0 ||
+      typeof error.message !== "string"
+    ) {
+      throw delegatedResponseError(status, `result ${index} has invalid error`, requestId);
+    }
+    return {
+      index,
+      status: "failed",
+      error: { code: error.code, message: error.message },
+    };
+  });
+  if (
+    (batchStatus === "succeeded" && succeeded !== itemCount) ||
+    (batchStatus === "failed" && succeeded !== 0) ||
+    (batchStatus === "partially_failed" && (succeeded === 0 || succeeded === itemCount))
+  ) {
+    throw delegatedResponseError(status, "terminal status does not match results", requestId);
+  }
+  return results;
+}
+
+function classifyDelegatedBatchCreateFailure(error: unknown, batchId?: string): never {
+  if (!(error instanceof QURLError)) {
+    throw new DelegatedBatchOutcomeUnknownError(
+      new RuntimeError("Unexpected failure after delegated batch dispatch", { cause: error }),
+      batchId,
+    );
+  }
+  if ((error.status >= 400 && error.status < 500 && error.status !== 408) || error.status === 501) {
+    throw error;
+  }
+  throw new DelegatedBatchOutcomeUnknownError(error, batchId);
 }
 
 // `format: uri` in the OpenAPI spec allows schemes the SDK doesn't
@@ -2454,6 +2939,8 @@ interface ApiResponse<T> {
   __http_status?: number;
   /** SDK-injected exact-body signal used by no-content endpoint contracts. */
   __http_body_empty?: boolean;
+  /** SDK-injected response headers used by exact endpoint contracts. */
+  __http_headers?: Headers;
 }
 
 interface ApiErrorEnvelope {
@@ -3278,6 +3765,214 @@ export class QURLClient {
       }
     }
     return requestId !== undefined ? { ...result, request_id: requestId } : result;
+  }
+
+  /**
+   * Start one durable delegated qURL batch. The SDK sends this mutation once.
+   * If the result may have committed, retry explicitly with the same key and
+   * semantic body.
+   */
+  async createDelegatedQurlBatch(
+    input: CreateDelegatedQurlBatchInput,
+    options: CreateDelegatedQurlBatchOptions,
+  ): Promise<DelegatedQurlBatchAccepted> {
+    validateCreateDelegatedQurlBatchInput(input);
+    validateDelegatedBatchCreateOptions(options);
+
+    let dispatched = false;
+    let acceptedBatchId: string | undefined;
+    try {
+      const envelope = await this.rawRequest<unknown>("POST", "/v1/delegated-qurl-batches", input, {
+        requestOptions: options,
+        retry: false,
+        generateIdempotencyKey: false,
+        captureResponseHeaders: true,
+        onDispatch: () => {
+          dispatched = true;
+        },
+      });
+      const status = envelope.__http_status ?? 0;
+      if (status !== 202) {
+        throw delegatedResponseError(status, "create returned an unexpected success status");
+      }
+      const rawData = envelope.data;
+      if (typeof rawData === "object" && rawData !== null && !Array.isArray(rawData)) {
+        const candidate = (rawData as Record<string, unknown>).batch_id;
+        if (typeof candidate === "string" && DELEGATED_BATCH_ID_PATTERN.test(candidate)) {
+          acceptedBatchId = candidate;
+        }
+      }
+      const { data, requestId } = delegatedEnvelope(envelope, status);
+      const base = delegatedBatchBase(data, status, requestId);
+      if (data.status !== "queued" || base.itemCount !== input.grants.length) {
+        throw delegatedResponseError(status, "acceptance data is inconsistent", requestId);
+      }
+      const responseHeaders = delegatedResponseHeaders(envelope, status, true, requestId);
+      const location = validateDelegatedLocation(
+        requiredDelegatedHeader(envelope, "Location", status, requestId),
+        this.baseUrl,
+        base.batchId,
+        status,
+        requestId,
+      );
+      return {
+        http_status: 202,
+        batch_id: base.batchId,
+        status: "queued",
+        item_count: base.itemCount,
+        submitted_at: base.submittedAt,
+        etag: responseHeaders.etag,
+        retry_after: responseHeaders.retryAfter!,
+        location,
+        request_id: requestId,
+      };
+    } catch (error) {
+      if (!dispatched) throw error;
+      classifyDelegatedBatchCreateFailure(error, acceptedBatchId);
+    }
+  }
+
+  /**
+   * Read one delegated qURL batch state. One call performs one logical read;
+   * callers retain control of the poll count and total deadline.
+   */
+  async getDelegatedQurlBatch(
+    batchId: string,
+    options?: GetDelegatedQurlBatchOptions,
+  ): Promise<GetDelegatedQurlBatchOutput> {
+    if (typeof batchId !== "string" || !DELEGATED_BATCH_ID_PATTERN.test(batchId)) {
+      throw clientValidationError(
+        "getDelegatedQurlBatch: batchId must match dqb_ plus 22 URL-safe characters",
+      );
+    }
+    validateGetDelegatedQurlBatchOptions(options);
+
+    const envelope = await this.rawRequest<unknown>(
+      "GET",
+      `/v1/delegated-qurl-batches/${encodeURIComponent(batchId)}`,
+      undefined,
+      {
+        passthroughStatuses: DELEGATED_BATCH_PASSTHROUGH_STATUSES,
+        allowEmptyPassthroughBody: true,
+        ifNoneMatch: options?.etag,
+        retry: false,
+        captureResponseHeaders: true,
+      },
+    );
+    const status = envelope.__http_status ?? 0;
+    if (status === 304) {
+      if (envelope.__http_body_empty !== true || options?.etag === undefined) {
+        throw delegatedResponseError(status, "304 response is inconsistent");
+      }
+      const responseHeaders = delegatedResponseHeaders(envelope, status, false);
+      if (responseHeaders.etag !== options.etag) {
+        throw delegatedResponseError(status, "304 response changed the ETag");
+      }
+      return {
+        http_status: 304,
+        etag: responseHeaders.etag,
+        ...(responseHeaders.retryAfter === undefined
+          ? {}
+          : { retry_after: responseHeaders.retryAfter }),
+      };
+    }
+    if (status !== 200 && status !== 202) {
+      throw delegatedResponseError(status, "read returned an unexpected success status");
+    }
+
+    const { data, requestId } = delegatedEnvelope(envelope, status);
+    const base = delegatedBatchBase(data, status, requestId, batchId);
+    if (status === 202) {
+      if (data.status !== "queued" && data.status !== "running") {
+        throw delegatedResponseError(status, "pending data has a terminal status", requestId);
+      }
+      const responseHeaders = delegatedResponseHeaders(envelope, status, true, requestId);
+      return {
+        http_status: 202,
+        batch_id: base.batchId,
+        status: data.status,
+        item_count: base.itemCount,
+        submitted_at: base.submittedAt,
+        etag: responseHeaders.etag,
+        retry_after: responseHeaders.retryAfter!,
+        request_id: requestId,
+      };
+    }
+
+    if (
+      data.status !== "succeeded" &&
+      data.status !== "partially_failed" &&
+      data.status !== "failed"
+    ) {
+      throw delegatedResponseError(status, "terminal data has a non-terminal status", requestId);
+    }
+    if (!isUtcTimestamp(data.completed_at)) {
+      throw delegatedResponseError(status, "terminal data has invalid completed_at", requestId);
+    }
+    const results = validateDelegatedBatchResults(
+      data.results,
+      base.itemCount,
+      data.status,
+      status,
+      requestId,
+    );
+    // This is the caller's only copy of the bearer links. Do not discard a
+    // valid terminal body because an intermediary removed a cache validator;
+    // qurl-service owns the required no-store response policy.
+    const cacheControl = envelope.__http_headers?.get("Cache-Control") ?? null;
+    if (!hasDelegatedNoStore(cacheControl)) {
+      this.log("delegated batch terminal response is missing private, no-store", {
+        batch_id: base.batchId,
+      });
+    }
+    const etag = envelope.__http_headers?.get("ETag") ?? undefined;
+    const terminalEtag =
+      etag !== undefined && etag.length <= MAX_DELEGATED_ETAG && STRONG_ETAG_PATTERN.test(etag)
+        ? etag
+        : undefined;
+    return {
+      http_status: 200,
+      batch_id: base.batchId,
+      status: data.status,
+      item_count: base.itemCount,
+      submitted_at: base.submittedAt,
+      completed_at: data.completed_at,
+      results,
+      ...(terminalEtag === undefined ? {} : { etag: terminalEtag }),
+      request_id: requestId,
+    };
+  }
+
+  /** Read owner-visible metadata for one delegated qURL. */
+  async getDelegatedQurl(qurlId: string): Promise<DelegatedQurl> {
+    if (typeof qurlId !== "string" || !DELEGATED_QURL_ID_PATTERN.test(qurlId)) {
+      throw clientValidationError(
+        "getDelegatedQurl: qurlId must match q_ plus 11 lowercase hexadecimal characters",
+      );
+    }
+    const envelope = await this.rawRequest<unknown>(
+      "GET",
+      `/v1/delegated-qurls/${encodeURIComponent(qurlId)}`,
+    );
+    const status = envelope.__http_status ?? 0;
+    if (status !== 200) {
+      throw delegatedResponseError(status, "read returned an unexpected success status");
+    }
+    const { data, requestId } = delegatedEnvelope(envelope, status);
+    return validateDelegatedQurl(data, qurlId, status, requestId);
+  }
+
+  /**
+   * Revoke one delegated qURL. DELETE is never retried automatically. A 503
+   * `mutation_outcome_unknown` is safe to retry with the same qURL ID.
+   */
+  async deleteDelegatedQurl(qurlId: string): Promise<void> {
+    if (typeof qurlId !== "string" || !DELEGATED_QURL_ID_PATTERN.test(qurlId)) {
+      throw clientValidationError(
+        "deleteDelegatedQurl: qurlId must match q_ plus 11 lowercase hexadecimal characters",
+      );
+    }
+    await this.requestNoContent(`/v1/delegated-qurls/${encodeURIComponent(qurlId)}`);
   }
 
   /**
@@ -4470,8 +5165,12 @@ export class QURLClient {
       passthroughStatuses = NO_PASSTHROUGH_STATUSES,
       requestOptions,
       allowEmptySuccessBody = false,
+      allowEmptyPassthroughBody = false,
       retry = true,
       generateIdempotencyKey = true,
+      ifNoneMatch,
+      captureResponseHeaders = false,
+      onDispatch,
     } = rawOptions;
     const idempotencyKey = idempotencyKeyForRequest(method, requestOptions, generateIdempotencyKey);
     const headers: Record<string, string> = {
@@ -4484,6 +5183,9 @@ export class QURLClient {
     }
     if (idempotencyKey !== undefined) {
       headers["Idempotency-Key"] = idempotencyKey;
+    }
+    if (ifNoneMatch !== undefined) {
+      headers["If-None-Match"] = ifNoneMatch;
     }
 
     // Reads may retry transient statuses and transport failures. POST/PATCH
@@ -4525,6 +5227,7 @@ export class QURLClient {
         // attempt shouldn't poison the next try's deadline. Total
         // request bound: roughly `timeout * (maxRetries + 1) +
         // sum(retryDelay)`.
+        onDispatch?.();
         response = await this.fetchFn(url, {
           method,
           headers,
@@ -4714,16 +5417,22 @@ export class QURLClient {
             data: undefined as unknown as T,
             __http_status: response.status,
             __http_body_empty: responseBody.length === 0,
+            __http_headers: captureResponseHeaders ? response.headers : undefined,
           };
         }
         // Exact no-content helpers must inspect both axes of the success
         // contract. Let only those callers observe an empty non-204 response;
         // body-returning methods still reject it as non-JSON below.
-        if (response.ok && allowEmptySuccessBody && responseBody.length === 0) {
+        if (
+          ((response.ok && allowEmptySuccessBody) ||
+            (isPassthrough && allowEmptyPassthroughBody)) &&
+          responseBody.length === 0
+        ) {
           return {
             data: undefined as unknown as T,
             __http_status: response.status,
             __http_body_empty: true,
+            __http_headers: captureResponseHeaders ? response.headers : undefined,
           };
         }
         try {
@@ -4733,6 +5442,7 @@ export class QURLClient {
             __http_status: response.status,
             // JSON.parse("") throws, so parsed JSON is necessarily non-empty.
             __http_body_empty: false,
+            __http_headers: captureResponseHeaders ? response.headers : undefined,
           };
         } catch {
           // Non-JSON body on a 2xx response (server contract violation)

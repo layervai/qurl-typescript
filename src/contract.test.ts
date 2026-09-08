@@ -130,8 +130,12 @@ function assertSdkCallMatches(
   }
 }
 
-const mockOk = (body: unknown, status: number = 200): typeof globalThis.fetch =>
-  mockFetch(body === undefined ? { status } : { status, body });
+const mockOk = (
+  body: unknown,
+  status: number = 200,
+  headers?: Record<string, string>,
+): typeof globalThis.fetch =>
+  mockFetch(body === undefined ? { status, headers } : { status, body, headers });
 
 const CONNECTOR_RESOURCE_CONTRACT_DATA = {
   crid: "ahpviqz46qwcvx56glfatm3p3ooccwfcf2it4sdgjervwdkapykw3o3qdq2a",
@@ -164,7 +168,16 @@ type MethodCase = {
   // `data.map(...)` — explicit is safer than a brittle fallback.
   mockBody: unknown;
   mockStatus?: number;
+  mockHeaders?: Record<string, string>;
   invoke: (c: QURLClient) => Promise<unknown>;
+};
+
+const DELEGATED_BATCH_ID = `dqb_${"a".repeat(22)}`;
+const DELEGATED_BATCH_ETAG = `"dqb-${"a".repeat(32)}"`;
+const DELEGATED_QURL_ID = "q_0123456789a";
+const DELEGATED_BATCH_HEADERS = {
+  "Cache-Control": "private, no-store",
+  ETag: DELEGATED_BATCH_ETAG,
 };
 
 const METHOD_CASES: MethodCase[] = [
@@ -334,6 +347,73 @@ const METHOD_CASES: MethodCase[] = [
       meta: {},
     },
     invoke: (c) => c.batchCreate({ items: [{ target_url: "https://example.com" }] }),
+  },
+  {
+    method: "createDelegatedQurlBatch",
+    verb: "POST",
+    template: "/v1/delegated-qurl-batches",
+    mockStatus: 202,
+    mockHeaders: {
+      ...DELEGATED_BATCH_HEADERS,
+      Location: `https://api.test.layerv.ai/v1/delegated-qurl-batches/${DELEGATED_BATCH_ID}`,
+      "Retry-After": "1",
+    },
+    mockBody: {
+      data: {
+        batch_id: DELEGATED_BATCH_ID,
+        status: "queued",
+        item_count: 1,
+        submitted_at: "2026-09-07T12:00:00Z",
+      },
+      meta: { request_id: "req_delegated_create" },
+    },
+    invoke: (c) =>
+      c.createDelegatedQurlBatch(
+        { mint_capability: "opaque", grants: [{}] },
+        { idempotencyKey: "12345678-1234-1234-1234-123456789012" },
+      ),
+  },
+  {
+    method: "getDelegatedQurlBatch",
+    verb: "GET",
+    template: "/v1/delegated-qurl-batches/{batch_id}",
+    mockStatus: 202,
+    mockHeaders: { ...DELEGATED_BATCH_HEADERS, "Retry-After": "1" },
+    mockBody: {
+      data: {
+        batch_id: DELEGATED_BATCH_ID,
+        status: "running",
+        item_count: 1,
+        submitted_at: "2026-09-07T12:00:00Z",
+      },
+      meta: { request_id: "req_delegated_get" },
+    },
+    invoke: (c) => c.getDelegatedQurlBatch(DELEGATED_BATCH_ID),
+  },
+  {
+    method: "getDelegatedQurl",
+    verb: "GET",
+    template: "/v1/delegated-qurls/{qurl_id}",
+    mockBody: {
+      data: {
+        qurl_id: DELEGATED_QURL_ID,
+        status: "active",
+        expires_at: "2026-09-07T13:00:00Z",
+        one_time_use: false,
+        max_sessions: 0,
+        session_duration: 3600,
+      },
+      meta: { request_id: "req_delegated_qurl" },
+    },
+    invoke: (c) => c.getDelegatedQurl(DELEGATED_QURL_ID),
+  },
+  {
+    method: "deleteDelegatedQurl",
+    verb: "DELETE",
+    template: "/v1/delegated-qurls/{qurl_id}",
+    mockBody: undefined,
+    mockStatus: 204,
+    invoke: (c) => c.deleteDelegatedQurl(DELEGATED_QURL_ID),
   },
   {
     method: "delete",
@@ -891,8 +971,8 @@ describe("API contract", () => {
   // `create → POST /v1/qurls`.
   it.each(METHOD_CASES)(
     "$method → $verb $template",
-    async ({ mockBody, mockStatus, verb, template, invoke }) => {
-      const fetch = mockOk(mockBody, mockStatus);
+    async ({ mockBody, mockStatus, mockHeaders, verb, template, invoke }) => {
+      const fetch = mockOk(mockBody, mockStatus, mockHeaders);
       await invoke(createClient(fetch));
       assertSdkCallMatches(fetch, verb, template);
     },
