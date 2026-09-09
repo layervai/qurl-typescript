@@ -201,7 +201,10 @@ class Lifecycle {
           if (phase === "registration" && envelope.aspId !== "agent")
             throw new AgentLifecycleError("INVALID_REPLY");
           if (envelope.errCode === "0") {
-            if (envelope.retryAfterSeconds !== undefined || envelope.errMsg !== undefined)
+            if (
+              envelope.retryAfterSeconds !== undefined ||
+              (phase !== "registration" && envelope.errMsg !== undefined)
+            )
               throw new AgentLifecycleError("INVALID_REPLY");
             return envelope;
           }

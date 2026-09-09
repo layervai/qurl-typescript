@@ -5,6 +5,7 @@ import type { SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import type { KMSClient } from "@aws-sdk/client-kms";
 import { createSSMAgentStateStore } from "./ssm.js";
 import { createSecretsManagerAgentStateStore } from "./secrets-manager.js";
+import { lockedStore } from "./store.js";
 import { createKMSAgentStateKeyWrapper } from "./kms.js";
 const pair = generateKeyPairSync("x25519");
 const state = {
@@ -80,4 +81,40 @@ it("KMS binds all four fields and decrypts with the immutable returned ARN", asy
   await expect(
     wrapper.unwrapKey({ ...wrapped, metadata: { key_id: "alias/current" } }, binding),
   ).rejects.toThrow("INVALID_WRAPPED_KEY");
+});
+
+it("serializes direct AWS saves with lifecycle transitions and carries the lock signal", async () => {
+  const controller = new AbortController();
+  const events: string[] = [];
+  const store = lockedStore({
+    async load() {
+      return state;
+    },
+    async save(_state, signal) {
+      expect(signal).toBe(controller.signal);
+      events.push("save");
+    },
+  });
+  let release!: () => void;
+  const entered = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let started!: () => void;
+  const ready = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const held = store.withLock(async (locked) => {
+    events.push("locked");
+    started();
+    await entered;
+    controller.abort(new Error("cancelled"));
+    await expect(locked.save(state)).rejects.toThrow("cancelled");
+  }, controller.signal);
+  await ready;
+  const queued = store.save(state, controller.signal);
+  expect(events).toEqual(["locked"]);
+  release();
+  await held;
+  await expect(queued).rejects.toThrow("cancelled");
+  expect(events).toEqual(["locked"]);
 });

@@ -103,6 +103,7 @@ func serve(agentKey string) error {
 		} else if kind == 13 {
 			replyType = 14
 			reply["aspId"] = "agent"
+			reply["errMsg"] = ""
 		} else if kind == 8 {
 			reply["sessId"], reply["sessIssuedAtMillis"] = json.Number("18446744073709551615"), 12345
 			reply["cellId"], reply["runId"], reply["runAttempt"] = fmt.Sprintf("cell-%d", generation), body["runId"], body["runAttempt"]

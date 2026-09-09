@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### SDK 2.x Go parity
+
+- Add explicit HTTPS relay and pinned discovery providers. Native opens refuse
+  unknown cells without relay fallback. NHP remains version 1.1.
+- Add producer registration, durable resume, refresh, relocation, credential
+  recovery, and exact session retirement through the Node entry point.
+- Add secure native filesystem state and Go-compatible sealed envelopes, with
+  separate SSM, Secrets Manager, and KMS adapters in `@layervai/qurl-aws`.
+- Gate wire, state, and local UDP lifecycle behavior against SHA-pinned Go code.
+- Keep all three npm packages on the SDK 2.x release line.
+
 ### ⚠ BREAKING CHANGES
 
 - **client:** Connector get/delete and handle-based portal minting now use

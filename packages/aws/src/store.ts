@@ -5,6 +5,10 @@ export function lockedStore(store: Omit<AgentStateStore, "withLock">): AgentStat
   let tail = Promise.resolve();
   const result: AgentStateStore = {
     ...store,
+    save(state, signal) {
+      const snapshot = structuredClone(state);
+      return result.withLock((locked) => locked.save(snapshot, signal), signal);
+    },
     async withLock(operation, signal) {
       let release!: () => void;
       const previous = tail;
@@ -31,15 +35,20 @@ export function lockedStore(store: Omit<AgentStateStore, "withLock">): AgentStat
           if (!active) throw new Error("qURL AWS state lock has expired");
         };
         const scoped: AgentStateStore = {
-          load: async (signal) => {
+          load: async (nextSignal) => {
             check();
-            const state = await store.load(signal);
+            const effective = nextSignal ?? signal;
+            effective?.throwIfAborted();
+            const state = await store.load(effective);
             check();
+            effective?.throwIfAborted();
             return state;
           },
-          save: async (state, signal) => {
+          save: async (state, nextSignal) => {
             check();
-            return store.save(state, signal);
+            const effective = nextSignal ?? signal;
+            effective?.throwIfAborted();
+            return store.save(state, effective);
           },
           withLock: async (operation) => {
             check();

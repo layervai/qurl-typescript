@@ -47,8 +47,12 @@ static int walk(const char *path, int create) {
     if (!strcmp(part, ".") || !strcmp(part, "..")) { close(fd); errno = EINVAL; return -1; }
     int next = openat(fd, part, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
     if (next < 0 && errno == ENOENT && create) {
-      if (!mkdirat(fd, part, 0700) || errno == EEXIST)
+      int made = mkdirat(fd, part, 0700) == 0;
+      if (made || errno == EEXIST) {
         next = openat(fd, part, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+        // A durable state file also needs each newly created parent entry persisted.
+        if (made && fsync(fd)) { if (next >= 0) close(next); close(fd); return -1; }
+      }
     }
     close(fd); fd = next;
     if (fd < 0) break;
