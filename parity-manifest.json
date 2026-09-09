@@ -15,7 +15,7 @@
     "producer-conformance-vectors"
   ],
   "state_schema_version": 8,
-  "typescript_sha": "aace3470edb1def4d25b8ef5ce6d0a6160e1af67",
+  "typescript_sha": "edf9df7c775eb074aa11808cb167d0b5ce420112",
   "conformance_version": "0.15.0",
   "surfaces": {
     "relay_discovery": [
