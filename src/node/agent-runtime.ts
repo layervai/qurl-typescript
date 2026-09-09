@@ -133,6 +133,7 @@ class Lifecycle {
     value: unknown,
     phase:
       | "assignment"
+      | "assignment-refresh"
       | "registration"
       | "completion"
       | "recovery-issue"
@@ -169,7 +170,10 @@ class Lifecycle {
             type,
             body,
             reknockBody,
-            assignment: phase === "assignment" || phase === "recovery-issue",
+            assignment:
+              phase === "assignment" ||
+              phase === "assignment-refresh" ||
+              phase === "recovery-issue",
             signal,
             beforeSend,
           });
@@ -192,15 +196,17 @@ class Lifecycle {
           );
           if (typeof envelope.errCode !== "string" || !/^(?:0|[1-9]\d{4})$/.test(envelope.errCode))
             throw new AgentLifecycleError("INVALID_REPLY");
+          if (envelope.errMsg !== undefined && typeof envelope.errMsg !== "string")
+            throw new AgentLifecycleError("INVALID_REPLY");
           if (phase === "registration" && envelope.aspId !== "agent")
             throw new AgentLifecycleError("INVALID_REPLY");
           if (envelope.errCode === "0") {
-            if (envelope.retryAfterSeconds !== undefined)
+            if (envelope.retryAfterSeconds !== undefined || envelope.errMsg !== undefined)
               throw new AgentLifecycleError("INVALID_REPLY");
             return envelope;
           }
           const allowed =
-            phase === "assignment"
+            phase === "assignment" || phase === "assignment-refresh"
               ? [
                   "52200",
                   "52201",
@@ -208,10 +214,7 @@ class Lifecycle {
                   "52203",
                   "52204",
                   "52205",
-                  "52106",
-                  "52107",
-                  "52108",
-                  "52109",
+                  ...(phase === "assignment" ? ["52106", "52107", "52108", "52109"] : []),
                 ]
               : phase === "registration"
                 ? [
@@ -295,7 +298,7 @@ class Lifecycle {
           ...(enrollment ? { credential: enrollment } : {}),
         },
       },
-      "assignment",
+      mode === "enroll" ? "assignment" : "assignment-refresh",
     );
     const list = exactObject(
       envelope.list,
@@ -401,171 +404,164 @@ class Lifecycle {
       );
     }
     credential(enrollment);
-    for (let attempt = 0; attempt < 2; attempt++) {
-      let code = enrollment;
-      let pending = state.pending_activation;
-      if (!pending) {
-        const { assignment, list } = await this.assignment(state, "enroll", enrollment);
-        const registration = exactObject(list.registration, "key_id key_kind");
-        const kind = registration.key_kind;
-        if (
-          typeof registration.key_id !== "string" ||
-          !KEY_ID.test(registration.key_id) ||
-          !(this.options.headless ? ["bootstrap", "connector_bootstrap"] : ["account"]).includes(
-            kind as string,
-          )
+    let code = enrollment;
+    let pending = state.pending_activation;
+    if (!pending) {
+      const { assignment, list } = await this.assignment(state, "enroll", enrollment);
+      const registration = exactObject(list.registration, "key_id key_kind");
+      const kind = registration.key_kind;
+      if (
+        typeof registration.key_id !== "string" ||
+        !KEY_ID.test(registration.key_id) ||
+        !(this.options.headless ? ["bootstrap", "connector_bootstrap"] : ["account"]).includes(
+          kind as string,
         )
-          throw new AgentLifecycleError("ENROLLMENT_KIND_REFUSED");
-        if (
-          typeof list.assignment_ticket !== "string" ||
-          !/^[\x21-\x7e]{1,2304}$/.test(list.assignment_ticket) ||
-          typeof list.assignment_ticket_expires_at !== "string"
-        )
-          throw new AgentLifecycleError("INVALID_ASSIGNMENT_TICKET");
-        const ticketExpiry = canonicalTime(list.assignment_ticket_expires_at);
-        if (
-          ticketExpiry <= Date.now() ||
-          ticketExpiry >= canonicalTime(assignment.lease_expires_at)
-        )
-          throw new AgentLifecycleError("INVALID_ASSIGNMENT_TICKET");
-        if (kind === "account") {
-          if (!this.options.otpProvider || ticketExpiry - Date.now() < 630_000)
-            throw new AgentLifecycleError("OTP_NOT_AVAILABLE");
-          await this.exchange(
-            state,
-            assignment.nhp_udp_endpoint,
-            12,
-            {
-              usrId: registration.key_id,
-              devId: state.agent_id,
-              aspId: "agent",
-              pass: enrollment,
-              usrData: {
-                query: "agent_registration_otp",
-                version: 1,
-                assignment_ticket: list.assignment_ticket,
-              },
-            },
-            "registration",
-          );
-          code = await this.options.otpProvider(
-            {
-              agentID: state.agent_id!,
-              cellID: assignment.cell_id,
-              assignmentTicketExpiresAt: list.assignment_ticket_expires_at,
-              pendingActivationRecovery: false,
-            },
-            this.options.signal ?? AbortSignal.timeout(30_000),
-          );
-          if (!/^\d{8}$/.test(code)) throw new AgentLifecycleError("INVALID_OTP");
-        }
-        pending = {
-          agent_id: state.agent_id!,
-          agent_public_key_b64: state.public_key_b64,
-          assignment,
-          registration: { key_id: registration.key_id, key_kind: kind as string },
-          assignment_ticket: list.assignment_ticket,
-          assignment_ticket_expires_at: list.assignment_ticket_expires_at,
-          recovery_anchor_ticket_expires_at:
-            this.replacement?.anchor ?? list.assignment_ticket_expires_at,
-          recovery_expires_at:
-            this.replacement?.deadline ??
-            new Date(ticketExpiry + RECOVERY_HORIZON_MS).toISOString().replace(".000Z", "Z"),
-          hostname: this.options.hostname,
-          agent_version: this.options.version,
-          enrollment_credential_fingerprint_b64: fingerprint("activation-enrollment", enrollment),
-        };
-        const next = copy(state);
-        next.assignment = assignment;
-        next.pending_activation = pending;
-        await this.store.save(next, this.options.signal);
-        state = next;
-      } else {
-        live(pending.recovery_expires_at);
-        const expected = Buffer.from(pending.enrollment_credential_fingerprint_b64);
-        const supplied = Buffer.from(fingerprint("activation-enrollment", enrollment));
-        if (
-          expected.length !== supplied.length ||
-          !timingSafeEqual(expected, supplied) ||
-          pending.hostname !== this.options.hostname ||
-          pending.agent_version !== this.options.version
-        )
-          throw new AgentLifecycleError("ACTIVATION_INPUT_CHANGED");
-        if (pending.registration.key_kind === "account") {
-          if (!this.options.otpProvider) throw new AgentLifecycleError("OTP_NOT_AVAILABLE");
-          code = await this.options.otpProvider(
-            {
-              agentID: state.agent_id!,
-              cellID: pending.assignment.cell_id,
-              assignmentTicketExpiresAt: pending.assignment_ticket_expires_at,
-              pendingActivationRecovery: true,
-            },
-            this.options.signal ?? AbortSignal.timeout(30_000),
-          );
-          if (!/^\d{8}$/.test(code)) throw new AgentLifecycleError("INVALID_OTP");
-        } else if (!this.options.headless) throw new AgentLifecycleError("ENROLLMENT_KIND_REFUSED");
-      }
-      try {
+      )
+        throw new AgentLifecycleError("ENROLLMENT_KIND_REFUSED");
+      if (
+        typeof list.assignment_ticket !== "string" ||
+        !/^[\x21-\x7e]{1,2304}$/.test(list.assignment_ticket) ||
+        typeof list.assignment_ticket_expires_at !== "string"
+      )
+        throw new AgentLifecycleError("INVALID_ASSIGNMENT_TICKET");
+      const ticketExpiry = canonicalTime(list.assignment_ticket_expires_at);
+      if (ticketExpiry <= Date.now() || ticketExpiry >= canonicalTime(assignment.lease_expires_at))
+        throw new AgentLifecycleError("INVALID_ASSIGNMENT_TICKET");
+      if (kind === "account") {
+        if (!this.options.otpProvider || ticketExpiry - Date.now() < 630_000)
+          throw new AgentLifecycleError("OTP_NOT_AVAILABLE");
         await this.exchange(
           state,
-          pending.assignment.nhp_udp_endpoint,
-          13,
+          assignment.nhp_udp_endpoint,
+          12,
           {
-            usrId: pending.registration.key_id,
+            usrId: registration.key_id,
             devId: state.agent_id,
             aspId: "agent",
-            otp: code,
+            pass: enrollment,
             usrData: {
-              hostname: pending.hostname,
-              version: pending.agent_version,
-              assignment_ticket: pending.assignment_ticket,
+              query: "agent_registration_otp",
+              version: 1,
+              assignment_ticket: list.assignment_ticket,
             },
           },
           "registration",
-          pending.recovery_expires_at,
         );
-      } catch (error) {
-        if (
-          !this.replacement &&
-          attempt === 0 &&
-          error instanceof AgentLifecycleError &&
-          (error.code === "52111" ||
-            (error.code === "52101" && pending.registration.key_kind === "account"))
-        ) {
-          // Keep the durable record. The replacement is committed only after a fresh Hub result.
-          const anchor = pending.recovery_anchor_ticket_expires_at!;
-          const deadline = pending.recovery_expires_at!;
-          const next = copy(state);
-          delete next.pending_activation;
-          // Replacement follows the same registration path but must retain the original horizon.
-          return new Lifecycle(
-            this.store,
-            {
-              ...this.options,
-              enrollmentCredential: enrollment,
-              enrollmentCredentialProvider: undefined,
-            },
-            this.transport,
-            { anchor, deadline },
-          ).enroll(next);
-        }
-        throw error;
+        code = await this.options.otpProvider(
+          {
+            agentID: state.agent_id!,
+            cellID: assignment.cell_id,
+            assignmentTicketExpiresAt: list.assignment_ticket_expires_at,
+            pendingActivationRecovery: false,
+          },
+          this.options.signal ?? AbortSignal.timeout(30_000),
+        );
+        if (!/^\d{8}$/.test(code)) throw new AgentLifecycleError("INVALID_OTP");
       }
-      live(pending.recovery_expires_at);
-      const next = copy(state);
-      next.pending_completion = {
-        device_api_key: `lv_live_${randomBytes(32).toString("base64url")}`,
-        cell_id: pending.assignment.cell_id,
-        assignment_generation: pending.assignment.assignment_generation,
-        recovery_anchor_ticket_expires_at: pending.recovery_anchor_ticket_expires_at,
-        recovery_expires_at: pending.recovery_expires_at,
+      pending = {
+        agent_id: state.agent_id!,
+        agent_public_key_b64: state.public_key_b64,
+        assignment,
+        registration: { key_id: registration.key_id, key_kind: kind as string },
+        assignment_ticket: list.assignment_ticket,
+        assignment_ticket_expires_at: list.assignment_ticket_expires_at,
+        recovery_anchor_ticket_expires_at:
+          this.replacement?.anchor ?? list.assignment_ticket_expires_at,
+        recovery_expires_at:
+          this.replacement?.deadline ??
+          new Date(ticketExpiry + RECOVERY_HORIZON_MS).toISOString().replace(".000Z", "Z"),
+        hostname: this.options.hostname,
+        agent_version: this.options.version,
+        enrollment_credential_fingerprint_b64: fingerprint("activation-enrollment", enrollment),
       };
-      next.enrollment_credential_kind = pending.registration.key_kind;
-      delete next.pending_activation;
+      const next = copy(state);
+      next.assignment = assignment;
+      next.pending_activation = pending;
       await this.store.save(next, this.options.signal);
-      return this.complete(next);
+      state = next;
+    } else {
+      live(pending.recovery_expires_at);
+      const expected = Buffer.from(pending.enrollment_credential_fingerprint_b64);
+      const supplied = Buffer.from(fingerprint("activation-enrollment", enrollment));
+      if (
+        expected.length !== supplied.length ||
+        !timingSafeEqual(expected, supplied) ||
+        pending.hostname !== this.options.hostname ||
+        pending.agent_version !== this.options.version
+      )
+        throw new AgentLifecycleError("ACTIVATION_INPUT_CHANGED");
+      if (pending.registration.key_kind === "account") {
+        if (!this.options.otpProvider) throw new AgentLifecycleError("OTP_NOT_AVAILABLE");
+        code = await this.options.otpProvider(
+          {
+            agentID: state.agent_id!,
+            cellID: pending.assignment.cell_id,
+            assignmentTicketExpiresAt: pending.assignment_ticket_expires_at,
+            pendingActivationRecovery: true,
+          },
+          this.options.signal ?? AbortSignal.timeout(30_000),
+        );
+        if (!/^\d{8}$/.test(code)) throw new AgentLifecycleError("INVALID_OTP");
+      } else if (!this.options.headless) throw new AgentLifecycleError("ENROLLMENT_KIND_REFUSED");
     }
-    throw new AgentLifecycleError("REGISTRATION_RETRY_EXHAUSTED");
+    try {
+      await this.exchange(
+        state,
+        pending.assignment.nhp_udp_endpoint,
+        13,
+        {
+          usrId: pending.registration.key_id,
+          devId: state.agent_id,
+          aspId: "agent",
+          otp: code,
+          usrData: {
+            hostname: pending.hostname,
+            version: pending.agent_version,
+            assignment_ticket: pending.assignment_ticket,
+          },
+        },
+        "registration",
+        pending.recovery_expires_at,
+      );
+    } catch (error) {
+      if (
+        !this.replacement &&
+        error instanceof AgentLifecycleError &&
+        (error.code === "52111" ||
+          (error.code === "52101" && pending.registration.key_kind === "account"))
+      ) {
+        // Keep the durable record. The replacement is committed only after a fresh Hub result.
+        const anchor = pending.recovery_anchor_ticket_expires_at!;
+        const deadline = pending.recovery_expires_at!;
+        const next = copy(state);
+        delete next.pending_activation;
+        // Replacement follows the same registration path but must retain the original horizon.
+        return new Lifecycle(
+          this.store,
+          {
+            ...this.options,
+            enrollmentCredential: enrollment,
+            enrollmentCredentialProvider: undefined,
+          },
+          this.transport,
+          { anchor, deadline },
+        ).enroll(next);
+      }
+      throw error;
+    }
+    live(pending.recovery_expires_at);
+    const next = copy(state);
+    next.pending_completion = {
+      device_api_key: `lv_live_${randomBytes(32).toString("base64url")}`,
+      cell_id: pending.assignment.cell_id,
+      assignment_generation: pending.assignment.assignment_generation,
+      recovery_anchor_ticket_expires_at: pending.recovery_anchor_ticket_expires_at,
+      recovery_expires_at: pending.recovery_expires_at,
+    };
+    next.enrollment_credential_kind = pending.registration.key_kind;
+    delete next.pending_activation;
+    await this.store.save(next, this.options.signal);
+    return this.complete(next);
   }
 }
 

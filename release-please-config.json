@@ -10,6 +10,31 @@
         {
           "type": "generic",
           "path": "src/version.ts"
+        },
+        {
+          "type": "json",
+          "path": "packages/aws/package.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "packages/state-fs/package.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "package.json",
+          "jsonpath": "$.optionalDependencies['@layervai/qurl-state-fs']"
+        },
+        {
+          "type": "json",
+          "path": "package-lock.json",
+          "jsonpath": "$.packages['packages/aws','packages/state-fs'].version"
+        },
+        {
+          "type": "json",
+          "path": "package-lock.json",
+          "jsonpath": "$.packages[''].optionalDependencies['@layervai/qurl-state-fs']"
         }
       ],
       "release-as": "2.0.0"

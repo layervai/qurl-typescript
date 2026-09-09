@@ -112,7 +112,7 @@ export class FileAgentState implements AgentStateStore {
           try {
             encoded = await this.#codec.encode(decodeAgentState(raw), nextSignal ?? signal);
             requireLease();
-            nextSignal?.throwIfAborted();
+            (nextSignal ?? signal)?.throwIfAborted();
             this.#native.write(this.#handle, encoded, `.qurl-${randomUUID()}`);
           } finally {
             encoded?.fill(0);

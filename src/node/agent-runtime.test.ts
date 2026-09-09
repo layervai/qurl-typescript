@@ -157,6 +157,28 @@ function setup() {
 }
 
 describe("producer lifecycle durability", () => {
+  it.each([
+    { errCode: "52201", errMsg: null },
+    { errCode: "52201", errMsg: {} },
+    { errCode: "0", errMsg: "unexpected" },
+  ])("rejects malformed lifecycle envelope %j", async (body) => {
+    const test = setup();
+    try {
+      await expect(
+        agentRuntimeTesting.connectWithTransport(test.store, test.options, async () => ({
+          type: 6,
+          flags: 0,
+          counter: 1n,
+          timestampNanos: 1n,
+          body: encodeAgentJSON(body),
+        })),
+      ).rejects.toThrow("INVALID_REPLY");
+      expect((await test.store.load()).assignment).toBeUndefined();
+    } finally {
+      test.store.close();
+    }
+  });
+
   it("saves replay authority before REG/completion and reopens warm state without network", async () => {
     const test = setup();
     try {

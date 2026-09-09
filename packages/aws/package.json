@@ -51,7 +51,7 @@
   },
   "types": "./dist/esm/index.d.ts",
   "scripts": {
-    "build": "tsc -p tsconfig.json && tsc -p tsconfig.cjs.json && node -e 'require(\"node:fs\").writeFileSync(\"dist/cjs/package.json\", JSON.stringify({type:\"commonjs\"}))'"
+    "build": "node -e 'require(\"node:fs\").rmSync(\"dist\", {recursive:true, force:true})' && tsc -p tsconfig.json && tsc -p tsconfig.cjs.json && node -e 'require(\"node:fs\").writeFileSync(\"dist/cjs/package.json\", JSON.stringify({type:\"commonjs\"}))'"
   },
   "peerDependencies": {
     "@layervai/qurl": "^2.0.0"

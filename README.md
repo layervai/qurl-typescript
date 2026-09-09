@@ -931,5 +931,8 @@ The SHA-pinned reference and behavior gates are in `parity-manifest.json`.
 Run `npm run build`, `npm test`, `npm run smoke:dist`, and `npm run parity:go`.
 Set `QURL_GO_REFERENCE` to a clean checkout at the manifest's exact Go revision.
 The direct gate compares producer wire bytes and sealed-state reads and writes
-across both languages. Shared conformance vectors cover assignment, registration,
+across both languages. It also runs the TypeScript lifecycle against a local Go UDP
+peer: registration, restart, relocation, exact retirement, and credential recovery.
+This checks protocol interoperability; the peer is not a sandbox authority.
+Shared conformance vectors cover assignment, registration,
 OTP, and completion packet construction and reply decryption.

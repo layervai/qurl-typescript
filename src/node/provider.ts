@@ -32,7 +32,10 @@ export interface DiscoveryProviderOptions {
 }
 
 const MANIFEST_DOMAIN = Buffer.from("NHP-QURL-V2-DISCOVERY-MANIFEST\0");
-const ORDER = 0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551n;
+const HALF_ORDER = Buffer.from(
+  "7fffffff800000007fffffffffffffffde737d56d38bcf4279dce5617e3192a8",
+  "hex",
+);
 const LIMIT = 1_048_576;
 
 function object(value: StrictJsonValue, keys: readonly string[]) {
@@ -107,13 +110,8 @@ export function createDiscoveryProvider(options: DiscoveryProviderOptions): Port
         const signature = decode(envelope.sig_b64);
         const key = typeof envelope.kid === "string" ? keys.get(envelope.kid) : undefined;
         if (!key || signature.length !== 64) throw new Error("invalid discovery signature");
-        const r = BigInt(`0x${signature.subarray(0, 32).toString("hex")}`);
-        const s = BigInt(`0x${signature.subarray(32).toString("hex")}`);
         if (
-          r <= 0n ||
-          r >= ORDER ||
-          s <= 0n ||
-          s > ORDER / 2n ||
+          Buffer.compare(signature.subarray(32), HALF_ORDER) > 0 ||
           !verify(
             "sha256",
             Buffer.concat([MANIFEST_DOMAIN, bytes]),

@@ -28,6 +28,9 @@ func main() {
 	}
 }
 func run() error {
+	if len(os.Args) == 3 && os.Args[1] == "serve" {
+		return serve(os.Args[2])
+	}
 	ctx := context.Background()
 	if len(os.Args) == 3 {
 		store, err := qurl.NewSealedFileAgentState(os.Args[2], "parity-test", testWrapper{})

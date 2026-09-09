@@ -75,7 +75,7 @@ jobs:
     uses: layervai/ops-routines-workflows/.github/workflows/notify.yml@d07fa2fe3a103907ff2b1a1a71509a6dcd8e9d32 # v0.13.0
     with:
       header: "qURL TypeScript SDK Build"
-      gates: '{"Tests": "${{ needs.test.result }}"}'
+      gates: '{"Tests": "${{ needs.test.result }}", "Native platforms": "${{ needs.native.result }}", "Go parity": "${{ needs.parity.result }}"}'
       extra_fields: '{"SDK": "TypeScript"}'
     secrets:
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

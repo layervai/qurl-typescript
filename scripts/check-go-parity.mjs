@@ -54,11 +54,17 @@ try {
   );
   const binary = join(dir, "reference");
   writeFileSync(join(dir, "main.go"), readFileSync(join(root, "scripts/parity/main.go")));
+  writeFileSync(join(dir, "serve.go"), readFileSync(join(root, "scripts/parity/serve.go")));
   execFileSync("go", ["build", "-mod=mod", "-o", binary, "."], {
     cwd: dir,
     env: { ...process.env, GOWORK: "off" },
     stdio: "inherit",
   });
+  execFileSync(
+    process.execPath,
+    [join(root, "node_modules/vitest/vitest.mjs"), "run", "src/node/agent-journey.test.ts"],
+    { cwd: root, env: { ...process.env, QURL_PARITY_RESPONDER: binary }, stdio: "inherit" },
+  );
   const packets = JSON.parse(execFileSync(binary, [], { encoding: "utf8" }));
   for (const type of [1, 5, 8, 12, 13, 16, 105]) {
     const { packet } = buildNHPMessage({

@@ -87,6 +87,28 @@ describe("native agent state boundary", () => {
     }
   });
 
+  it("does not commit when the lock signal is aborted during encoding", async () => {
+    const name = path();
+    const controller = new AbortController();
+    const store = new FileAgentState(name, {
+      async encode(value) {
+        controller.abort(new Error("cancelled while sealing"));
+        return encodeAgentState(value);
+      },
+      async decode(value) {
+        return decodeAgentState(value);
+      },
+    });
+    try {
+      await expect(
+        store.withLock((locked) => locked.save(state()), controller.signal),
+      ).rejects.toThrow("cancelled while sealing");
+      await expect(store.load()).rejects.toMatchObject({ code: "NOT_FOUND" });
+    } finally {
+      store.close();
+    }
+  });
+
   it("rejects replaced parent paths and lock entries while a transition is active", async () => {
     const name = path();
     const store = new FileAgentState(name);
