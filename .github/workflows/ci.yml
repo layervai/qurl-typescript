@@ -34,8 +34,6 @@ jobs:
 
   native:
     uses: ./.github/workflows/native-state.yml
-    with:
-      ref: ${{ github.sha }}
 
   parity:
     runs-on: ubuntu-latest
