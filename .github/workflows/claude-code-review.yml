@@ -26,11 +26,9 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.base.repo.full_name == github.repository
     runs-on: ubuntu-latest
-    # Reviews here run 2-6 minutes; search_code adds a few turns. This is
-    # headroom, not a target. Delegation was tried fleet-wide and removed
-    # after one review elsewhere ran past a 20-minute cap and published
-    # nothing — a review this slow is a problem to look at, not to fund.
-    timeout-minutes: 14
+    # Large SDK changes need more than the small-PR ten-minute window.
+    # Keep a hard cap and leave time after the action for terminal verification.
+    timeout-minutes: 34
     permissions:
       contents: read
       pull-requests: write
@@ -160,7 +158,7 @@ jobs:
         # the job alive to report it. A kill at the JOB cap cancels every later
         # step, so the verify step never runs and the PR gets a bare
         # `cancelled` check with no comment and nothing saying why.
-        timeout-minutes: 10
+        timeout-minutes: 30
         uses: anthropics/claude-code-action@a874e9ecd7bb36efdad65429c6b35815f5a08f10 # v1.0.210
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -185,8 +183,14 @@ jobs:
             - Security concerns
             - Test coverage
 
-            Use search_code to find call sites, other implementations, and
-            prior art before judging a change; scope every query with
+            Read the changed-file list first, then review each relevant file
+            once and follow concrete call sites across the change. Reuse reads;
+            do not repeatedly fetch the full diff or unchanged files. Cover all
+            changed behavior and report any coverage limit explicitly. Publish
+            the final review before the 30-minute action deadline.
+
+            Use search_code when needed to find call sites, other implementations,
+            and prior art before judging a change; scope every query with
             `repo:${{ github.repository }}`. GitHub indexes only the default
             branch, so results are pointers, not truth: confirm anything you
             rely on with get_file_contents, passing HEAD SHA in the `sha`
