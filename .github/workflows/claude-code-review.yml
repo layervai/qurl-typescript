@@ -27,8 +27,9 @@ jobs:
       github.event.pull_request.base.repo.full_name == github.repository
     runs-on: ubuntu-latest
     # Large SDK changes need more than the small-PR ten-minute window.
-    # Keep a hard cap and leave time after the action for terminal verification.
-    timeout-minutes: 34
+    # Keep delegation disabled and a hard cap; allow setup, verification, and
+    # cleanup to finish outside the action window even on a slow runner.
+    timeout-minutes: 40
     permissions:
       contents: read
       pull-requests: write
@@ -187,7 +188,7 @@ jobs:
             once and follow concrete call sites across the change. Reuse reads;
             do not repeatedly fetch the full diff or unchanged files. Cover all
             changed behavior and report any coverage limit explicitly. Publish
-            the final review before the 30-minute action deadline.
+            the review as your final action.
 
             Use search_code when needed to find call sites, other implementations,
             and prior art before judging a change; scope every query with
