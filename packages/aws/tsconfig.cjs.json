@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "CommonJS",
+    "moduleResolution": "Bundler",
+    "outDir": "dist/cjs",
+    "declarationMap": false,
+    "sourceMap": false
+  }
+}

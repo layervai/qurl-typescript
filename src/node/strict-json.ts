@@ -15,10 +15,14 @@ export type StrictJsonValue =
  * integer ambiguity. NHP uses uint64 session identifiers, so integral values
  * outside Number's safe range remain bigint instead of losing wire bytes.
  */
-export function parseStrictJson(input: Uint8Array, maxBytes: number): StrictJsonValue {
+export function parseStrictJson(
+  input: Uint8Array,
+  maxBytes: number,
+  onMember?: (object: object, key: string, raw: string) => void,
+): StrictJsonValue {
   if (input.byteLength > maxBytes) throw new Error(`JSON exceeds ${maxBytes}-byte limit`);
   const text = new TextDecoder("utf-8", { fatal: true }).decode(input);
-  const parser = new StrictJsonParser(text);
+  const parser = new StrictJsonParser(text, onMember);
   const value = parser.parseValue(0);
   parser.skipWhitespace();
   if (!parser.done) throw new Error("trailing data after JSON value");
@@ -28,7 +32,10 @@ export function parseStrictJson(input: Uint8Array, maxBytes: number): StrictJson
 class StrictJsonParser {
   #offset = 0;
 
-  constructor(private readonly input: string) {}
+  constructor(
+    private readonly input: string,
+    private readonly onMember?: (object: object, key: string, raw: string) => void,
+  ) {}
 
   get done(): boolean {
     return this.#offset === this.input.length;
@@ -74,7 +81,10 @@ class StrictJsonParser {
       keys.add(key);
       this.skipWhitespace();
       if (!this.consume(":")) throw new Error("JSON object key has no value");
+      this.skipWhitespace();
+      const start = this.#offset;
       value[key] = this.parseValue(depth);
+      this.onMember?.(value, key, this.input.slice(start, this.#offset));
       this.skipWhitespace();
       if (this.consume("}")) return value;
       if (!this.consume(",")) throw new Error("invalid JSON object separator");

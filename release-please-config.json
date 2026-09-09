@@ -11,7 +11,8 @@
           "type": "generic",
           "path": "src/version.ts"
         }
-      ]
+      ],
+      "release-as": "2.0.0"
     }
   }
 }

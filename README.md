@@ -836,3 +836,100 @@ MIT
 Resource verification requires Web Crypto (`crypto.subtle`). In browsers, use
 an HTTPS page or localhost. Raw REST response types keep `crid` optional;
 resource handles and portals require a validated CRID.
+
+## Node producer runtime (SDK 2.x, NHP 1.1)
+
+The SDK implements the producer lifecycle in TypeScript. A small optional native
+package, `@layervai/qurl-state-fs`, supplies descriptor-relative filesystem
+operations on Linux and macOS. There is no bundled Go runtime. The portable
+`@layervai/qurl` entry point does not load the native module.
+
+```ts
+import { FileAgentState, connectAgentRuntime } from '@layervai/qurl/node';
+
+const store = new FileAgentState('/private/agent/state.json');
+const runtime = await connectAgentRuntime(store, {
+  hub: { host: 'hub.nhp.layerv.ai', port: 443, server_public_key_b64: hubPublicKey },
+  headless: true,
+  enrollmentCredential: bootstrapCredential,
+});
+try {
+  // runtime.client uses the durable device credential, with bounded reloads.
+  const grant = await runtime.knock(knockResourceID, {
+    protectedResourceID: crid, runID: '0123456789abcdef', runAttempt: 1n,
+  });
+  // Keep the original receipt. It retains the issuing cell across relocation.
+  await runtime.retire(grant.receipt);
+} finally {
+  runtime.close();
+  store.close();
+}
+```
+
+A registered state opens without enrollment or network work while its assignment
+lease is current. An explicit Hub option or the `hub` field in `QURL_DEPLOYMENT`
+provides refresh trust. `runtime.refresh()` handles assignment renewal and
+relocation. `knock()` attempts renewal near lease expiry and refuses expired
+assignments. Account enrollment uses an explicit `otpProvider` instead of
+`headless`. Resume an interrupted enrollment with the same credential and
+metadata. The SDK persists activation and completion replay authority before
+sending the corresponding mutation.
+
+`recoverAgentRuntime(store, recoveryCredential, { hub })` starts explicit device
+credential recovery. It persists the issue nonce, replacement candidate, and
+recovery horizon. It saves the recovered credential before mandatory assignment
+refresh. A failed refresh resumes without another recovery grant. No startup
+path silently resets an existing identity.
+
+`FileAgentState` uses a private directory, mode 0600 files, a process-safe setup
+lock, exclusive temporary files, file and directory fsync, and atomic replacement.
+It rejects symlinks, hard links, unsafe permissions, and directory or lock
+replacement. Keep the store open until its runtime has closed. Filesystem state
+currently requires Linux or macOS; unsupported platforms fail closed. Install
+scripts may be disabled when a matching prebuilt native binary is available.
+
+For sealed state, use `openSealedFileAgentState(path, providerID, keyWrapper,
+expectedAgentID)`. Each save uses a fresh AES-256-GCM key and verifies wrapping and
+unwrapping before commit. The envelope is compatible with the pinned Go SDK.
+Sealing authenticates the agent, provider, purpose, version, and wrapped-key
+metadata. It does not detect rollback to an older valid envelope. JavaScript
+strings cannot be reliably erased; avoid logging state or credentials.
+
+AWS adapters are separate exports from `@layervai/qurl-aws` (ESM and CommonJS):
+
+- `createSSMAgentStateStore(ssmClient, parameterName, { kmsKeyID, tier })` stores
+  SecureString parameters and enforces tier size limits.
+- `createSecretsManagerAgentStateStore(secretsClient, secretID, kmsKeyID)` handles
+  missing-secret creation races with one write token.
+- `createKMSAgentStateKeyWrapper(kmsClient, keyID)` wraps only the data key and
+  authenticates all four state-binding fields in the KMS encryption context.
+
+SSM and Secrets Manager stores serialize lifecycle calls within one store handle.
+They require one process to own each state object: these services do not provide
+an agent setup transaction lock. KMS is a key wrapper, not a state store.
+
+## Explicit relay and discovery
+
+Native UDP remains the default transport. An unknown cell fails closed, including
+when a relay allowlist exists. Select `transport: 'relay'` explicitly to use HTTPS
+relay. Relay URLs come from verified qv2 claims and must match deployment trust.
+Redirects and oversized responses are refused.
+
+`createStaticProvider(deployment)` snapshots fixed trust. For discovery, use
+`createDiscoveryProvider({ fetcher, pinSHA256, manifestKeys, requireSignature,
+minVersion, expectedProfile })` and `createHTTPManifestFetcher(httpsURL)`. Supply
+a manifest pin or signing keys. Discovery verifies the domain-separated low-S
+signature when configured, validity times, profile, and monotonic version floor.
+It never returns stale trust after a failed refresh. Persist `minVersion` in
+configuration when downgrade protection must survive process restarts.
+
+```ts
+const opener = createPortalOpener({ qurl: signedLink, provider, transport: 'relay' });
+```
+
+The SHA-pinned reference and behavior gates are in `parity-manifest.json`.
+Run `npm run build`, `npm test`, `npm run smoke:dist`, and `npm run parity:go`.
+Set `QURL_GO_REFERENCE` to a clean checkout at the manifest's exact Go revision.
+The direct gate compares producer wire bytes and sealed-state reads and writes
+across both languages. Shared conformance vectors cover assignment, registration,
+OTP, and completion packet construction and reply decryption.

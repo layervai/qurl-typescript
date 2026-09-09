@@ -1,0 +1,24 @@
+{
+  "name": "@layervai/qurl-state-fs",
+  "version": "2.0.0",
+  "description": "Native filesystem guarantees for qURL agent state",
+  "license": "MIT",
+  "main": "index.cjs",
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "files": [
+    "index.cjs",
+    "state_fs.c",
+    "binding.gyp",
+    "prebuilds/"
+  ],
+  "scripts": {
+    "install": "node-gyp-build",
+    "prebuild": "prebuildify --napi"
+  },
+  "dependencies": {
+    "node-gyp-build": "4.8.4"
+  }
+}

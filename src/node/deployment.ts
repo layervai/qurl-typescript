@@ -7,6 +7,7 @@ import { issuerKeyFromSpki } from "./qv2.js";
 export interface PortalDeployment {
   readonly issuers: readonly PortalDeploymentIssuer[];
   readonly cells: readonly PortalDeploymentCell[];
+  readonly relay_allowlist?: readonly string[];
 }
 
 export interface PortalDeploymentIssuer {
@@ -24,6 +25,7 @@ export interface PortalDeploymentCell {
 export interface ValidatedDeployment {
   readonly issuers: ReadonlyMap<string, KeyObject>;
   readonly cells: ReadonlyMap<string, ValidatedCell>;
+  readonly relayAllowlist: readonly string[];
 }
 
 export interface ValidatedCell {
@@ -125,8 +127,14 @@ function validateDeploymentValue(value: StrictJsonValue): ValidatedDeployment {
   const issuerRows = requireArray(root.issuers, "deployment issuers");
   const cellRows = requireArray(root.cells, "deployment cells");
   if (issuerRows.length === 0) throw new Error("deployment must contain at least one issuer");
-  if (cellRows.length === 0)
-    throw new Error("native-only deployment must contain at least one cell");
+  const relayAllowlist =
+    root.relay_allowlist === undefined
+      ? []
+      : requireArray(root.relay_allowlist, "relay allowlist")
+          .map((value) => requireString(value, "relay host").trim().toLowerCase())
+          .filter(Boolean);
+  if (cellRows.length === 0 && relayAllowlist.length === 0)
+    throw new Error("deployment must contain at least one cell or relay host");
 
   const issuers = new Map<string, KeyObject>();
   for (const row of issuerRows) {
@@ -152,7 +160,7 @@ function validateDeploymentValue(value: StrictJsonValue): ValidatedDeployment {
     if (item.cell_id !== undefined) requireString(item.cell_id, "cell id");
     cells.set(fingerprint, { host, port: 443, serverPublicKey });
   }
-  return { issuers, cells };
+  return { issuers, cells, relayAllowlist };
 }
 
 export function fingerprintKey(key: Uint8Array): string {
@@ -213,3 +221,20 @@ function rejectUnknown(
 }
 
 export const deploymentTesting = { readBoundedDeploymentFile, decodeFlexibleBase64 };
+
+/** Producer-only deployments need a pinned Hub, but need no portal issuer keys. */
+export function loadDeploymentHub(): unknown {
+  const configured = process.env.QURL_DEPLOYMENT?.trim();
+  if (!configured) throw new Error("QURL_DEPLOYMENT has no producer Hub");
+  const raw = configured.startsWith("{")
+    ? Buffer.from(configured)
+    : readBoundedDeploymentFile(configured);
+  const value = parseStrictJson(raw, MAX_DEPLOYMENT_BYTES);
+  if (
+    !isStrictJsonObject(value) ||
+    Object.keys(value).some((key) => !DEPLOYMENT_KEYS.has(key)) ||
+    !isStrictJsonObject(value.hub)
+  )
+    throw new Error("QURL_DEPLOYMENT has no producer Hub");
+  return value.hub;
+}

@@ -217,6 +217,21 @@ describe("delegated qURL batches", () => {
     });
   });
 
+  it.each([undefined, "0", "broken", "3601"])(
+    "accepts advisory Retry-After %s and missing ETag",
+    async (retryAfter) => {
+      const headers: Record<string, string> = { ...ACCEPTED_HEADERS };
+      delete headers.ETag;
+      delete headers["Retry-After"];
+      if (retryAfter !== undefined) headers["Retry-After"] = retryAfter;
+      const result = await createClient(
+        mockFetch({ status: 202, headers, body: acceptedBody() }),
+      ).createDelegatedQurlBatch(INPUT, { idempotencyKey: IDEMPOTENCY_KEY });
+      expect(result.etag).toBeUndefined();
+      expect(result.retry_after).toBeUndefined();
+    },
+  );
+
   it("ignores additive response fields", async () => {
     const fetch = mockFetch({
       status: 202,
@@ -232,7 +247,6 @@ describe("delegated qURL batches", () => {
   it.each([
     ["missing Location", { "Cache-Control": "private, no-store", ETag: ETAG }, acceptedBody()],
     ["weak ETag", { ...ACCEPTED_HEADERS, ETag: `W/${ETAG}` }, acceptedBody()],
-    ["unsafe Retry-After", { ...ACCEPTED_HEADERS, "Retry-After": "3601" }, acceptedBody()],
     ["invalid submitted_at", ACCEPTED_HEADERS, acceptedBody({ submitted_at: "invalid" })],
     [
       "foreign Location",

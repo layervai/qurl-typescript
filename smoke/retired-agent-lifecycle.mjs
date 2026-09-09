@@ -93,11 +93,6 @@ const forbiddenWire = [
   ["/v1/agent/", "bootstrap"],
   ["/v1/agent/", "registration-info"],
   ["/v1/agent/", "registration/complete"],
-  ["NHP_", "OTP"],
-  ["NHP_", "REG"],
-  ["NHP_", "RAK"],
-  ["NHP_", "LST"],
-  ["NHP_", "LRT"],
 ].map((parts) => parts.join(""));
 
 function filesUnder(root) {
@@ -116,7 +111,7 @@ const packageJson = fileURLToPath(new URL("../package.json", import.meta.url));
 const readme = fileURLToPath(new URL("../README.md", import.meta.url));
 for (const file of [...filesUnder(sourceRoot), ...filesUnder(distRoot), packageJson, readme]) {
   const contents = readFileSync(file, "utf8");
-  for (const forbidden of [...retiredNames, ...forbiddenWire]) {
+  for (const forbidden of forbiddenWire) {
     assert.equal(contents.includes(forbidden), false, `${forbidden} reappeared in ${file}`);
   }
 }

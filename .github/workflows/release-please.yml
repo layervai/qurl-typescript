@@ -73,13 +73,22 @@ jobs:
           cache: "npm"
       - run: npm install -g npm@${{ env.NPM_VERSION }}
       - run: npm ci
+      - run: npm run prebuild --workspace @layervai/qurl-state-fs
       - run: npm run build
+      - run: npm run build --workspace @layervai/qurl-aws
       - run: npm run smoke:dist
       - run: npm test
 
-  publish:
+  native:
     needs: [release-please, test]
-    if: ${{ !cancelled() && needs.test.result == 'success' && (github.event_name == 'workflow_dispatch' || needs.release-please.outputs.release_created == 'true') }}
+    if: ${{ !cancelled() && needs.test.result == 'success' }}
+    uses: ./.github/workflows/native-state.yml
+    with:
+      ref: ${{ github.event.inputs.ref_name || needs.release-please.outputs.tag_name }}
+
+  publish:
+    needs: [release-please, test, native]
+    if: ${{ !cancelled() && needs.test.result == 'success' && needs.native.result == 'success' && (github.event_name == 'workflow_dispatch' || needs.release-please.outputs.release_created == 'true') }}
     runs-on: ubuntu-latest
     # Serialize only the npm publish boundary; release-please maintenance and
     # validation jobs can still run while a manual publish waits for approval.
@@ -137,6 +146,15 @@ jobs:
       - run: npm install -g npm@${{ env.NPM_VERSION }}
       - run: npm ci
       # .npmrc disables lifecycle scripts, so build and smoke explicitly here.
+      - run: npm run prebuild --workspace @layervai/qurl-state-fs
       - run: npm run build
+      - run: npm run build --workspace @layervai/qurl-aws
       - run: npm run smoke:dist
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          pattern: native-*
+          merge-multiple: true
+          path: packages/state-fs/prebuilds/
+      - run: npm publish --workspace @layervai/qurl-state-fs --access public --provenance
       - run: npm publish --provenance
+      - run: npm publish --workspace @layervai/qurl-aws --access public --provenance

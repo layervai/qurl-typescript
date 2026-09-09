@@ -1972,9 +1972,8 @@ function hasDelegatedNoStore(value: string | null): boolean {
 function delegatedResponseHeaders(
   envelope: ApiResponse<unknown>,
   status: number,
-  requireRetryAfter: boolean,
   requestId?: string,
-): { etag: string; retryAfter?: number } {
+): { etag?: string; retryAfter?: number } {
   const cacheControl = envelope.__http_headers?.get("Cache-Control") ?? null;
   if (cacheControl !== null) {
     if (!hasDelegatedNoStore(cacheControl)) {
@@ -1983,24 +1982,21 @@ function delegatedResponseHeaders(
   } else if (status !== 304) {
     requiredDelegatedHeader(envelope, "Cache-Control", status, requestId);
   }
-  const etag = requiredDelegatedHeader(envelope, "ETag", status, requestId);
-  if (etag.length > MAX_DELEGATED_ETAG || !STRONG_ETAG_PATTERN.test(etag)) {
+  const etag = envelope.__http_headers?.get("ETag") ?? undefined;
+  if (etag !== undefined && (etag.length > MAX_DELEGATED_ETAG || !STRONG_ETAG_PATTERN.test(etag))) {
     throw delegatedResponseError(status, "response has invalid strong ETag", requestId);
   }
-  const rawRetryAfter = envelope.__http_headers?.get("Retry-After") ?? null;
-  if (rawRetryAfter === null) {
-    if (requireRetryAfter) {
-      throw delegatedResponseError(status, "response is missing Retry-After", requestId);
-    }
-    return { etag };
-  }
-  if (!/^[1-9]\d*$/.test(rawRetryAfter)) {
-    throw delegatedResponseError(status, "response has invalid Retry-After", requestId);
-  }
-  const retryAfter = Number(rawRetryAfter);
-  if (!Number.isSafeInteger(retryAfter) || retryAfter > RETRY_AFTER_PARSE_LIMIT_S) {
-    throw delegatedResponseError(status, "response has invalid Retry-After", requestId);
-  }
+  const rawRetryAfter = envelope.__http_headers?.get("Retry-After") ?? "";
+  const trimmed = rawRetryAfter.trim();
+  const seconds = /^\d+$/.test(trimmed)
+    ? Number(trimmed)
+    : /^[A-Z][a-z]{2}, \d{2} [A-Z][a-z]{2} \d{4} \d{2}:\d{2}:\d{2} GMT$/.test(trimmed)
+      ? Math.ceil((Date.parse(trimmed) - Date.now()) / 1000)
+      : NaN;
+  const retryAfter =
+    Number.isSafeInteger(seconds) && seconds > 0 && seconds <= RETRY_AFTER_PARSE_LIMIT_S
+      ? seconds
+      : undefined;
   return { etag, retryAfter };
 }
 
@@ -3807,7 +3803,7 @@ export class QURLClient {
       if (data.status !== "queued" || base.itemCount !== input.grants.length) {
         throw delegatedResponseError(status, "acceptance data is inconsistent", requestId);
       }
-      const responseHeaders = delegatedResponseHeaders(envelope, status, true, requestId);
+      const responseHeaders = delegatedResponseHeaders(envelope, status, requestId);
       const location = validateDelegatedLocation(
         requiredDelegatedHeader(envelope, "Location", status, requestId),
         this.baseUrl,
@@ -3822,7 +3818,7 @@ export class QURLClient {
         item_count: base.itemCount,
         submitted_at: base.submittedAt,
         etag: responseHeaders.etag,
-        retry_after: responseHeaders.retryAfter!,
+        retry_after: responseHeaders.retryAfter,
         location,
         request_id: requestId,
       };
@@ -3864,13 +3860,13 @@ export class QURLClient {
       if (envelope.__http_body_empty !== true || options?.etag === undefined) {
         throw delegatedResponseError(status, "304 response is inconsistent");
       }
-      const responseHeaders = delegatedResponseHeaders(envelope, status, false);
-      if (responseHeaders.etag !== options.etag) {
+      const responseHeaders = delegatedResponseHeaders(envelope, status);
+      if (responseHeaders.etag !== undefined && responseHeaders.etag !== options.etag) {
         throw delegatedResponseError(status, "304 response changed the ETag");
       }
       return {
         http_status: 304,
-        etag: responseHeaders.etag,
+        etag: responseHeaders.etag ?? options.etag,
         ...(responseHeaders.retryAfter === undefined
           ? {}
           : { retry_after: responseHeaders.retryAfter }),
@@ -3886,7 +3882,7 @@ export class QURLClient {
       if (data.status !== "queued" && data.status !== "running") {
         throw delegatedResponseError(status, "pending data has a terminal status", requestId);
       }
-      const responseHeaders = delegatedResponseHeaders(envelope, status, true, requestId);
+      const responseHeaders = delegatedResponseHeaders(envelope, status, requestId);
       return {
         http_status: 202,
         batch_id: base.batchId,
@@ -3894,7 +3890,7 @@ export class QURLClient {
         item_count: base.itemCount,
         submitted_at: base.submittedAt,
         etag: responseHeaders.etag,
-        retry_after: responseHeaders.retryAfter!,
+        retry_after: responseHeaders.retryAfter,
         request_id: requestId,
       };
     }
@@ -3906,16 +3902,41 @@ export class QURLClient {
     ) {
       throw delegatedResponseError(status, "terminal data has a non-terminal status", requestId);
     }
-    if (!isUtcTimestamp(data.completed_at)) {
-      throw delegatedResponseError(status, "terminal data has invalid completed_at", requestId);
+    const partialQurlIds = Array.isArray(data.results)
+      ? [
+          ...new Set(
+            data.results.flatMap((item) =>
+              item &&
+              typeof item === "object" &&
+              item.status === "succeeded" &&
+              typeof item.qurl?.qurl_id === "string" &&
+              DELEGATED_QURL_ID_PATTERN.test(item.qurl.qurl_id)
+                ? [item.qurl.qurl_id as string]
+                : [],
+            ),
+          ),
+        ]
+      : [];
+    let results: DelegatedQurlBatchItemResult[];
+    try {
+      if (!isUtcTimestamp(data.completed_at)) {
+        throw delegatedResponseError(status, "terminal data has invalid completed_at", requestId);
+      }
+      results = validateDelegatedBatchResults(
+        data.results,
+        base.itemCount,
+        data.status,
+        status,
+        requestId,
+      );
+    } catch (error) {
+      if (error instanceof QURLError)
+        Object.defineProperty(error, "partialQurlIds", {
+          value: Object.freeze(partialQurlIds),
+          enumerable: true,
+        });
+      throw error;
     }
-    const results = validateDelegatedBatchResults(
-      data.results,
-      base.itemCount,
-      data.status,
-      status,
-      requestId,
-    );
     // This is the caller's only copy of the bearer links. Do not discard a
     // valid terminal body because an intermediary removed a cache validator;
     // qurl-service owns the required no-store response policy.
@@ -5561,14 +5582,13 @@ export class QURLClient {
     if (typeof response.headers?.get !== "function") return undefined;
     const header = response.headers.get("Retry-After");
     if (!header) return undefined;
-    // TODO: parse HTTP-date format per RFC 7231 §7.1.3 — currently only
-    // handles delta-seconds; HTTP-date headers fall through to the
-    // exponential-backoff branch in `retryDelay`. Tracked in #61.
-    //
-    // Digit-only pre-check rather than `parseInt` alone: `parseInt("60abc")`
-    // returns `60` and would silently honor a malformed header. The
-    // strict check makes any deviation observable (debug log) instead.
     const trimmed = header.trim();
+    if (/^[A-Z][a-z]{2}, \d{2} [A-Z][a-z]{2} \d{4} \d{2}:\d{2}:\d{2} GMT$/.test(trimmed)) {
+      const seconds = Math.ceil((Date.parse(trimmed) - Date.now()) / 1000);
+      return Number.isSafeInteger(seconds) && seconds > 0 && seconds <= RETRY_AFTER_PARSE_LIMIT_S
+        ? seconds
+        : undefined;
+    }
     if (!/^\d+$/.test(trimmed)) {
       this.log("Retry-After header was non-numeric, using exponential backoff", {
         header_value: header.slice(0, 100),
