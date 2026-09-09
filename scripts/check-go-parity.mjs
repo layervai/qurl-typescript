@@ -10,6 +10,19 @@ import { openSealedFileAgentState } from "../dist/esm/node/sealed-agent-state.js
 const root = fileURLToPath(new URL("../", import.meta.url));
 const manifest = JSON.parse(readFileSync(join(root, "parity-manifest.json")));
 assert.match(manifest.typescript_sha, /^[0-9a-f]{40}$/);
+// Squash merges do not retain the implementation commit in main's ancestry.
+// Fetch that immutable revision only when the local checkout does not have it.
+try {
+  execFileSync("git", ["cat-file", "-e", `${manifest.typescript_sha}^{commit}`], {
+    cwd: root,
+    stdio: "pipe",
+  });
+} catch {
+  execFileSync("git", ["fetch", "--no-tags", "origin", manifest.typescript_sha], {
+    cwd: root,
+    stdio: "inherit",
+  });
+}
 execFileSync(
   "git",
   [
