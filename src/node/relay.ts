@@ -70,7 +70,12 @@ export async function relayKnock(
   body: Uint8Array,
   options: { signal?: AbortSignal; fetch?: typeof globalThis.fetch } = {},
 ): Promise<NHPMessage> {
-  const base = validateRelayURL(relayURL, allowlist);
+  let base: URL;
+  try {
+    base = validateRelayURL(relayURL, allowlist);
+  } catch (cause) {
+    throw new RelayError(0, "qURL relay URL is invalid or not trusted", { cause });
+  }
   options.signal?.throwIfAborted();
   const built = buildNHPMessage({ type: NHP_TYPE_KNOCK, serverPublicKey, devicePrivateKey, body });
   let packet: Uint8Array | undefined;

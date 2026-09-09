@@ -15,6 +15,12 @@
 
 ### ⚠ BREAKING CHANGES
 
+- **delegated batches:** `etag` and `retry_after` are now optional response
+  fields. Poll without `If-None-Match` when no ETag is supplied, and use a bounded
+  polling delay when Retry-After is absent or invalid. Retry-After accepts an
+  HTTP date or positive delta seconds up to one hour. Invalid supplied ETags
+  still fail validation. Discord applies its existing deadline and polling delay.
+
 - **client:** Connector get/delete and handle-based portal minting now use
   CRIDs only. Connector management responses must include a CRID that matches
   the returned public key. Public-key arguments and CRID-less responses are

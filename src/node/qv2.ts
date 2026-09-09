@@ -247,7 +247,6 @@ function parseClaims(raw: Uint8Array): ParsedClaims {
   if (resourcePublic.byteLength < 80 || resourcePublic.byteLength > 160) {
     throw new Error("resource public key has an invalid length");
   }
-  requireNonEmptyString(value.relay_url, "relay URL");
   // cell_id is descriptive deployment metadata, not a security identity. The
   // signed 32-byte cell public key selects and then fully binds the UDP peer.
   if ("cell_id" in value && typeof value.cell_id !== "string") {

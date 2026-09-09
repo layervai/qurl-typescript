@@ -14,7 +14,7 @@ TypeScript SDK for the qURL API (`npm install @layervai/qurl`). Extracted from `
 ```bash
 npm install                # Install dependencies
 npm run build              # Compile TypeScript
-npm test                   # Run tests (vitest)
+npm test                   # Run tests after build (AWS tests import dist)
 npm run format:check       # Check formatting (prettier)
 npm run format             # Fix formatting
 ```

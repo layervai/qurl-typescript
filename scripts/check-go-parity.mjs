@@ -23,26 +23,14 @@ try {
     stdio: "inherit",
   });
 }
-execFileSync(
-  "git",
-  [
-    "diff",
-    "--exit-code",
-    manifest.typescript_sha,
-    "--",
-    "src",
-    "packages",
-    "scripts",
-    ".github",
-    "package.json",
-    "package-lock.json",
-    "tsconfig.json",
-    "tsconfig.cjs.json",
-    "vitest.config.ts",
-    "README.md",
-  ],
-  { cwd: root, stdio: "pipe" },
-);
+// The manifest records the reviewed baseline. Test the current candidate rather
+// than requiring its tree to equal that baseline: release/dependency PRs must
+// run the behavior gates without a self-referential manifest update.
+const candidateSHA = execFileSync("git", ["rev-parse", "HEAD"], {
+  cwd: root,
+  encoding: "utf8",
+}).trim();
+console.log(`Testing TypeScript ${candidateSHA}; reviewed baseline ${manifest.typescript_sha}`);
 const reference = resolve(process.env.QURL_GO_REFERENCE ?? "../qurl-go-parity-reference");
 assert.equal(
   execFileSync("git", ["rev-parse", "HEAD"], { cwd: reference, encoding: "utf8" }).trim(),
@@ -56,7 +44,7 @@ assert.equal(
   "",
   "Go reference must be clean",
 );
-assert.equal(JSON.parse(readFileSync(join(root, "package.json"))).version, manifest.sdk_version);
+assert.match(JSON.parse(readFileSync(join(root, "package.json"))).version, /^2\./);
 assert.match(manifest.sdk_version, /^2\./);
 assert.equal(manifest.nhp_version, "1.1");
 const dir = mkdtempSync(join(tmpdir(), "qurl-parity-"));

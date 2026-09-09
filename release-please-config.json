@@ -29,7 +29,12 @@
         {
           "type": "json",
           "path": "package-lock.json",
-          "jsonpath": "$.packages['packages/aws','packages/state-fs'].version"
+          "jsonpath": "$.packages['packages/aws'].version"
+        },
+        {
+          "type": "json",
+          "path": "package-lock.json",
+          "jsonpath": "$.packages['packages/state-fs'].version"
         },
         {
           "type": "json",

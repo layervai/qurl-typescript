@@ -885,6 +885,13 @@ path silently resets an existing identity.
 lock, exclusive temporary files, file and directory fsync, and atomic replacement.
 It rejects symlinks, hard links, unsafe permissions, and directory or lock
 replacement. Keep the store open until its runtime has closed. Filesystem state
+uses synchronous native I/O, including fsync, on the event loop. Use local storage;
+slow or network filesystems can block the process. Continuity checks also run before
+lifecycle datagrams and cannot be cached safely across external directory changes.
+An existing state directory must be owned by the process user with mode 0700.
+On macOS, `/var`, `/tmp`, and `/etc` resolve through their standard `/private` paths.
+A save error after rename can mean the new state is present but its durability is
+unconfirmed; do not assume the previous state remains. Filesystem state
 currently requires Linux or macOS; unsupported platforms fail closed. Install
 scripts may be disabled when a matching prebuilt native binary is available.
 
@@ -927,7 +934,9 @@ configuration when downgrade protection must survive process restarts.
 const opener = createPortalOpener({ qurl: signedLink, provider, transport: 'relay' });
 ```
 
-The SHA-pinned reference and behavior gates are in `parity-manifest.json`.
+The SHA-pinned reviewed baseline and behavior gates are in `parity-manifest.json`.
+CI reports the candidate SHA and tests that candidate against pinned Go behavior.
+It does not require release or dependency PRs to match the baseline tree.
 Run `npm run build`, `npm test`, `npm run smoke:dist`, and `npm run parity:go`.
 Set `QURL_GO_REFERENCE` to a clean checkout at the manifest's exact Go revision.
 The direct gate compares producer wire bytes and sealed-state reads and writes

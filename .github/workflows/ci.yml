@@ -46,6 +46,7 @@ jobs:
           repository: layervai/qurl-go
           ref: 3612c9fb64fff782694373367106a0734c095b82
           path: .reference/go
+          persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: "22"
