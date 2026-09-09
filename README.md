@@ -894,6 +894,8 @@ A save error after rename can mean the new state is present but its durability i
 unconfirmed; do not assume the previous state remains. Filesystem state
 currently requires Linux or macOS; unsupported platforms fail closed. Install
 scripts may be disabled when a matching prebuilt native binary is available.
+Linux x64/arm64 prebuilds distinguish glibc and musl; CI tests Ubuntu 24.04 and
+Alpine 3.22. macOS prebuilds cover x64 and arm64.
 
 For sealed state, use `openSealedFileAgentState(path, providerID, keyWrapper,
 expectedAgentID)`. Each save uses a fresh AES-256-GCM key and verifies wrapping and

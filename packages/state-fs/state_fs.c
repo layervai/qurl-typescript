@@ -121,7 +121,8 @@ static napi_value check(napi_env env, napi_callback_info info) {
 }
 static napi_value lock_store(napi_env env, napi_callback_info info) {
   size_t n = 1; napi_value arg, value; napi_get_cb_info(env, info, &n, &arg, NULL, NULL);
-  store *s = n == 1 ? handle(env, arg) : NULL;
+  if (n != 1) return fail(env, "STATE_HANDLE");
+  store *s = handle(env, arg);
   if (!s) return NULL;
   if (s->lock >= 0) return fail(env, "STATE_LOCKED");
   int fd = openat(s->dir, s->lockname, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, 0600);
@@ -147,7 +148,8 @@ static napi_value unlock_store(napi_env env, napi_callback_info info) {
 }
 static napi_value read_store(napi_env env, napi_callback_info info) {
   size_t n = 1; napi_value arg, value; napi_get_cb_info(env, info, &n, &arg, NULL, NULL);
-  store *s = n == 1 ? handle(env, arg) : NULL; if (!s) return NULL;
+  if (n != 1) return fail(env, "STATE_HANDLE");
+  store *s = handle(env, arg); if (!s) return NULL;
   int fd = openat(s->dir, s->name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
   if (fd < 0) { if (errno == ENOENT) { napi_get_null(env, &value); return value; } return fail(env, "STATE_READ"); }
   struct stat st, after;
@@ -173,7 +175,8 @@ static napi_value read_store(napi_env env, napi_callback_info info) {
 static napi_value write_store(napi_env env, napi_callback_info info) {
   size_t n = 3, length; napi_value args[3]; void *bytes; char temp[256];
   napi_get_cb_info(env, info, &n, args, NULL, NULL);
-  store *s = n == 3 ? handle(env, args[0]) : NULL; if (!s) return NULL;
+  if (n != 3) return fail(env, "STATE_HANDLE");
+  store *s = handle(env, args[0]); if (!s) return NULL;
   if (s->lock < 0 || napi_get_buffer_info(env, args[1], &bytes, &length) != napi_ok || length > (2 << 20) ||
       !string(env, args[2], temp, sizeof(temp)) || strncmp(temp, ".qurl-", 6) || strchr(temp, '/') || !strcmp(temp, s->name)) return fail(env, "STATE_WRITE");
   struct stat old, current;

@@ -80,6 +80,25 @@ it("maps HTTP failure without trying to decrypt the error body", async () => {
   ).rejects.toMatchObject({ name: "RelayError", status: 503 });
 });
 
+it("preserves an error status and cancels an oversized proxy error page", async () => {
+  const cancel = vi.fn();
+  const response = new Response(
+    new ReadableStream({
+      start(controller) {
+        controller.enqueue(new Uint8Array(wire.NHP_PACKET_SIZE + 1));
+      },
+      cancel,
+    }),
+    { status: 502 },
+  );
+  await expect(
+    relayKnock(url, allowed, server, device, payload, {
+      fetch: async () => response,
+    }),
+  ).rejects.toMatchObject({ name: "RelayError", status: 502 });
+  expect(cancel).toHaveBeenCalledTimes(1);
+});
+
 it("refuses redirect/network failures without a second request", async () => {
   const fetcher = vi.fn(async () => {
     throw new TypeError("redirect refused");

@@ -16,7 +16,7 @@
   ],
   "scripts": {
     "install": "node-gyp-build",
-    "prebuild": "prebuildify --napi"
+    "prebuild": "prebuildify --napi --tag-libc"
   },
   "dependencies": {
     "node-gyp-build": "4.8.4"

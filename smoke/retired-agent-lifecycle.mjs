@@ -111,7 +111,10 @@ const packageJson = fileURLToPath(new URL("../package.json", import.meta.url));
 const readme = fileURLToPath(new URL("../README.md", import.meta.url));
 for (const file of [...filesUnder(sourceRoot), ...filesUnder(distRoot), packageJson, readme]) {
   const contents = readFileSync(file, "utf8");
-  for (const forbidden of forbiddenWire) {
+  for (const forbidden of [
+    ...retiredNames.filter((name) => name !== "AgentState"),
+    ...forbiddenWire,
+  ]) {
     assert.equal(contents.includes(forbidden), false, `${forbidden} reappeared in ${file}`);
   }
 }

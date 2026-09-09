@@ -95,9 +95,11 @@ export async function relayKnock(
     } catch (cause) {
       throw new RelayError(0, "qURL relay transport failed", { cause });
     }
-    packet = await readBoundedBody(response, NHP_PACKET_SIZE);
-    if (response.status !== 200)
+    if (response.status !== 200) {
+      await response.body?.cancel().catch(() => undefined);
       throw new RelayError(response.status, "qURL relay returned an unexpected HTTP status");
+    }
+    packet = await readBoundedBody(response, NHP_PACKET_SIZE);
     const reply = decryptNHPReply(devicePrivateKey, serverPublicKey, packet);
     if (reply.type === NHP_TYPE_COOKIE) return reply;
     if (reply.type !== NHP_TYPE_ACK || reply.counter !== built.counter) {

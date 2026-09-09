@@ -67,12 +67,8 @@ export class FileAgentState implements AgentStateStore {
 
   async save(state: AgentState, signal?: AbortSignal): Promise<void> {
     // Snapshot before waiting for another writer or an external key wrapper.
-    const bytes = encodeAgentState(state);
-    try {
-      await this.withLock((locked) => locked.save(decodeAgentState(bytes), signal), signal);
-    } finally {
-      bytes.fill(0);
-    }
+    const snapshot = structuredClone(state);
+    await this.withLock((locked) => locked.save(snapshot, signal), signal);
   }
 
   async withLock<T>(

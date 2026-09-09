@@ -3902,21 +3902,6 @@ export class QURLClient {
     ) {
       throw delegatedResponseError(status, "terminal data has a non-terminal status", requestId);
     }
-    const partialQurlIds = Array.isArray(data.results)
-      ? [
-          ...new Set(
-            data.results.flatMap((item) =>
-              item &&
-              typeof item === "object" &&
-              item.status === "succeeded" &&
-              typeof item.qurl?.qurl_id === "string" &&
-              DELEGATED_QURL_ID_PATTERN.test(item.qurl.qurl_id)
-                ? [item.qurl.qurl_id as string]
-                : [],
-            ),
-          ),
-        ]
-      : [];
     let results: DelegatedQurlBatchItemResult[];
     try {
       if (!isUtcTimestamp(data.completed_at)) {
@@ -3930,6 +3915,21 @@ export class QURLClient {
         requestId,
       );
     } catch (error) {
+      const partialQurlIds = Array.isArray(data.results)
+        ? [
+            ...new Set(
+              data.results.flatMap((item) =>
+                item &&
+                typeof item === "object" &&
+                item.status === "succeeded" &&
+                typeof item.qurl?.qurl_id === "string" &&
+                DELEGATED_QURL_ID_PATTERN.test(item.qurl.qurl_id)
+                  ? [item.qurl.qurl_id as string]
+                  : [],
+              ),
+            ),
+          ]
+        : [];
       if (error instanceof QURLError)
         Object.defineProperty(error, "partialQurlIds", {
           value: Object.freeze(partialQurlIds),

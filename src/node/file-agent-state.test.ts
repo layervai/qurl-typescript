@@ -10,9 +10,11 @@ import {
   writeFileSync,
   linkSync,
   statSync,
+  realpathSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname, basename } from "node:path";
+import { loadNativeStateFS } from "./native-loader.cjs";
 import { FileAgentState } from "./file-agent-state.js";
 import { decodeAgentState, encodeAgentState, type AgentState } from "./agent-state.js";
 import {
@@ -56,6 +58,23 @@ const wrapper: AgentStateKeyWrapper = {
 };
 
 describe("native agent state boundary", () => {
+  it("rejects missing native arguments instead of reporting a successful write", () => {
+    const native = loadNativeStateFS();
+    const file = path();
+    const handle = native.open(realpathSync(dirname(file)), basename(file));
+    try {
+      for (const method of [native.read, native.tryLock, native.write]) {
+        expect(() => Reflect.apply(method, undefined, [])).toThrow();
+      }
+      expect(() =>
+        Reflect.apply(native.write, undefined, [handle, Buffer.from("state")]),
+      ).toThrow();
+      expect(native.read(handle)).toBeNull();
+    } finally {
+      native.close(handle);
+    }
+  });
+
   it("persists across handles, uses private modes, and serializes independent writers", async () => {
     const name = path();
     const first = new FileAgentState(name);
