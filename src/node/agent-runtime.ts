@@ -1,5 +1,11 @@
 import { loadDeploymentHub } from "./deployment.js";
-import { createHash, generateKeyPairSync, randomBytes, timingSafeEqual } from "node:crypto";
+import {
+  createHash,
+  generateKeyPairSync,
+  randomBytes,
+  randomInt,
+  timingSafeEqual,
+} from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { isIP } from "node:net";
 import { QURLClient } from "../client.js";
@@ -151,6 +157,7 @@ class Lifecycle {
       expires ? canonicalTime(expires) - Date.now() : Infinity,
       this.replacement ? canonicalTime(this.replacement.deadline) - Date.now() : Infinity,
     );
+    const deadline = Date.now() + remaining;
     const controller = AbortSignal.timeout(Math.max(0, remaining));
     const caller = detachedSignal ?? this.options.signal;
     const signal = caller ? AbortSignal.any([controller, caller]) : controller;
@@ -267,13 +274,13 @@ class Lifecycle {
               (!error.code.startsWith("524") || !!error.retryAfterMs));
           if (!retryable || attempt === 3 || phase === "session" || type === 12) throw error;
           beforeSend();
-          await delay(
-            error instanceof AgentLifecycleError && error.retryAfterMs
-              ? error.retryAfterMs
-              : Math.min(8000, 500 * 2 ** attempt),
-            undefined,
-            { signal },
+          const pause = Math.max(
+            error instanceof AgentLifecycleError ? (error.retryAfterMs ?? 0) : 0,
+            randomInt(Math.min(8000, 500 * 2 ** attempt)),
           );
+          // Retry-After is a lower bound. Never let Node clamp a large delay to 1 ms.
+          if (pause >= deadline - Date.now()) throw error;
+          await delay(pause, undefined, { signal });
         }
       }
       throw new AgentLifecycleError("RETRY_EXHAUSTED");

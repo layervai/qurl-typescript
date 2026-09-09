@@ -7,7 +7,7 @@ import { generateKeyPairSync } from "node:crypto";
 import { FileAgentState } from "./file-agent-state.js";
 import { encodeAgentJSON, type AgentStateStore } from "./agent-state.js";
 import { agentRuntimeTesting, type AgentRuntimeOptions } from "./agent-runtime.js";
-import type { AgentTransport } from "./agent-transport.js";
+import { AgentTransportError, type AgentTransport } from "./agent-transport.js";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 const vectors = JSON.parse(
@@ -174,6 +174,47 @@ describe("producer lifecycle durability", () => {
         })),
       ).rejects.toThrow("INVALID_REPLY");
       expect((await test.store.load()).assignment).toBeUndefined();
+    } finally {
+      test.store.close();
+    }
+  });
+
+  it("does not retry when authenticated Retry-After exceeds the operation budget", async () => {
+    const test = setup();
+    let calls = 0;
+    try {
+      await expect(
+        agentRuntimeTesting.connectWithTransport(test.store, test.options, async () => {
+          calls++;
+          return {
+            type: 6,
+            flags: 0,
+            counter: 1n,
+            timestampNanos: 1n,
+            body: encodeAgentJSON({ errCode: "52204", retryAfterSeconds: 9_223_372_036n }),
+          };
+        }),
+      ).rejects.toMatchObject({ code: "52204" });
+      expect(calls).toBe(1);
+    } finally {
+      test.store.close();
+    }
+  });
+
+  it("retries a transient transport failure within the bounded lifecycle", async () => {
+    const test = setup();
+    let attempts = 0;
+    try {
+      const runtime = await agentRuntimeTesting.connectWithTransport(
+        test.store,
+        test.options,
+        async (request) => {
+          if (attempts++ === 0) throw new AgentTransportError();
+          return test.transport(request);
+        },
+      );
+      expect(attempts).toBe(4);
+      runtime.close();
     } finally {
       test.store.close();
     }
