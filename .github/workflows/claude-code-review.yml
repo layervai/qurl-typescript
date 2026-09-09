@@ -184,11 +184,11 @@ jobs:
             - Security concerns
             - Test coverage
 
-            Read the changed-file list first, then review each relevant file
-            once and follow concrete call sites across the change. Reuse reads;
+            Read the changed-file list and its per-file patches first. Fetch
+            full files where patches omit context and follow concrete call sites.
+            Reuse reads;
             do not repeatedly fetch the full diff or unchanged files. Cover all
-            changed behavior and report any coverage limit explicitly. Publish
-            the review as your final action.
+            changed behavior and report any coverage limit explicitly.
 
             Use search_code when needed to find call sites, other implementations,
             and prior art before judging a change; scope every query with
@@ -229,6 +229,18 @@ jobs:
           # comment. It receives the repository token but not the Anthropic key.
           # Local, network, delegation, and GitHub file-write tools stay denied.
           claude_args: '--model claude-opus-5 --disallowed-tools "Bash,Read,Glob,Grep,LS,Task,Edit,Write,MultiEdit,NotebookEdit,WebFetch,WebSearch,mcp__github_file_ops__commit_files,mcp__github_file_ops__delete_files,mcp__github__create_or_update_file,mcp__github__push_files,mcp__github__delete_file" --allowed-tools "mcp__github__get_pull_request,mcp__github__get_pull_request_diff,mcp__github__get_pull_request_files,mcp__github__get_pull_request_review_comments,mcp__github__get_pull_request_reviews,mcp__github__get_pull_request_status,mcp__github__get_file_contents,mcp__github__search_code,mcp__github__get_issue,mcp__github__get_issue_comments,mcp__github__search_issues,mcp__github__search_pull_requests,mcp__github__list_issues,mcp__github__list_pull_requests,mcp__github__add_issue_comment"'
+
+      - name: Report incomplete review
+        if: ${{ always() && (steps.claude-review.outcome == 'failure' || steps.claude-review.outcome == 'cancelled') }}
+        timeout-minutes: 1
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REVIEW_HEAD: ${{ github.event.pull_request.head.sha }}
+          REVIEW_OUTCOME: ${{ steps.claude-review.outcome }}
+        run: |
+          body="Automated review did not complete (action outcome: ${REVIEW_OUTCOME}) for ${REVIEW_HEAD}. This is not a completed review. Inspect ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID} before rerunning."
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body "$body"
 
       - name: Verify terminal Claude review
         if: success() && steps.claude-review.outcome == 'success'
