@@ -460,6 +460,17 @@ describe("account enrollment", () => {
       await expect(
         agentRuntimeTesting.connectWithTransport(test.store, options, async (exchange) => {
           const reply = await test.transport(exchange);
+          // The replacement ticket has a later expiry: resetting the horizon
+          // from this ticket would incorrectly extend credential recovery.
+          if (exchange.type === 5 && horizons.length === 1) {
+            const body = parseStrictJson(reply!.body, 4096) as unknown as {
+              list: { assignment_ticket_expires_at: string };
+            };
+            body.list.assignment_ticket_expires_at = new Date(Date.now() + 960_000)
+              .toISOString()
+              .replace(/\.\d{3}Z$/, "Z");
+            return { ...reply!, body: encodeAgentJSON(body) };
+          }
           if (exchange.type === 13) {
             const pending = (await test.store.load()).pending_activation!;
             horizons.push([pending.recovery_anchor_ticket_expires_at, pending.recovery_expires_at]);
