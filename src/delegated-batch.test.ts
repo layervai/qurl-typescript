@@ -771,3 +771,30 @@ describe("delegated qURL batches", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 });
+
+it.each([
+  [
+    [
+      { status: "succeeded", qurl: { qurl_id: "q_0123456789a" } },
+      { status: "succeeded", qurl: { qurl_id: "q_0123456789a" } },
+      { status: "succeeded", qurl: { qurl_id: "invalid" } },
+      { status: "failed", qurl: { qurl_id: "q_0123456789b" } },
+      null,
+    ],
+    ["q_0123456789a"],
+  ],
+  [{ invalid: true }, []],
+])(
+  "preserves only valid successful IDs for malformed terminal cleanup",
+  async (results, expected) => {
+    const fetch = mockFetch({
+      status: 200,
+      body: pendingBody({ status: "partially_failed", completed_at: "invalid", results }),
+    });
+    const error = await createClient(fetch)
+      .getDelegatedQurlBatch(BATCH_ID)
+      .catch((error) => error);
+    expect(error).toMatchObject({ partialQurlIds: expected });
+    expect(Object.isFrozen(error.partialQurlIds)).toBe(true);
+  },
+);

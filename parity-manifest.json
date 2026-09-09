@@ -38,5 +38,6 @@
       "packages/aws/src/secrets-manager.ts",
       "packages/aws/src/kms.ts"
     ]
-  }
+  },
+  "typescript_sha_role": "Documentary reviewed implementation baseline; gates execute the current TypeScript candidate."
 }

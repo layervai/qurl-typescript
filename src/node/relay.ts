@@ -99,14 +99,18 @@ export async function relayKnock(
       await response.body?.cancel().catch(() => undefined);
       throw new RelayError(response.status, "qURL relay returned an unexpected HTTP status");
     }
-    packet = await readBoundedBody(response, NHP_PACKET_SIZE);
-    const reply = decryptNHPReply(devicePrivateKey, serverPublicKey, packet);
-    if (reply.type === NHP_TYPE_COOKIE) return reply;
-    if (reply.type !== NHP_TYPE_ACK || reply.counter !== built.counter) {
-      reply.body.fill(0);
-      throw new Error("NHP relay reply does not match the request");
+    try {
+      packet = await readBoundedBody(response, NHP_PACKET_SIZE);
+      const reply = decryptNHPReply(devicePrivateKey, serverPublicKey, packet);
+      if (reply.type === NHP_TYPE_COOKIE) return reply;
+      if (reply.type !== NHP_TYPE_ACK || reply.counter !== built.counter) {
+        reply.body.fill(0);
+        throw new Error("NHP relay reply does not match the request");
+      }
+      return reply;
+    } catch (cause) {
+      throw new RelayError(200, "qURL relay reply is invalid", { cause });
     }
-    return reply;
   } finally {
     built.packet.fill(0);
     packet?.fill(0);

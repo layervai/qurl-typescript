@@ -53,7 +53,11 @@ it("rejects a valid ACK for a different request counter", async () => {
   fixedCounter(counter + 1n);
   await expect(
     relayKnock(url, allowed, server, device, payload, { fetch: async () => ack() }),
-  ).rejects.toThrow("does not match");
+  ).rejects.toMatchObject({
+    name: "RelayError",
+    status: 200,
+    cause: { message: "NHP relay reply does not match the request" },
+  });
 });
 
 it("returns a cookie reply without treating it as an ACK", async () => {
@@ -116,3 +120,12 @@ it("rejects malformed relay URLs before sending", async () => {
   ).rejects.toMatchObject({ name: "RelayError", status: 0 });
   expect(fetcher).not.toHaveBeenCalled();
 });
+
+it.each([new Uint8Array(3), new Uint8Array(wire.NHP_PACKET_SIZE + 1)])(
+  "classifies invalid HTTP 200 relay bodies",
+  async (body) => {
+    await expect(
+      relayKnock(url, allowed, server, device, payload, { fetch: async () => new Response(body) }),
+    ).rejects.toMatchObject({ name: "RelayError", status: 200, cause: expect.any(Error) });
+  },
+);

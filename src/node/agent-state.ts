@@ -94,7 +94,11 @@ export class AgentStateError extends Error {
 export interface AgentStateStore {
   load(signal?: AbortSignal): Promise<AgentState>;
   save(state: AgentState, signal?: AbortSignal): Promise<void>;
-  /** Hold one store's setup lock across the complete lifecycle transition. */
+  /**
+   * Hold one store's setup lock across the complete lifecycle transition.
+   * Nested calls reuse the outer lock and its signal; pass a signal directly
+   * to load/save when an individual operation needs a different deadline.
+   */
   withLock<T>(operation: (locked: AgentStateStore) => Promise<T>, signal?: AbortSignal): Promise<T>;
   checkContinuity?(): void;
 }

@@ -554,7 +554,7 @@ export interface DelegatedQurlBatchTerminal extends DelegatedQurlBatchBase {
 /** Exact body-free HTTP 304 result for an unchanged non-terminal batch. */
 export interface DelegatedQurlBatchNotModified {
   http_status: 304;
-  etag?: string;
+  etag: string;
   /** Positive Retry-After delta in seconds, when the batch is still pending. */
   retry_after?: number;
 }

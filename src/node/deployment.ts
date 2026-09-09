@@ -4,7 +4,10 @@ import type { KeyObject } from "node:crypto";
 import { isStrictJsonObject, parseStrictJson, type StrictJsonValue } from "./strict-json.js";
 import { issuerKeyFromSpki } from "./qv2.js";
 
+import type { NHPUDPEndpoint } from "./agent-state.js";
+
 export interface PortalDeployment {
+  readonly hub?: NHPUDPEndpoint;
   readonly issuers: readonly PortalDeploymentIssuer[];
   readonly cells: readonly PortalDeploymentCell[];
   readonly relay_allowlist?: readonly string[];

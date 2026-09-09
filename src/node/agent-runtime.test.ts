@@ -29,7 +29,7 @@ const dirs: string[] = [];
 afterEach(() => {
   dirs.splice(0).forEach((dir) => rmSync(dir, { recursive: true, force: true }));
 });
-function setup() {
+function setup(kind = "bootstrap", ticketTTL = 900_000) {
   const dir = mkdtempSync(join(tmpdir(), "qurl-runtime-test-"));
   dirs.push(dir);
   const store = new FileAgentState(join(dir, "state.json"));
@@ -53,6 +53,7 @@ function setup() {
     const body = parseStrictJson(exchange.body, 4096) as unknown as TestBody;
     calls.push({ type: exchange.type, host: exchange.endpoint.host, body });
     let reply: unknown;
+    if (exchange.type === 12) return undefined;
     if (exchange.type === 13) {
       expect((await store.load()).pending_activation?.assignment_ticket).toBe(
         body.usrData.assignment_ticket,
@@ -69,9 +70,9 @@ function setup() {
       };
       if (body.usrData.mode === "enroll")
         Object.assign(list, {
-          registration: { key_id: "key_123456789012", key_kind: "bootstrap" },
+          registration: { key_id: "key_123456789012", key_kind: kind },
           assignment_ticket: "qat1.test",
-          assignment_ticket_expires_at: new Date(Date.now() + 900_000)
+          assignment_ticket_expires_at: new Date(Date.now() + ticketTTL)
             .toISOString()
             .replace(/\.\d{3}Z$/, "Z"),
         });
@@ -377,6 +378,99 @@ describe("producer lifecycle durability", () => {
       expect(test.calls[0].body.usrData.mode).toBe("refresh");
       expect((await test.store.load()).credential_recovery_refresh_required).toBeUndefined();
       runtime.close();
+    } finally {
+      test.store.close();
+    }
+  });
+});
+
+describe("account enrollment", () => {
+  it.each([
+    ["account", 900_000, "12345678", undefined],
+    ["account", 900_000, "bad", "INVALID_OTP"],
+    ["account", 600_000, "12345678", "OTP_NOT_AVAILABLE"],
+    ["bootstrap", 900_000, "12345678", "ENROLLMENT_KIND_REFUSED"],
+    ["account", 900_000, undefined, "OTP_NOT_AVAILABLE"],
+  ])("validates %s enrollment with ticket TTL %i and OTP %s", async (kind, ttl, otp, error) => {
+    const test = setup(kind, ttl);
+    const challenges: boolean[] = [];
+    const options = {
+      ...test.options,
+      headless: false,
+      otpProvider:
+        otp === undefined
+          ? undefined
+          : async (challenge: { pendingActivationRecovery: boolean }) => {
+              challenges.push(challenge.pendingActivationRecovery);
+              return otp;
+            },
+    };
+    try {
+      const result = agentRuntimeTesting.connectWithTransport(test.store, options, test.transport);
+      if (error) await expect(result).rejects.toThrow(error);
+      else {
+        const runtime = await result;
+        expect(challenges).toEqual([false]);
+        expect(test.calls.filter((call) => call.type === 12)).toHaveLength(1);
+        expect(test.calls.find((call) => call.type === 13)?.body.otp).toBe(otp);
+        await runtime.close();
+      }
+    } finally {
+      test.store.close();
+    }
+  });
+
+  it("resumes interrupted account activation without sending another OTP request", async () => {
+    const test = setup("account");
+    const challenges: boolean[] = [];
+    const options = {
+      ...test.options,
+      headless: false,
+      otpProvider: async (challenge: { pendingActivationRecovery: boolean }) => {
+        challenges.push(challenge.pendingActivationRecovery);
+        return "12345678";
+      },
+    };
+    try {
+      await expect(
+        agentRuntimeTesting.connectWithTransport(test.store, options, async (exchange) => {
+          if (exchange.type === 13) throw new Error("interrupted registration");
+          return test.transport(exchange);
+        }),
+      ).rejects.toThrow("interrupted registration");
+      expect((await test.store.load()).pending_activation).toBeDefined();
+      const runtime = await agentRuntimeTesting.connectWithTransport(
+        test.store,
+        options,
+        test.transport,
+      );
+      expect(challenges).toEqual([false, true]);
+      expect(test.calls.filter((call) => call.type === 12)).toHaveLength(1);
+      await runtime.close();
+    } finally {
+      test.store.close();
+    }
+  });
+
+  it("bounds account ticket replacement to one attempt and preserves its recovery horizon", async () => {
+    const test = setup("account");
+    const options = { ...test.options, headless: false, otpProvider: async () => "12345678" };
+    const horizons: unknown[] = [];
+    try {
+      await expect(
+        agentRuntimeTesting.connectWithTransport(test.store, options, async (exchange) => {
+          const reply = await test.transport(exchange);
+          if (exchange.type === 13) {
+            const pending = (await test.store.load()).pending_activation!;
+            horizons.push([pending.recovery_anchor_ticket_expires_at, pending.recovery_expires_at]);
+            return { ...reply!, body: encodeAgentJSON({ errCode: "52101", aspId: "agent" }) };
+          }
+          return reply;
+        }),
+      ).rejects.toThrow("52101");
+      expect(horizons).toHaveLength(2);
+      expect(horizons[1]).toEqual(horizons[0]);
+      expect(test.calls.filter((call) => call.type === 12)).toHaveLength(2);
     } finally {
       test.store.close();
     }

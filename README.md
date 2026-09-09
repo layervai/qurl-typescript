@@ -904,7 +904,11 @@ Sealing authenticates the agent, provider, purpose, version, and wrapped-key
 metadata. It does not detect rollback to an older valid envelope. JavaScript
 strings cannot be reliably erased; avoid logging state or credentials.
 
-AWS adapters are separate exports from `@layervai/qurl-aws` (ESM and CommonJS):
+AWS adapters are separate exports from `@layervai/qurl-aws` (ESM and CommonJS).
+Install the AWS client for the subpath you use: `/ssm`, `/secrets-manager`, or
+`/kms`. These clients are optional peer dependencies. Importing the root barrel
+requires all three clients.
+
 
 - `createSSMAgentStateStore(ssmClient, parameterName, { kmsKeyID, tier })` stores
   SecureString parameters and enforces tier size limits.
@@ -914,6 +918,7 @@ AWS adapters are separate exports from `@layervai/qurl-aws` (ESM and CommonJS):
   authenticates all four state-binding fields in the KMS encryption context.
 
 SSM and Secrets Manager stores serialize lifecycle calls within one store handle.
+Loads outside a lifecycle lock can read the previous committed state.
 They require one process to own each state object: these services do not provide
 an agent setup transaction lock. KMS is a key wrapper, not a state store.
 
@@ -922,12 +927,14 @@ an agent setup transaction lock. KMS is a key wrapper, not a state store.
 Native UDP remains the default transport. An unknown cell fails closed, including
 when a relay allowlist exists. Select `transport: 'relay'` explicitly to use HTTPS
 relay. Relay URLs come from verified qv2 claims and must match deployment trust.
-Redirects and oversized responses are refused.
+Redirects and oversized responses are refused. A hostname-only allowlist entry
+authorizes all ports on that host; use `host:port` to limit the port.
 
 `createStaticProvider(deployment)` snapshots fixed trust. For discovery, use
 `createDiscoveryProvider({ fetcher, pinSHA256, manifestKeys, requireSignature,
 minVersion, expectedProfile })` and `createHTTPManifestFetcher(httpsURL)`. Supply
-a manifest pin or signing keys. Discovery verifies the domain-separated low-S
+a manifest pin or signing keys. Discovery is relay-only and requires
+`transport: 'relay'`; native UDP requires a static cell catalog. Discovery verifies the domain-separated low-S
 signature when configured, validity times, profile, and monotonic version floor.
 It never returns stale trust after a failed refresh. Persist `minVersion` in
 configuration when downgrade protection must survive process restarts.

@@ -54,20 +54,32 @@
     "build": "node -e 'require(\"node:fs\").rmSync(\"dist\", {recursive:true, force:true})' && tsc -p tsconfig.json && tsc -p tsconfig.cjs.json && node -e 'require(\"node:fs\").writeFileSync(\"dist/cjs/package.json\", JSON.stringify({type:\"commonjs\"}))'"
   },
   "peerDependencies": {
-    "@layervai/qurl": "^2.0.0"
+    "@layervai/qurl": "^2.0.0",
+    "@aws-sdk/client-ssm": "^3.1036.0",
+    "@aws-sdk/client-secrets-manager": "^3.1036.0",
+    "@aws-sdk/client-kms": "^3.1036.0"
   },
-  "dependencies": {
+  "devDependencies": {
+    "@layervai/qurl": "file:../..",
     "@aws-sdk/client-ssm": "3.1036.0",
     "@aws-sdk/client-secrets-manager": "3.1036.0",
     "@aws-sdk/client-kms": "3.1036.0"
-  },
-  "devDependencies": {
-    "@layervai/qurl": "file:../.."
   },
   "main": "./dist/cjs/index.js",
   "repository": {
     "type": "git",
     "url": "https://github.com/layervai/qurl-typescript",
     "directory": "packages/aws"
+  },
+  "peerDependenciesMeta": {
+    "@aws-sdk/client-ssm": {
+      "optional": true
+    },
+    "@aws-sdk/client-secrets-manager": {
+      "optional": true
+    },
+    "@aws-sdk/client-kms": {
+      "optional": true
+    }
   }
 }

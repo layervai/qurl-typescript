@@ -93,7 +93,9 @@ export const nativeAgentTransport: AgentTransport = async (input) => {
       const challenge = exactObject(parseStrictJson(reply.body, 4096), "trxId cookie");
       if (
         challenge.trxId !== first.counter ||
-        /"cookie"\s*:\s*"[^"\n]*\\/.test(Buffer.from(reply.body).toString())
+        /"cookie"\s*:\s*"[^"\n]*\\/.test(
+          Buffer.from(reply.body.buffer, reply.body.byteOffset, reply.body.byteLength).toString(),
+        )
       )
         throw new AgentStateError("INVALID_COOKIE");
       cookie = canonicalKey(challenge.cookie);

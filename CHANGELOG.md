@@ -11,6 +11,8 @@
 - Add secure native filesystem state and Go-compatible sealed envelopes, with
   separate SSM, Secrets Manager, and KMS adapters in `@layervai/qurl-aws`.
 - Gate wire, state, and local UDP lifecycle behavior against SHA-pinned Go code.
+- Expose frozen, deduplicated `partialQurlIds` on malformed terminal batch errors
+  so callers can clean up valid successful items.
 - Keep all three npm packages on the SDK 2.x release line.
 
 ### ⚠ BREAKING CHANGES
