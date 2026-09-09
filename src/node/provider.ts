@@ -37,6 +37,7 @@ const HALF_ORDER = Buffer.from(
   "hex",
 );
 const LIMIT = 1_048_576;
+const MAX_INT64 = (1n << 63n) - 1n;
 
 function object(value: StrictJsonValue, keys: readonly string[]) {
   if (!isStrictJsonObject(value) || Object.keys(value).some((key) => !keys.includes(key)))
@@ -92,7 +93,8 @@ export function createDiscoveryProvider(options: DiscoveryProviderOptions): Port
   const profile = options.expectedProfile;
   const now = options.now ?? Date.now;
   let floor = options.minVersion ?? 0n;
-  if (typeof floor !== "bigint" || floor < 0n) throw new Error("invalid discovery version floor");
+  if (typeof floor !== "bigint" || floor < 0n || floor > MAX_INT64)
+    throw new Error("invalid discovery version floor");
   return {
     async resolve(signal) {
       signal?.throwIfAborted();
@@ -136,12 +138,14 @@ export function createDiscoveryProvider(options: DiscoveryProviderOptions): Port
       if (
         typeof version !== "bigint" ||
         version <= 0n ||
-        version > (1n << 63n) - 1n ||
+        version > MAX_INT64 ||
         typeof issuedAt !== "bigint" ||
         issuedAt <= 0n ||
+        issuedAt > MAX_INT64 ||
         typeof notAfter !== "bigint" ||
         notAfter <= issuedAt ||
-        typeof manifest.profile !== "string" ||
+        notAfter > MAX_INT64 ||
+        (manifest.profile !== undefined && typeof manifest.profile !== "string") ||
         (profile && profile !== manifest.profile)
       )
         throw new Error("invalid discovery manifest");

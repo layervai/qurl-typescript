@@ -254,6 +254,32 @@ describe("producer lifecycle durability", () => {
       test.store.close();
     }
   });
+  it("cancels refresh lock waits when the runtime closes", async () => {
+    const test = setup();
+    const runtime = await agentRuntimeTesting.connectWithTransport(
+      test.store,
+      test.options,
+      test.transport,
+    );
+    let release!: () => void;
+    const held = test.store.withLock(
+      async () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    );
+    try {
+      const refreshing = runtime.refresh();
+      runtime.close();
+      await expect(refreshing).rejects.toThrow();
+    } finally {
+      release();
+      await held;
+      runtime.close();
+      test.store.close();
+    }
+  });
+
   it("retires the issuing cell after relocation and refuses reconstructed receipts", async () => {
     const test = setup();
     try {

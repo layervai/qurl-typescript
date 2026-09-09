@@ -666,6 +666,7 @@ export class AgentRuntime {
   async refresh(signal?: AbortSignal): Promise<void> {
     if (this.#options.offline) throw new AgentLifecycleError("OFFLINE");
     this.#requireState();
+    signal = signal ? AbortSignal.any([signal, this.#closed.signal]) : this.#closed.signal;
     this.#renewal ??= this.store
       .withLock(async (locked) => {
         const state = await locked.load(signal);
@@ -676,7 +677,7 @@ export class AgentRuntime {
           locked,
           {
             ...this.#options,
-            signal: signal ? AbortSignal.any([signal, this.#closed.signal]) : this.#closed.signal,
+            signal,
           },
           this.transport,
         ).refresh(state, true);

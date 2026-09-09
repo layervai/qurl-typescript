@@ -56,6 +56,27 @@ describe("discovery and explicit transport", () => {
     await expect(resolve({ ...manifest, cells: [] })).rejects.toThrow("schema");
   });
 
+  it("accepts an omitted optional profile and rejects timestamps outside Go int64", async () => {
+    const unprofiled: Partial<typeof manifest> = { ...manifest };
+    delete unprofiled.profile;
+    const resolve = (raw: Buffer) =>
+      createDiscoveryProvider({
+        fetcher: async () => envelope(raw),
+        pinSHA256: createHash("sha256").update(raw).digest(),
+        now: () => 1_000_000,
+      }).resolve();
+    expect((await resolve(Buffer.from(JSON.stringify(unprofiled)))).issuers).toEqual([
+      fixture.issuer,
+    ]);
+    await expect(
+      resolve(
+        Buffer.from(
+          JSON.stringify(manifest).replace('"not_after":2000', '"not_after":9223372036854775808'),
+        ),
+      ),
+    ).rejects.toThrow("invalid discovery manifest");
+  });
+
   it("verifies low-S domain-separated signatures and rejects downgrade", async () => {
     const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
     const signed = (version: number, domain = "NHP-QURL-V2-DISCOVERY-MANIFEST\0") => {
