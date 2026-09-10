@@ -399,6 +399,10 @@ class Lifecycle {
   }
 
   async enroll(state: AgentState): Promise<AgentState> {
+    // Pre-v6 completion records have no authenticated deadline anchor. Keep them
+    // readable, but never invent a deadline or replay them during an upgrade.
+    if (state.pending_completion && state.pending_completion.recovery_expires_at === undefined)
+      throw new AgentLifecycleError("RECOVERY_MIGRATION_REQUIRED");
     if (state.schema_version !== 8) {
       state = copy(state);
       state.schema_version = 8;

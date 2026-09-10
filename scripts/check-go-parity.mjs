@@ -90,6 +90,37 @@ try {
     const returned = JSON.parse(execFileSync(binary, ["roundtrip", path], { encoding: "utf8" }));
     assert.equal(returned.agent_id, state.agent_id);
     assert.deepEqual(await store.load(), state);
+    const legacy = {
+      ...state,
+      schema_version: 5,
+      assignment: {
+        cell_id: "parity-cell",
+        assignment_generation: 1,
+        endpoint_revision: 1,
+        lease_expires_at: "2033-05-18T03:33:20Z",
+        nhp_udp_endpoint: {
+          host: "cell.layerv.ai",
+          port: 443,
+          server_public_key_b64: state.public_key_b64,
+        },
+      },
+      pending_completion: {
+        device_api_key: "lv_live_" + Buffer.alloc(32, 8).toString("base64url"),
+        cell_id: "parity-cell",
+        assignment_generation: 1,
+      },
+    };
+    await store.save(legacy);
+    const goLegacy = JSON.parse(execFileSync(binary, ["roundtrip", path], { encoding: "utf8" }));
+    assert.equal(goLegacy.schema_version, 5);
+    assert.equal(goLegacy.pending_completion.recovery_expires_at, "0001-01-01T00:00:00Z");
+    const restoredLegacy = await store.load();
+    assert.equal(restoredLegacy.schema_version, 5);
+    assert.equal(
+      restoredLegacy.pending_completion.device_api_key,
+      legacy.pending_completion.device_api_key,
+    );
+    assert.equal(restoredLegacy.pending_completion.recovery_expires_at, undefined);
   } finally {
     store.close();
   }

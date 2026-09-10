@@ -540,3 +540,63 @@ it("reloads a rotated credential once per expiry and rejects identity replacemen
     test.store.close();
   }
 }, 20_000);
+
+it("keeps legacy completion readable but refuses migration without a deadline or UDP", async () => {
+  const test = setup();
+  test.failCompletion();
+  try {
+    await expect(
+      agentRuntimeTesting.connectWithTransport(test.store, test.options, test.transport),
+    ).rejects.toThrow("process interrupted");
+    const legacy = await test.store.load();
+    const pending = legacy.pending_completion!;
+    legacy.schema_version = 5;
+    await expect(test.store.save(legacy)).rejects.toThrow("INVALID_COMPLETION");
+    delete pending.recovery_anchor_ticket_expires_at;
+    delete pending.recovery_expires_at;
+    await test.store.save(legacy);
+    const before = await test.store.load();
+    const calls = test.calls.length;
+    await expect(
+      agentRuntimeTesting.connectWithTransport(test.store, test.options, test.transport),
+    ).rejects.toThrow("RECOVERY_MIGRATION_REQUIRED");
+    expect(test.calls).toHaveLength(calls);
+    expect(await test.store.load()).toEqual(before);
+    await expect(test.store.save({ ...legacy, schema_version: 8 })).rejects.toThrow("INVALID_TIME");
+  } finally {
+    test.store.close();
+  }
+});
+
+it("normalizes legacy activation zero times from its authenticated ticket before replay", async () => {
+  const test = setup();
+  try {
+    await expect(
+      agentRuntimeTesting.connectWithTransport(test.store, test.options, async (exchange) => {
+        if (exchange.type === 13) throw new Error("registration interrupted");
+        return test.transport(exchange);
+      }),
+    ).rejects.toThrow("registration interrupted");
+    const legacy = await test.store.load();
+    const pending = legacy.pending_activation!;
+    legacy.schema_version = 5;
+    await expect(test.store.save(legacy)).rejects.toThrow("INVALID_ACTIVATION");
+    pending.recovery_anchor_ticket_expires_at = "0001-01-01T00:00:00Z";
+    pending.recovery_expires_at = "0001-01-01T00:00:00Z";
+    await test.store.save(legacy);
+    const normalized = await test.store.load();
+    expect(normalized.schema_version).toBe(6);
+    expect(normalized.pending_activation?.recovery_anchor_ticket_expires_at).toBe(
+      pending.assignment_ticket_expires_at,
+    );
+    const runtime = await agentRuntimeTesting.connectWithTransport(
+      test.store,
+      test.options,
+      test.transport,
+    );
+    expect((await test.store.load()).schema_version).toBe(8);
+    await runtime.close();
+  } finally {
+    test.store.close();
+  }
+});

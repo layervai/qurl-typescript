@@ -297,17 +297,18 @@ export function decodeAgentState(raw: Uint8Array): AgentState {
       )
         throw new AgentStateError("INVALID_ACTIVATION");
       canonicalTime(p.assignment_ticket_expires_at);
-      if (
-        schema < 6n &&
-        p.recovery_anchor_ticket_expires_at === undefined &&
-        p.recovery_expires_at === undefined
-      ) {
+      if (schema < 6n) {
+        for (const field of ["recovery_anchor_ticket_expires_at", "recovery_expires_at"])
+          if (p[field] !== undefined && p[field] !== "0001-01-01T00:00:00Z")
+            throw new AgentStateError("INVALID_ACTIVATION");
         p.recovery_anchor_ticket_expires_at = p.assignment_ticket_expires_at;
         p.recovery_expires_at = new Date(
           canonicalTime(p.assignment_ticket_expires_at) + RECOVERY_HORIZON_MS,
         )
           .toISOString()
           .replace(".000Z", "Z");
+        // The normalized in-memory shape now carries the v6 recovery fields.
+        state.schema_version = 6;
       }
       recoveryWindow(p.recovery_anchor_ticket_expires_at, p.recovery_expires_at);
       canonicalKey(p.enrollment_credential_fingerprint_b64, "base64url");
@@ -326,7 +327,13 @@ export function decodeAgentState(raw: Uint8Array): AgentState {
     if (value.pending_completion !== undefined) {
       const p = exactObject(value.pending_completion, KEYS.completion);
       validateDeviceCredential(p.device_api_key);
-      recoveryWindow(p.recovery_anchor_ticket_expires_at, p.recovery_expires_at);
+      if (schema < 6n) {
+        for (const field of ["recovery_anchor_ticket_expires_at", "recovery_expires_at"]) {
+          if (p[field] !== undefined && p[field] !== "0001-01-01T00:00:00Z")
+            throw new AgentStateError("INVALID_COMPLETION");
+          delete p[field];
+        }
+      } else recoveryWindow(p.recovery_anchor_ticket_expires_at, p.recovery_expires_at);
       if (
         !state.assignment ||
         p.cell_id !== state.assignment.cell_id ||

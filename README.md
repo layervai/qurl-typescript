@@ -881,6 +881,13 @@ recovery horizon. It saves the recovered credential before mandatory assignment
 refresh. A failed refresh resumes without another recovery grant. No startup
 path silently resets an existing identity.
 
+Legacy pre-v6 pending-completion state remains readable, but enrollment returns
+`RECOVERY_MIGRATION_REQUIRED` without UDP or state changes. Those records lack
+an authenticated recovery deadline; explicit recovery or reprovisioning is required.
+Filesystem state creation honors the process umask and creates missing ancestors.
+Keep owner read/write/search permissions enabled (for example, umask `077`);
+unsafe existing permissions or an incompatible umask fail closed.
+
 `FileAgentState` uses a private directory, mode 0600 files, a process-safe setup
 lock, exclusive temporary files, file and directory fsync, and atomic replacement.
 It rejects symlinks, hard links, unsafe permissions, and directory or lock
@@ -939,6 +946,9 @@ a manifest pin or signing keys. Discovery is relay-only and requires
 signature when configured, validity times, profile, and monotonic version floor.
 It never returns stale trust after a failed refresh. Persist `minVersion` in
 configuration when downgrade protection must survive process restarts.
+Like Go, discovery fetches on each resolution, including renewal retries; it has
+no built-in cache. Use static trust for high-volume opens, or supply a provider
+with a deployment-owned refresh policy that refuses expired or failed-refresh trust.
 
 ```ts
 const opener = createPortalOpener({ qurl: signedLink, provider, transport: 'relay' });
