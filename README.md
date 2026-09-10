@@ -924,9 +924,10 @@ an agent setup transaction lock. KMS is a key wrapper, not a state store.
 
 ## Explicit relay and discovery
 
-Native UDP remains the default transport. An unknown cell fails closed, including
+Native UDP remains the default transport. An unknown native cell fails closed, including
 when a relay allowlist exists. Select `transport: 'relay'` explicitly to use HTTPS
-relay. Relay URLs come from verified qv2 claims and must match deployment trust.
+relay. Explicit relay trust uses signed qv2 claims and the relay allowlist, not
+the native cell catalog. Relay URLs must match that deployment trust.
 Redirects and oversized responses are refused. A hostname-only allowlist entry
 authorizes all ports on that host; use `host:port` to limit the port.
 

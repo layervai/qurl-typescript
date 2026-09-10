@@ -90,6 +90,7 @@ function aad(
         ? undefined
         : encodeAgentJSON(wrapped.metadata).toString()
       : compactMetadata(metadataRaw);
+  // wrapped_key is the final field; raw ends with its closing brace and the envelope brace.
   return metadata === undefined
     ? raw
     : Buffer.concat([raw.subarray(0, -2), Buffer.from(',"metadata":' + metadata + "}}")]);

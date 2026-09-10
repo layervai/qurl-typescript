@@ -129,3 +129,28 @@ it.each([new Uint8Array(3), new Uint8Array(wire.NHP_PACKET_SIZE + 1)])(
     ).rejects.toMatchObject({ name: "RelayError", status: 200, cause: expect.any(Error) });
   },
 );
+
+it.each(["fetch", "body"])("preserves caller cancellation during %s", async (phase) => {
+  const controller = new AbortController();
+  const reason = new DOMException("cancelled by caller", "AbortError");
+  const fetcher = async () => {
+    if (phase === "fetch") {
+      controller.abort(reason);
+      throw reason;
+    }
+    return new Response(
+      new ReadableStream({
+        pull(stream) {
+          controller.abort(reason);
+          stream.error(reason);
+        },
+      }),
+    );
+  };
+  await expect(
+    relayKnock(url, allowed, server, device, payload, {
+      signal: controller.signal,
+      fetch: fetcher,
+    }),
+  ).rejects.toBe(reason);
+});

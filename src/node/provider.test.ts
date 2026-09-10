@@ -6,6 +6,7 @@ import {
   createHTTPManifestFetcher,
 } from "./provider.js";
 import { createPortalOpener } from "./portal-opener.js";
+import { fingerprintKey } from "./deployment.js";
 import { validateRelayURL, readBoundedBody } from "./relay.js";
 import { createMatchedQv2Fixture } from "../__tests__/matched-qv2-fixture.js";
 
@@ -135,4 +136,48 @@ describe("discovery and explicit transport", () => {
     ).toBe("8443");
     await expect(readBoundedBody(new Response("oversize"), 3)).rejects.toThrow("size limit");
   });
+});
+
+it("routes an explicitly selected relay through its signed URL and allowlist", async () => {
+  const relayFetch = vi.fn(async () => new Response("unavailable", { status: 503 }));
+  for (const allowed of [true, false]) {
+    const provider = createStaticProvider({
+      issuers: [fixture.issuer],
+      cells: [],
+      relay_allowlist: [allowed ? "relay.example.test" : "different.example.test"],
+    });
+    const opener = createPortalOpener({
+      qurl: fixture.qurl,
+      provider,
+      transport: "relay",
+      relayFetch,
+    });
+    try {
+      await expect(opener.start()).rejects.toMatchObject({
+        name: "RelayError",
+        status: allowed ? 503 : 0,
+      });
+    } finally {
+      await opener.close();
+    }
+  }
+  expect(relayFetch).toHaveBeenCalledTimes(1);
+  expect(relayFetch.mock.calls[0][0]).toBe(
+    `https://relay.example.test/relay/${fingerprintKey(Buffer.from(fixture.cellPublicKeyB64, "base64url"))}`,
+  );
+});
+
+it("refuses ambiguous static deployment and provider configuration", () => {
+  const deployment = {
+    issuers: [fixture.issuer],
+    cells: [],
+    relay_allowlist: ["relay.example.test"],
+  };
+  expect(() =>
+    createPortalOpener({
+      qurl: fixture.qurl,
+      deployment,
+      provider: createStaticProvider(deployment),
+    }),
+  ).toThrow("provider");
 });

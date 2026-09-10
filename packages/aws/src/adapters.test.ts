@@ -1,4 +1,5 @@
-import { expect, it } from "vitest";
+import * as sdk from "@layervai/qurl/node";
+import { expect, it, vi } from "vitest";
 import { generateKeyPairSync } from "node:crypto";
 import type { SSMClient } from "@aws-sdk/client-ssm";
 import type { SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
@@ -117,4 +118,46 @@ it("serializes direct AWS saves with lifecycle transitions and carries the lock 
   await held;
   await expect(queued).rejects.toThrow("cancelled");
   expect(events).toEqual(["locked"]);
+});
+
+it.each([
+  ["Standard", 4096, false],
+  ["Standard", 4097, true],
+  ["Advanced", 5000, false],
+  ["Advanced", 8193, true],
+  ["Intelligent-Tiering", 8192, false],
+  ["Intelligent-Tiering", 8193, true],
+] as const)("bounds encoded SSM state for %s at %i bytes", async (tier, size, refused) => {
+  const encoded = Buffer.alloc(size);
+  const encode = vi.spyOn(sdk, "encodeAgentState").mockReturnValue(encoded);
+  const send = vi.fn(async () => ({}));
+  try {
+    const result = createSSMAgentStateStore({ send } as unknown as SSMClient, "/state", {
+      tier,
+    }).save(state);
+    if (refused) await expect(result).rejects.toThrow("SSM_SIZE_LIMIT");
+    else await result;
+    expect(send).toHaveBeenCalledTimes(refused ? 0 : 1);
+  } finally {
+    encode.mockRestore();
+  }
+});
+
+it("refuses oversized Secrets Manager state before a write and never creates an ARN-named secret", async () => {
+  const send = vi.fn(async () => {
+    throw Object.assign(new Error("missing"), { name: "ResourceNotFoundException" });
+  });
+  const store = createSecretsManagerAgentStateStore(
+    { send } as unknown as SecretsManagerClient,
+    "arn:aws:secretsmanager:us-east-1:123456789012:secret:state-AbCdEf",
+  );
+  const encode = vi.spyOn(sdk, "encodeAgentState").mockReturnValue(Buffer.alloc(65537));
+  try {
+    await expect(store.save(state)).rejects.toThrow("SECRETS_MANAGER_SIZE_LIMIT");
+    expect(send).not.toHaveBeenCalled();
+  } finally {
+    encode.mockRestore();
+  }
+  await expect(store.save(state)).rejects.toThrow("SECRET_MUST_EXIST");
+  expect(send).toHaveBeenCalledTimes(1);
 });

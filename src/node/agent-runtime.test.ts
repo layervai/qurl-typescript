@@ -1,5 +1,5 @@
 import { parseStrictJson } from "./strict-json.js";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -487,3 +487,56 @@ describe("account enrollment", () => {
     }
   });
 });
+
+it("reloads a rotated credential once per expiry and rejects identity replacement before HTTP", async () => {
+  const test = setup();
+  const credentials: (string | null)[] = [];
+  const fetcher = async (_url: unknown, init?: RequestInit) => {
+    credentials.push(new Headers(init?.headers).get("Authorization"));
+    return new Response(JSON.stringify({ data: {} }));
+  };
+  const runtime = await agentRuntimeTesting.connectWithTransport(
+    test.store,
+    { ...test.options, fetch: fetcher },
+    test.transport,
+  );
+  const load = vi.spyOn(test.store, "load");
+  let now = Date.now();
+  const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+  try {
+    const state = await test.store.load();
+    const original = state.device_api_key;
+    state.device_api_key = "lv_live_" + Buffer.alloc(32, 8).toString("base64url");
+    await test.store.save(state);
+    load.mockClear();
+    await runtime.client.getQuota();
+    expect(credentials).toEqual([`Bearer ${original}`]);
+    expect(load).not.toHaveBeenCalled();
+    now += 60_001;
+    await Promise.all([
+      runtime.client.getQuota(),
+      runtime.client.getQuota(),
+      runtime.client.getQuota(),
+    ]);
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(credentials.slice(1)).toEqual(Array(3).fill(`Bearer ${state.device_api_key}`));
+    const pair = generateKeyPairSync("x25519");
+    state.private_key_b64 = pair.privateKey
+      .export({ type: "pkcs8", format: "der" })
+      .subarray(-32)
+      .toString("base64");
+    state.public_key_b64 = pair.publicKey
+      .export({ type: "spki", format: "der" })
+      .subarray(-32)
+      .toString("base64");
+    await test.store.save(state);
+    now += 60_001;
+    await expect(runtime.client.getQuota()).rejects.toThrow("IDENTITY_CHANGED");
+    expect(credentials).toHaveLength(4);
+  } finally {
+    clock.mockRestore();
+    load.mockRestore();
+    await runtime.close();
+    test.store.close();
+  }
+}, 20_000);

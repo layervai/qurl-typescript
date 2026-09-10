@@ -93,6 +93,7 @@ export async function relayKnock(
           : AbortSignal.timeout(15_000),
       });
     } catch (cause) {
+      options.signal?.throwIfAborted();
       throw new RelayError(0, "qURL relay transport failed", { cause });
     }
     if (response.status !== 200) {
@@ -109,6 +110,7 @@ export async function relayKnock(
       }
       return reply;
     } catch (cause) {
+      options.signal?.throwIfAborted();
       throw new RelayError(200, "qURL relay reply is invalid", { cause });
     }
   } finally {
