@@ -27,12 +27,14 @@ jobs:
             ci
             chore
             revert
+          # Release Please uses chore(main) for default-branch releases.
           scopes: |
             client
             types
             api
             ci
             deps
+            main
           requireScope: false
           subjectPattern: ^[a-z].*$
           subjectPatternError: |
