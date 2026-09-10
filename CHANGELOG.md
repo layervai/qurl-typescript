@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [2.0.0](https://github.com/layervai/qurl-typescript/compare/qurl-v0.7.0...qurl-v2.0.0) (2026-09-10)
 
 ### SDK 2.x Go parity
 
@@ -58,6 +58,10 @@
 - **client:** add qurl-go-compatible Connector resource management by immutable
   slug and canonical public resource ID. Connector identity, reverse routing,
   and NHP admission IDs are validated and exposed separately.
+
+* **client:** bind portal access to an independently held CRID ([#258](https://github.com/layervai/qurl-typescript/issues/258)) ([aace347](https://github.com/layervai/qurl-typescript/commit/aace3470edb1def4d25b8ef5ce6d0a6160e1af67))
+* **client:** support delegated qURL batches ([#255](https://github.com/layervai/qurl-typescript/issues/255)) ([734cddf](https://github.com/layervai/qurl-typescript/commit/734cddf0033490355a6df4abb641db7ed31c7aaa))
+* complete Go parity for the TypeScript SDK 2.x ([#265](https://github.com/layervai/qurl-typescript/issues/265)) ([92f57e6](https://github.com/layervai/qurl-typescript/commit/92f57e6c62086d37347dea151a0fc69eea29f625))
 
 ### Bug Fixes
 
