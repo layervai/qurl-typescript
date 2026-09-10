@@ -16,7 +16,7 @@
     "go-udp-producer-journey"
   ],
   "state_schema_version": 8,
-  "typescript_sha": "93a2e81e51844fd5ba27954f77e7203a403eef63",
+  "typescript_sha": "60b3b080461e2910cec3c2e20596b6e0166bcad7",
   "conformance_version": "0.15.0",
   "surfaces": {
     "relay_discovery": [
