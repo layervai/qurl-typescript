@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  unit:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -19,7 +19,9 @@ jobs:
           node-version: "22"
           cache: "npm"
       - run: npm ci
+      - run: npm run prebuild --workspace @layervai/qurl-state-fs
       - run: npm run build
+      - run: npm run build --workspace @layervai/qurl-aws
       - run: npm run lint
       - run: npm run format:check
       - run: npm test
@@ -30,6 +32,47 @@ jobs:
           node-version: "22.12.0"
       - run: npm run smoke:dist
 
+  native:
+    uses: ./.github/workflows/native-state.yml
+
+  parity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: layervai/qurl-go
+          ref: 3612c9fb64fff782694373367106a0734c095b82
+          path: .reference/go
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "22"
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: .reference/go/go.mod
+          cache-dependency-path: .reference/go/go.sum
+      - run: npm ci
+      - run: npm run prebuild --workspace @layervai/qurl-state-fs
+      - run: npm run build
+      - run: npm run parity:go
+        env:
+          QURL_GO_REFERENCE: .reference/go
+
+  # Preserve the existing required check name while gating every parity surface.
+  test:
+    needs: [unit, native, parity]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          UNIT: ${{ needs.unit.result }}
+          NATIVE: ${{ needs.native.result }}
+          PARITY: ${{ needs.parity.result }}
+        run: test "$UNIT" = success && test "$NATIVE" = success && test "$PARITY" = success
+
   # Slack build-completion card. Thin shim over the fleet-shared reusable
   # in layervai/ops-routines-workflows (public mirror of private
   # layervai/ops-routines); the curl/jq Block Kit payload builder and the
@@ -37,13 +80,13 @@ jobs:
   # one-line edit to `needs:` + `gates:` here — no aggregation if-chain.
   notify:
     name: Notify
-    needs: [test]
+    needs: [unit, native, parity]
     if: always() && github.event_name != 'pull_request'
     permissions: {}
     uses: layervai/ops-routines-workflows/.github/workflows/notify.yml@d07fa2fe3a103907ff2b1a1a71509a6dcd8e9d32 # v0.13.0
     with:
       header: "qURL TypeScript SDK Build"
-      gates: '{"Tests": "${{ needs.test.result }}"}'
+      gates: '{"Tests": "${{ needs.unit.result }}", "Native platforms": "${{ needs.native.result }}", "Go parity": "${{ needs.parity.result }}"}'
       extra_fields: '{"SDK": "TypeScript"}'
     secrets:
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

@@ -503,10 +503,10 @@ interface DelegatedQurlBatchBase {
 export interface DelegatedQurlBatchAccepted extends DelegatedQurlBatchBase {
   http_status: 202;
   status: "queued";
-  etag: string;
+  etag?: string;
   location: string;
   /** Positive Retry-After delta in seconds. */
-  retry_after: number;
+  retry_after?: number;
 }
 
 export interface DelegatedQurlCreatedData {
@@ -538,9 +538,9 @@ export type DelegatedQurlBatchItemResult =
 export interface DelegatedQurlBatchPending extends DelegatedQurlBatchBase {
   http_status: 202;
   status: "queued" | "running";
-  etag: string;
+  etag?: string;
   /** Positive Retry-After delta in seconds. */
-  retry_after: number;
+  retry_after?: number;
 }
 
 /** Exact HTTP 200 terminal result. */

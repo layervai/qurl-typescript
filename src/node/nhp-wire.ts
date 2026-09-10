@@ -14,6 +14,13 @@ import { inflateSync } from "node:zlib";
 export const NHP_TYPE_KNOCK = 1;
 export const NHP_TYPE_ACK = 2;
 export const NHP_TYPE_COOKIE = 7;
+export const NHP_TYPE_LIST = 5;
+export const NHP_TYPE_LIST_RESULT = 6;
+export const NHP_TYPE_REKNOCK = 8;
+export const NHP_TYPE_OTP = 12;
+export const NHP_TYPE_REGISTER = 13;
+export const NHP_TYPE_REGISTER_ACK = 14;
+export const NHP_TYPE_EXIT = 16;
 export const NHP_HEADER_SIZE = 240;
 export const NHP_PACKET_SIZE = 4_096;
 export const NHP_MAX_BODY_SIZE = NHP_PACKET_SIZE - NHP_HEADER_SIZE - 16;
@@ -46,6 +53,8 @@ export interface BuildNHPMessageInput {
   readonly timestampNanos?: bigint;
   readonly counter?: bigint;
   readonly preamble?: number;
+  readonly cookie?: Uint8Array;
+  readonly hubProof?: boolean;
 }
 
 export function buildNHPMessage(input: BuildNHPMessageInput): {
@@ -56,7 +65,14 @@ export function buildNHPMessage(input: BuildNHPMessageInput): {
   validateKey(input.serverPublicKey, "server public key");
   if (input.body.byteLength > NHP_MAX_BODY_SIZE)
     throw new Error("NHP application body is too large");
-  if (input.type !== NHP_TYPE_KNOCK) throw new Error("unsupported NHP initiator message type");
+  if (![1, 5, 8, 12, 13, 16].includes(input.type))
+    throw new Error("unsupported NHP initiator message type");
+  const cookieRequired = input.type === NHP_TYPE_REKNOCK || input.hubProof === true;
+  if (
+    (input.hubProof && input.type !== NHP_TYPE_LIST) ||
+    (cookieRequired ? input.cookie?.length !== 32 : input.cookie !== undefined)
+  )
+    throw new Error("invalid NHP cookie proof");
 
   const ephemeralPrivateKey = input.ephemeralPrivateKey
     ? Buffer.from(input.ephemeralPrivateKey)
@@ -110,7 +126,7 @@ export function buildNHPMessage(input: BuildNHPMessageInput): {
 
     header.writeUInt8(1, 8);
     header.writeUInt8(1, 9);
-    header.writeUInt16BE(0, 10);
+    header.writeUInt16BE(input.hubProof ? 4 : 0, 10);
     header.writeBigUInt64BE(counter, 16);
     const payloadSize = input.body.byteLength === 0 ? 0 : input.body.byteLength + 16;
     header.writeUInt32BE(preamble >>> 0, 0);
@@ -118,7 +134,7 @@ export function buildNHPMessage(input: BuildNHPMessageInput): {
     const bodyAad = hashParts([...chainHashParts, header.subarray(0, HEADER_COMMON_SIZE)]);
     const sealedBody =
       input.body.byteLength === 0 ? Buffer.alloc(0) : seal(bodyKey, nonce, input.body, bodyAad);
-    headerDigest(input.serverPublicKey, header).copy(header, OFFSET_DIGEST);
+    headerDigest(input.serverPublicKey, header, input.cookie).copy(header, OFFSET_DIGEST);
 
     return { packet: Buffer.concat([header, sealedBody]), counter };
   } finally {
@@ -209,7 +225,10 @@ export function decryptNHPReply(
 }
 
 function validateReplyProfile(type: number, flags: number): void {
-  if (![NHP_TYPE_ACK, NHP_TYPE_COOKIE].includes(type) || (flags !== 0 && flags !== FLAG_COMPRESS)) {
+  if (
+    ![NHP_TYPE_ACK, NHP_TYPE_COOKIE, NHP_TYPE_LIST_RESULT, NHP_TYPE_REGISTER_ACK].includes(type) ||
+    (flags !== 0 && flags !== FLAG_COMPRESS)
+  ) {
     throw new Error("NHP reply type or flags are outside the reply profile");
   }
 }
@@ -307,8 +326,17 @@ function open(key: Uint8Array, nonce: Uint8Array, sealed: Uint8Array, aad: Uint8
   return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
 }
 
-function headerDigest(peerStaticPublicKey: Uint8Array, header: Uint8Array): Buffer {
-  return hashParts([INITIAL_HASH, peerStaticPublicKey, header.subarray(0, OFFSET_DIGEST)]);
+function headerDigest(
+  peerStaticPublicKey: Uint8Array,
+  header: Uint8Array,
+  cookie?: Uint8Array,
+): Buffer {
+  return hashParts([
+    INITIAL_HASH,
+    peerStaticPublicKey,
+    header.subarray(0, OFFSET_DIGEST),
+    ...(cookie ? [cookie] : []),
+  ]);
 }
 
 function trackSecret<T extends Uint8Array>(secrets: Uint8Array[], value: T): T {

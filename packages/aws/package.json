@@ -1,0 +1,85 @@
+{
+  "name": "@layervai/qurl-aws",
+  "version": "2.0.0",
+  "type": "module",
+  "description": "AWS state adapters for qURL agent lifecycle",
+  "license": "MIT",
+  "files": [
+    "dist/"
+  ],
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/esm/index.d.ts",
+        "default": "./dist/esm/index.js"
+      },
+      "require": {
+        "types": "./dist/cjs/index.d.ts",
+        "default": "./dist/cjs/index.js"
+      }
+    },
+    "./ssm": {
+      "import": {
+        "types": "./dist/esm/ssm.d.ts",
+        "default": "./dist/esm/ssm.js"
+      },
+      "require": {
+        "types": "./dist/cjs/ssm.d.ts",
+        "default": "./dist/cjs/ssm.js"
+      }
+    },
+    "./secrets-manager": {
+      "import": {
+        "types": "./dist/esm/secrets-manager.d.ts",
+        "default": "./dist/esm/secrets-manager.js"
+      },
+      "require": {
+        "types": "./dist/cjs/secrets-manager.d.ts",
+        "default": "./dist/cjs/secrets-manager.js"
+      }
+    },
+    "./kms": {
+      "import": {
+        "types": "./dist/esm/kms.d.ts",
+        "default": "./dist/esm/kms.js"
+      },
+      "require": {
+        "types": "./dist/cjs/kms.d.ts",
+        "default": "./dist/cjs/kms.js"
+      }
+    }
+  },
+  "types": "./dist/esm/index.d.ts",
+  "scripts": {
+    "build": "node -e 'require(\"node:fs\").rmSync(\"dist\", {recursive:true, force:true})' && tsc -p tsconfig.json && tsc -p tsconfig.cjs.json && node -e 'require(\"node:fs\").writeFileSync(\"dist/cjs/package.json\", JSON.stringify({type:\"commonjs\"}))'"
+  },
+  "peerDependencies": {
+    "@layervai/qurl": "^2.0.0",
+    "@aws-sdk/client-ssm": "^3.1036.0",
+    "@aws-sdk/client-secrets-manager": "^3.1036.0",
+    "@aws-sdk/client-kms": "^3.1036.0"
+  },
+  "devDependencies": {
+    "@layervai/qurl": "file:../..",
+    "@aws-sdk/client-ssm": "3.1036.0",
+    "@aws-sdk/client-secrets-manager": "3.1036.0",
+    "@aws-sdk/client-kms": "3.1036.0"
+  },
+  "main": "./dist/cjs/index.js",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/layervai/qurl-typescript",
+    "directory": "packages/aws"
+  },
+  "peerDependenciesMeta": {
+    "@aws-sdk/client-ssm": {
+      "optional": true
+    },
+    "@aws-sdk/client-secrets-manager": {
+      "optional": true
+    },
+    "@aws-sdk/client-kms": {
+      "optional": true
+    }
+  }
+}

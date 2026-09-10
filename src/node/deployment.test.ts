@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import conformancePackage from "@layervai/qurl-conformance";
-import { deploymentTesting, loadPortalDeployment } from "./deployment.js";
+import { deploymentTesting, loadPortalDeployment, loadDeploymentHub } from "./deployment.js";
 
 type Qv2Vectors = {
   classes: {
@@ -155,5 +155,36 @@ describe("native deployment loading", () => {
       deploymentJson().replace('{"issuers":', '{"issuers":[],"issuers":'),
     );
     expect(() => loadPortalDeployment()).toThrow("duplicate");
+  });
+});
+
+describe("producer Hub deployment loading", () => {
+  it.each([undefined, " ", "{}", '{"hub":null}', '{"hub":{},"unknown":true}'])(
+    "refuses missing or malformed Hub configuration %s",
+    (configured) => {
+      vi.stubEnv("QURL_DEPLOYMENT", configured);
+      expect(() => loadDeploymentHub()).toThrow("no producer Hub");
+    },
+  );
+  it("loads the same Hub from inline JSON and a deployment file", () => {
+    const dir = mkdtempSync(join(tmpdir(), "qurl-hub-test-"));
+    const path = join(dir, "deployment.json");
+    const deployment = JSON.parse(deploymentJson());
+    const { host, port, server_public_key_b64 } = deployment.cells[0];
+    const hub = {
+      host,
+      port,
+      server_public_key_b64: Buffer.from(server_public_key_b64, "base64url").toString("base64"),
+    };
+    const raw = JSON.stringify({ ...deployment, hub });
+    try {
+      writeFileSync(path, raw, { mode: 0o600 });
+      for (const configured of [raw, path]) {
+        vi.stubEnv("QURL_DEPLOYMENT", configured);
+        expect(loadDeploymentHub()).toEqual({ ...hub, port: 443n });
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

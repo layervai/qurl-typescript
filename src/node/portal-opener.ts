@@ -1,3 +1,5 @@
+import { relayKnock } from "./relay.js";
+import type { PortalProvider } from "./provider.js";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { setMaxListeners } from "node:events";
 import type { NHPMessage } from "./nhp-wire.js";
@@ -36,6 +38,10 @@ export interface CreatePortalOpenerOptions {
   readonly expectedCRID?: string;
   /** Public deployment trust. Omit to load QURL_DEPLOYMENT on the first start. */
   readonly deployment?: PortalDeployment;
+  readonly provider?: PortalProvider;
+  /** Explicit choice. Native UDP is the default and never falls back to relay. */
+  readonly transport?: "native" | "relay";
+  readonly relayFetch?: typeof globalThis.fetch;
   /** Whole-operation deadline for each NHP open. The default is 15 seconds. */
   readonly openTimeoutMs?: number;
   /** Protected-content fetch implementation. Native NHP opening never uses it. */
@@ -261,6 +267,14 @@ export function createPortalOpenerWithRuntime(
   if (options.fetch !== undefined && typeof options.fetch !== "function") {
     throw new PortalConfigurationError("native portal opener fetch must be a function");
   }
+  if (
+    options.transport !== undefined &&
+    options.transport !== "native" &&
+    options.transport !== "relay"
+  )
+    throw new PortalConfigurationError("unsupported portal transport");
+  if (options.provider && options.deployment)
+    throw new PortalConfigurationError("configure either a provider or a deployment");
   return new NativePortalOpener(options, runtime);
 }
 
@@ -283,6 +297,9 @@ class NativePortalOpener implements PortalOpener {
   readonly #explicitDeployment?: PortalDeployment;
   readonly #openTimeoutMs: number;
   readonly #expectedCRID?: string;
+  readonly #provider?: PortalProvider;
+  readonly #transport: "native" | "relay";
+  readonly #relayFetch?: typeof globalThis.fetch;
   #qurl: string;
   #resolvedDeployment?: ValidatedDeployment;
   #sessionSecret?: Buffer;
@@ -307,6 +324,9 @@ class NativePortalOpener implements PortalOpener {
     this.#qurl = options.qurl;
     this.#expectedCRID = options.expectedCRID;
     this.#explicitDeployment = options.deployment;
+    this.#provider = options.provider;
+    this.#transport = options.transport ?? "native";
+    this.#relayFetch = options.relayFetch;
     this.#runtime = runtime;
     this.#fetch = options.fetch ?? runtime.fetch;
     this.#openTimeoutMs = options.openTimeoutMs ?? DEFAULT_OPEN_TIMEOUT_MS;
@@ -610,10 +630,14 @@ class NativePortalOpener implements PortalOpener {
 
   async #performOpen(signal: AbortSignal): Promise<void> {
     this.#requireOpen();
-    const deployment = this.#loadDeployment();
+    const deployment = this.#provider
+      ? loadPortalDeployment(await this.#provider.resolve(signal))
+      : this.#loadDeployment();
+    signal.throwIfAborted();
     const link = this.#verifyLink(deployment);
     try {
-      const cell = validatedCellForLink(link, deployment);
+      const cell =
+        this.#transport === "native" ? validatedCellForLink(link, deployment) : undefined;
       this.#sessionSecret ??= randomBytes(32);
       const body = this.#knockBody(link);
       // Start the local validity bound before DNS and UDP I/O. The cell starts
@@ -621,9 +645,16 @@ class NativePortalOpener implements PortalOpener {
       const startedAtNanos = this.#runtime.nowNanos();
       const startedAtEpochMs = this.#runtime.nowEpochMs();
       try {
-        const reply = await this.#runtime.knock(cell, link.devicePrivateKey, body, {
-          signal,
-        });
+        const reply = cell
+          ? await this.#runtime.knock(cell, link.devicePrivateKey, body, { signal })
+          : await relayKnock(
+              link.claims.relayUrl,
+              deployment.relayAllowlist,
+              link.claims.cellPublicKey,
+              link.devicePrivateKey,
+              body,
+              { signal, fetch: this.#relayFetch },
+            );
         try {
           this.#requireOpen();
           if (reply.type === NHP_TYPE_COOKIE) throw new PortalBusyError();

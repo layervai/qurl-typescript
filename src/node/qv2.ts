@@ -42,6 +42,7 @@ export interface VerifiedQv2Link {
     readonly kid: string;
     readonly cellPublicKey: Uint8Array;
     readonly resourcePublicKeyB64: string;
+    readonly relayUrl: string;
   };
   readonly devicePrivateKey: Uint8Array;
 }
@@ -92,6 +93,7 @@ export function verifyQv2Link(
         kid: claims.kid,
         cellPublicKey: decodeX25519(claims.cellPublicKeyB64, "cell public key"),
         resourcePublicKeyB64: claims.resourcePublicKeyB64,
+        relayUrl: claims.relayUrl,
       },
       devicePrivateKey: privateKey,
     };
@@ -200,6 +202,7 @@ type ParsedClaims = {
   kid: string;
   cellPublicKeyB64: string;
   resourcePublicKeyB64: string;
+  relayUrl: string;
   qurlUserPublicKeyB64: string;
 };
 
@@ -244,7 +247,6 @@ function parseClaims(raw: Uint8Array): ParsedClaims {
   if (resourcePublic.byteLength < 80 || resourcePublic.byteLength > 160) {
     throw new Error("resource public key has an invalid length");
   }
-  requireNonEmptyString(value.relay_url, "relay URL");
   // cell_id is descriptive deployment metadata, not a security identity. The
   // signed 32-byte cell public key selects and then fully binds the UDP peer.
   if ("cell_id" in value && typeof value.cell_id !== "string") {
@@ -255,6 +257,7 @@ function parseClaims(raw: Uint8Array): ParsedClaims {
     cellPublicKeyB64,
     resourcePublicKeyB64,
     qurlUserPublicKeyB64: qurlPublic,
+    relayUrl: requireNonEmptyString(value.relay_url, "relay URL"),
   };
 }
 

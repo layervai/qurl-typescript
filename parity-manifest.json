@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "sdk_version": "2.0.0",
+  "nhp_version": "1.1",
+  "go_repository": "https://github.com/layervai/qurl-go",
+  "go_sha": "3612c9fb64fff782694373367106a0734c095b82",
+  "typescript_base_sha": "aace3470edb1def4d25b8ef5ce6d0a6160e1af67",
+  "transport_policy": "Native by default. HTTPS relay requires explicit selection. Unknown cells fail closed.",
+  "gates": [
+    "wire-bytes",
+    "sealed-state-roundtrip",
+    "typescript-tests",
+    "distribution-smoke",
+    "hub-source-proof-wire-bytes",
+    "producer-conformance-vectors",
+    "go-udp-producer-journey"
+  ],
+  "state_schema_version": 8,
+  "typescript_sha": "9041c2f84763e4774861765c39170576f6530fa8",
+  "conformance_version": "0.15.0",
+  "surfaces": {
+    "relay_discovery": [
+      "src/node/relay.ts",
+      "src/node/provider.ts"
+    ],
+    "producer_lifecycle": [
+      "src/node/agent-runtime.ts",
+      "src/node/agent-transport.ts"
+    ],
+    "durable_state": [
+      "src/node/agent-state.ts",
+      "src/node/file-agent-state.ts",
+      "src/node/sealed-agent-state.ts",
+      "packages/state-fs/state_fs.c"
+    ],
+    "aws": [
+      "packages/aws/src/ssm.ts",
+      "packages/aws/src/secrets-manager.ts",
+      "packages/aws/src/kms.ts"
+    ]
+  },
+  "typescript_sha_role": "Documentary reviewed implementation baseline; gates execute the current TypeScript candidate."
+}

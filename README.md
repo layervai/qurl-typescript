@@ -836,3 +836,135 @@ MIT
 Resource verification requires Web Crypto (`crypto.subtle`). In browsers, use
 an HTTPS page or localhost. Raw REST response types keep `crid` optional;
 resource handles and portals require a validated CRID.
+
+## Node producer runtime (SDK 2.x, NHP 1.1)
+
+The SDK implements the producer lifecycle in TypeScript. A small optional native
+package, `@layervai/qurl-state-fs`, supplies descriptor-relative filesystem
+operations on Linux and macOS. There is no bundled Go runtime. The portable
+`@layervai/qurl` entry point does not load the native module.
+
+```ts
+import { FileAgentState, connectAgentRuntime } from '@layervai/qurl/node';
+
+const store = new FileAgentState('/private/agent/state.json');
+const runtime = await connectAgentRuntime(store, {
+  hub: { host: 'hub.nhp.layerv.ai', port: 443, server_public_key_b64: hubPublicKey },
+  headless: true,
+  enrollmentCredential: bootstrapCredential,
+});
+try {
+  // runtime.client uses the durable device credential, with bounded reloads.
+  const grant = await runtime.knock(knockResourceID, {
+    protectedResourceID: crid, runID: '0123456789abcdef', runAttempt: 1n,
+  });
+  // Keep the original receipt. It retains the issuing cell across relocation.
+  await runtime.retire(grant.receipt);
+} finally {
+  await runtime.close();
+  store.close();
+}
+```
+
+A registered state opens without enrollment or network work while its assignment
+lease is current. An explicit Hub option or the `hub` field in `QURL_DEPLOYMENT`
+provides refresh trust. `runtime.refresh()` handles assignment renewal and
+relocation. `knock()` attempts renewal near lease expiry and refuses expired
+assignments. Account enrollment uses an explicit `otpProvider` instead of
+`headless`. Resume an interrupted enrollment with the same credential and
+metadata. The SDK persists activation and completion replay authority before
+sending the corresponding mutation.
+
+`recoverAgentRuntime(store, recoveryCredential, { hub })` starts explicit device
+credential recovery. It persists the issue nonce, replacement candidate, and
+recovery horizon. It saves the recovered credential before mandatory assignment
+refresh. A failed refresh resumes without another recovery grant. No startup
+path silently resets an existing identity.
+
+Legacy pre-v6 pending-completion state remains readable, but enrollment returns
+`RECOVERY_MIGRATION_REQUIRED` without UDP or state changes. Those records lack
+an authenticated recovery deadline; explicit recovery or reprovisioning is required.
+Filesystem state creation honors the process umask and creates missing ancestors.
+Keep owner read/write/search permissions enabled (for example, umask `077`);
+unsafe existing permissions or an incompatible umask fail closed.
+
+`FileAgentState` uses a private directory, mode 0600 files, a process-safe setup
+lock, exclusive temporary files, file and directory fsync, and atomic replacement.
+It rejects symlinks, hard links, unsafe permissions, and directory or lock
+replacement. Await `runtime.close()` before closing the store. Inside `withLock`,
+use the supplied locked handle; using the outer store waits until the lock timeout.
+Crash-abandoned `.qurl-*` temporary files remain private but need offline cleanup;
+automatic sweeps could race other state files in the same directory. Filesystem state
+uses synchronous native I/O, including fsync, on the event loop. Use local storage;
+slow or network filesystems can block the process. Continuity checks also run before
+lifecycle datagrams and cannot be cached safely across external directory changes.
+An existing state directory must be owned by the process user with mode 0700.
+On macOS, `/var`, `/tmp`, and `/etc` resolve through their standard `/private` paths.
+A save error after rename can mean the new state is present but its durability is
+unconfirmed; do not assume the previous state remains. Filesystem state
+currently requires Linux or macOS; unsupported platforms fail closed. Install
+scripts may be disabled when a matching prebuilt native binary is available.
+Linux x64/arm64 prebuilds distinguish glibc and musl; CI tests Ubuntu 24.04 and
+Alpine 3.22. macOS prebuilds cover x64 and arm64.
+
+For sealed state, use `openSealedFileAgentState(path, providerID, keyWrapper,
+expectedAgentID)`. Each save uses a fresh AES-256-GCM key and verifies wrapping and
+unwrapping before commit. The envelope is compatible with the pinned Go SDK.
+Sealing authenticates the agent, provider, purpose, version, and wrapped-key
+metadata. It does not detect rollback to an older valid envelope. JavaScript
+strings cannot be reliably erased; avoid logging state or credentials.
+
+AWS adapters are separate exports from `@layervai/qurl-aws` (ESM and CommonJS).
+Install the AWS client for the subpath you use: `/ssm`, `/secrets-manager`, or
+`/kms`. These clients are optional peer dependencies. Importing the root barrel
+requires all three clients.
+
+
+- `createSSMAgentStateStore(ssmClient, parameterName, { kmsKeyID, tier })` stores
+  SecureString parameters and enforces tier size limits.
+- `createSecretsManagerAgentStateStore(secretsClient, secretID, kmsKeyID)` handles
+  missing-secret creation races with one write token.
+- `createKMSAgentStateKeyWrapper(kmsClient, keyID)` wraps only the data key and
+  authenticates all four state-binding fields in the KMS encryption context.
+
+SSM and Secrets Manager stores serialize lifecycle calls within one store handle.
+Loads outside a lifecycle lock can read the previous committed state.
+They require one process to own each state object: these services do not provide
+an agent setup transaction lock. KMS is a key wrapper, not a state store.
+
+## Explicit relay and discovery
+
+Native UDP remains the default transport. An unknown native cell fails closed, including
+when a relay allowlist exists. Select `transport: 'relay'` explicitly to use HTTPS
+relay. Explicit relay trust uses signed qv2 claims and the relay allowlist, not
+the native cell catalog. Relay URLs must match that deployment trust.
+Redirects and oversized responses are refused. A hostname-only allowlist entry
+authorizes all ports on that host; use `host:port` to limit the port.
+
+`createStaticProvider(deployment)` snapshots fixed trust. For discovery, use
+`createDiscoveryProvider({ fetcher, pinSHA256, manifestKeys, requireSignature,
+minVersion, expectedProfile })` and `createHTTPManifestFetcher(httpsURL)`. Supply
+a manifest pin or signing keys. Discovery is relay-only and requires
+`transport: 'relay'`; native UDP requires a static cell catalog. Discovery verifies the domain-separated low-S
+signature when configured, validity times, profile, and monotonic version floor.
+It never returns stale trust after a failed refresh. Persist `minVersion` in
+configuration when downgrade protection must survive process restarts.
+Like Go, discovery fetches on each resolution, including renewal retries; it has
+no built-in cache. Use static trust for high-volume opens, or supply a provider
+with a deployment-owned refresh policy that refuses expired or failed-refresh trust.
+
+```ts
+const opener = createPortalOpener({ qurl: signedLink, provider, transport: 'relay' });
+```
+
+The SHA-pinned reviewed baseline and behavior gates are in `parity-manifest.json`.
+CI reports the candidate SHA and tests that candidate against pinned Go behavior.
+It does not require release or dependency PRs to match the baseline tree.
+Run `npm run build`, `npm test`, `npm run smoke:dist`, and `npm run parity:go`.
+Set `QURL_GO_REFERENCE` to a clean checkout at the manifest's exact Go revision.
+The direct gate compares producer wire bytes and sealed-state reads and writes
+across both languages. It also runs the TypeScript lifecycle against a local Go UDP
+peer: registration, restart, relocation, exact retirement, and credential recovery.
+This checks protocol interoperability; the peer is not a sandbox authority.
+Shared conformance vectors cover assignment, registration,
+OTP, and completion packet construction and reply decryption.

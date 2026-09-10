@@ -69,6 +69,8 @@ export class QURLError extends Error {
   readonly invalidFields?: Record<string, string>;
   readonly requestId?: string;
   readonly retryAfter?: number;
+  /** Known minted IDs from a rejected terminal batch, for bounded cleanup. No bearer links. */
+  readonly partialQurlIds?: readonly string[];
 
   constructor(data: QURLErrorData) {
     // RFC 7807 leaves `detail` optional; the API can legitimately omit it and

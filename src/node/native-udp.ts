@@ -184,7 +184,7 @@ async function nativeKnockWithRuntime(
   }
 }
 
-async function resolvePublicAddresses(
+export async function resolvePublicAddresses(
   host: string,
   maximum: number,
   signal?: AbortSignal,
@@ -233,17 +233,18 @@ class SocketExchangeError extends Error {
 // miss that can send the same knock to another address.
 class ReceivedDatagramError extends Error {}
 
-function isSocketExchangeError(error: unknown): error is SocketExchangeError {
+export function isSocketExchangeError(error: unknown): error is SocketExchangeError {
   return error instanceof SocketExchangeError;
 }
 
-function exchangeDatagram(
+export function exchangeDatagram(
   address: string,
   family: 4 | 6,
   port: number,
   packet: Uint8Array,
   timeoutMs: number,
   signal?: AbortSignal,
+  oneWay = false,
 ): Promise<Uint8Array> {
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 60_000) {
     return Promise.reject(new Error("native NHP timeout must be from 1 to 60000 milliseconds"));
@@ -282,7 +283,12 @@ function exchangeDatagram(
       } else finish(undefined, reply);
     });
     socket.connect(port, address, () => {
-      sendOwnedDatagram(socket, packet, finish);
+      sendOwnedDatagram(
+        socket,
+        packet,
+        finish,
+        oneWay ? () => finish(undefined, Buffer.alloc(0)) : undefined,
+      );
     });
   });
 }
@@ -291,6 +297,7 @@ function sendOwnedDatagram(
   socket: Socket,
   packet: Uint8Array,
   finish: (error: unknown) => void,
+  onSent?: () => void,
 ): void {
   // dgram owns its input until this callback. Use an independent encrypted
   // datagram so nativeKnock can wipe the builder's packet immediately when an
@@ -300,6 +307,7 @@ function sendOwnedDatagram(
     socket.send(outbound, (error) => {
       try {
         if (error) finish(error);
+        else onSent?.();
       } finally {
         outbound.fill(0);
       }
