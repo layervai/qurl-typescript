@@ -65,6 +65,15 @@
   idempotency path, and treat a consumed bootstrap key as outcome-unknown.
 - **client:** send the required `{}` body for a default portal mint.
 
+## [2.0.0](https://github.com/layervai/qurl-typescript/compare/qurl-v0.7.0...qurl-v2.0.0) (2026-09-10)
+
+
+### Features
+
+* **client:** bind portal access to an independently held CRID ([#258](https://github.com/layervai/qurl-typescript/issues/258)) ([aace347](https://github.com/layervai/qurl-typescript/commit/aace3470edb1def4d25b8ef5ce6d0a6160e1af67))
+* **client:** support delegated qURL batches ([#255](https://github.com/layervai/qurl-typescript/issues/255)) ([734cddf](https://github.com/layervai/qurl-typescript/commit/734cddf0033490355a6df4abb641db7ed31c7aaa))
+* complete Go parity for the TypeScript SDK 2.x ([#265](https://github.com/layervai/qurl-typescript/issues/265)) ([92f57e6](https://github.com/layervai/qurl-typescript/commit/92f57e6c62086d37347dea151a0fc69eea29f625))
+
 ## [0.7.0](https://github.com/layervai/qurl-typescript/compare/qurl-v0.6.0...qurl-v0.7.0) (2026-09-08)
 
 
