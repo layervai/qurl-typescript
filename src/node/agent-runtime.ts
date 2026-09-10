@@ -609,6 +609,7 @@ export class AgentRuntime {
   #state: AgentState | undefined;
   readonly #options: AgentRuntimeOptions;
   #renewal?: Promise<void>;
+  #credentialReload?: Promise<void>;
   #nextRefreshAt = 0;
   readonly #closed = new AbortController();
   constructor(
@@ -626,7 +627,6 @@ export class AgentRuntime {
     };
     let cached = state.device_api_key!;
     let expiresAt = Date.now() + 60_000;
-    let reload: Promise<void> | undefined;
     const agentID = state.agent_id;
     const publicKey = state.public_key_b64;
     const fetch = options.fetch ?? globalThis.fetch;
@@ -636,7 +636,7 @@ export class AgentRuntime {
       fetch: async (url, init) => {
         this.#closed.signal.throwIfAborted();
         if (Date.now() >= expiresAt) {
-          reload ??= (async () => {
+          this.#credentialReload ??= (async () => {
             const current = await store.load(this.#closed.signal);
             ready(current);
             checkIdentity(current, agentID);
@@ -645,9 +645,9 @@ export class AgentRuntime {
             cached = current.device_api_key!;
             expiresAt = Date.now() + 60_000;
           })().finally(() => {
-            reload = undefined;
+            this.#credentialReload = undefined;
           });
-          await reload;
+          await this.#credentialReload;
         }
         this.#closed.signal.throwIfAborted();
         const headers = new Headers(init?.headers);
@@ -886,9 +886,11 @@ export class AgentRuntime {
       throw new AgentLifecycleError("INVALID_RETIREMENT_REPLY");
     return { closeEventID: ack.closeEventId, state: ack.state as "closing" | "closed" };
   }
-  close(): void {
+  async close(): Promise<void> {
     this.#closed.abort(new AgentLifecycleError("CLOSED"));
     this.#state = undefined;
+    // Drain all runtime-owned store operations before the caller closes the store.
+    await Promise.allSettled([this.#renewal, this.#credentialReload]);
   }
   toJSON() {
     return { agentID: this.#state?.agent_id, closed: this.#closed.signal.aborted };

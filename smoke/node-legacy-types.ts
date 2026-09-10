@@ -5,6 +5,10 @@ import {
   PortalOpenTimeoutError,
   PortalOpenerNotReadyError,
   PortalTargetChangedError,
+  type AgentStateCodec,
+  type PendingAgentCompletion,
+  type AgentTransport,
+  type NHPMessage,
   type CreatePortalOpenerOptions,
   type PortalOpener,
   type PortalOpenerHealth,
@@ -59,3 +63,13 @@ void client.createApiKey({ kind: "enrollment_token", name: "agent", scopes: ["qu
 void client.createApiKey({ name: "durable", scopes: ["qurl:read"], expires_in: "1h" });
 // @ts-expect-error Retired fields are not accepted.
 void client.createApiKey({ name: "durable", scopes: ["qurl:read"], purpose: "tunnel_bootstrap" });
+
+// Public extension types must resolve through the supported Node entry point.
+type PublicStateCodec = AgentStateCodec;
+type PublicPendingCompletion = PendingAgentCompletion;
+type PublicAgentReply = Awaited<ReturnType<AgentTransport>>;
+const publicReply: PublicAgentReply = undefined;
+const noCodec: PublicStateCodec | undefined = undefined;
+const noCompletion: PublicPendingCompletion | undefined = undefined;
+const noMessage: NHPMessage | undefined = undefined;
+void [publicReply, noCodec, noCompletion, noMessage];

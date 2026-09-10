@@ -67,7 +67,7 @@ export function createHTTPManifestFetcher(
       signal: signal ? AbortSignal.any([signal, deadline]) : deadline,
     });
     if (!response.ok) {
-      await response.body?.cancel();
+      await response.body?.cancel().catch(() => undefined);
       throw new Error(`discovery returned HTTP ${response.status}`);
     }
     return readBoundedBody(response, LIMIT);

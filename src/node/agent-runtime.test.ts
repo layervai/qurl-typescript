@@ -4,8 +4,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { generateKeyPairSync } from "node:crypto";
-import { FileAgentState } from "./file-agent-state.js";
-import { encodeAgentJSON, type AgentStateStore } from "./agent-state.js";
+import { FileAgentState, type AgentStateCodec } from "./file-agent-state.js";
+import {
+  encodeAgentJSON,
+  encodeAgentState,
+  decodeAgentState,
+  type AgentStateStore,
+} from "./agent-state.js";
 import { agentRuntimeTesting, type AgentRuntimeOptions } from "./agent-runtime.js";
 import { AgentTransportError, type AgentTransport } from "./agent-transport.js";
 import { readFileSync } from "node:fs";
@@ -29,10 +34,10 @@ const dirs: string[] = [];
 afterEach(() => {
   dirs.splice(0).forEach((dir) => rmSync(dir, { recursive: true, force: true }));
 });
-function setup(kind = "bootstrap", ticketTTL = 900_000) {
+function setup(kind = "bootstrap", ticketTTL = 900_000, codec?: AgentStateCodec) {
   const dir = mkdtempSync(join(tmpdir(), "qurl-runtime-test-"));
   dirs.push(dir);
-  const store = new FileAgentState(join(dir, "state.json"));
+  const store = new FileAgentState(join(dir, "state.json"), codec);
   const publicKey = generateKeyPairSync("x25519")
     .publicKey.export({ type: "spki", format: "der" })
     .subarray(-32)
@@ -600,3 +605,81 @@ it("normalizes legacy activation zero times from its authenticated ticket before
     test.store.close();
   }
 });
+
+it("awaits active refresh lock release before the state store can close", async () => {
+  const test = setup();
+  let entered!: () => void;
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const runtime = await agentRuntimeTesting.connectWithTransport(
+    test.store,
+    test.options,
+    async (exchange) => {
+      const body = parseStrictJson(exchange.body, 4096) as unknown as TestBody;
+      if (body.usrData?.mode === "refresh") {
+        entered();
+        return new Promise((_, reject) => {
+          exchange.signal.addEventListener("abort", () => reject(exchange.signal.reason), {
+            once: true,
+          });
+          if (exchange.signal.aborted) reject(exchange.signal.reason);
+        });
+      }
+      return test.transport(exchange);
+    },
+  );
+  const refreshing = runtime.refresh().catch((error) => error);
+  try {
+    await started;
+    await runtime.close();
+    expect(() => test.store.close()).not.toThrow();
+    expect(await refreshing).toMatchObject({ code: "CLOSED" });
+  } finally {
+    await runtime.close();
+    test.store.close();
+  }
+});
+
+it("awaits credential reload state reads before the store closes", async () => {
+  let block = false;
+  let entered!: () => void;
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const test = setup("bootstrap", 900_000, {
+    async encode(state) {
+      return encodeAgentState(state);
+    },
+    async decode(raw, signal) {
+      if (block) {
+        entered();
+        await new Promise((_, reject) => {
+          signal!.addEventListener("abort", () => reject(signal!.reason), { once: true });
+          if (signal!.aborted) reject(signal!.reason);
+        });
+      }
+      return decodeAgentState(raw);
+    },
+  });
+  const fetch = vi.fn();
+  const runtime = await agentRuntimeTesting.connectWithTransport(
+    test.store,
+    { ...test.options, fetch },
+    test.transport,
+  );
+  const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60_001);
+  try {
+    block = true;
+    const request = runtime.client.getQuota().catch((error) => error);
+    await started;
+    await runtime.close();
+    expect(() => test.store.close()).not.toThrow();
+    await request;
+    expect(fetch).not.toHaveBeenCalled();
+  } finally {
+    clock.mockRestore();
+    await runtime.close();
+    test.store.close();
+  }
+}, 20_000);

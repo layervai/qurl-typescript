@@ -861,7 +861,7 @@ try {
   // Keep the original receipt. It retains the issuing cell across relocation.
   await runtime.retire(grant.receipt);
 } finally {
-  runtime.close();
+  await runtime.close();
   store.close();
 }
 ```
@@ -891,7 +891,10 @@ unsafe existing permissions or an incompatible umask fail closed.
 `FileAgentState` uses a private directory, mode 0600 files, a process-safe setup
 lock, exclusive temporary files, file and directory fsync, and atomic replacement.
 It rejects symlinks, hard links, unsafe permissions, and directory or lock
-replacement. Keep the store open until its runtime has closed. Filesystem state
+replacement. Await `runtime.close()` before closing the store. Inside `withLock`,
+use the supplied locked handle; using the outer store waits until the lock timeout.
+Crash-abandoned `.qurl-*` temporary files remain private but need offline cleanup;
+automatic sweeps could race other state files in the same directory. Filesystem state
 uses synchronous native I/O, including fsync, on the event loop. Use local storage;
 slow or network filesystems can block the process. Continuity checks also run before
 lifecycle datagrams and cannot be cached safely across external directory changes.

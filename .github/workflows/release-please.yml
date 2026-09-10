@@ -204,16 +204,21 @@ jobs:
           registry-url: "https://registry.npmjs.org"
       - run: npm install -g npm@${{ env.NPM_VERSION }}
       - run: npm ci
-      # .npmrc disables lifecycle scripts, so build and smoke explicitly here.
-      - run: npm run prebuild --workspace @layervai/qurl-state-fs
-      - run: npm run build
-      - run: npm run build --workspace @layervai/qurl-aws
-      - run: npm run smoke:dist
+      # Test and publish the matrix artifacts, with no local prebuild to shadow them.
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           pattern: native-*
           merge-multiple: true
           path: packages/state-fs/prebuilds/
+      - name: Verify all native release variants
+        run: |
+          for target in linux-x64/glibc linux-x64/musl linux-arm64/glibc linux-arm64/musl darwin-x64/glibc darwin-arm64/glibc; do
+            test -f "packages/state-fs/prebuilds/${target%/*}/@layervai+qurl-state-fs.${target#*/}.node"
+          done
+      # .npmrc disables lifecycle scripts, so build and smoke explicitly here.
+      - run: npm run build
+      - run: npm run build --workspace @layervai/qurl-aws
+      - run: npm run smoke:dist
       - run: npm publish --workspace @layervai/qurl-state-fs --access public --provenance
       - run: npm publish --provenance
       - run: npm publish --workspace @layervai/qurl-aws --access public --provenance

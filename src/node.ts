@@ -44,7 +44,16 @@ export type {
   AgentAssignment,
   NHPUDPEndpoint,
   AgentStateStore,
+  AssignmentRegistration,
+  PendingAgentActivation,
+  PendingAgentCompletion,
+  PendingAgentCredentialRecovery,
+  PendingAgentCredentialRecoveryIssue,
 } from "./node/agent-state.js";
+export type { AgentStateCodec } from "./node/file-agent-state.js";
+export type { AgentExchange, AgentTransport } from "./node/agent-transport.js";
+export { AgentTransportError } from "./node/agent-transport.js";
+export type { NHPMessage } from "./node/nhp-wire.js";
 export { FileAgentState } from "./node/file-agent-state.js";
 export {
   createSealedAgentStateCodec,

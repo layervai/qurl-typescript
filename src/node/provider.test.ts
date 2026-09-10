@@ -181,3 +181,17 @@ it("refuses ambiguous static deployment and provider configuration", () => {
     }),
   ).toThrow("provider");
 });
+
+it("preserves discovery HTTP status when discarded-body cleanup fails", async () => {
+  const response = new Response(
+    new ReadableStream({
+      cancel() {
+        throw new Error("cleanup failed");
+      },
+    }),
+    { status: 503 },
+  );
+  await expect(
+    createHTTPManifestFetcher("https://trust.example.test/manifest", async () => response)(),
+  ).rejects.toThrow("discovery returned HTTP 503");
+});
