@@ -62,7 +62,7 @@
   "devDependencies": {
     "@layervai/qurl": "file:../..",
     "@aws-sdk/client-ssm": "3.1036.0",
-    "@aws-sdk/client-secrets-manager": "3.1036.0",
+    "@aws-sdk/client-secrets-manager": "3.1128.0",
     "@aws-sdk/client-kms": "3.1036.0"
   },
   "main": "./dist/cjs/index.js",
