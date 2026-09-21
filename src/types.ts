@@ -400,7 +400,6 @@ export interface Quota {
     list_per_minute?: number;
     resolve_per_minute?: number;
     max_active_qurls?: number;
-    max_tokens_per_qurl?: number;
     max_expiry_seconds?: number;
   };
   usage?: {
