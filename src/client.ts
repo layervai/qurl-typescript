@@ -4510,52 +4510,66 @@ export class QURLClient {
     );
   }
 
-  /**
-   * List active access sessions for a resource.
-   *
-   * The current API contract has no cursor query params for this endpoint.
-   * If the service later advertises pagination metadata, the SDK returns
-   * this page and emits a debug log rather than pretending it fetched all pages.
-   */
+  /** List every active session, following bounded service pages. */
   async listResourceSessions(id: string): Promise<SessionListOutput> {
     requireResourceCrid(id, "listResourceSessions");
-    const { data, meta } = await this.rawRequest<Session[]>(
-      "GET",
-      `/v1/resources/${encodeURIComponent(id)}/sessions`,
-    );
-    if (meta?.has_more || meta?.next_cursor) {
-      this.log("listResourceSessions: pagination metadata surfaced on unpaginated endpoint", {
-        has_more: meta.has_more,
-        next_cursor: meta.next_cursor,
-      });
-    }
-    return {
-      sessions: data ?? [],
-      request_id: meta?.request_id,
-      has_more: false,
-      page_size: meta?.page_size,
-    };
+    const sessions: Session[] = [];
+    let request_id: string | undefined;
+    for await (const session of this.paginateAll(
+      "listResourceSessions",
+      {},
+      async ({ cursor }: { cursor?: string }) => {
+        const { data, meta } = await this.rawRequest<Session[]>(
+          "GET",
+          appendQuery(
+            `/v1/resources/${encodeURIComponent(id)}/sessions`,
+            { cursor },
+            ["cursor"],
+            "listResourceSessions",
+          ),
+        );
+        if (meta?.has_more && !meta.next_cursor)
+          throw unexpectedResponseError("Session page has no continuation cursor");
+        request_id = meta?.request_id;
+        return { ...meta, sessions: data ?? [] };
+      },
+      (page) => page.sessions,
+    ))
+      sessions.push(session);
+    return { sessions, request_id, has_more: false, page_size: sessions.length };
   }
 
-  /** Terminate all active sessions for a resource and return the server count. */
+  /** End every session page. A failed page throws; it never reports full success. */
   async terminateAllResourceSessions(id: string): Promise<SessionTerminateOutput> {
     requireResourceCrid(id, "terminateAllResourceSessions");
     const path = `/v1/resources/${encodeURIComponent(id)}/sessions`;
-    const { data, meta, __http_status } = await this.rawRequest<{ terminated?: number }>(
-      "DELETE",
-      path,
-    );
-    if (__http_status === 204) {
-      throw unexpectedResponseError(
-        `Unexpected 204 No Content from DELETE ${path}; expected response body`,
-      );
-    }
-    if (data?.terminated === undefined) {
-      this.log("terminateAllResourceSessions: missing terminated count; defaulting to zero", {
-        request_id: meta?.request_id,
-      });
-    }
-    return { terminated: data?.terminated ?? 0, request_id: meta?.request_id };
+    let terminated = 0;
+    let request_id: string | undefined;
+    for await (const count of this.paginateAll(
+      "terminateAllResourceSessions",
+      {},
+      async ({ cursor }: { cursor?: string }) => {
+        const { data, meta, __http_status } = await this.rawRequest<{ terminated?: number }>(
+          "DELETE",
+          appendQuery(path, { cursor }, ["cursor"], "terminateAllResourceSessions"),
+        );
+        if (__http_status === 204)
+          throw unexpectedResponseError(
+            `Unexpected 204 No Content from DELETE ${path}; expected response body`,
+          );
+        if (meta?.has_more && !meta.next_cursor)
+          throw unexpectedResponseError("Session page has no continuation cursor");
+        if (data?.terminated === undefined)
+          this.log("terminateAllResourceSessions: missing terminated count; defaulting to zero", {
+            request_id: meta?.request_id,
+          });
+        request_id = meta?.request_id;
+        return { ...meta, counts: [data?.terminated ?? 0] };
+      },
+      (page) => page.counts,
+    ))
+      terminated += count;
+    return { terminated, request_id };
   }
 
   /** Terminate a specific resource session. */
