@@ -4515,6 +4515,7 @@ export class QURLClient {
     requireResourceCrid(id, "listResourceSessions");
     const sessions: Session[] = [];
     let request_id: string | undefined;
+    let page_size: number | undefined;
     for await (const session of this.paginateAll(
       "listResourceSessions",
       {},
@@ -4528,18 +4529,27 @@ export class QURLClient {
             "listResourceSessions",
           ),
         );
-        if (meta?.has_more && !meta.next_cursor)
-          throw unexpectedResponseError("Session page has no continuation cursor");
+        if (meta?.has_more && !meta.next_cursor) {
+          throw unexpectedResponseError("Session page has no continuation cursor", {
+            requestId: meta.request_id,
+          });
+        }
         request_id = meta?.request_id;
+        page_size = meta?.page_size;
         return { ...meta, sessions: data ?? [] };
       },
       (page) => page.sessions,
-    ))
+    )) {
       sessions.push(session);
-    return { sessions, request_id, has_more: false, page_size: sessions.length };
+    }
+    return { sessions, request_id, has_more: false, page_size };
   }
 
-  /** End every session page. A failed page throws; it never reports full success. */
+  /**
+   * End every session page. This is not atomic: a failed page throws after earlier
+   * pages may have closed sessions. List sessions to reconcile, then retry the call.
+   * A retry can close newly admitted sessions and counts only its own transitions.
+   */
   async terminateAllResourceSessions(id: string): Promise<SessionTerminateOutput> {
     requireResourceCrid(id, "terminateAllResourceSessions");
     const path = `/v1/resources/${encodeURIComponent(id)}/sessions`;
@@ -4553,22 +4563,29 @@ export class QURLClient {
           "DELETE",
           appendQuery(path, { cursor }, ["cursor"], "terminateAllResourceSessions"),
         );
-        if (__http_status === 204)
+        if (__http_status === 204) {
           throw unexpectedResponseError(
             `Unexpected 204 No Content from DELETE ${path}; expected response body`,
+            { status: 204, requestId: meta?.request_id },
           );
-        if (meta?.has_more && !meta.next_cursor)
-          throw unexpectedResponseError("Session page has no continuation cursor");
-        if (data?.terminated === undefined)
+        }
+        if (meta?.has_more && !meta.next_cursor) {
+          throw unexpectedResponseError("Session page has no continuation cursor", {
+            requestId: meta.request_id,
+          });
+        }
+        if (data?.terminated === undefined) {
           this.log("terminateAllResourceSessions: missing terminated count; defaulting to zero", {
             request_id: meta?.request_id,
           });
+        }
         request_id = meta?.request_id;
         return { ...meta, counts: [data?.terminated ?? 0] };
       },
       (page) => page.counts,
-    ))
+    )) {
       terminated += count;
+    }
     return { terminated, request_id };
   }
 
