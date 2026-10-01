@@ -590,7 +590,9 @@ console.log(`Access granted to ${access.target_url} for ${access.access_grant?.e
 | `createApiKey(input)` / `listApiKeys(input?)` / `listAllApiKeys(input?)` / `updateApiKey(id, input)` / `revokeApiKey(id)` | API key management |
 | `createAccessCode(input)` / `listAccessCodes()` / `redeemAccessCode(input)` / `revokeAccessCode(id)` | Access code management |
 
-`listResourceSessions(id)` and `listAccessCodes()` reflect currently unpaginated service endpoints. Their outputs always return `has_more: false`; if the service starts surfacing cursor metadata, the SDK emits a debug log rather than exposing an unactionable next-page signal.
+`listResourceSessions(id)` opts in to bounded pages with `paged=true` and collects every service page, including empty intermediate pages, and returns `has_more: false`. Its `request_id` and `page_size` describe the last page. `terminateAllResourceSessions(id)` follows every page and sums closed sessions. Termination is not atomic: an error can occur after some sessions close. List sessions to reconcile before retrying; a retry can also close newly admitted sessions and counts only its own changes. A successful call returns the last page’s `request_id`.
+
+`listAccessCodes()` remains unpaginated. It returns `has_more: false` and logs unexpected cursor metadata.
 
 `listAll*()` methods validate ids and query params when called, before the async iterator is consumed. Wrap the `listAll*()` call itself in `try/catch` when passing dynamic input.
 

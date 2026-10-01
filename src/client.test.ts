@@ -1476,25 +1476,14 @@ describe("QURLClient", () => {
       debug,
     });
 
-    const sessions = await client.listResourceSessions(RESOURCE_CRID);
     const accessCodes = await client.listAccessCodes();
 
-    expect(sessions).toEqual({
-      sessions: [],
-      request_id: "req_page",
-      has_more: false,
-      page_size: undefined,
-    });
     expect(accessCodes).toEqual({
       access_codes: [],
       request_id: "req_page",
       has_more: false,
       page_size: undefined,
     });
-    expect(debug).toHaveBeenCalledWith(
-      "listResourceSessions: pagination metadata surfaced on unpaginated endpoint",
-      { has_more: true, next_cursor: "cursor_2" },
-    );
     expect(debug).toHaveBeenCalledWith(
       "listAccessCodes: pagination metadata surfaced on unpaginated endpoint",
       { has_more: true, next_cursor: "cursor_2" },
@@ -1515,15 +1504,9 @@ describe("QURLClient", () => {
       debug,
     });
 
-    const sessions = await client.listResourceSessions(RESOURCE_CRID);
     const accessCodes = await client.listAccessCodes();
 
-    expect(sessions.has_more).toBe(false);
     expect(accessCodes.has_more).toBe(false);
-    expect(debug).toHaveBeenCalledWith(
-      "listResourceSessions: pagination metadata surfaced on unpaginated endpoint",
-      { has_more: undefined, next_cursor: "cursor_only" },
-    );
     expect(debug).toHaveBeenCalledWith(
       "listAccessCodes: pagination metadata surfaced on unpaginated endpoint",
       { has_more: undefined, next_cursor: "cursor_only" },
@@ -11500,6 +11483,155 @@ describe("QURLClient", () => {
       ).rejects.toBeInstanceOf(ServerError);
       expect(fetch, `status ${c.status}`).toHaveBeenCalledTimes(1);
       expect(callHeaders(fetch)["Idempotency-Key"], `status ${c.status}`).toMatch(UUID_V7_RE);
+    }
+  });
+});
+
+describe("session management pagination", () => {
+  it("lists through empty pages and returns all sessions", async () => {
+    const fetch = mockFetches([
+      {
+        status: 200,
+        body: {
+          data: [{ session_id: "qs_first" }],
+          meta: { has_more: true, next_cursor: "empty" },
+        },
+      },
+      { status: 200, body: { data: [], meta: { has_more: true, next_cursor: "page/2" } } },
+      {
+        status: 200,
+        body: {
+          data: [{ session_id: "qs_last" }],
+          meta: { has_more: false, page_size: 100, request_id: "last-page" },
+        },
+      },
+    ]);
+    const result = await createClient(fetch).listResourceSessions(RESOURCE_CRID);
+    expect(result.sessions).toEqual([{ session_id: "qs_first" }, { session_id: "qs_last" }]);
+    expect(result.has_more).toBe(false);
+    expect(new URL(vi.mocked(fetch).mock.calls[0][0] as string).searchParams.get("paged")).toBe(
+      "true",
+    );
+    expect(result.page_size).toBe(100);
+    expect(result.request_id).toBe("last-page");
+    expect(new URL(vi.mocked(fetch).mock.calls[0][0] as string).searchParams.has("cursor")).toBe(
+      false,
+    );
+    expect(new URL(vi.mocked(fetch).mock.calls[2][0] as string).searchParams.get("cursor")).toBe(
+      "page/2",
+    );
+  });
+
+  it("ends all pages and sums their counts", async () => {
+    const fetch = mockFetches([
+      {
+        status: 200,
+        body: { data: { terminated: 2 }, meta: { has_more: true, next_cursor: "next" } },
+      },
+      { status: 200, body: { data: { terminated: 3 }, meta: { has_more: false } } },
+    ]);
+    expect((await createClient(fetch).terminateAllResourceSessions(RESOURCE_CRID)).terminated).toBe(
+      5,
+    );
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(new URL(vi.mocked(fetch).mock.calls[0][0] as string).searchParams.get("paged")).toBe(
+      "true",
+    );
+    expect(new URL(vi.mocked(fetch).mock.calls[0][0] as string).searchParams.has("cursor")).toBe(
+      false,
+    );
+    expect(new URL(vi.mocked(fetch).mock.calls[1][0] as string).searchParams.get("cursor")).toBe(
+      "next",
+    );
+  });
+
+  it("reports a malformed later DELETE page without replaying it", async () => {
+    const fetch = mockFetches([
+      {
+        status: 200,
+        body: { data: { terminated: 2 }, meta: { has_more: true, next_cursor: "next" } },
+      },
+      {
+        status: 200,
+        body: { data: { terminated: 1 }, meta: { has_more: true, request_id: "failed-page" } },
+      },
+    ]);
+    await expect(
+      createClient(fetch).terminateAllResourceSessions(RESOURCE_CRID),
+    ).rejects.toMatchObject({
+      code: ERROR_CODE_UNEXPECTED_RESPONSE,
+      requestId: "failed-page",
+    });
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(new URL(vi.mocked(fetch).mock.calls[0][0] as string).searchParams.get("paged")).toBe(
+      "true",
+    );
+  });
+
+  it("fails without replay after a later DELETE returns 204 or 500", async () => {
+    for (const status of [204, 500]) {
+      const fetch = mockFetches([
+        {
+          status: 200,
+          body: { data: { terminated: 2 }, meta: { has_more: true, next_cursor: "next" } },
+        },
+        {
+          status,
+          body:
+            status === 204
+              ? undefined
+              : { error: { status, code: "internal_error", title: "Failure" } },
+        },
+      ]);
+      await expect(
+        createClient(fetch).terminateAllResourceSessions(RESOURCE_CRID),
+      ).rejects.toMatchObject({ status });
+      expect(fetch).toHaveBeenCalledTimes(2);
+      expect(new URL(vi.mocked(fetch).mock.calls[0][0] as string).searchParams.get("paged")).toBe(
+        "true",
+      );
+    }
+  });
+
+  it("follows a cursor without has_more and rejects invalid termination counts", async () => {
+    const pages = (data: unknown) =>
+      mockFetches([
+        { status: 200, body: { data, meta: { next_cursor: "next" } } },
+        { status: 200, body: { data, meta: { has_more: false } } },
+      ]);
+    expect(
+      (await createClient(pages([{ session_id: "s" }])).listResourceSessions(RESOURCE_CRID))
+        .sessions,
+    ).toHaveLength(2);
+    expect(
+      (await createClient(pages({ terminated: 1 })).terminateAllResourceSessions(RESOURCE_CRID))
+        .terminated,
+    ).toBe(2);
+    for (const terminated of ["3", -1, 1.5, null]) {
+      const fetch = mockFetch({ status: 200, body: { data: { terminated } } });
+      await expect(
+        createClient(fetch).terminateAllResourceSessions(RESOURCE_CRID),
+      ).rejects.toMatchObject({ code: ERROR_CODE_UNEXPECTED_RESPONSE });
+      expect(fetch).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("rejects missing and repeated cursors instead of claiming completion", async () => {
+    for (const next_cursor of [undefined, "repeat"]) {
+      const fetch = mockFetch({
+        status: 200,
+        body: { data: [], meta: { has_more: true, next_cursor } },
+      });
+      await expect(createClient(fetch).listResourceSessions(RESOURCE_CRID)).rejects.toMatchObject({
+        code: ERROR_CODE_UNEXPECTED_RESPONSE,
+      });
+      const terminateFetch = mockFetch({
+        status: 200,
+        body: { data: { terminated: 1 }, meta: { has_more: true, next_cursor } },
+      });
+      await expect(
+        createClient(terminateFetch).terminateAllResourceSessions(RESOURCE_CRID),
+      ).rejects.toMatchObject({ code: ERROR_CODE_UNEXPECTED_RESPONSE });
     }
   });
 });

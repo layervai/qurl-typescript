@@ -714,13 +714,13 @@ export interface UnpaginatedOutput {
   page_size?: number;
 }
 
-export interface SessionListOutput extends UnpaginatedOutput {
-  /**
-   * Active sessions. The current OpenAPI contract has no cursor query params;
-   * if pagination metadata appears, the SDK surfaces it for observability but
-   * returns this page only.
-   */
+/** All session pages collected by the SDK; request_id and page_size describe the last page. */
+export interface SessionListOutput {
   sessions: Session[];
+  request_id?: string;
+  /** Always false because the SDK follows every page; retained for compatibility. */
+  has_more: false;
+  page_size?: number;
 }
 
 export interface SessionTerminateOutput {
