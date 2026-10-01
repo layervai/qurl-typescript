@@ -11490,6 +11490,13 @@ describe("QURLClient", () => {
 describe("session management pagination", () => {
   it("lists through empty pages and returns all sessions", async () => {
     const fetch = mockFetches([
+      {
+        status: 200,
+        body: {
+          data: [{ session_id: "qs_first" }],
+          meta: { has_more: true, next_cursor: "empty" },
+        },
+      },
       { status: 200, body: { data: [], meta: { has_more: true, next_cursor: "page/2" } } },
       {
         status: 200,
@@ -11500,14 +11507,14 @@ describe("session management pagination", () => {
       },
     ]);
     const result = await createClient(fetch).listResourceSessions(RESOURCE_CRID);
-    expect(result.sessions).toEqual([{ session_id: "qs_last" }]);
+    expect(result.sessions).toEqual([{ session_id: "qs_first" }, { session_id: "qs_last" }]);
     expect(result.has_more).toBe(false);
     expect(result.page_size).toBe(100);
     expect(result.request_id).toBe("last-page");
     expect(new URL(vi.mocked(fetch).mock.calls[0][0] as string).searchParams.has("cursor")).toBe(
       false,
     );
-    expect(new URL(vi.mocked(fetch).mock.calls[1][0] as string).searchParams.get("cursor")).toBe(
+    expect(new URL(vi.mocked(fetch).mock.calls[2][0] as string).searchParams.get("cursor")).toBe(
       "page/2",
     );
   });
@@ -11550,6 +11557,28 @@ describe("session management pagination", () => {
       requestId: "failed-page",
     });
     expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("fails without replay after a later DELETE returns 204 or 500", async () => {
+    for (const status of [204, 500]) {
+      const fetch = mockFetches([
+        {
+          status: 200,
+          body: { data: { terminated: 2 }, meta: { has_more: true, next_cursor: "next" } },
+        },
+        {
+          status,
+          body:
+            status === 204
+              ? undefined
+              : { error: { status, code: "internal_error", title: "Failure" } },
+        },
+      ]);
+      await expect(
+        createClient(fetch).terminateAllResourceSessions(RESOURCE_CRID),
+      ).rejects.toMatchObject({ status });
+      expect(fetch).toHaveBeenCalledTimes(2);
+    }
   });
 
   it("rejects missing and repeated cursors instead of claiming completion", async () => {
