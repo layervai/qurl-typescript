@@ -11509,6 +11509,9 @@ describe("session management pagination", () => {
     const result = await createClient(fetch).listResourceSessions(RESOURCE_CRID);
     expect(result.sessions).toEqual([{ session_id: "qs_first" }, { session_id: "qs_last" }]);
     expect(result.has_more).toBe(false);
+    expect(new URL(vi.mocked(fetch).mock.calls[0][0] as string).searchParams.get("paged")).toBe(
+      "true",
+    );
     expect(result.page_size).toBe(100);
     expect(result.request_id).toBe("last-page");
     expect(new URL(vi.mocked(fetch).mock.calls[0][0] as string).searchParams.has("cursor")).toBe(
@@ -11531,6 +11534,9 @@ describe("session management pagination", () => {
       5,
     );
     expect(fetch).toHaveBeenCalledTimes(2);
+    expect(new URL(vi.mocked(fetch).mock.calls[0][0] as string).searchParams.get("paged")).toBe(
+      "true",
+    );
     expect(new URL(vi.mocked(fetch).mock.calls[0][0] as string).searchParams.has("cursor")).toBe(
       false,
     );
@@ -11557,6 +11563,9 @@ describe("session management pagination", () => {
       requestId: "failed-page",
     });
     expect(fetch).toHaveBeenCalledTimes(2);
+    expect(new URL(vi.mocked(fetch).mock.calls[0][0] as string).searchParams.get("paged")).toBe(
+      "true",
+    );
   });
 
   it("fails without replay after a later DELETE returns 204 or 500", async () => {
@@ -11578,6 +11587,9 @@ describe("session management pagination", () => {
         createClient(fetch).terminateAllResourceSessions(RESOURCE_CRID),
       ).rejects.toMatchObject({ status });
       expect(fetch).toHaveBeenCalledTimes(2);
+      expect(new URL(vi.mocked(fetch).mock.calls[0][0] as string).searchParams.get("paged")).toBe(
+        "true",
+      );
     }
   });
 

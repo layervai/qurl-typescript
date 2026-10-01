@@ -4524,8 +4524,8 @@ export class QURLClient {
           "GET",
           appendQuery(
             `/v1/resources/${encodeURIComponent(id)}/sessions`,
-            { cursor },
-            ["cursor"],
+            { paged: "true", cursor },
+            ["paged", "cursor"],
             "listResourceSessions",
           ),
         );
@@ -4561,7 +4561,12 @@ export class QURLClient {
       async ({ cursor }: { cursor?: string }) => {
         const { data, meta, __http_status } = await this.rawRequest<{ terminated?: number }>(
           "DELETE",
-          appendQuery(path, { cursor }, ["cursor"], "terminateAllResourceSessions"),
+          appendQuery(
+            path,
+            { paged: "true", cursor },
+            ["paged", "cursor"],
+            "terminateAllResourceSessions",
+          ),
         );
         if (__http_status === 204) {
           throw unexpectedResponseError(
