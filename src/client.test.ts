@@ -11593,6 +11593,29 @@ describe("session management pagination", () => {
     }
   });
 
+  it("follows a cursor without has_more and rejects invalid termination counts", async () => {
+    const pages = (data: unknown) =>
+      mockFetches([
+        { status: 200, body: { data, meta: { next_cursor: "next" } } },
+        { status: 200, body: { data, meta: { has_more: false } } },
+      ]);
+    expect(
+      (await createClient(pages([{ session_id: "s" }])).listResourceSessions(RESOURCE_CRID))
+        .sessions,
+    ).toHaveLength(2);
+    expect(
+      (await createClient(pages({ terminated: 1 })).terminateAllResourceSessions(RESOURCE_CRID))
+        .terminated,
+    ).toBe(2);
+    for (const terminated of ["3", -1, 1.5, null]) {
+      const fetch = mockFetch({ status: 200, body: { data: { terminated } } });
+      await expect(
+        createClient(fetch).terminateAllResourceSessions(RESOURCE_CRID),
+      ).rejects.toMatchObject({ code: ERROR_CODE_UNEXPECTED_RESPONSE });
+      expect(fetch).toHaveBeenCalledTimes(1);
+    }
+  });
+
   it("rejects missing and repeated cursors instead of claiming completion", async () => {
     for (const next_cursor of [undefined, "repeat"]) {
       const fetch = mockFetch({

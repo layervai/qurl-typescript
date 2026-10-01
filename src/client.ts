@@ -4583,6 +4583,10 @@ export class QURLClient {
           this.log("terminateAllResourceSessions: missing terminated count; defaulting to zero", {
             request_id: meta?.request_id,
           });
+        } else if (!Number.isSafeInteger(data.terminated) || data.terminated < 0) {
+          throw unexpectedResponseError("terminateAllResourceSessions: invalid terminated count", {
+            requestId: meta?.request_id,
+          });
         }
         request_id = meta?.request_id;
         return { ...meta, counts: [data?.terminated ?? 0] };
