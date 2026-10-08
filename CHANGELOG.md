@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.0.0](https://github.com/layervai/qurl-typescript/compare/qurl-v2.0.0...qurl-v2.0.0) (2026-10-08)
+
+
+### ⚠ BREAKING CHANGES
+
+* Quota.rate_limits no longer declares max_tokens_per_qurl. Remove reads of that retired per-resource cap; it no longer limits qURL minting. This is a public TypeScript type change even though runtime response parsing is unchanged. A later package release must carry the breaking-change version and migration note; this cleanup does not publish it.
+
+### Bug Fixes
+
+* complete paged resource session operations ([#280](https://github.com/layervai/qurl-typescript/issues/280)) ([c77bafa](https://github.com/layervai/qurl-typescript/commit/c77bafa2d1ffe060f88c7e447c7e06cbc3c7b613))
+* remove unused quota cap declaration ([#278](https://github.com/layervai/qurl-typescript/issues/278)) ([1bdab3c](https://github.com/layervai/qurl-typescript/commit/1bdab3c2b53acdf71625300f6a1604d8a33d6db5))
+
 ## [2.0.0](https://github.com/layervai/qurl-typescript/compare/qurl-v0.7.0...qurl-v2.0.0) (2026-09-10)
 
 ### SDK 2.x Go parity
