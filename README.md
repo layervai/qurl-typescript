@@ -1,17 +1,26 @@
-# @layervai/qurl
+# qURL TypeScript and Node.js SDK
 
 [![npm](https://img.shields.io/npm/v/@layervai/qurl)](https://www.npmjs.com/package/@layervai/qurl)
 [![CI](https://github.com/layervai/qurl-typescript/actions/workflows/ci.yml/badge.svg)](https://github.com/layervai/qurl-typescript/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/layervai/qurl-typescript)](LICENSE)
 
-**Use the LayerV [qURL™ Platform](https://docs.layerv.ai) from TypeScript: protect a
-private URL once, then mint short-lived portal links for it.**
+Create temporary access links for private web apps and APIs with LayerV's
+[qURL™ TypeScript and Node.js SDK](https://layerv.ai/sdk/). Use the
+`@layervai/qurl` package in a service or automation script to register
+resources, choose a link lifetime, and manage resource access.
 
-> **Quantum URL (qURL)** · The internet has a hidden layer. This is how you enter.
+For a local app, [publish it with the CLI](https://github.com/layervai/qurl-integrations/tree/main/apps/cli)
+or configure a connector before issuing links. Creating an access link does
+not start the app or close any separate public route to it. Your app's own
+sign-in still applies.
 
 Portal recipients do not need LayerV credentials, API keys, or SDK state. They
 open the qURL link. Credentials are only for software that protects URLs or
 creates portals.
+
+[Installation](#installation) · [Quickstart](#quickstart) ·
+[Opening received links](#opening-portals) · [API reference](#api) ·
+[Resource and token management](#rest-shaped-api-compatibility)
 
 ## Why qURL?
 
