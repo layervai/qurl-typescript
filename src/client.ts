@@ -4584,6 +4584,21 @@ export class QURLClient {
     );
   }
 
+  /**
+   * Revoke an API resource identifier retained by a client migrating to CRIDs.
+   * New callers should use deleteResource with the resource CRID.
+   */
+  async deleteResourceByIdentifier(id: string): Promise<void> {
+    if (typeof id !== "string") throw clientValidationError("id: invalid resource identifier");
+    if (/^r_[a-z0-9_-]{11}$/.test(id)) {
+      await this.requestNoContent(`/v1/qurls/${encodeURIComponent(id)}`);
+      return;
+    }
+    const publicKey = /^[A-Za-z0-9_-]{107,214}$/.test(id) && id.length % 4 !== 1;
+    if (!publicKey) requireResourceCrid(id, "deleteResourceByIdentifier");
+    await this.requestNoContent(`/v1/resources/${encodeURIComponent(id)}`);
+  }
+
   /** Revoke a resource and all of its qURLs. */
   async deleteResource(id: string): Promise<void> {
     requireResourceCrid(id, "deleteResource");
