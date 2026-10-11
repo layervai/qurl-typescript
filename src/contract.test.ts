@@ -181,6 +181,67 @@ const DELEGATED_BATCH_HEADERS = {
 };
 
 const METHOD_CASES: MethodCase[] = [
+  {
+    method: "inviteConsumer",
+    verb: "POST",
+    template: "/v1/resources/{id}/invitations",
+    mockBody: { data: { id: "a".repeat(64), status: "active", version: 2 } },
+    invoke: (c) => c.inviteConsumer(CONNECTOR_RESOURCE_CONTRACT_DATA.crid, "consumer@example.com"),
+  },
+  {
+    method: "listConsumerInvitations",
+    verb: "GET",
+    template: "/v1/resources/{id}/invitations",
+    mockBody: { data: [], meta: { has_more: false } },
+    invoke: (c) => c.listConsumerInvitations(CONNECTOR_RESOURCE_CONTRACT_DATA.crid),
+  },
+  {
+    method: "listConsumerGrants",
+    verb: "GET",
+    template: "/v1/resources/{id}/consumer-grants",
+    mockBody: { data: [], meta: { has_more: false } },
+    invoke: (c) => c.listConsumerGrants(CONNECTOR_RESOURCE_CONTRACT_DATA.crid),
+  },
+  {
+    method: "resendConsumerInvitation",
+    verb: "POST",
+    template: "/v1/resources/{id}/invitations/{invitation_id}/resend",
+    mockBody: { data: { id: "a".repeat(64), status: "active", version: 2 } },
+    invoke: (c) =>
+      c.resendConsumerInvitation(CONNECTOR_RESOURCE_CONTRACT_DATA.crid, "a".repeat(64), 1),
+  },
+  {
+    method: "revokeConsumerInvitation",
+    verb: "DELETE",
+    template: "/v1/resources/{id}/invitations/{invitation_id}",
+    mockBody: { data: { id: "a".repeat(64), status: "active", version: 2 } },
+    invoke: (c) =>
+      c.revokeConsumerInvitation(CONNECTOR_RESOURCE_CONTRACT_DATA.crid, "a".repeat(64), 1),
+  },
+  {
+    method: "approveConsumerGrant",
+    verb: "POST",
+    template: "/v1/resources/{id}/consumer-grants/{grant_id}/approve",
+    mockBody: { data: { id: "a".repeat(64), status: "active", version: 2 } },
+    invoke: (c) =>
+      c.approveConsumerGrant(CONNECTOR_RESOURCE_CONTRACT_DATA.crid, "a".repeat(64), {
+        expected_version: 1,
+      }),
+  },
+  {
+    method: "denyConsumerGrant",
+    verb: "POST",
+    template: "/v1/resources/{id}/consumer-grants/{grant_id}/deny",
+    mockBody: { data: { id: "a".repeat(64), status: "active", version: 2 } },
+    invoke: (c) => c.denyConsumerGrant(CONNECTOR_RESOURCE_CONTRACT_DATA.crid, "a".repeat(64), 1),
+  },
+  {
+    method: "revokeConsumerGrant",
+    verb: "DELETE",
+    template: "/v1/resources/{id}/consumer-grants/{grant_id}",
+    mockBody: { data: { id: "a".repeat(64), status: "active", version: 2 } },
+    invoke: (c) => c.revokeConsumerGrant(CONNECTOR_RESOURCE_CONTRACT_DATA.crid, "a".repeat(64), 1),
+  },
   // Portal verbs (mirror qurl-go). They reuse endpoints the REST-shaped
   // surface already declares, so no snapshot additions — the entries pin
   // each verb to its endpoint so a rewire can't slip past.

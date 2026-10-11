@@ -108,3 +108,18 @@ paths:
     get: {}
   /v1/webhooks/{id}/secret:
     post: {}
+  /v1/resources/{id}/invitations:
+    get: {}
+    post: {}
+  /v1/resources/{id}/invitations/{invitation_id}/resend:
+    post: {}
+  /v1/resources/{id}/invitations/{invitation_id}:
+    delete: {}
+  /v1/resources/{id}/consumer-grants:
+    get: {}
+  /v1/resources/{id}/consumer-grants/{grant_id}/approve:
+    post: {}
+  /v1/resources/{id}/consumer-grants/{grant_id}/deny:
+    post: {}
+  /v1/resources/{id}/consumer-grants/{grant_id}:
+    delete: {}

@@ -19,6 +19,12 @@ import {
 import { stripTrailingSlashes } from "./internal.js";
 import { ShareLink } from "./share.js";
 import type {
+  ConsumerInvitation,
+  ConsumerGrant,
+  ConsumerGrantApprovalInput,
+  ConsumerListInput,
+  ConsumerInvitationListOutput,
+  ConsumerGrantListOutput,
   AccessPolicy,
   AccessToken,
   AccessCode,
@@ -360,6 +366,8 @@ assertExhaustive<
 >(true);
 
 const CREATE_RESOURCE_FIELD_KEYS = [
+  "private",
+  "consumer_access",
   "type",
   "target_url",
   "description",
@@ -377,6 +385,8 @@ assertExhaustive<
 >(true);
 
 const UPDATE_RESOURCE_FIELD_KEYS = [
+  "consumer_access",
+  "expected_consumer_access_version",
   "description",
   "tags",
   "custom_domain",
@@ -2433,6 +2443,16 @@ function normalizePatchFields(
   return normalized;
 }
 
+function requireConsumerDecision(id: string, version: number, allowNew = false): void {
+  if (
+    typeof id !== "string" ||
+    (!/^[a-f0-9]{64}$/.test(id) && !(allowNew && id === "new")) ||
+    !Number.isSafeInteger(version) ||
+    version < (allowNew ? 0 : 1)
+  )
+    throw clientValidationError("consumer decision: invalid id or expected version");
+}
+
 function validateResourceWriteFields(
   input: Record<string, unknown>,
   options: {
@@ -2455,6 +2475,63 @@ function validateResourceWriteFields(
       throw err;
     }
   };
+  collect(() => {
+    if (input.private !== undefined && typeof input.private !== "boolean") {
+      throw clientValidationError("private: must be a boolean");
+    }
+    if (input.consumer_access !== undefined) {
+      const policy = input.consumer_access;
+      requireObjectInput(policy, "consumer_access");
+      const p = policy as Record<string, unknown>;
+      requireNoUnknownFields(p, ["mode", "version", "contract_id"], "consumer_access");
+      if (
+        !["keys", "invite_only", "email_capture", "review", "contract"].includes(
+          p.mode as string,
+        ) ||
+        !Number.isSafeInteger(p.version) ||
+        (p.version as number) < 1
+      ) {
+        throw clientValidationError("consumer_access: invalid mode or version");
+      }
+      if (p.mode === "contract") {
+        if (
+          typeof p.contract_id !== "string" ||
+          !p.contract_id.trim() ||
+          new TextEncoder().encode(p.contract_id).length > 128
+        ) {
+          throw clientValidationError(
+            "consumer_access: contract mode requires a bounded contract_id",
+          );
+        }
+      } else if (p.contract_id !== undefined) {
+        throw clientValidationError("consumer_access: contract_id requires contract mode");
+      }
+      if (input.private === false)
+        throw clientValidationError("consumer_access: requires a private resource");
+      if (options.requireUrlTarget) {
+        if (p.version !== 1 || input.private !== true)
+          throw clientValidationError(
+            "consumer_access: creation requires private true and version one",
+          );
+      } else if (options.allowAliasClear) {
+        const expected = input.expected_consumer_access_version;
+        if (
+          !Number.isSafeInteger(expected) ||
+          (expected as number) < 0 ||
+          p.version !== (expected as number) + 1 ||
+          Object.keys(input).some(
+            (key) => key !== "consumer_access" && key !== "expected_consumer_access_version",
+          )
+        ) {
+          throw clientValidationError(
+            "consumer_access: update requires its expected version and no metadata changes",
+          );
+        }
+      }
+    } else if (input.expected_consumer_access_version !== undefined) {
+      throw clientValidationError("expected_consumer_access_version: requires consumer_access");
+    }
+  });
   const resourceType = input.type;
   if (resourceType !== undefined && typeof resourceType !== "string") {
     errors.push(
@@ -4345,6 +4422,136 @@ export class QURLClient {
       `/v1/resources/${encodeURIComponent(id)}`,
       validationInput,
       options,
+    );
+  }
+
+  /** Send a publisher-only invitation. Mail delivery does not prove enrollment. */
+  async inviteConsumer(id: string, email: string): Promise<ConsumerInvitation> {
+    requireResourceCrid(id, "inviteConsumer");
+    requireNonEmptyIfPresent(email, "email");
+    if (typeof email !== "string" || email.length > 320)
+      throw clientValidationError("email: must be a bounded string");
+    return this.request<ConsumerInvitation>(
+      "POST",
+      `/v1/resources/${encodeURIComponent(id)}/invitations`,
+      { email },
+    );
+  }
+
+  async listConsumerInvitations(
+    id: string,
+    input: ConsumerListInput = {},
+  ): Promise<ConsumerInvitationListOutput> {
+    requireResourceCrid(id, "listConsumerInvitations");
+    const { data, meta } = await this.rawRequest<ConsumerInvitation[]>(
+      "GET",
+      appendQuery(
+        `/v1/resources/${encodeURIComponent(id)}/invitations`,
+        input as Record<string, unknown>,
+        ["cursor", "limit"],
+        "listConsumerInvitations",
+      ),
+    );
+    return pageFromMeta({ invitations: data ?? [] }, meta);
+  }
+
+  async listConsumerGrants(
+    id: string,
+    input: ConsumerListInput = {},
+  ): Promise<ConsumerGrantListOutput> {
+    requireResourceCrid(id, "listConsumerGrants");
+    const { data, meta } = await this.rawRequest<ConsumerGrant[]>(
+      "GET",
+      appendQuery(
+        `/v1/resources/${encodeURIComponent(id)}/consumer-grants`,
+        input as Record<string, unknown>,
+        ["cursor", "limit"],
+        "listConsumerGrants",
+      ),
+    );
+    return pageFromMeta({ grants: data ?? [] }, meta);
+  }
+
+  async resendConsumerInvitation(
+    id: string,
+    invitationId: string,
+    expectedVersion: number,
+  ): Promise<ConsumerInvitation> {
+    requireResourceCrid(id, "resendConsumerInvitation");
+    requireConsumerDecision(invitationId, expectedVersion);
+    return this.request<ConsumerInvitation>(
+      "POST",
+      `/v1/resources/${encodeURIComponent(id)}/invitations/${encodeURIComponent(invitationId)}/resend`,
+      { expected_version: expectedVersion },
+    );
+  }
+
+  /** Remove the invitation and its grant. Inspect session_cleanup before reporting stream removal. */
+  async revokeConsumerInvitation(
+    id: string,
+    invitationId: string,
+    expectedVersion: number,
+  ): Promise<ConsumerInvitation> {
+    requireResourceCrid(id, "revokeConsumerInvitation");
+    requireConsumerDecision(invitationId, expectedVersion);
+    return this.request<ConsumerInvitation>(
+      "DELETE",
+      `/v1/resources/${encodeURIComponent(id)}/invitations/${encodeURIComponent(invitationId)}?expected_version=${expectedVersion}`,
+    );
+  }
+
+  /** Review approval, key opt-in with grantId new, or trusted publisher entitlement. */
+  async approveConsumerGrant(
+    id: string,
+    grantId: string,
+    input: ConsumerGrantApprovalInput,
+  ): Promise<ConsumerGrant> {
+    requireResourceCrid(id, "approveConsumerGrant");
+    requireObjectInput(input, "approveConsumerGrant");
+    requireNoUnknownFields(
+      input,
+      [
+        "expected_version",
+        "credential_kind",
+        "credential_id",
+        "credential_public_key_b64",
+        "entitlement_id",
+        "expires_at",
+      ],
+      "approveConsumerGrant",
+    );
+    requireConsumerDecision(grantId, input.expected_version, grantId === "new");
+    return this.request<ConsumerGrant>(
+      "POST",
+      `/v1/resources/${encodeURIComponent(id)}/consumer-grants/${encodeURIComponent(grantId)}/approve`,
+      input,
+    );
+  }
+
+  async denyConsumerGrant(
+    id: string,
+    grantId: string,
+    expectedVersion: number,
+  ): Promise<ConsumerGrant> {
+    requireResourceCrid(id, "denyConsumerGrant");
+    requireConsumerDecision(grantId, expectedVersion);
+    return this.request<ConsumerGrant>(
+      "POST",
+      `/v1/resources/${encodeURIComponent(id)}/consumer-grants/${encodeURIComponent(grantId)}/deny`,
+      { expected_version: expectedVersion },
+    );
+  }
+
+  async revokeConsumerGrant(
+    id: string,
+    grantId: string,
+    expectedVersion: number,
+  ): Promise<ConsumerGrant> {
+    requireResourceCrid(id, "revokeConsumerGrant");
+    requireConsumerDecision(grantId, expectedVersion);
+    return this.request<ConsumerGrant>(
+      "DELETE",
+      `/v1/resources/${encodeURIComponent(id)}/consumer-grants/${encodeURIComponent(grantId)}?expected_version=${expectedVersion}`,
     );
   }
 
