@@ -548,6 +548,14 @@ const METHOD_CASES: MethodCase[] = [
     invoke: (c) => c.updateResource(CONNECTOR_RESOURCE_CONTRACT_DATA.crid, { description: "x" }),
   },
   {
+    method: "deleteResourceByIdentifier",
+    verb: "DELETE",
+    template: "/v1/resources/{id}",
+    mockBody: undefined,
+    mockStatus: 204,
+    invoke: (c) => c.deleteResourceByIdentifier(CONNECTOR_RESOURCE_CONTRACT_DATA.crid),
+  },
+  {
     method: "deleteResource",
     verb: "DELETE",
     template: "/v1/resources/{id}",

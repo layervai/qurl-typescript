@@ -2994,6 +2994,7 @@ function buildCreatePortalBody(opts: CreatePortalOptions, method: string): Recor
 interface ApiResponse<T> {
   data: T;
   meta?: {
+    found_existing?: unknown;
     request_id?: string;
     page_size?: number;
     has_more?: boolean;
@@ -3396,12 +3397,21 @@ export class QURLClient {
     if (normalized.customDomain !== undefined) body.custom_domain = normalized.customDomain;
     if (normalized.alias !== undefined) body.alias = normalized.alias;
     validateResourceWriteFields(body, { requireUrlTarget: true });
-    const resource = await this.request<Resource>("POST", "/v1/resources", body, requestOptions);
+    const response = await this.rawRequest<Resource>("POST", "/v1/resources", body, {
+      requestOptions,
+    });
+    if (response.__http_status === 204)
+      throw unexpectedResponseError("protectUrl: expected a resource response body");
+    const resource = response.data;
     await verifyResourceIdentity(resource, "protectUrl");
     if (
       normalized.consumerAccess &&
       (resource.private !== true ||
-        !sameConsumerPolicy(resource.consumer_access, normalized.consumerAccess))
+        !sameConsumerPolicy(
+          resource.consumer_access,
+          normalized.consumerAccess,
+          response.meta?.found_existing === true,
+        ))
     ) {
       throw unexpectedResponseError("protectUrl: private policy was not confirmed");
     }
@@ -3478,7 +3488,11 @@ export class QURLClient {
       if (
         consumerAccess &&
         (response.data.private !== true ||
-          !sameConsumerPolicy(response.data.consumer_access, consumerAccess))
+          !sameConsumerPolicy(
+            response.data.consumer_access,
+            consumerAccess,
+            response.meta?.found_existing === true,
+          ))
       ) {
         throw unexpectedResponseError("ensureConnectorResource: private policy was not confirmed");
       }
@@ -6088,10 +6102,14 @@ export class ConnectorResource {
 function sameConsumerPolicy(
   actual: ConsumerAccessPolicy | undefined,
   expected: ConsumerAccessPolicy,
+  foundExisting: boolean,
 ): boolean {
   return (
     actual?.mode === expected.mode &&
-    actual?.version === expected.version &&
+    (actual?.version === expected.version ||
+      (foundExisting &&
+        Number.isSafeInteger(actual?.version) &&
+        Number(actual?.version) > expected.version)) &&
     actual?.contract_id === expected.contract_id
   );
 }

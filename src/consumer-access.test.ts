@@ -98,3 +98,28 @@ it("refuses a later policy version before ensuring a Connector resource", async 
   ).rejects.toBeInstanceOf(ValidationError);
   expect(fetch).not.toHaveBeenCalled();
 });
+
+it.each([true, false, undefined])(
+  "keeps a later URL policy only on a confirmed existing resource (%s)",
+  async (foundExisting) => {
+    const resource = {
+      resource_id:
+        "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE2cTVv5_3eeYCcLLq5ROYCqcmY50HiKZ9ATglIkPnCji1E_S63UMtXba1moR8-Q6EV7oM6zwwh9_j2CDujzXvLA",
+      crid,
+      private: true,
+      consumer_access: { mode: "review", version: 3 },
+      target_url: "https://example.com",
+    };
+    const fetch = mockFetch({
+      status: 201,
+      body: { data: resource, meta: { found_existing: foundExisting } },
+    });
+    const result = createClient(fetch).protectUrl("https://example.com", {
+      consumerAccess: { mode: "review", version: 1 },
+    });
+    if (foundExisting === true) expect((await result).details?.consumer_access?.version).toBe(3);
+    else await expect(result).rejects.toThrow("private policy was not confirmed");
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(String(fetch.mock.calls[0]![1]?.body)).consumer_access.version).toBe(1);
+  },
+);
