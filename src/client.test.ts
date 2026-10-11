@@ -11635,3 +11635,27 @@ describe("session management pagination", () => {
     }
   });
 });
+
+it.each([true, false])(
+  "keeps a later Connector policy only on an existing resource (%s)",
+  async (foundExisting) => {
+    const fetch = mockFetch({
+      status: 201,
+      body: {
+        data: connectorResourceData({
+          private: true,
+          consumer_access: { mode: "review", version: 3 },
+        }),
+        meta: { found_existing: foundExisting },
+      },
+    });
+    const result = createClient(fetch).ensureConnectorResource("prod-dashboard", undefined, {
+      mode: "review",
+      version: 1,
+    });
+    if (foundExisting) expect((await result).foundExisting).toBe(true);
+    else await expect(result).rejects.toThrow("private policy was not confirmed");
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(String(fetch.mock.calls[0]![1]?.body)).consumer_access.version).toBe(1);
+  },
+);
