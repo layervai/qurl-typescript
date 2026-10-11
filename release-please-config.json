@@ -41,8 +41,7 @@
           "path": "package-lock.json",
           "jsonpath": "$.packages[''].optionalDependencies['@layervai/qurl-state-fs']"
         }
-      ],
-      "release-as": "2.0.0"
+      ]
     }
   }
 }
