@@ -19,6 +19,7 @@ import {
 import { stripTrailingSlashes } from "./internal.js";
 import { ShareLink } from "./share.js";
 import type {
+  ConsumerAccessPolicy,
   ConsumerInvitation,
   ConsumerGrant,
   ConsumerGrantApprovalInput,
@@ -436,6 +437,8 @@ assertExhaustive<
  * fields the REST-shaped methods send.
  */
 const PROTECT_URL_OPTION_KEYS = [
+  "private",
+  "consumerAccess",
   "description",
   "tags",
   "customDomain",
@@ -3383,13 +3386,25 @@ export class QURLClient {
     // SDK-wide normalizePatchFields convention.
     const normalized = normalizePatchFields(opts, PROTECT_URL_OPTION_KEYS) as ProtectUrlOptions;
     const body: Record<string, unknown> = { target_url: targetUrl };
+    if (normalized.private !== undefined) body.private = normalized.private;
+    if (normalized.consumerAccess !== undefined) {
+      body.private = normalized.private ?? true;
+      body.consumer_access = normalized.consumerAccess;
+    }
     if (normalized.description !== undefined) body.description = normalized.description;
     if (normalized.tags !== undefined) body.tags = normalized.tags;
     if (normalized.customDomain !== undefined) body.custom_domain = normalized.customDomain;
     if (normalized.alias !== undefined) body.alias = normalized.alias;
-    validateResourceWriteFields(body);
+    validateResourceWriteFields(body, { requireUrlTarget: true });
     const resource = await this.request<Resource>("POST", "/v1/resources", body, requestOptions);
     await verifyResourceIdentity(resource, "protectUrl");
+    if (
+      normalized.consumerAccess &&
+      (resource.private !== true ||
+        !sameConsumerPolicy(resource.consumer_access, normalized.consumerAccess))
+    ) {
+      throw unexpectedResponseError("protectUrl: private policy was not confirmed");
+    }
     return new ProtectedResource(
       this,
       resource.crid as string,
@@ -3424,8 +3439,14 @@ export class QURLClient {
   async ensureConnectorResource(
     slug: string,
     requestOptions?: RequestOptions,
+    consumerAccess?: ConsumerAccessPolicy,
   ): Promise<EnsureConnectorResourceResult> {
     requireConnectorSlug(slug, "ensureConnectorResource");
+    if (consumerAccess !== undefined) {
+      validateResourceWriteFields({ consumer_access: consumerAccess, private: true });
+      if (consumerAccess.version !== 1)
+        throw clientValidationError("consumer_access: creation requires version one");
+    }
     // Response validation imports the producer's P-256 resource key. Preflight
     // before POST so a missing runtime capability cannot orphan a committed row.
     requireConnectorSubtleCrypto("ensureConnectorResource");
@@ -3443,6 +3464,7 @@ export class QURLClient {
           type: "tunnel",
           slug,
           find_or_create: true,
+          ...(consumerAccess ? { private: true, consumer_access: consumerAccess } : {}),
         },
         { requestOptions, retry: false, generateIdempotencyKey: false },
       );
@@ -3452,6 +3474,13 @@ export class QURLClient {
         throw unexpectedResponseError(
           `ensureConnectorResource: expected HTTP 201, got ${response.__http_status ?? "unknown"}`,
         );
+      }
+      if (
+        consumerAccess &&
+        (response.data.private !== true ||
+          !sameConsumerPolicy(response.data.consumer_access, consumerAccess))
+      ) {
+        throw unexpectedResponseError("ensureConnectorResource: private policy was not confirmed");
       }
       resource = await parseConnectorResource(this, response.data, "ensureConnectorResource", {
         slug,
@@ -6039,4 +6068,15 @@ export class ConnectorResource {
   ): Promise<Portal> {
     return this.#client.createPortal(this.crid, opts, requestOptions);
   }
+}
+
+function sameConsumerPolicy(
+  actual: ConsumerAccessPolicy | undefined,
+  expected: ConsumerAccessPolicy,
+): boolean {
+  return (
+    actual?.mode === expected.mode &&
+    actual?.version === expected.version &&
+    actual?.contract_id === expected.contract_id
+  );
 }

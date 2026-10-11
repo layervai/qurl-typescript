@@ -979,6 +979,12 @@ OTP, and completion packet construction and reply decryption.
 `updateResource` changes the policy with `expected_consumer_access_version` and
 the next version. Send policy changes separately from metadata updates.
 
+For a URL, `protectUrl(url, { consumerAccess: { mode: "invite_only", version: 1 } })`
+creates the private resource and checks the returned policy. For a local
+Connector, pass the policy as the third argument to `ensureConnectorResource`.
+A private policy cannot be combined with public access. A service that ignores
+the requested policy is refused.
+
 Publisher methods are `inviteConsumer`, `listConsumerInvitations`,
 `resendConsumerInvitation`, `revokeConsumerInvitation`, `listConsumerGrants`,
 `approveConsumerGrant`, `denyConsumerGrant` and `revokeConsumerGrant`. Decisions

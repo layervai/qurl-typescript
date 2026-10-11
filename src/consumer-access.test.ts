@@ -61,3 +61,40 @@ describe("consumer publisher operations", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 });
+
+it("protects a URL with the exact private policy and refuses missing confirmation", async () => {
+  const resource = {
+    resource_id:
+      "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE2cTVv5_3eeYCcLLq5ROYCqcmY50HiKZ9ATglIkPnCji1E_S63UMtXba1moR8-Q6EV7oM6zwwh9_j2CDujzXvLA",
+    crid,
+    private: true,
+    consumer_access: { version: 1, mode: "review" },
+    target_url: "https://example.com",
+  };
+  const fetch = mockFetch({ status: 201, body: { data: resource } });
+  const result = await createClient(fetch).protectUrl("https://example.com", {
+    consumerAccess: { mode: "review", version: 1 },
+  });
+  expect(result.crid).toBe(crid);
+  expect(JSON.parse(String(fetch.mock.calls[0]![1]?.body))).toMatchObject({
+    private: true,
+    consumer_access: { mode: "review", version: 1 },
+  });
+  const absent = mockFetch({
+    status: 201,
+    body: { data: { ...resource, consumer_access: undefined } },
+  });
+  await expect(
+    createClient(absent).protectUrl("https://example.com", {
+      consumerAccess: { mode: "review", version: 1 },
+    }),
+  ).rejects.toThrow("private policy was not confirmed");
+});
+
+it("refuses a later policy version before ensuring a Connector resource", async () => {
+  const fetch = mockFetch({ status: 201, body: { data: {} } });
+  await expect(
+    createClient(fetch).ensureConnectorResource("app", undefined, { mode: "review", version: 2 }),
+  ).rejects.toBeInstanceOf(ValidationError);
+  expect(fetch).not.toHaveBeenCalled();
+});

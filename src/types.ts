@@ -272,6 +272,8 @@ export interface MintOutput {
 
 /** Options for `QURLClient.protectUrl`. */
 export interface ProtectUrlOptions {
+  private?: boolean;
+  consumerAccess?: ConsumerAccessPolicy;
   /** Optional resource-level metadata. Max 500 chars. */
   description?: string;
   /** Optional resource-level tags. Max 10 items. */
