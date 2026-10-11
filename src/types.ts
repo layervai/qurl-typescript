@@ -908,6 +908,7 @@ export type WebhookEventType = OpenString<
   | "qurl.updated"
   | "resource.closed"
   | "qurl.accessed"
+  | "consumer.subscribed"
   | "qurl.access_denied"
   | "qurl.token_exhausted"
   | "quota.warning"
