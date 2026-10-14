@@ -979,3 +979,30 @@ peer: registration, restart, relocation, exact retirement, and credential recove
 This checks protocol interoperability; the peer is not a sandbox authority.
 Shared conformance vectors cover assignment, registration,
 OTP, and completion packet construction and reply decryption.
+
+
+### Private consumer policies
+
+`createResource` accepts `private: true` and `consumer_access` with mode
+`keys`, `invite_only`, `email_capture`, `review` or `contract`, and version `1`.
+`updateResource` changes the policy with `expected_consumer_access_version` and
+the next version. Send policy changes separately from metadata updates.
+
+For a URL, `protectUrl(url, { consumerAccess: { mode: "invite_only", version: 1 } })`
+creates the private resource and checks the returned policy. For a local
+Connector, pass the policy as the third argument to `ensureConnectorResource`.
+A private policy cannot be combined with public access. A service that ignores
+the requested policy is refused.
+
+Publisher methods are `inviteConsumer`, `listConsumerInvitations`,
+`resendConsumerInvitation`, `revokeConsumerInvitation`, `listConsumerGrants`,
+`approveConsumerGrant`, `denyConsumerGrant` and `revokeConsumerGrant`. Decisions
+use the version read from the invitation or grant. Lists return the usual
+`nextCursor`. Contract entitlement approval requires a trusted publisher backend
+receipt and expiry; the SDK does not verify payment. Contract replies omit email
+and globally reusable credential data.
+
+A removal receipt reports `session_cleanup: pending` until connection cleanup
+is confirmed. Retry the same removal and version to confirm `complete`. These
+APIs require the matching service feature and remain off by default during
+integration. Consumer Noise enrollment and browser access are in the NHP agent.
