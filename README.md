@@ -1087,3 +1087,8 @@ A removal receipt reports `session_cleanup: pending` until connection cleanup
 is confirmed. Retry the same removal and version to confirm `complete`. These
 APIs require the matching service feature and remain off by default during
 integration. Consumer Noise enrollment and browser access are in the NHP agent.
+
+Email access is always available as a backup to passkeys. The recipient chooses
+**Email me an access link** and verifies the mailbox. No publisher setting is
+needed or available. Invitations, approval, entitlement, expiry, and revocation
+still apply.

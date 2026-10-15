@@ -123,3 +123,24 @@ it.each([true, false, undefined])(
     expect(JSON.parse(String(fetch.mock.calls[0]![1]?.body)).consumer_access.version).toBe(1);
   },
 );
+
+it("returns email-backed grants but refuses email credential claims in publisher input", async () => {
+  const grant = {
+    id: decision,
+    status: "active",
+    version: 2,
+    credential_kind: "email",
+    email: "reader@example.com",
+    email_verified_at: "2026-10-15T00:00:00Z",
+  };
+  const fetch = mockFetch({ status: 200, body: { data: [grant] } });
+  expect((await createClient(fetch).listConsumerGrants(crid)).grants).toEqual([grant]);
+  const rejected = mockFetch({ status: 200, body: { data: grant } });
+  await expect(
+    createClient(rejected).approveConsumerGrant(crid, decision, {
+      expected_version: 1,
+      credential_kind: "email",
+    } as never),
+  ).rejects.toBeInstanceOf(ValidationError);
+  expect(rejected).not.toHaveBeenCalled();
+});
