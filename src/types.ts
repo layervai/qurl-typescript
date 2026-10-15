@@ -578,8 +578,6 @@ export interface DelegatedQurl {
 
 /** Private resource policy. Contract fulfillment comes from the publisher backend. */
 export interface ConsumerAccessPolicy {
-  /** Permit email links instead of passkeys. Disabled when omitted. */
-  email_fallback?: boolean;
   mode: "keys" | "invite_only" | "email_capture" | "review" | "contract";
   version: number;
   contract_id?: string;

@@ -998,8 +998,7 @@ is confirmed. Retry the same removal and version to confirm `complete`. These
 APIs require the matching service feature and remain off by default during
 integration. Consumer Noise enrollment and browser access are in the NHP agent.
 
-For private consumer policies, `email_fallback: true` permits the recipient to
-choose an email access link instead of a passkey. It is off when omitted.
-Email has lower assurance than a passkey. Invitations, publisher approval,
-contract entitlement, expiry, and revocation still apply. The SDK checks that
-the server confirmed the requested fallback setting.
+Email access is always available as a backup to passkeys. The recipient chooses
+**Email me an access link** and verifies the mailbox. No publisher setting is
+needed or available. Invitations, approval, entitlement, expiry, and revocation
+still apply.

@@ -123,39 +123,3 @@ it.each([true, false, undefined])(
     expect(JSON.parse(String(fetch.mock.calls[0]![1]?.body)).consumer_access.version).toBe(1);
   },
 );
-
-it("sends the email fallback choice and requires the server to confirm it", async () => {
-  const resource = {
-    resource_id:
-      "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE2cTVv5_3eeYCcLLq5ROYCqcmY50HiKZ9ATglIkPnCji1E_S63UMtXba1moR8-Q6EV7oM6zwwh9_j2CDujzXvLA",
-    crid,
-    private: true,
-    target_url: "https://example.com",
-    consumer_access: { mode: "review" as const, version: 1, email_fallback: true },
-  };
-  const fetch = mockFetch({ status: 201, body: { data: resource } });
-  await createClient(fetch).protectUrl("https://example.com", {
-    consumerAccess: resource.consumer_access,
-  });
-  expect(JSON.parse(String(fetch.mock.calls[0]![1]?.body)).consumer_access.email_fallback).toBe(
-    true,
-  );
-  const dropped = mockFetch({
-    status: 201,
-    body: { data: { ...resource, consumer_access: { mode: "review", version: 1 } } },
-  });
-  await expect(
-    createClient(dropped).protectUrl("https://example.com", {
-      consumerAccess: resource.consumer_access,
-    }),
-  ).rejects.toThrow("private policy was not confirmed");
-  const invalid = mockFetch({ status: 201, body: { data: resource } });
-  await expect(
-    createClient(invalid).createResource({
-      target_url: "https://example.com",
-      private: true,
-      consumer_access: { mode: "review", version: 1, email_fallback: "true" },
-    } as never),
-  ).rejects.toBeInstanceOf(ValidationError);
-  expect(invalid).not.toHaveBeenCalled();
-});
