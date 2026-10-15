@@ -1215,7 +1215,7 @@ export interface ConsumerGrant {
   id: string;
   status: "pending" | "active" | "revoked";
   version: number;
-  credential_kind?: "passkey" | "device";
+  credential_kind?: "passkey" | "device" | "email";
   credential_id?: string;
   credential_public_key_b64?: string;
   email?: string;

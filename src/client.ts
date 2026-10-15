@@ -4563,6 +4563,14 @@ export class QURLClient {
       ],
       "approveConsumerGrant",
     );
+    if (
+      input.credential_kind !== undefined &&
+      !["passkey", "device"].includes(input.credential_kind)
+    ) {
+      throw clientValidationError(
+        "approveConsumerGrant: credential_kind must be passkey or device",
+      );
+    }
     requireConsumerDecision(grantId, input.expected_version, grantId === "new");
     return this.request<ConsumerGrant>(
       "POST",

@@ -31,8 +31,8 @@ assert.equal(
   "",
   "Go reference must be clean",
 );
-assert.match(JSON.parse(readFileSync(join(root, "package.json"))).version, /^2\./);
-assert.match(manifest.sdk_version, /^2\./);
+assert.match(JSON.parse(readFileSync(join(root, "package.json"))).version, /^3\./);
+assert.match(manifest.sdk_version, /^3\./);
 assert.equal(manifest.nhp_version, "1.1");
 const dir = mkdtempSync(join(tmpdir(), "qurl-parity-"));
 try {

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "sdk_version": "2.0.0",
+  "sdk_version": "3.0.0",
   "nhp_version": "1.1",
   "go_repository": "https://github.com/layervai/qurl-go",
   "go_sha": "3612c9fb64fff782694373367106a0734c095b82",
@@ -19,14 +19,8 @@
   "typescript_sha": "9041c2f84763e4774861765c39170576f6530fa8",
   "conformance_version": "0.15.0",
   "surfaces": {
-    "relay_discovery": [
-      "src/node/relay.ts",
-      "src/node/provider.ts"
-    ],
-    "producer_lifecycle": [
-      "src/node/agent-runtime.ts",
-      "src/node/agent-transport.ts"
-    ],
+    "relay_discovery": ["src/node/relay.ts", "src/node/provider.ts"],
+    "producer_lifecycle": ["src/node/agent-runtime.ts", "src/node/agent-transport.ts"],
     "durable_state": [
       "src/node/agent-state.ts",
       "src/node/file-agent-state.ts",
