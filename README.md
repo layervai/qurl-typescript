@@ -83,6 +83,18 @@ For programmatic access, follow [opening portals](#opening-portals), including
 resource binding, HTTP request authorization, and redirect rules. Fetching the
 browser share URL itself does not substitute for that opening flow.
 
+## Choosing a Node.js preview workflow
+
+A Node.js service can issue a qURL link to an authorized, configured resource, establish connectivity with an Agent SDK, or provide a deployed preview. Choose the operation before choosing the package:
+
+| What the reviewer needs | Workflow |
+| --- | --- |
+| Temporary access to the current local app or private API | Publish through the CLI or configure the serving runtime, then use this SDK's resource and portal APIs with the appropriate issuer authority. |
+| An endpoint established from the Node.js process | The [ngrok JavaScript Agent SDK](https://github.com/ngrok/ngrok-javascript) can forward to a local service; configure its endpoint access policies and keep the origin available. |
+| A hosted application build that can outlive your development session | Create a [Vercel Preview deployment](https://vercel.com/docs/deployments/environments), with its environment and deployment protection configured. |
+
+Keep issuer credentials in the issuing service. A browser reviewer receives the access link and still follows the app's login requirements; a programmatic consumer follows [opening portals](#opening-portals). For generated files, first decide between a local file-serving resource and uploaded storage using the [file-sharing comparison](https://github.com/layervai/qurl-integrations#should-a-file-stay-on-the-local-host-or-be-uploaded). Link issuance does not perform the upload or deploy the app.
+
 ## TypeScript and Node.js sharing questions
 
 ### Does `protectUrl` publish the app on my laptop?
@@ -110,11 +122,6 @@ qURL separates a private resource from the access links your code issues for
 it. A running Connector supplies the access path to the origin; this SDK
 manages resources, links, and supported sessions. It can fit a preview-review
 or private API workflow without moving the app to a public staging server.
-
-ngrok also supports authenticated endpoints and outbound connectivity.
-Compare the resource-link workflow with the public endpoint workflow in the
-[qURL and ngrok guide](https://github.com/layervai/qurl-integrations#qurl-and-ngrok-for-localhost-sharing),
-and retain your app's authentication and normal operational controls.
 
 ## Installation
 
