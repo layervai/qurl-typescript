@@ -2486,7 +2486,11 @@ function validateResourceWriteFields(
       const policy = input.consumer_access;
       requireObjectInput(policy, "consumer_access");
       const p = policy as Record<string, unknown>;
-      requireNoUnknownFields(p, ["mode", "version", "contract_id"], "consumer_access");
+      requireNoUnknownFields(
+        p,
+        ["mode", "version", "contract_id", "email_fallback"],
+        "consumer_access",
+      );
       if (
         !["keys", "invite_only", "email_capture", "review", "contract"].includes(
           p.mode as string,
@@ -2496,6 +2500,8 @@ function validateResourceWriteFields(
       ) {
         throw clientValidationError("consumer_access: invalid mode or version");
       }
+      if (p.email_fallback !== undefined && typeof p.email_fallback !== "boolean")
+        throw clientValidationError("consumer_access: email_fallback must be a boolean");
       if (p.mode === "contract") {
         if (
           typeof p.contract_id !== "string" ||
@@ -6110,6 +6116,7 @@ function sameConsumerPolicy(
       (foundExisting &&
         Number.isSafeInteger(actual?.version) &&
         Number(actual?.version) > expected.version)) &&
-    actual?.contract_id === expected.contract_id
+    actual?.contract_id === expected.contract_id &&
+    (actual?.email_fallback ?? false) === (expected.email_fallback ?? false)
   );
 }

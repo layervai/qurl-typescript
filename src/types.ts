@@ -578,6 +578,8 @@ export interface DelegatedQurl {
 
 /** Private resource policy. Contract fulfillment comes from the publisher backend. */
 export interface ConsumerAccessPolicy {
+  /** Permit email links instead of passkeys. Disabled when omitted. */
+  email_fallback?: boolean;
   mode: "keys" | "invite_only" | "email_capture" | "review" | "contract";
   version: number;
   contract_id?: string;
@@ -1215,7 +1217,7 @@ export interface ConsumerGrant {
   id: string;
   status: "pending" | "active" | "revoked";
   version: number;
-  credential_kind?: "passkey" | "device";
+  credential_kind?: "passkey" | "device" | "email";
   credential_id?: string;
   credential_public_key_b64?: string;
   email?: string;
