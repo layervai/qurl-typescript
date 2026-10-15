@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.1.0](https://github.com/layervai/qurl-typescript/compare/qurl-v3.0.0...qurl-v3.1.0) (2026-10-15)
+
+
+### Features
+
+* expose email-backed consumer grants ([#291](https://github.com/layervai/qurl-typescript/issues/291)) ([612cd67](https://github.com/layervai/qurl-typescript/commit/612cd674318ecb9cafdbcda597f321d7f258d5d8))
+
 ## [3.0.0](https://github.com/layervai/qurl-typescript/compare/qurl-v2.0.0...qurl-v3.0.0) (2026-10-11)
 
 
