@@ -138,6 +138,8 @@ export interface QURL {
  * the resource and must be set through {@link UpdateInput} after creation.
  */
 export interface CreateInput {
+  /** Omit to keep an existing resource's privacy; a new URL or Connector resource defaults to private. */
+  private?: boolean;
   type?: ResourceType;
   target_url?: string;
   expires_in?: string;
@@ -599,6 +601,10 @@ export interface CreateResourceInput {
 
 /** Input for updating resource metadata. */
 export interface UpdateResourceInput {
+  /** Canonical padded-base64 X25519 public keys to add, at most 256. */
+  allowed_device_keys_add?: string[];
+  /** Remove allowed devices; links they already created keep their lifetime. */
+  allowed_device_keys_remove?: string[];
   consumer_access?: ConsumerAccessPolicy;
   expected_consumer_access_version?: number;
   description?: string;
@@ -673,7 +679,7 @@ export interface ShareResourceOptions {
 /** Input for minting a qURL against an existing resource. */
 export type CreateQurlForResourceInput = Omit<
   CreateInput,
-  "target_url" | "custom_domain" | "type"
+  "target_url" | "custom_domain" | "type" | "private"
 > & {
   /**
    * Path this resource qURL resolves to (e.g. "/api/detect").

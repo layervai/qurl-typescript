@@ -298,6 +298,7 @@ assertExhaustive<
 >(true);
 
 const CREATE_FIELD_KEYS = [
+  "private",
   "type",
   "target_url",
   "expires_in",
@@ -386,6 +387,8 @@ assertExhaustive<
 >(true);
 
 const UPDATE_RESOURCE_FIELD_KEYS = [
+  "allowed_device_keys_add",
+  "allowed_device_keys_remove",
   "consumer_access",
   "expected_consumer_access_version",
   "description",
@@ -2301,6 +2304,7 @@ function validateCreateInput(input: CreateInput): void {
   collect(() => requireNonEmptyIfPresent(input.label, "label"));
   collect(() => requireMaxLength(input.custom_domain, "custom_domain", MAX_CUSTOM_DOMAIN));
   collect(() => requireNonEmptyIfPresent(input.custom_domain, "custom_domain"));
+  collect(() => requireBooleanIfPresent(input.private, "private"));
   collect(() => requireBooleanIfPresent(input.one_time_use, "one_time_use"));
   collect(() => requireMaxSessionsInRange(input.max_sessions));
   collect(() => requireNonEmptyIfPresent(input.expires_in, "expires_in"));
@@ -2533,6 +2537,35 @@ function validateResourceWriteFields(
       }
     } else if (input.expected_consumer_access_version !== undefined) {
       throw clientValidationError("expected_consumer_access_version: requires consumer_access");
+    }
+  });
+  collect(() => {
+    const fields = ["allowed_device_keys_add", "allowed_device_keys_remove"] as const;
+    for (const field of fields) {
+      const keys = input[field];
+      if (keys === undefined) continue;
+      requireStringArrayElements(keys, field, "updateResource");
+      if (keys.length > 256 || new Set(keys).size !== keys.length) {
+        throw clientValidationError(`${field}: must contain at most 256 unique keys`);
+      }
+      for (const key of keys) {
+        let canonical = false;
+        try {
+          canonical = key.length === 44 && atob(key).length === 32 && btoa(atob(key)) === key;
+        } catch {
+          /* Invalid base64 is rejected below. */
+        }
+        if (!canonical) {
+          throw clientValidationError(`${field}: keys must be canonical padded base64 of 32 bytes`);
+        }
+      }
+      if (input.custom_domain !== undefined) {
+        throw clientValidationError(`${field}: update separately from custom_domain`);
+      }
+    }
+    const added = new Set(input.allowed_device_keys_add as string[] | undefined);
+    if ((input.allowed_device_keys_remove as string[] | undefined)?.some((key) => added.has(key))) {
+      throw clientValidationError("allowed device key additions and removals must not overlap");
     }
   });
   const resourceType = input.type;
