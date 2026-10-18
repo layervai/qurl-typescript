@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.1.1](https://github.com/layervai/qurl-typescript/compare/qurl-v3.1.0...qurl-v3.1.1) (2026-10-18)
+
+
+### Bug Fixes
+
+* require the SDK major used by the AWS adapters ([#294](https://github.com/layervai/qurl-typescript/issues/294)) ([b6eb23f](https://github.com/layervai/qurl-typescript/commit/b6eb23f83677d5ecc20f4eecfa700cf7ea838fc3))
+
 ## [3.1.0](https://github.com/layervai/qurl-typescript/compare/qurl-v3.0.0...qurl-v3.1.0) (2026-10-17)
 
 
