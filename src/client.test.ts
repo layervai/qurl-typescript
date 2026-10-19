@@ -11659,3 +11659,126 @@ it.each([true, false])(
     expect(JSON.parse(String(fetch.mock.calls[0]![1]?.body)).consumer_access.version).toBe(1);
   },
 );
+
+describe("private resource create and device-key delta contracts", () => {
+  const keyA = btoa(String.fromCharCode(...new Uint8Array(32).fill(1)));
+  const keyB = btoa(String.fromCharCode(...new Uint8Array(32).fill(2)));
+
+  it.each([undefined, true, false])("preserves one-call privacy %s", async (privacy) => {
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+    const client = createClient(fetch);
+    const input: CreateInput = { target_url: "https://example.com", private: privacy };
+    await client.create(input);
+    expect(JSON.parse(vi.mocked(fetch).mock.calls[0][1]?.body as string)).toEqual(
+      privacy === undefined ? { target_url: input.target_url } : input,
+    );
+  });
+
+  it("preserves explicit public privacy in batch creation", async () => {
+    const fetch = mockFetch({
+      status: 207,
+      body: {
+        data: {
+          succeeded: 0,
+          failed: 1,
+          results: [
+            { index: 0, success: false, error: { code: "invalid_input", message: "test" } },
+          ],
+        },
+      },
+    });
+    await createClient(fetch).batchCreate({
+      items: [{ target_url: "https://example.com", private: false }],
+    });
+    expect(JSON.parse(vi.mocked(fetch).mock.calls[0][1]?.body as string).items[0].private).toBe(
+      false,
+    );
+  });
+
+  it("keeps privacy out of qURL creation for an existing resource", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+    await expect(
+      createClient(fetch).createQurlForResource(RESOURCE_CRID, { private: false } as never),
+    ).rejects.toBeInstanceOf(ValidationError);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("accepts the 256-key delta boundary", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const keys = Array.from({ length: 256 }, (_, n) => {
+      const bytes = new Uint8Array(32).fill(1);
+      bytes[31] = n;
+      return btoa(String.fromCharCode(...bytes));
+    });
+    await createClient(fetch).updateResource(RESOURCE_CRID, { allowed_device_keys_add: keys });
+    expect(
+      JSON.parse(vi.mocked(fetch).mock.calls[0][1]?.body as string).allowed_device_keys_add,
+    ).toEqual(keys);
+  });
+
+  it("sends additions and removals together without changing metadata", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const changes = { allowed_device_keys_add: [keyA], allowed_device_keys_remove: [keyB] };
+    await createClient(fetch).updateResource(RESOURCE_CRID, changes);
+    const call = vi.mocked(fetch).mock.calls[0];
+    expect(call[1]?.method).toBe("PATCH");
+    expect(JSON.parse(call[1]?.body as string)).toEqual(changes);
+  });
+
+  it("allows empty delta lists as no-op fields", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    await createClient(fetch).updateResource(RESOURCE_CRID, { allowed_device_keys_add: [] });
+    expect(JSON.parse(vi.mocked(fetch).mock.calls[0][1]?.body as string)).toEqual({
+      allowed_device_keys_add: [],
+    });
+  });
+
+  it.each([
+    { allowed_device_keys_add: "not-an-array" },
+    { allowed_device_keys_remove: [42] },
+    { allowed_device_keys_add: [keyA, keyA] },
+    {
+      allowed_device_keys_add: Array.from({ length: 257 }, (_, n) => {
+        const bytes = new Uint8Array(32).fill(1);
+        bytes[30] = n >> 8;
+        bytes[31] = n & 255;
+        return btoa(String.fromCharCode(...bytes));
+      }),
+    },
+    { allowed_device_keys_add: [keyA.replace(/=$/, "")] },
+    { allowed_device_keys_remove: ["A".repeat(42) + "B="] },
+    { allowed_device_keys_add: [keyA], allowed_device_keys_remove: [keyA] },
+    { allowed_device_keys_remove: [keyA], custom_domain: "" },
+    {
+      allowed_device_keys_add: [keyA],
+      consumer_access: { mode: "keys", version: 1 },
+      expected_consumer_access_version: 0,
+    },
+  ])("rejects invalid device-key changes before HTTP: %j", async (input) => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    await expect(
+      createClient(fetch).updateResource(RESOURCE_CRID, input as never),
+    ).rejects.toBeInstanceOf(ValidationError);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each(["false", null, 0])("rejects invalid one-call privacy %s", async (privacy) => {
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+    await expect(
+      createClient(fetch).create({ target_url: "https://example.com", private: privacy } as never),
+    ).rejects.toBeInstanceOf(ValidationError);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("preserves the service privacy_mismatch code", async () => {
+    const fetch = mockFetch({
+      status: 400,
+      body: {
+        error: { code: "privacy_mismatch", detail: "Existing resource has different privacy" },
+      },
+    });
+    await expect(
+      createClient(fetch).create({ target_url: "https://example.com", private: true }),
+    ).rejects.toMatchObject({ status: 400, code: "privacy_mismatch" });
+  });
+});

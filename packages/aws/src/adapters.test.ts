@@ -1,6 +1,7 @@
 import * as sdk from "@layervai/qurl/node";
 import { expect, it, vi } from "vitest";
 import { generateKeyPairSync } from "node:crypto";
+import { readFileSync } from "node:fs";
 import type { SSMClient } from "@aws-sdk/client-ssm";
 import type { SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import type { KMSClient } from "@aws-sdk/client-kms";
@@ -160,4 +161,10 @@ it("refuses oversized Secrets Manager state before a write and never creates an 
   }
   await expect(store.save(state)).rejects.toThrow("SECRET_MUST_EXIST");
   expect(send).toHaveBeenCalledTimes(1);
+});
+
+it("declares the peer SDK major that the adapters build and test against", () => {
+  const root = JSON.parse(readFileSync(new URL("../../../package.json", import.meta.url), "utf8"));
+  const adapter = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  expect(adapter.peerDependencies["@layervai/qurl"]).toBe(`^${root.version.split(".")[0]}.0.0`);
 });
