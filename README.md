@@ -777,6 +777,29 @@ for await (const qurl of client.listAll({ status: 'active' })) {
 }
 ```
 
+### Restarting an API-key inventory after cutover
+
+A Control identity cutover can invalidate a cell-signed API-key cursor. The
+SDK reports this as `QURLError` with `status === 400` and
+`code === "invalid_cursor"`. Do not resend that cursor or treat a partial
+inventory as complete.
+
+`listAllApiKeys()` propagates the error after any earlier keys have been yielded.
+It does not rewind automatically: that would deliver those keys twice. An
+application collecting an inventory before displaying it can recover once:
+
+1. Discard all keys collected by the failed iteration.
+2. Create a new `client.listAllApiKeys()` iterator with the same filters and
+   page size. The new iterator starts at the first page without a cursor.
+3. Publish only the completed replacement inventory. If the replacement also
+   fails, report that failure instead of restarting again.
+
+Keep the application's inventory size and request limits in force across both
+attempts. Do not use this pattern to repeat side effects already performed for
+yielded keys. Other errors retain their existing handling. A caller using
+`listApiKeys()` directly must also discard its partial inventory and omit the
+old `cursor` on the replacement first-page request.
+
 ## Debug Logging
 
 Enable debug output to see all HTTP requests and retries:
