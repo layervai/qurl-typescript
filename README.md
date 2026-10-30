@@ -779,8 +779,8 @@ for await (const qurl of client.listAll({ status: 'active' })) {
 
 ### Restarting an API-key inventory after cutover
 
-A Control identity cutover can invalidate a cell-signed API-key cursor. The
-SDK reports this as `QURLError` with `status === 400` and
+An API-key inventory cursor can become invalid after a server-side identity
+migration. The SDK reports this as `QURLError` with `status === 400` and
 `code === "invalid_cursor"`. Do not resend that cursor or treat a partial
 inventory as complete.
 
