@@ -44,6 +44,8 @@ import type {
   CreateAccessCodeOutput,
   CreateApiKeyInput,
   CreateApiKeyOutput,
+  CreateExternalIdentityBindingInput,
+  CreateExternalIdentityBindingOutput,
   CreateBillingCheckoutInput,
   CreateDelegatedQurlBatchInput,
   CreateDelegatedQurlBatchOptions,
@@ -5288,6 +5290,110 @@ export class QURLClient {
       (pageInput) => this.listWebhookDeliveries(id, pageInput),
       (page) => page.deliveries,
     );
+  }
+
+  /**
+   * Bind an external identity using the provider's trusted OAuth JWT as the
+   * client's bearer credential. Persist the request key before calling, then
+   * securely store the returned one-time plaintext key without logging it.
+   * Retry a lost response within 24 hours with the same key and body.
+   */
+  async createExternalIdentityBinding(
+    input: CreateExternalIdentityBindingInput,
+    options: RequestOptions,
+  ): Promise<CreateExternalIdentityBindingOutput> {
+    const method = "createExternalIdentityBinding";
+    requireObjectInput(input, method);
+    requireNoUnknownFields(
+      input,
+      ["provider", "external_id", "display_name", "rotate_existing"],
+      method,
+    );
+    if (!["slack", "discord", "teams"].includes(input.provider)) {
+      throw clientValidationError(`${method}: provider must be slack, discord, or teams`);
+    }
+    if (
+      typeof input.external_id !== "string" ||
+      input.external_id.length > 256 ||
+      !/^[\x21-\x22\x24-\x7e]+$/.test(input.external_id)
+    ) {
+      throw clientValidationError(
+        `${method}: external_id must contain 1-256 visible ASCII characters without #`,
+      );
+    }
+    if (
+      input.display_name !== undefined &&
+      (typeof input.display_name !== "string" ||
+        [...input.display_name].length > 100 ||
+        /[\uD800-\uDFFF]/u.test(input.display_name))
+    ) {
+      throw clientValidationError(
+        `${method}: display_name must contain at most 100 Unicode characters`,
+      );
+    }
+    requireBooleanIfPresent(input.rotate_existing, `${method}.rotate_existing`);
+    validateRequestOptions(options);
+    if (!options?.idempotencyKey || options.idempotencyKey.length < 32) {
+      throw clientValidationError(
+        `${method}: a persisted idempotencyKey of 32-256 characters is required`,
+      );
+    }
+    const body: CreateExternalIdentityBindingInput = {
+      provider: input.provider,
+      external_id: input.external_id,
+      ...(input.display_name !== undefined ? { display_name: input.display_name } : {}),
+      ...(input.rotate_existing !== undefined ? { rotate_existing: input.rotate_existing } : {}),
+    };
+    const raw = await this.rawRequest<never>("POST", "/v1/external-identity-bindings", body, {
+      requestOptions: options,
+      generateIdempotencyKey: false,
+    });
+    // This operation returns a flat document, unlike the data/meta endpoints.
+    const result = raw as unknown as CreateExternalIdentityBindingOutput;
+    const expectedScopes =
+      body.provider === "discord"
+        ? ["qurl:read", "qurl:write"]
+        : ["qurl:read", "qurl:write", "qurl:agent"];
+    if (
+      raw.__http_status !== 201 ||
+      typeof result.binding_id !== "string" ||
+      !/^eib_[A-Za-z0-9]{11}$/.test(result.binding_id) ||
+      result.provider !== body.provider ||
+      result.external_id !== body.external_id ||
+      !result.api_key ||
+      typeof result.api_key !== "object" ||
+      Array.isArray(result.api_key) ||
+      typeof result.api_key.key_id !== "string" ||
+      !/^key_[A-Za-z0-9]{12}$/.test(result.api_key.key_id) ||
+      typeof result.api_key.plaintext !== "string" ||
+      !/^lv_(?:live|test)_[A-Za-z0-9_-]{43}$/.test(result.api_key.plaintext) ||
+      result.api_key.key_prefix !== result.api_key.plaintext.slice(0, 12) ||
+      !Array.isArray(result.scopes) ||
+      result.scopes.length !== expectedScopes.length ||
+      !expectedScopes.every((scope) => result.scopes.includes(scope as ApiKeyRequestScope)) ||
+      !isUtcTimestamp(result.created_at) ||
+      (result.display_name !== undefined &&
+        (typeof result.display_name !== "string" ||
+          [...result.display_name].length > 100 ||
+          /[\uD800-\uDFFF]/u.test(result.display_name)))
+    ) {
+      throw unexpectedResponseError(
+        `${method}: invalid binding response; reconcile with the same request key before retrying`,
+      );
+    }
+    return {
+      binding_id: result.binding_id,
+      provider: result.provider,
+      external_id: result.external_id,
+      ...(result.display_name !== undefined ? { display_name: result.display_name } : {}),
+      api_key: {
+        key_id: result.api_key.key_id,
+        key_prefix: result.api_key.key_prefix,
+        plaintext: result.api_key.plaintext,
+      },
+      scopes: result.scopes,
+      created_at: result.created_at,
+    };
   }
 
   /** Create a new API key. */

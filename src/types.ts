@@ -1250,3 +1250,30 @@ export interface ConsumerInvitationListOutput extends PaginatedOutput {
 export interface ConsumerGrantListOutput extends PaginatedOutput {
   grants: ConsumerGrant[];
 }
+
+/** Provider authenticated by its configured confidential OAuth client. */
+export type ExternalIdentityProvider = "slack" | "discord" | "teams";
+
+export interface CreateExternalIdentityBindingInput {
+  provider: ExternalIdentityProvider;
+  external_id: string;
+  display_name?: string;
+  /** Explicit reauthorization only; revokes the previous binding key. */
+  rotate_existing?: boolean;
+}
+
+/** Persist api_key.plaintext securely immediately; never log this result. */
+export interface CreateExternalIdentityBindingOutput {
+  binding_id: string;
+  provider: ExternalIdentityProvider;
+  external_id: string;
+  display_name?: string;
+  api_key: {
+    key_id: string;
+    key_prefix: string;
+    /** One-time secret, replayable only with the same request within 24 hours. */
+    plaintext: string;
+  };
+  scopes: ApiKeyRequestScope[];
+  created_at: string;
+}

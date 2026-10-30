@@ -81,3 +81,16 @@ export function createClient(fetchFn: typeof globalThis.fetch): QURLClient {
     maxRetries: 0,
   });
 }
+
+export const EXTERNAL_BINDING_RESPONSE = {
+  binding_id: "eib_Example0001",
+  provider: "teams" as const,
+  external_id: "synthetic-tenant",
+  api_key: {
+    key_id: "key_Example00001",
+    key_prefix: "lv_live_aaaa",
+    plaintext: `lv_live_${"a".repeat(43)}`,
+  },
+  scopes: ["qurl:read", "qurl:write", "qurl:agent"],
+  created_at: "2026-10-30T00:00:00Z",
+};
