@@ -1,5 +1,38 @@
 # Changelog
 
+## [3.1.1](https://github.com/layervai/qurl-typescript/compare/qurl-v3.1.0...qurl-v3.1.1) (2026-10-18)
+
+
+### Bug Fixes
+
+* require the SDK major used by the AWS adapters ([#294](https://github.com/layervai/qurl-typescript/issues/294)) ([b6eb23f](https://github.com/layervai/qurl-typescript/commit/b6eb23f83677d5ecc20f4eecfa700cf7ea838fc3))
+
+## [3.1.0](https://github.com/layervai/qurl-typescript/compare/qurl-v3.0.0...qurl-v3.1.0) (2026-10-17)
+
+
+### Features
+
+* expose email-backed consumer grants ([#291](https://github.com/layervai/qurl-typescript/issues/291)) ([612cd67](https://github.com/layervai/qurl-typescript/commit/612cd674318ecb9cafdbcda597f321d7f258d5d8))
+* support private qURL creation and device-key deltas ([#293](https://github.com/layervai/qurl-typescript/issues/293)) ([3dc7600](https://github.com/layervai/qurl-typescript/commit/3dc7600c8309dcd6e283a63de8c0acfa8b846b7d))
+
+## [3.0.0](https://github.com/layervai/qurl-typescript/compare/qurl-v2.0.0...qurl-v3.0.0) (2026-10-11)
+
+
+### ⚠ BREAKING CHANGES
+
+* Quota.rate_limits no longer declares max_tokens_per_qurl. Remove reads of that retired per-resource cap; it no longer limits qURL minting. This is a public TypeScript type change even though runtime response parsing is unchanged. A later package release must carry the breaking-change version and migration note; this cleanup does not publish it.
+
+### Features
+
+* add private consumer access policies and owner actions ([#286](https://github.com/layervai/qurl-typescript/issues/286)) ([ff0ce3e](https://github.com/layervai/qurl-typescript/commit/ff0ce3efbcffe45fd3c8a9752a68afdc5ec98ae7))
+
+
+### Bug Fixes
+
+* complete paged resource session operations ([#280](https://github.com/layervai/qurl-typescript/issues/280)) ([c77bafa](https://github.com/layervai/qurl-typescript/commit/c77bafa2d1ffe060f88c7e447c7e06cbc3c7b613))
+* remove unused quota cap declaration ([#278](https://github.com/layervai/qurl-typescript/issues/278)) ([1bdab3c](https://github.com/layervai/qurl-typescript/commit/1bdab3c2b53acdf71625300f6a1604d8a33d6db5))
+* stop forcing SDK releases to an existing version ([#290](https://github.com/layervai/qurl-typescript/issues/290)) ([a6c2c8a](https://github.com/layervai/qurl-typescript/commit/a6c2c8a43b8bc7a91a5a3bb225172d3341346fd4))
+
 ## [2.0.0](https://github.com/layervai/qurl-typescript/compare/qurl-v0.7.0...qurl-v2.0.0) (2026-09-10)
 
 ### SDK 2.x Go parity

@@ -9270,6 +9270,57 @@ describe("QURLClient", () => {
     expect(fetch.mock.calls[1][0] as string).toContain("cursor=cur_filt");
   });
 
+  it("API-key inventory callers can discard a cutover error and recreate the iterator", async () => {
+    const fetch = mockFetches([
+      {
+        status: 200,
+        body: {
+          data: [{ key_id: "old-key" }],
+          meta: { has_more: true, next_cursor: "cell-cursor" },
+        },
+      },
+      {
+        status: 400,
+        body: {
+          error: {
+            status: 400,
+            code: "invalid_cursor",
+            title: "Bad Request",
+            detail: "Invalid cursor",
+          },
+        },
+      },
+      { status: 200, body: { data: [{ key_id: "fresh-key" }], meta: { has_more: false } } },
+    ]);
+    const client = createClient(fetch);
+    const keys: string[] = [];
+    const old = client.listAllApiKeys({ limit: 10 });
+    const first = await old.next();
+    expect(first.done).toBe(false);
+    if (!first.done) keys.push(first.value.key_id);
+    let failure: unknown;
+    try {
+      await old.next();
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(QURLError);
+    expect(failure).toMatchObject({ status: 400, code: "invalid_cursor" });
+    expect(keys).toEqual(["old-key"]);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect((await old.next()).done).toBe(true);
+
+    // The application discards partial data before publishing a replacement inventory.
+    keys.length = 0;
+    for await (const key of client.listAllApiKeys({ limit: 10 })) keys.push(key.key_id);
+    expect(keys).toEqual(["fresh-key"]);
+    expect(fetch).toHaveBeenCalledTimes(3);
+    const urls = vi.mocked(fetch).mock.calls.map(([url]) => new URL(String(url)));
+    expect(urls.map((url) => url.pathname)).toEqual(Array(3).fill("/v1/api-keys"));
+    expect(urls.map((url) => url.searchParams.get("limit"))).toEqual(["10", "10", "10"]);
+    expect(urls.map((url) => url.searchParams.get("cursor"))).toEqual([null, "cell-cursor", null]);
+  });
+
   it("listAll propagates errors mid-pagination after yielding prior pages", async () => {
     // If a page fetch throws mid-iteration (e.g. server hits a 500
     // after the first page succeeded), the generator must propagate
@@ -11633,5 +11684,152 @@ describe("session management pagination", () => {
         createClient(terminateFetch).terminateAllResourceSessions(RESOURCE_CRID),
       ).rejects.toMatchObject({ code: ERROR_CODE_UNEXPECTED_RESPONSE });
     }
+  });
+});
+
+it.each([true, false])(
+  "keeps a later Connector policy only on an existing resource (%s)",
+  async (foundExisting) => {
+    const fetch = mockFetch({
+      status: 201,
+      body: {
+        data: connectorResourceData({
+          private: true,
+          consumer_access: { mode: "review", version: 3 },
+        }),
+        meta: { found_existing: foundExisting },
+      },
+    });
+    const result = createClient(fetch).ensureConnectorResource("prod-dashboard", undefined, {
+      mode: "review",
+      version: 1,
+    });
+    if (foundExisting) expect((await result).foundExisting).toBe(true);
+    else await expect(result).rejects.toThrow("private policy was not confirmed");
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(String(fetch.mock.calls[0]![1]?.body)).consumer_access.version).toBe(1);
+  },
+);
+
+describe("private resource create and device-key delta contracts", () => {
+  const keyA = btoa(String.fromCharCode(...new Uint8Array(32).fill(1)));
+  const keyB = btoa(String.fromCharCode(...new Uint8Array(32).fill(2)));
+
+  it.each([undefined, true, false])("preserves one-call privacy %s", async (privacy) => {
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+    const client = createClient(fetch);
+    const input: CreateInput = { target_url: "https://example.com", private: privacy };
+    await client.create(input);
+    expect(JSON.parse(vi.mocked(fetch).mock.calls[0][1]?.body as string)).toEqual(
+      privacy === undefined ? { target_url: input.target_url } : input,
+    );
+  });
+
+  it("preserves explicit public privacy in batch creation", async () => {
+    const fetch = mockFetch({
+      status: 207,
+      body: {
+        data: {
+          succeeded: 0,
+          failed: 1,
+          results: [
+            { index: 0, success: false, error: { code: "invalid_input", message: "test" } },
+          ],
+        },
+      },
+    });
+    await createClient(fetch).batchCreate({
+      items: [{ target_url: "https://example.com", private: false }],
+    });
+    expect(JSON.parse(vi.mocked(fetch).mock.calls[0][1]?.body as string).items[0].private).toBe(
+      false,
+    );
+  });
+
+  it("keeps privacy out of qURL creation for an existing resource", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+    await expect(
+      createClient(fetch).createQurlForResource(RESOURCE_CRID, { private: false } as never),
+    ).rejects.toBeInstanceOf(ValidationError);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("accepts the 256-key delta boundary", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const keys = Array.from({ length: 256 }, (_, n) => {
+      const bytes = new Uint8Array(32).fill(1);
+      bytes[31] = n;
+      return btoa(String.fromCharCode(...bytes));
+    });
+    await createClient(fetch).updateResource(RESOURCE_CRID, { allowed_device_keys_add: keys });
+    expect(
+      JSON.parse(vi.mocked(fetch).mock.calls[0][1]?.body as string).allowed_device_keys_add,
+    ).toEqual(keys);
+  });
+
+  it("sends additions and removals together without changing metadata", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    const changes = { allowed_device_keys_add: [keyA], allowed_device_keys_remove: [keyB] };
+    await createClient(fetch).updateResource(RESOURCE_CRID, changes);
+    const call = vi.mocked(fetch).mock.calls[0];
+    expect(call[1]?.method).toBe("PATCH");
+    expect(JSON.parse(call[1]?.body as string)).toEqual(changes);
+  });
+
+  it("allows empty delta lists as no-op fields", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    await createClient(fetch).updateResource(RESOURCE_CRID, { allowed_device_keys_add: [] });
+    expect(JSON.parse(vi.mocked(fetch).mock.calls[0][1]?.body as string)).toEqual({
+      allowed_device_keys_add: [],
+    });
+  });
+
+  it.each([
+    { allowed_device_keys_add: "not-an-array" },
+    { allowed_device_keys_remove: [42] },
+    { allowed_device_keys_add: [keyA, keyA] },
+    {
+      allowed_device_keys_add: Array.from({ length: 257 }, (_, n) => {
+        const bytes = new Uint8Array(32).fill(1);
+        bytes[30] = n >> 8;
+        bytes[31] = n & 255;
+        return btoa(String.fromCharCode(...bytes));
+      }),
+    },
+    { allowed_device_keys_add: [keyA.replace(/=$/, "")] },
+    { allowed_device_keys_remove: ["A".repeat(42) + "B="] },
+    { allowed_device_keys_add: [keyA], allowed_device_keys_remove: [keyA] },
+    { allowed_device_keys_remove: [keyA], custom_domain: "" },
+    {
+      allowed_device_keys_add: [keyA],
+      consumer_access: { mode: "keys", version: 1 },
+      expected_consumer_access_version: 0,
+    },
+  ])("rejects invalid device-key changes before HTTP: %j", async (input) => {
+    const fetch = mockFetch({ status: 200, body: { data: {} } });
+    await expect(
+      createClient(fetch).updateResource(RESOURCE_CRID, input as never),
+    ).rejects.toBeInstanceOf(ValidationError);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each(["false", null, 0])("rejects invalid one-call privacy %s", async (privacy) => {
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+    await expect(
+      createClient(fetch).create({ target_url: "https://example.com", private: privacy } as never),
+    ).rejects.toBeInstanceOf(ValidationError);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("preserves the service privacy_mismatch code", async () => {
+    const fetch = mockFetch({
+      status: 400,
+      body: {
+        error: { code: "privacy_mismatch", detail: "Existing resource has different privacy" },
+      },
+    });
+    await expect(
+      createClient(fetch).create({ target_url: "https://example.com", private: true }),
+    ).rejects.toMatchObject({ status: 400, code: "privacy_mismatch" });
   });
 });

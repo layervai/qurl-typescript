@@ -39,9 +39,16 @@ export {
 } from "./errors.js";
 export { VERSION } from "./version.js";
 export type {
+  ConsumerAccessPolicy,
   AccessCode,
   AccessCodeListOutput,
   AccessGrant,
+  ConsumerInvitation,
+  ConsumerGrant,
+  ConsumerGrantApprovalInput,
+  ConsumerListInput,
+  ConsumerInvitationListOutput,
+  ConsumerGrantListOutput,
   AccessPolicy,
   AccessToken,
   AIAgentCategory,

@@ -19,6 +19,13 @@ import {
 import { stripTrailingSlashes } from "./internal.js";
 import { ShareLink } from "./share.js";
 import type {
+  ConsumerAccessPolicy,
+  ConsumerInvitation,
+  ConsumerGrant,
+  ConsumerGrantApprovalInput,
+  ConsumerListInput,
+  ConsumerInvitationListOutput,
+  ConsumerGrantListOutput,
   AccessPolicy,
   AccessToken,
   AccessCode,
@@ -291,6 +298,7 @@ assertExhaustive<
 >(true);
 
 const CREATE_FIELD_KEYS = [
+  "private",
   "type",
   "target_url",
   "expires_in",
@@ -360,6 +368,8 @@ assertExhaustive<
 >(true);
 
 const CREATE_RESOURCE_FIELD_KEYS = [
+  "private",
+  "consumer_access",
   "type",
   "target_url",
   "description",
@@ -377,6 +387,10 @@ assertExhaustive<
 >(true);
 
 const UPDATE_RESOURCE_FIELD_KEYS = [
+  "allowed_device_keys_add",
+  "allowed_device_keys_remove",
+  "consumer_access",
+  "expected_consumer_access_version",
   "description",
   "tags",
   "custom_domain",
@@ -426,6 +440,8 @@ assertExhaustive<
  * fields the REST-shaped methods send.
  */
 const PROTECT_URL_OPTION_KEYS = [
+  "private",
+  "consumerAccess",
   "description",
   "tags",
   "customDomain",
@@ -2288,6 +2304,7 @@ function validateCreateInput(input: CreateInput): void {
   collect(() => requireNonEmptyIfPresent(input.label, "label"));
   collect(() => requireMaxLength(input.custom_domain, "custom_domain", MAX_CUSTOM_DOMAIN));
   collect(() => requireNonEmptyIfPresent(input.custom_domain, "custom_domain"));
+  collect(() => requireBooleanIfPresent(input.private, "private"));
   collect(() => requireBooleanIfPresent(input.one_time_use, "one_time_use"));
   collect(() => requireMaxSessionsInRange(input.max_sessions));
   collect(() => requireNonEmptyIfPresent(input.expires_in, "expires_in"));
@@ -2433,6 +2450,16 @@ function normalizePatchFields(
   return normalized;
 }
 
+function requireConsumerDecision(id: string, version: number, allowNew = false): void {
+  if (
+    typeof id !== "string" ||
+    (!/^[a-f0-9]{64}$/.test(id) && !(allowNew && id === "new")) ||
+    !Number.isSafeInteger(version) ||
+    version < (allowNew ? 0 : 1)
+  )
+    throw clientValidationError("consumer decision: invalid id or expected version");
+}
+
 function validateResourceWriteFields(
   input: Record<string, unknown>,
   options: {
@@ -2455,6 +2482,92 @@ function validateResourceWriteFields(
       throw err;
     }
   };
+  collect(() => {
+    if (input.private !== undefined && typeof input.private !== "boolean") {
+      throw clientValidationError("private: must be a boolean");
+    }
+    if (input.consumer_access !== undefined) {
+      const policy = input.consumer_access;
+      requireObjectInput(policy, "consumer_access");
+      const p = policy as Record<string, unknown>;
+      requireNoUnknownFields(p, ["mode", "version", "contract_id"], "consumer_access");
+      if (
+        !["keys", "invite_only", "email_capture", "review", "contract"].includes(
+          p.mode as string,
+        ) ||
+        !Number.isSafeInteger(p.version) ||
+        (p.version as number) < 1
+      ) {
+        throw clientValidationError("consumer_access: invalid mode or version");
+      }
+      if (p.mode === "contract") {
+        if (
+          typeof p.contract_id !== "string" ||
+          !p.contract_id.trim() ||
+          new TextEncoder().encode(p.contract_id).length > 128
+        ) {
+          throw clientValidationError(
+            "consumer_access: contract mode requires a bounded contract_id",
+          );
+        }
+      } else if (p.contract_id !== undefined) {
+        throw clientValidationError("consumer_access: contract_id requires contract mode");
+      }
+      if (input.private === false)
+        throw clientValidationError("consumer_access: requires a private resource");
+      if (options.requireUrlTarget) {
+        if (p.version !== 1 || input.private !== true)
+          throw clientValidationError(
+            "consumer_access: creation requires private true and version one",
+          );
+      } else if (options.allowAliasClear) {
+        const expected = input.expected_consumer_access_version;
+        if (
+          !Number.isSafeInteger(expected) ||
+          (expected as number) < 0 ||
+          p.version !== (expected as number) + 1 ||
+          Object.keys(input).some(
+            (key) => key !== "consumer_access" && key !== "expected_consumer_access_version",
+          )
+        ) {
+          throw clientValidationError(
+            "consumer_access: update requires its expected version and no metadata changes",
+          );
+        }
+      }
+    } else if (input.expected_consumer_access_version !== undefined) {
+      throw clientValidationError("expected_consumer_access_version: requires consumer_access");
+    }
+  });
+  collect(() => {
+    const fields = ["allowed_device_keys_add", "allowed_device_keys_remove"] as const;
+    for (const field of fields) {
+      const keys = input[field];
+      if (keys === undefined) continue;
+      requireStringArrayElements(keys, field, "updateResource");
+      if (keys.length > 256 || new Set(keys).size !== keys.length) {
+        throw clientValidationError(`${field}: must contain at most 256 unique keys`);
+      }
+      for (const key of keys) {
+        let canonical = false;
+        try {
+          canonical = key.length === 44 && atob(key).length === 32 && btoa(atob(key)) === key;
+        } catch {
+          /* Invalid base64 is rejected below. */
+        }
+        if (!canonical) {
+          throw clientValidationError(`${field}: keys must be canonical padded base64 of 32 bytes`);
+        }
+      }
+      if (input.custom_domain !== undefined) {
+        throw clientValidationError(`${field}: update separately from custom_domain`);
+      }
+    }
+    const added = new Set(input.allowed_device_keys_add as string[] | undefined);
+    if ((input.allowed_device_keys_remove as string[] | undefined)?.some((key) => added.has(key))) {
+      throw clientValidationError("allowed device key additions and removals must not overlap");
+    }
+  });
   const resourceType = input.type;
   if (resourceType !== undefined && typeof resourceType !== "string") {
     errors.push(
@@ -2914,6 +3027,7 @@ function buildCreatePortalBody(opts: CreatePortalOptions, method: string): Recor
 interface ApiResponse<T> {
   data: T;
   meta?: {
+    found_existing?: unknown;
     request_id?: string;
     page_size?: number;
     has_more?: boolean;
@@ -3306,13 +3420,34 @@ export class QURLClient {
     // SDK-wide normalizePatchFields convention.
     const normalized = normalizePatchFields(opts, PROTECT_URL_OPTION_KEYS) as ProtectUrlOptions;
     const body: Record<string, unknown> = { target_url: targetUrl };
+    if (normalized.private !== undefined) body.private = normalized.private;
+    if (normalized.consumerAccess !== undefined) {
+      body.private = normalized.private ?? true;
+      body.consumer_access = normalized.consumerAccess;
+    }
     if (normalized.description !== undefined) body.description = normalized.description;
     if (normalized.tags !== undefined) body.tags = normalized.tags;
     if (normalized.customDomain !== undefined) body.custom_domain = normalized.customDomain;
     if (normalized.alias !== undefined) body.alias = normalized.alias;
-    validateResourceWriteFields(body);
-    const resource = await this.request<Resource>("POST", "/v1/resources", body, requestOptions);
+    validateResourceWriteFields(body, { requireUrlTarget: true });
+    const response = await this.rawRequest<Resource>("POST", "/v1/resources", body, {
+      requestOptions,
+    });
+    if (response.__http_status === 204)
+      throw unexpectedResponseError("protectUrl: expected a resource response body");
+    const resource = response.data;
     await verifyResourceIdentity(resource, "protectUrl");
+    if (
+      normalized.consumerAccess &&
+      (resource.private !== true ||
+        !sameConsumerPolicy(
+          resource.consumer_access,
+          normalized.consumerAccess,
+          response.meta?.found_existing === true,
+        ))
+    ) {
+      throw unexpectedResponseError("protectUrl: private policy was not confirmed");
+    }
     return new ProtectedResource(
       this,
       resource.crid as string,
@@ -3347,8 +3482,14 @@ export class QURLClient {
   async ensureConnectorResource(
     slug: string,
     requestOptions?: RequestOptions,
+    consumerAccess?: ConsumerAccessPolicy,
   ): Promise<EnsureConnectorResourceResult> {
     requireConnectorSlug(slug, "ensureConnectorResource");
+    if (consumerAccess !== undefined) {
+      validateResourceWriteFields({ consumer_access: consumerAccess, private: true });
+      if (consumerAccess.version !== 1)
+        throw clientValidationError("consumer_access: creation requires version one");
+    }
     // Response validation imports the producer's P-256 resource key. Preflight
     // before POST so a missing runtime capability cannot orphan a committed row.
     requireConnectorSubtleCrypto("ensureConnectorResource");
@@ -3366,6 +3507,7 @@ export class QURLClient {
           type: "tunnel",
           slug,
           find_or_create: true,
+          ...(consumerAccess ? { private: true, consumer_access: consumerAccess } : {}),
         },
         { requestOptions, retry: false, generateIdempotencyKey: false },
       );
@@ -3375,6 +3517,17 @@ export class QURLClient {
         throw unexpectedResponseError(
           `ensureConnectorResource: expected HTTP 201, got ${response.__http_status ?? "unknown"}`,
         );
+      }
+      if (
+        consumerAccess &&
+        (response.data.private !== true ||
+          !sameConsumerPolicy(
+            response.data.consumer_access,
+            consumerAccess,
+            response.meta?.found_existing === true,
+          ))
+      ) {
+        throw unexpectedResponseError("ensureConnectorResource: private policy was not confirmed");
       }
       resource = await parseConnectorResource(this, response.data, "ensureConnectorResource", {
         slug,
@@ -4346,6 +4499,159 @@ export class QURLClient {
       validationInput,
       options,
     );
+  }
+
+  /** Send a publisher-only invitation. Mail delivery does not prove enrollment. */
+  async inviteConsumer(id: string, email: string): Promise<ConsumerInvitation> {
+    requireResourceCrid(id, "inviteConsumer");
+    requireNonEmptyIfPresent(email, "email");
+    if (typeof email !== "string" || email.length > 320)
+      throw clientValidationError("email: must be a bounded string");
+    return this.request<ConsumerInvitation>(
+      "POST",
+      `/v1/resources/${encodeURIComponent(id)}/invitations`,
+      { email },
+    );
+  }
+
+  async listConsumerInvitations(
+    id: string,
+    input: ConsumerListInput = {},
+  ): Promise<ConsumerInvitationListOutput> {
+    requireResourceCrid(id, "listConsumerInvitations");
+    const { data, meta } = await this.rawRequest<ConsumerInvitation[]>(
+      "GET",
+      appendQuery(
+        `/v1/resources/${encodeURIComponent(id)}/invitations`,
+        input as Record<string, unknown>,
+        ["cursor", "limit"],
+        "listConsumerInvitations",
+      ),
+    );
+    return pageFromMeta({ invitations: data ?? [] }, meta);
+  }
+
+  async listConsumerGrants(
+    id: string,
+    input: ConsumerListInput = {},
+  ): Promise<ConsumerGrantListOutput> {
+    requireResourceCrid(id, "listConsumerGrants");
+    const { data, meta } = await this.rawRequest<ConsumerGrant[]>(
+      "GET",
+      appendQuery(
+        `/v1/resources/${encodeURIComponent(id)}/consumer-grants`,
+        input as Record<string, unknown>,
+        ["cursor", "limit"],
+        "listConsumerGrants",
+      ),
+    );
+    return pageFromMeta({ grants: data ?? [] }, meta);
+  }
+
+  async resendConsumerInvitation(
+    id: string,
+    invitationId: string,
+    expectedVersion: number,
+  ): Promise<ConsumerInvitation> {
+    requireResourceCrid(id, "resendConsumerInvitation");
+    requireConsumerDecision(invitationId, expectedVersion);
+    return this.request<ConsumerInvitation>(
+      "POST",
+      `/v1/resources/${encodeURIComponent(id)}/invitations/${encodeURIComponent(invitationId)}/resend`,
+      { expected_version: expectedVersion },
+    );
+  }
+
+  /** Remove the invitation and its grant. Inspect session_cleanup before reporting stream removal. */
+  async revokeConsumerInvitation(
+    id: string,
+    invitationId: string,
+    expectedVersion: number,
+  ): Promise<ConsumerInvitation> {
+    requireResourceCrid(id, "revokeConsumerInvitation");
+    requireConsumerDecision(invitationId, expectedVersion);
+    return this.request<ConsumerInvitation>(
+      "DELETE",
+      `/v1/resources/${encodeURIComponent(id)}/invitations/${encodeURIComponent(invitationId)}?expected_version=${expectedVersion}`,
+    );
+  }
+
+  /** Review approval, key opt-in with grantId new, or trusted publisher entitlement. */
+  async approveConsumerGrant(
+    id: string,
+    grantId: string,
+    input: ConsumerGrantApprovalInput,
+  ): Promise<ConsumerGrant> {
+    requireResourceCrid(id, "approveConsumerGrant");
+    requireObjectInput(input, "approveConsumerGrant");
+    requireNoUnknownFields(
+      input,
+      [
+        "expected_version",
+        "credential_kind",
+        "credential_id",
+        "credential_public_key_b64",
+        "entitlement_id",
+        "expires_at",
+      ],
+      "approveConsumerGrant",
+    );
+    if (
+      input.credential_kind !== undefined &&
+      !["passkey", "device"].includes(input.credential_kind)
+    ) {
+      throw clientValidationError(
+        "approveConsumerGrant: credential_kind must be passkey or device",
+      );
+    }
+    requireConsumerDecision(grantId, input.expected_version, grantId === "new");
+    return this.request<ConsumerGrant>(
+      "POST",
+      `/v1/resources/${encodeURIComponent(id)}/consumer-grants/${encodeURIComponent(grantId)}/approve`,
+      input,
+    );
+  }
+
+  async denyConsumerGrant(
+    id: string,
+    grantId: string,
+    expectedVersion: number,
+  ): Promise<ConsumerGrant> {
+    requireResourceCrid(id, "denyConsumerGrant");
+    requireConsumerDecision(grantId, expectedVersion);
+    return this.request<ConsumerGrant>(
+      "POST",
+      `/v1/resources/${encodeURIComponent(id)}/consumer-grants/${encodeURIComponent(grantId)}/deny`,
+      { expected_version: expectedVersion },
+    );
+  }
+
+  async revokeConsumerGrant(
+    id: string,
+    grantId: string,
+    expectedVersion: number,
+  ): Promise<ConsumerGrant> {
+    requireResourceCrid(id, "revokeConsumerGrant");
+    requireConsumerDecision(grantId, expectedVersion);
+    return this.request<ConsumerGrant>(
+      "DELETE",
+      `/v1/resources/${encodeURIComponent(id)}/consumer-grants/${encodeURIComponent(grantId)}?expected_version=${expectedVersion}`,
+    );
+  }
+
+  /**
+   * Revoke an API resource identifier retained by a client migrating to CRIDs.
+   * New callers should use deleteResource with the resource CRID.
+   */
+  async deleteResourceByIdentifier(id: string): Promise<void> {
+    if (typeof id !== "string") throw clientValidationError("id: invalid resource identifier");
+    if (/^r_[a-z0-9_-]{11}$/.test(id)) {
+      await this.requestNoContent(`/v1/qurls/${encodeURIComponent(id)}`);
+      return;
+    }
+    const publicKey = /^[A-Za-z0-9_-]{107,214}$/.test(id) && id.length % 4 !== 1;
+    if (!publicKey) requireResourceCrid(id, "deleteResourceByIdentifier");
+    await this.requestNoContent(`/v1/resources/${encodeURIComponent(id)}`);
   }
 
   /** Revoke a resource and all of its qURLs. */
@@ -5832,4 +6138,19 @@ export class ConnectorResource {
   ): Promise<Portal> {
     return this.#client.createPortal(this.crid, opts, requestOptions);
   }
+}
+
+function sameConsumerPolicy(
+  actual: ConsumerAccessPolicy | undefined,
+  expected: ConsumerAccessPolicy,
+  foundExisting: boolean,
+): boolean {
+  return (
+    actual?.mode === expected.mode &&
+    (actual?.version === expected.version ||
+      (foundExisting &&
+        Number.isSafeInteger(actual?.version) &&
+        Number(actual?.version) > expected.version)) &&
+    actual?.contract_id === expected.contract_id
+  );
 }

@@ -138,6 +138,8 @@ export interface QURL {
  * the resource and must be set through {@link UpdateInput} after creation.
  */
 export interface CreateInput {
+  /** Omit to keep an existing resource's privacy; a new URL or Connector resource defaults to private. */
+  private?: boolean;
   type?: ResourceType;
   target_url?: string;
   expires_in?: string;
@@ -272,6 +274,8 @@ export interface MintOutput {
 
 /** Options for `QURLClient.protectUrl`. */
 export interface ProtectUrlOptions {
+  private?: boolean;
+  consumerAccess?: ConsumerAccessPolicy;
   /** Optional resource-level metadata. Max 500 chars. */
   description?: string;
   /** Optional resource-level tags. Max 10 items. */
@@ -574,8 +578,17 @@ export interface DelegatedQurl {
   access_policy?: AccessPolicy;
 }
 
+/** Private resource policy. Contract fulfillment comes from the publisher backend. */
+export interface ConsumerAccessPolicy {
+  mode: "keys" | "invite_only" | "email_capture" | "review" | "contract";
+  version: number;
+  contract_id?: string;
+}
+
 /** Input for creating a resource directly. */
 export interface CreateResourceInput {
+  private?: boolean;
+  consumer_access?: ConsumerAccessPolicy;
   type?: ResourceType;
   target_url?: string;
   description?: string;
@@ -588,6 +601,12 @@ export interface CreateResourceInput {
 
 /** Input for updating resource metadata. */
 export interface UpdateResourceInput {
+  /** Canonical padded-base64 X25519 public keys to add, at most 256. */
+  allowed_device_keys_add?: string[];
+  /** Remove allowed devices; links they already created keep their lifetime. */
+  allowed_device_keys_remove?: string[];
+  consumer_access?: ConsumerAccessPolicy;
+  expected_consumer_access_version?: number;
   description?: string;
   tags?: string[];
   /** Omit to leave unchanged; send `""` to clear. `null` is not a clear signal. */
@@ -599,6 +618,9 @@ export interface UpdateResourceInput {
 
 /** Resource data returned by the `/v1/resources` surface. */
 export interface Resource {
+  private?: boolean;
+  consumer_access?: ConsumerAccessPolicy;
+  consumer_access_version?: number;
   resource_id: string;
   /** Cryptographic Resource ID derived from the resource public key. */
   crid?: string;
@@ -657,7 +679,7 @@ export interface ShareResourceOptions {
 /** Input for minting a qURL against an existing resource. */
 export type CreateQurlForResourceInput = Omit<
   CreateInput,
-  "target_url" | "custom_domain" | "type"
+  "target_url" | "custom_domain" | "type" | "private"
 > & {
   /**
    * Path this resource qURL resolves to (e.g. "/api/detect").
@@ -892,6 +914,7 @@ export type WebhookEventType = OpenString<
   | "qurl.updated"
   | "resource.closed"
   | "qurl.accessed"
+  | "consumer.subscribed"
   | "qurl.access_denied"
   | "qurl.token_exhausted"
   | "quota.warning"
@@ -1180,4 +1203,50 @@ export interface ClientOptions {
   userAgent?: string;
   /** Enable debug logging. Pass `true` for console.debug, or a custom callback. */
   debug?: boolean | ((message: string, data?: Record<string, unknown>) => void);
+}
+
+/** Publisher-only invitation status; no link secret is returned. */
+export interface ConsumerInvitation {
+  id: string;
+  email: string;
+  status: "open" | "enrolled" | "revoked";
+  delivery: "queued" | "accepted" | "failed";
+  version: number;
+  expires_at: string;
+  session_cleanup?: "pending" | "complete";
+}
+
+/** Resource-scoped consumer decision. Contract mode omits identity. */
+export interface ConsumerGrant {
+  id: string;
+  status: "pending" | "active" | "revoked";
+  version: number;
+  credential_kind?: "passkey" | "device" | "email";
+  credential_id?: string;
+  credential_public_key_b64?: string;
+  email?: string;
+  email_verified_at?: string;
+  entitlement_id?: string;
+  expires_at?: string;
+  session_cleanup?: "pending" | "complete";
+}
+
+export interface ConsumerGrantApprovalInput {
+  expected_version: number;
+  credential_kind?: "passkey" | "device";
+  credential_id?: string;
+  credential_public_key_b64?: string;
+  entitlement_id?: string;
+  expires_at?: string;
+}
+
+export interface ConsumerListInput {
+  cursor?: string;
+  limit?: number;
+}
+export interface ConsumerInvitationListOutput extends PaginatedOutput {
+  invitations: ConsumerInvitation[];
+}
+export interface ConsumerGrantListOutput extends PaginatedOutput {
+  grants: ConsumerGrant[];
 }

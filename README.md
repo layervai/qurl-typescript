@@ -1,37 +1,127 @@
-# @layervai/qurl
+# qURL TypeScript and Node.js SDK
 
 [![npm](https://img.shields.io/npm/v/@layervai/qurl)](https://www.npmjs.com/package/@layervai/qurl)
 [![CI](https://github.com/layervai/qurl-typescript/actions/workflows/ci.yml/badge.svg)](https://github.com/layervai/qurl-typescript/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/layervai/qurl-typescript)](LICENSE)
 
-**Use the LayerV [qURL™ Platform](https://docs.layerv.ai) from TypeScript: protect a
-private URL once, then mint short-lived portal links for it.**
+Use [qURL™ by LayerV](https://layerv.ai/qurl/) to share localhost web apps,
+private APIs, and files through expiring access links. This
+[TypeScript and Node.js SDK](https://layerv.ai/sdk/) creates and manages access
+from JavaScript or TypeScript. Use the
+`@layervai/qurl` package in a service or automation script to register
+resources, choose a link lifetime, and manage resource access.
 
-> **Quantum URL (qURL)** · The internet has a hidden layer. This is how you enter.
+For a local app, [publish it with the CLI](https://github.com/layervai/qurl-integrations/tree/main/apps/cli)
+or configure a connector before issuing links. Creating an access link does
+not start the app or close any separate public route to it. Your app's own
+sign-in still applies.
 
 Portal recipients do not need LayerV credentials, API keys, or SDK state. They
 open the qURL link. Credentials are only for software that protects URLs or
 creates portals.
 
+[Installation](#installation) · [Quickstart](#quickstart) ·
+[Opening received links](#opening-portals) · [API reference](#api) ·
+[Resource and token management](#rest-shaped-api-compatibility)
+
+[Local preview workflow](#share-a-localhost-preview-from-nodejs) ·
+[File-sharing workflows](#share-files-from-a-nodejs-workflow) ·
+[Sharing questions](#typescript-and-nodejs-sharing-questions) · [Private links](https://qurl.link/)
+
+## Share a localhost preview from Node.js
+
+Use `@layervai/qurl` when a Node.js backend or automation job should issue
+temporary access to a preview, internal dashboard, or private API. Publish
+the running local app with the [CLI](https://github.com/layervai/qurl-integrations#share-a-localhost-web-app)
+or configure a compatible Connector before issuing a link from the SDK.
+
+For an existing SDK-managed Connector resource, use its immutable slug to
+look it up and create a portal. Set `QURL_API_KEY` to an issuer credential
+authorized for that resource, and `QURL_CONNECTOR_SLUG` to its configured slug:
+
+```typescript
+import { QURLClient } from '@layervai/qurl';
+
+const apiKey = process.env.QURL_API_KEY;
+const slug = process.env.QURL_CONNECTOR_SLUG;
+if (!apiKey || !slug) {
+  throw new Error('Set QURL_API_KEY and QURL_CONNECTOR_SLUG for your configured resource');
+}
+
+const client = new QURLClient({ apiKey });
+const resource = await client.getConnectorResourceBySlug(slug);
+const portal = await resource.createPortal({ validFor: '5m' });
+console.log(portal.link);
+```
+
+Read-only lookup requires the resource to exist. The API credential must have
+the required lookup and mint permissions. A Connector slug, a CRID, and an
+account key are different things; do not substitute a CLI CRID for the slug
+or assume your API key controls another device's published resource.
+For a preview published solely through the CLI, `qurl share` is the direct
+sharing path until compatible SDK resource management is configured.
+
+Send the full link through a private channel. A browser recipient can use the
+preview without installing the SDK; the app's own login continues to apply.
+The local host, app, and serving runtime must stay available. Existing resource
+handles can also mint links for a specific `targetPath` where the service
+supports it; see [quickstart](#quickstart) for its resource and path constraints.
+
+## Share files from a Node.js workflow
+
+qURL also supports private document and file sharing. The SDK's resource and
+portal calls issue access; they do not upload a file from your process or start
+a localhost server.
+
+| Use case | Serving or upload step | SDK role |
+| --- | --- | --- |
+| Share static preview files | Publish a dedicated localhost HTTP directory with the [CLI](https://github.com/layervai/qurl-integrations#share-files-and-documents). | Automate access only when the service is configured as a compatible resource for your credential; otherwise share through the CLI. |
+| Share a generated PDF or supported image | Use the [MCP upload workflow](https://github.com/layervai/qurl-mcp#let-an-ai-agent-share-a-pdf-or-image) or the [Gmail integration](https://github.com/layervai/qurl-integrations/tree/main/apps/chrome-extension). | Keep the upload service's identifiers, expiry, and revocation contract; its returned file ID is not automatically an SDK Connector resource. |
+| Give automation access to a private file service | Configure and register the service with the appropriate runtime. | Create a portal for the registered resource and use the documented opening and content-request flow. |
+
+For programmatic access, follow [opening portals](#opening-portals), including
+resource binding, HTTP request authorization, and redirect rules. Fetching the
+browser share URL itself does not substitute for that opening flow.
+
+## Choosing a Node.js preview workflow
+
+A Node.js service can issue a qURL link to an authorized, configured resource, establish connectivity with an Agent SDK, or provide a deployed preview. Choose the operation before choosing the package:
+
+| What the reviewer needs | Workflow |
+| --- | --- |
+| Temporary access to the current local app or private API | Publish through the CLI or configure the serving runtime, then use this SDK's resource and portal APIs with the appropriate issuer authority. |
+| An endpoint established from the Node.js process | The [ngrok JavaScript Agent SDK](https://github.com/ngrok/ngrok-javascript) can forward to a local service; configure its endpoint access policies and keep the origin available. |
+| A hosted application build that can outlive your development session | Create a [Vercel Preview deployment](https://vercel.com/docs/deployments/environments), with its environment and deployment protection configured. |
+
+Keep issuer credentials in the issuing service. A browser reviewer receives the access link and still follows the app's login requirements; a programmatic consumer follows [opening portals](#opening-portals). For generated files, first decide between a local file-serving resource and uploaded storage using the [file-sharing comparison](https://github.com/layervai/qurl-integrations#should-a-file-stay-on-the-local-host-or-be-uploaded). Link issuance does not perform the upload or deploy the app.
+
+## TypeScript and Node.js sharing questions
+
+### Does `protectUrl` publish the app on my laptop?
+
+No. It registers a URL resource. Local serving needs the CLI or another
+configured runtime. An existing public route remains reachable unless you
+close or restrict it.
+
+### Does link expiry terminate an already open session?
+
+Link redemption and session lifetime are separate. Configure both through
+the options supported by your resource and service. An expired link can deny
+a new opening while an earlier session remains valid.
+
+### Can I identify a recipient by setting a link label?
+
+A label is metadata. It does not make the link non-transferable or replace
+application login. Treat returned links as access credentials, and keep issuer
+keys in the issuing service. Use [opening portals](#opening-portals) for the
+credential and transport requirements of a programmatic recipient.
+
 ## Why qURL?
 
-Agents and services increasingly need to reach private MCP servers, APIs, and
-internal tools. The issue is visibility: every standing public endpoint becomes
-inventory for scanners, fingerprinting, credential attacks, and AI-assisted
-probing before a legitimate user or agent ever arrives.
-
-Opening an inbound port, running a VPN, shipping a bastion, publishing a
-Cloudflare Tunnel or ngrok URL, or passing around a long-lived key all leave
-something durable to find, scan, or steal. qURL flips that model: it is an
-invisibility primitive for authenticated access, and the private resource is
-not public inventory. A portal is **cryptographic, just-in-time permission for
-one actor to reach one private resource** — not another externally visible
-endpoint in front of the same service:
-
-- **Time-limited** — portals expire after minutes, hours, or days
-- **IP-scoped** — access is granted only to the requesting IP via NHP
-- **Auditable** — every access is logged with who, when, and from where
-- **Revocable** — kill access instantly if something goes wrong
+qURL separates a private resource from the access links your code issues for
+it. A running Connector supplies the access path to the origin; this SDK
+manages resources, links, and supported sessions. It can fit a preview-review
+or private API workflow without moving the app to a public staging server.
 
 ## Installation
 
@@ -687,6 +777,29 @@ for await (const qurl of client.listAll({ status: 'active' })) {
 }
 ```
 
+### Restarting an API-key inventory after cutover
+
+An API-key inventory cursor can become invalid after a server-side identity
+migration. The SDK reports this as `QURLError` with `status === 400` and
+`code === "invalid_cursor"`. Do not resend that cursor or treat a partial
+inventory as complete.
+
+`listAllApiKeys()` propagates the error after any earlier keys have been yielded.
+It does not rewind automatically: that would deliver those keys twice. An
+application collecting an inventory before displaying it can recover once:
+
+1. Discard all keys collected by the failed iteration.
+2. Create a new `client.listAllApiKeys()` iterator with the same filters and
+   page size. The new iterator starts at the first page without a cursor.
+3. Publish only the completed replacement inventory. If the replacement also
+   fails, report that failure instead of restarting again.
+
+Keep the application's inventory size and request limits in force across both
+attempts. Do not use this pattern to repeat side effects already performed for
+yielded keys. Other errors retain their existing handling. A caller using
+`listApiKeys()` directly must also discard its partial inventory and omit the
+old `cursor` on the replacement first-page request.
+
 ## Debug Logging
 
 Enable debug output to see all HTTP requests and retries:
@@ -970,3 +1083,35 @@ peer: registration, restart, relocation, exact retirement, and credential recove
 This checks protocol interoperability; the peer is not a sandbox authority.
 Shared conformance vectors cover assignment, registration,
 OTP, and completion packet construction and reply decryption.
+
+
+### Private consumer policies
+
+`createResource` accepts `private: true` and `consumer_access` with mode
+`keys`, `invite_only`, `email_capture`, `review` or `contract`, and version `1`.
+`updateResource` changes the policy with `expected_consumer_access_version` and
+the next version. Send policy changes separately from metadata updates.
+
+For a URL, `protectUrl(url, { consumerAccess: { mode: "invite_only", version: 1 } })`
+creates the private resource and checks the returned policy. For a local
+Connector, pass the policy as the third argument to `ensureConnectorResource`.
+A private policy cannot be combined with public access. A service that ignores
+the requested policy is refused.
+
+Publisher methods are `inviteConsumer`, `listConsumerInvitations`,
+`resendConsumerInvitation`, `revokeConsumerInvitation`, `listConsumerGrants`,
+`approveConsumerGrant`, `denyConsumerGrant` and `revokeConsumerGrant`. Decisions
+use the version read from the invitation or grant. Lists return the usual
+`nextCursor`. Contract entitlement approval requires a trusted publisher backend
+receipt and expiry; the SDK does not verify payment. Contract replies omit email
+and globally reusable credential data.
+
+A removal receipt reports `session_cleanup: pending` until connection cleanup
+is confirmed. Retry the same removal and version to confirm `complete`. These
+APIs require the matching service feature and remain off by default during
+integration. Consumer Noise enrollment and browser access are in the NHP agent.
+
+Email access is always available as a backup to passkeys. The recipient chooses
+**Email me an access link** and verifies the mailbox. No publisher setting is
+needed or available. Invitations, approval, entitlement, expiry, and revocation
+still apply.
