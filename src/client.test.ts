@@ -9270,6 +9270,57 @@ describe("QURLClient", () => {
     expect(fetch.mock.calls[1][0] as string).toContain("cursor=cur_filt");
   });
 
+  it("API-key inventory callers can discard a cutover error and recreate the iterator", async () => {
+    const fetch = mockFetches([
+      {
+        status: 200,
+        body: {
+          data: [{ key_id: "old-key" }],
+          meta: { has_more: true, next_cursor: "cell-cursor" },
+        },
+      },
+      {
+        status: 400,
+        body: {
+          error: {
+            status: 400,
+            code: "invalid_cursor",
+            title: "Bad Request",
+            detail: "Invalid cursor",
+          },
+        },
+      },
+      { status: 200, body: { data: [{ key_id: "fresh-key" }], meta: { has_more: false } } },
+    ]);
+    const client = createClient(fetch);
+    const keys: string[] = [];
+    const old = client.listAllApiKeys({ limit: 10 });
+    const first = await old.next();
+    expect(first.done).toBe(false);
+    if (!first.done) keys.push(first.value.key_id);
+    let failure: unknown;
+    try {
+      await old.next();
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(QURLError);
+    expect(failure).toMatchObject({ status: 400, code: "invalid_cursor" });
+    expect(keys).toEqual(["old-key"]);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect((await old.next()).done).toBe(true);
+
+    // The application discards partial data before publishing a replacement inventory.
+    keys.length = 0;
+    for await (const key of client.listAllApiKeys({ limit: 10 })) keys.push(key.key_id);
+    expect(keys).toEqual(["fresh-key"]);
+    expect(fetch).toHaveBeenCalledTimes(3);
+    const urls = vi.mocked(fetch).mock.calls.map(([url]) => new URL(String(url)));
+    expect(urls.map((url) => url.pathname)).toEqual(Array(3).fill("/v1/api-keys"));
+    expect(urls.map((url) => url.searchParams.get("limit"))).toEqual(["10", "10", "10"]);
+    expect(urls.map((url) => url.searchParams.get("cursor"))).toEqual([null, "cell-cursor", null]);
+  });
+
   it("listAll propagates errors mid-pagination after yielding prior pages", async () => {
     // If a page fetch throws mid-iteration (e.g. server hits a 500
     // after the first page succeeded), the generator must propagate
