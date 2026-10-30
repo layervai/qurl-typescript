@@ -1115,3 +1115,34 @@ Email access is always available as a backup to passkeys. The recipient chooses
 **Email me an access link** and verifies the mailbox. No publisher setting is
 needed or available. Invitations, approval, entitlement, expiry, and revocation
 still apply.
+
+
+## Bind a Slack, Discord, or Teams identity
+
+`createExternalIdentityBinding` uses the JWT from the provider's configured
+confidential OAuth flow as the client's bearer credential (`apiKey`). The
+provider determines the new key's scopes. Slack and Teams also require the
+JWT's `qurl:agent` permission.
+
+Persist a unique `RequestOptions.idempotencyKey` (32–256 printable ASCII
+characters) before the first request. Retry a lost response within 24 hours
+with that same key and body. Store `result.api_key.plaintext` in your secret
+store immediately. It is a one-time secret: never log or serialize the result
+into diagnostics. After the replay window, the secret cannot be retrieved.
+
+```ts
+const setup = new QURLClient({ apiKey: providerOAuthJwt });
+const result = await setup.createExternalIdentityBinding(
+  { provider: "teams", external_id: verifiedTenantId, display_name: "Example tenant" },
+  { idempotencyKey: persistedSetupRequestId },
+);
+await secretStore.save(result.binding_id, result.api_key.plaintext);
+```
+
+Your integration supplies the verified identity, OAuth JWT, durable setup ID,
+and secret store. Use `rotate_existing: true` only for explicit reauthorization:
+it revokes the previous binding key. Serialize setup operations for each identity.
+A `409` retains `QURLError.status` and the `already_exists` or
+`idempotency_conflict` code. A `503 service_unavailable` retains `retryAfter`;
+wait and retry with the same request key and body. `503 bindings_disabled`
+requires a fallback flow. Ordinary retries cannot enable the feature.

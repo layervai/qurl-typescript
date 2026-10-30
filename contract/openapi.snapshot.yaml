@@ -16,6 +16,8 @@ info:
   title: QURL API — SDK contract surface
   version: "1"
 paths:
+  /v1/external-identity-bindings:
+    post: {}
   /v1/api-keys:
     get: {}
     post: {}

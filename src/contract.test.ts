@@ -4,7 +4,12 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { QURLClient } from "./client.js";
-import { mockFetch, mockFetches, createClient } from "./__tests__/test-helpers.js";
+import {
+  mockFetch,
+  mockFetches,
+  createClient,
+  EXTERNAL_BINDING_RESPONSE,
+} from "./__tests__/test-helpers.js";
 
 // API-contract test: every SDK public method must call the exact
 // (verb, path) pair declared in contract/openapi.snapshot.yaml.
@@ -181,6 +186,18 @@ const DELEGATED_BATCH_HEADERS = {
 };
 
 const METHOD_CASES: MethodCase[] = [
+  {
+    method: "createExternalIdentityBinding",
+    verb: "POST",
+    template: "/v1/external-identity-bindings",
+    mockStatus: 201,
+    mockBody: EXTERNAL_BINDING_RESPONSE,
+    invoke: (c) =>
+      c.createExternalIdentityBinding(
+        { provider: "teams", external_id: "synthetic-tenant" },
+        { idempotencyKey: "0192f7c4-3b8a-7e2f-9d01-4cf8a1b6e3d2" },
+      ),
+  },
   {
     method: "inviteConsumer",
     verb: "POST",
