@@ -9,7 +9,7 @@
     "outDir": "./dist/esm",
     "rootDir": "./src",
     "declaration": true,
-    "declarationMap": true,
+    "declarationMap": false,
     "sourceMap": true,
     "strict": true,
     "esModuleInterop": true,

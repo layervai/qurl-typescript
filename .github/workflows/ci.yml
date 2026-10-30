@@ -21,6 +21,7 @@ jobs:
       - run: npm ci
       - run: npm run prebuild --workspace @layervai/qurl-state-fs
       - run: npm run build
+      - run: npm run check:package
       - run: npm run build --workspace @layervai/qurl-aws
       - run: npm run lint
       - run: npm run format:check
