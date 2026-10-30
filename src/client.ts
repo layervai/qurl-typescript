@@ -6037,8 +6037,8 @@ export class QURLClient {
     const trimmed = header.trim();
     if (/^[A-Z][a-z]{2}, \d{2} [A-Z][a-z]{2} \d{4} \d{2}:\d{2}:\d{2} GMT$/.test(trimmed)) {
       const seconds = Math.ceil((Date.parse(trimmed) - Date.now()) / 1000);
-      return Number.isSafeInteger(seconds) && seconds > 0 && seconds <= RETRY_AFTER_PARSE_LIMIT_S
-        ? seconds
+      return Number.isSafeInteger(seconds)
+        ? Math.min(Math.max(0, seconds), RETRY_AFTER_PARSE_LIMIT_S)
         : undefined;
     }
     if (!/^\d+$/.test(trimmed)) {
