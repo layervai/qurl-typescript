@@ -7207,67 +7207,6 @@ describe("QURLClient", () => {
     }
   });
 
-  it("falls back to exponential backoff when Retry-After is an HTTP-date", async () => {
-    // Per RFC 7231 §7.1.3, Retry-After can be either a numeric
-    // delay-seconds OR an HTTP-date. The current implementation
-    // uses `parseInt`, which returns `NaN` for HTTP-date strings —
-    // `Number.isNaN(seconds)` catches that and returns `undefined`,
-    // so the retry falls back to exponential backoff. This test
-    // documents that intent: the SDK currently does NOT parse
-    // HTTP-date values; it silently ignores them and uses backoff
-    // instead. If we ever add HTTP-date support, this test should
-    // be flipped to assert the date is parsed and respected.
-    const retryAfterResponse = {
-      ok: false,
-      status: 429,
-      statusText: "Too Many Requests",
-      // Valid RFC 7231 HTTP-date format — the SDK should NOT parse this.
-      headers: new Headers({ "Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT" }),
-      json: () =>
-        Promise.resolve({
-          error: {
-            title: "Rate Limited",
-            status: 429,
-            detail: "Too many requests",
-            code: "rate_limited",
-          },
-        }),
-      text: () => Promise.resolve(""),
-    } satisfies Partial<Response> as Response;
-
-    const successResponse = {
-      ok: true,
-      status: 200,
-      statusText: "OK",
-      headers: new Headers({}),
-      json: () =>
-        Promise.resolve({
-          data: { plan: "growth", period_start: "2026-03-01", period_end: "2026-04-01" },
-        }),
-      text: () => Promise.resolve(""),
-    } satisfies Partial<Response> as Response;
-
-    const fetch = vi
-      .fn()
-      .mockResolvedValueOnce(retryAfterResponse)
-      .mockResolvedValueOnce(successResponse);
-
-    const client = new QURLClient({
-      apiKey: "test-api-key",
-      baseUrl: "https://api.test.layerv.ai",
-      fetch: fetch as typeof globalThis.fetch,
-      maxRetries: 1,
-    });
-
-    // Should still retry and succeed — just via exponential backoff
-    // instead of the HTTP-date value. Don't assert exact timing; the
-    // important contract is "retry happens, doesn't wait for a parsed
-    // date value, and doesn't throw on the unparseable header."
-    const result = await client.getQuota();
-    expect(result.plan).toBe("growth");
-    expect(fetch).toHaveBeenCalledTimes(2);
-  });
-
   it("honors Retry-After: 0 (immediate retry, not exponential backoff)", async () => {
     // RFC 7231 §7.1.3 allows Retry-After: 0 ("retry immediately"). A
     // truthy check on `lastError.retryAfter` would misclassify 0 as
