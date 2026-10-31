@@ -98,3 +98,31 @@ it.each(["existing", "url"])(
     expect(fetch).toHaveBeenCalledTimes(1);
   },
 );
+
+it.each(["existing", "url"])("rejects explicit null on an unscoped %s portal", async (kind) => {
+  const fetch = mockFetch({ status: 201, body: { data: { ...DATA, target_path: null } } });
+  const client = createClient(fetch);
+  await expect(
+    kind === "url" ? client.createPortalForUrl("https://example.com") : client.createPortal(CRID),
+  ).rejects.toMatchObject({ code: "unexpected_response" });
+  expect(fetch).toHaveBeenCalledTimes(1);
+});
+
+it.each([
+  ["resource_id", undefined],
+  ["resource_id", "not-a-key"],
+  ["crid", undefined],
+  ["crid", "invalid"],
+  ["qurl_link", undefined],
+  ["qurl_link", ""],
+])("keeps correlation for a bad post-mint %s without replay", async (field, value) => {
+  const fetch = mockFetch({
+    status: 201,
+    body: { data: { ...DATA, [field as string]: value }, meta: { request_id: "req_portal_body" } },
+  });
+  await expect(createClient(fetch).createPortal(CRID)).rejects.toMatchObject({
+    code: "unexpected_response",
+    requestId: "req_portal_body",
+  });
+  expect(fetch).toHaveBeenCalledTimes(1);
+});

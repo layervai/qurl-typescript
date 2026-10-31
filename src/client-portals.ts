@@ -156,20 +156,22 @@ export async function parsePortal(
   expectedCrid?: string,
   expectedTargetPath?: string,
 ): Promise<Portal> {
+  const errorOptions = { requestId: getResponseMetadata(data)?.requestId };
   if (typeof data?.resource_id !== "string" || data.resource_id.trim() === "") {
-    throw unexpectedResponseError(`${method}: response is missing resource_id`);
+    throw unexpectedResponseError(`${method}: response is missing resource_id`, errorOptions);
   }
   if (typeof data.qurl_link !== "string" || data.qurl_link.trim() === "") {
-    throw unexpectedResponseError(`${method}: response is missing qurl_link`);
+    throw unexpectedResponseError(`${method}: response is missing qurl_link`, errorOptions);
   }
   await verifyResourceIdentity(data, method, expectedCrid);
   if (
     data.target_path !== expectedTargetPath ||
     (data.target_path !== undefined && !isCanonicalTargetPath(data.target_path))
   ) {
-    throw unexpectedResponseError(`${method}: mint response target path differs from request`, {
-      requestId: getResponseMetadata(data)?.requestId,
-    });
+    throw unexpectedResponseError(
+      `${method}: mint response target path differs from request`,
+      errorOptions,
+    );
   }
   return copyResponseMetadata(data, {
     crid: data.crid as string,
