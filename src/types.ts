@@ -78,7 +78,8 @@ export interface AccessToken {
   use_count: number;
   qurl_site?: string;
   created_at: string;
-  expires_at: string;
+  /** Optional in API summaries; omission does not imply an unlimited lifetime. */
+  expires_at?: string;
 }
 
 /** Per-qURL summary returned from resource-detail and token-update endpoints. */
