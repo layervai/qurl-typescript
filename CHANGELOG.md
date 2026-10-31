@@ -68,7 +68,9 @@
   either a CRID or a `q_` display ID; `delete()` rejects display IDs because it
   revokes the whole resource. Before upgrading, store and pass the `crid`
   returned in API responses instead of the public-key `resource_id`. A stored
-  public key alone is not a CRID and cannot be converted into one.
+  public key alone is not a CRID and cannot be converted into one. SDK 3.0.0+
+  adds `deleteResourceByIdentifier()` to delete resources known only by a
+  legacy or public-key resource ID.
 - **client:** path identifiers now reject raw or repeatedly encoded `.` / `..`
   segments, URL-shaped values, and embedded qURL
   access-token credentials before making a request. Resource/qURL identifier
