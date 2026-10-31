@@ -5,7 +5,7 @@ import type {
   UpdateResourceQurlInput,
 } from "./types.js";
 import { ValidationError } from "./errors.js";
-import { clientValidationError } from "./client-errors.js";
+import { TEXT_ENCODER, clientValidationError } from "./client-errors.js";
 import {
   describeShape,
   requireBooleanIfPresent,
@@ -23,6 +23,8 @@ import {
 import { CREATE_FIELD_KEYS } from "./client-input-fields.js";
 import {
   MAX_ALIAS,
+  MAX_ALLOWED_DEVICE_KEYS,
+  MAX_CONSUMER_CONTRACT_ID_BYTES,
   MAX_CUSTOM_DOMAIN,
   MAX_DESCRIPTION,
   MAX_LABEL,
@@ -177,7 +179,7 @@ export function validateResourceWriteFields(
         if (
           typeof p.contract_id !== "string" ||
           !p.contract_id.trim() ||
-          new TextEncoder().encode(p.contract_id).length > 128
+          TEXT_ENCODER.encode(p.contract_id).length > MAX_CONSUMER_CONTRACT_ID_BYTES
         ) {
           throw clientValidationError(
             "consumer_access: contract mode requires a bounded contract_id",
@@ -218,8 +220,10 @@ export function validateResourceWriteFields(
       const keys = input[field];
       if (keys === undefined) continue;
       requireStringArrayElements(keys, field, "updateResource");
-      if (keys.length > 256 || new Set(keys).size !== keys.length) {
-        throw clientValidationError(`${field}: must contain at most 256 unique keys`);
+      if (keys.length > MAX_ALLOWED_DEVICE_KEYS || new Set(keys).size !== keys.length) {
+        throw clientValidationError(
+          `${field}: must contain at most ${MAX_ALLOWED_DEVICE_KEYS} unique keys`,
+        );
       }
       for (const key of keys) {
         let canonical = false;

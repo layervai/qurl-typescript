@@ -83,3 +83,10 @@ export const MAX_DELEGATED_BATCH_ITEMS = 100;
 export const MAX_PATH_ID_DECODE_PASSES = 3;
 
 export const MAX_PATH_ID_LENGTH = 4096;
+
+export const MAX_ALLOWED_DEVICE_KEYS = 256;
+
+export const MAX_LIST_LIMIT = 100;
+
+// Local UTF-8 budget; OpenAPI maxLength counts characters, not bytes.
+export const MAX_CONSUMER_CONTRACT_ID_BYTES = 128;
