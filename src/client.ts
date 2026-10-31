@@ -118,6 +118,7 @@ import {
   MAX_IDEMPOTENCY_KEY,
   MAX_LABEL,
   MAX_RESPONSE_BODY_BYTES,
+  MAX_CONFIGURABLE_RESPONSE_BODY_BYTES,
   RETRY_AFTER_HARD_CAP_MS,
   RETRY_AFTER_PARSE_LIMIT_S,
   RETRY_BASE_DELAY_MS,
@@ -282,8 +283,8 @@ type RawRequestOptions = {
 };
 
 class ResponseBodyTooLargeError extends Error {
-  constructor() {
-    super(`Response body exceeds ${MAX_RESPONSE_BODY_BYTES}-byte limit`);
+  constructor(limit: number) {
+    super(`Response body exceeds ${limit}-byte limit`);
     this.name = "ResponseBodyTooLargeError";
   }
 }
@@ -410,24 +411,24 @@ async function cancelResponseBody(body: Response["body"]): Promise<void> {
   }
 }
 
-function materializedResponseBodyExceedsLimit(value: string): boolean {
-  if (value.length > MAX_RESPONSE_BODY_BYTES) return true;
+function materializedResponseBodyExceedsLimit(value: string, limit: number): boolean {
+  if (value.length > limit) return true;
   // Encoding creates another buffer. UTF-8 uses at most three bytes per
   // UTF-16 code unit, so shorter strings are provably safe without that copy.
-  return (
-    value.length * 3 > MAX_RESPONSE_BODY_BYTES &&
-    TEXT_ENCODER.encode(value).byteLength > MAX_RESPONSE_BODY_BYTES
-  );
+  return value.length * 3 > limit && TEXT_ENCODER.encode(value).byteLength > limit;
 }
 
-function contentLengthExceedsLimit(response: Response): boolean {
+function contentLengthExceedsLimit(response: Response, limit: number): boolean {
   // 204/205 never carry content, and a 304 Content-Length describes the
   // selected representation rather than a response body. Do not reject those
   // statuses for metadata about bytes that fetch will not deliver.
   if (response.status === 204 || response.status === 205 || response.status === 304) return false;
+  // Encoded Content-Length describes wire bytes; fetch exposes decoded bytes.
+  const encoding = response.headers.get("content-encoding");
+  if (encoding && encoding.trim().toLowerCase() !== "identity") return false;
   const value = response.headers.get("content-length");
   if (value === null || !/^\d+$/.test(value.trim())) return false;
-  return Number(value) > MAX_RESPONSE_BODY_BYTES;
+  return Number(value) > limit;
 }
 
 type ResponseUrlState = "same" | "changed" | "invalid";
@@ -456,7 +457,7 @@ function responseUrlState(responseUrl: unknown, requestUrl: string): ResponseUrl
  * optimization only; streaming byte accounting remains authoritative because
  * that header may be absent or false.
  */
-async function readBoundedResponseBody(response: Response): Promise<string> {
+async function readBoundedResponseBody(response: Response, limit: number): Promise<string> {
   // `headers.get` is part of the documented injected-fetch contract. Detect a
   // malformed local shim before it can be mistaken for a retryable body-stream
   // failure and replay an otherwise deterministic GET programming error.
@@ -465,9 +466,9 @@ async function readBoundedResponseBody(response: Response): Promise<string> {
       "Response-like fetch must provide headers.get(name)",
     );
   }
-  if (contentLengthExceedsLimit(response)) {
+  if (contentLengthExceedsLimit(response, limit)) {
     await cancelResponseBody(response.body);
-    throw new ResponseBodyTooLargeError();
+    throw new ResponseBodyTooLargeError(limit);
   }
 
   const body = response.body;
@@ -489,8 +490,8 @@ async function readBoundedResponseBody(response: Response): Promise<string> {
       }
     }
     const text = typeof materializedText === "string" ? materializedText : "";
-    if (materializedResponseBodyExceedsLimit(text)) {
-      throw new ResponseBodyTooLargeError();
+    if (materializedResponseBodyExceedsLimit(text, limit)) {
+      throw new ResponseBodyTooLargeError(limit);
     }
     if (
       text !== "" ||
@@ -518,8 +519,8 @@ async function readBoundedResponseBody(response: Response): Promise<string> {
       throw new ResponseBodyMaterializationError();
     }
     if (serialized === undefined) return "";
-    if (materializedResponseBodyExceedsLimit(serialized)) {
-      throw new ResponseBodyTooLargeError();
+    if (materializedResponseBodyExceedsLimit(serialized, limit)) {
+      throw new ResponseBodyTooLargeError(limit);
     }
     return serialized;
   }
@@ -537,13 +538,13 @@ async function readBoundedResponseBody(response: Response): Promise<string> {
         );
       }
       const nextTotal = total + value.byteLength;
-      if (nextTotal > MAX_RESPONSE_BODY_BYTES) {
+      if (nextTotal > limit) {
         try {
           await reader.cancel();
         } catch {
           // Preserve the body-limit failure even if stream cancellation fails.
         }
-        throw new ResponseBodyTooLargeError();
+        throw new ResponseBodyTooLargeError(limit);
       }
       chunks.push(value);
       total = nextTotal;
@@ -646,6 +647,7 @@ export class QURLClient {
   private readonly apiKey: string;
   private readonly fetchFn: typeof globalThis.fetch;
   private readonly maxRetries: number;
+  private readonly maxResponseBodyBytes: number;
   private readonly timeout: number;
   private readonly userAgent: string;
   private readonly debugFn: ((message: string, data?: Record<string, unknown>) => void) | undefined;
@@ -660,6 +662,20 @@ export class QURLClient {
     if (/[\r\n]/.test(options.apiKey)) {
       throw clientValidationError("apiKey: must not contain CR/LF characters");
     }
+    const responseLimit =
+      options.maxResponseBodyBytes === undefined
+        ? MAX_RESPONSE_BODY_BYTES
+        : options.maxResponseBodyBytes;
+    if (
+      !Number.isSafeInteger(responseLimit) ||
+      responseLimit < 1 ||
+      responseLimit > MAX_CONFIGURABLE_RESPONSE_BODY_BYTES
+    ) {
+      throw clientValidationError(
+        "maxResponseBodyBytes: must be an integer from 1 through 16777216 bytes",
+      );
+    }
+    this.maxResponseBodyBytes = responseLimit;
     this.apiKey = options.apiKey;
     const rawBaseUrl = stripTrailingSlashes(options.baseUrl ?? DEFAULT_BASE_URL);
     // Parse the URL so the loopback exemption matches on the hostname,
@@ -3410,14 +3426,14 @@ export class QURLClient {
 
       let responseBody: string;
       try {
-        responseBody = await readBoundedResponseBody(response);
+        responseBody = await readBoundedResponseBody(response, this.maxResponseBodyBytes);
       } catch (err) {
         if (err instanceof ResponseBodyTooLargeError) {
           this.log(`rejected oversized response body from ${response.status}`, {
             status: response.status,
           });
           const detail =
-            `Response body exceeds ${MAX_RESPONSE_BODY_BYTES}-byte limit on HTTP ${response.status}; ` +
+            `Response body exceeds ${this.maxResponseBodyBytes}-byte limit on HTTP ${response.status}; ` +
             "request a smaller page when listing collections";
           if (response.ok) {
             throw unexpectedResponseError(detail, { status: response.status });

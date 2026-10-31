@@ -5,7 +5,9 @@
 // do not add an override or widen one SDK independently from the other.
 // The limit is enforced from Content-Length when usable and again while
 // consuming the response stream.
+// Joint Go/TypeScript policy: docs/api-response-limits.md. Keep default and ceiling aligned.
 export const MAX_RESPONSE_BODY_BYTES = 1 << 20;
+export const MAX_CONFIGURABLE_RESPONSE_BODY_BYTES = 16 << 20;
 
 export const MAX_ERROR_SNIPPET_BYTES = 512;
 
