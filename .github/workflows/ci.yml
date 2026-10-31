@@ -18,6 +18,7 @@ jobs:
         with:
           node-version: "22"
           cache: "npm"
+      - run: npm run check:fixtures
       - run: npm ci
       - run: npm run prebuild --workspace @layervai/qurl-state-fs
       - run: npm run build
