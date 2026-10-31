@@ -14,6 +14,33 @@ import { UUID_V7_RE, callHeaders } from "./__tests__/client-fixtures.js";
 describe("QURLClient", () => {
   // --- Batch create ---
 
+  it.each([201, 207, 400])(
+    "uses observed HTTP %s in batch diagnostics despite body metadata names",
+    async (status) => {
+      const fetch = mockFetch({
+        status,
+        body: {
+          data: {},
+          meta: { request_id: "req_transport_metadata" },
+          status: 599,
+          bodyEmpty: true,
+          headers: {},
+          __http_status: 599,
+          __http_body_empty: true,
+          __http_headers: {},
+        },
+      });
+      const error = await createClient(fetch)
+        .batchCreate({ items: [{ target_url: "https://example.com" }] })
+        .catch((error: unknown) => error);
+      expect(error).toBeInstanceOf(ValidationError);
+      expect(error).toMatchObject({ requestId: "req_transport_metadata" });
+      expect((error as Error).message).toContain(`(HTTP ${status})`);
+      expect((error as Error).message).not.toContain("599");
+      expect(fetch).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it("throws ValidationError on empty batch create", async () => {
     const fetch = mockFetch({ status: 201, body: { data: {} } });
     const client = createClient(fetch);

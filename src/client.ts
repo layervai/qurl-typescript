@@ -1970,27 +1970,36 @@ function delegatedResponseObject(
 }
 
 function delegatedEnvelope(
-  envelope: ApiResponse<unknown>,
+  response: HttpResponse<unknown>,
   status: number,
 ): { data: Record<string, unknown>; requestId: string } {
-  if (typeof envelope.meta !== "object" || envelope.meta === null || Array.isArray(envelope.meta)) {
+  if (
+    typeof response.envelope.meta !== "object" ||
+    response.envelope.meta === null ||
+    Array.isArray(response.envelope.meta)
+  ) {
     throw delegatedResponseError(status, "response meta is not an object");
   }
-  const meta = envelope.meta as Record<string, unknown>;
+  const meta = response.envelope.meta as Record<string, unknown>;
   if (typeof meta.request_id !== "string") {
     throw delegatedResponseError(status, "response meta has invalid request_id");
   }
-  const data = delegatedResponseObject(envelope.data, status, "response data", meta.request_id);
+  const data = delegatedResponseObject(
+    response.envelope.data,
+    status,
+    "response data",
+    meta.request_id,
+  );
   return { data, requestId: meta.request_id };
 }
 
 function requiredDelegatedHeader(
-  envelope: ApiResponse<unknown>,
+  response: HttpResponse<unknown>,
   name: string,
   status: number,
   requestId?: string,
 ): string {
-  const headers = envelope.__http_headers;
+  const headers = response.headers;
   if (!headers || typeof headers.get !== "function") {
     throw delegatedResponseError(status, "response headers are unavailable", requestId);
   }
@@ -2010,23 +2019,23 @@ function hasDelegatedNoStore(value: string | null): boolean {
 }
 
 function delegatedResponseHeaders(
-  envelope: ApiResponse<unknown>,
+  response: HttpResponse<unknown>,
   status: number,
   requestId?: string,
 ): { etag?: string; retryAfter?: number } {
-  const cacheControl = envelope.__http_headers?.get("Cache-Control") ?? null;
+  const cacheControl = response.headers?.get("Cache-Control") ?? null;
   if (cacheControl !== null) {
     if (!hasDelegatedNoStore(cacheControl)) {
       throw delegatedResponseError(status, "response has invalid Cache-Control", requestId);
     }
   } else if (status !== 304) {
-    requiredDelegatedHeader(envelope, "Cache-Control", status, requestId);
+    requiredDelegatedHeader(response, "Cache-Control", status, requestId);
   }
-  const etag = envelope.__http_headers?.get("ETag") ?? undefined;
+  const etag = response.headers?.get("ETag") ?? undefined;
   if (etag !== undefined && (etag.length > MAX_DELEGATED_ETAG || !STRONG_ETAG_PATTERN.test(etag))) {
     throw delegatedResponseError(status, "response has invalid strong ETag", requestId);
   }
-  const rawRetryAfter = envelope.__http_headers?.get("Retry-After") ?? "";
+  const rawRetryAfter = response.headers?.get("Retry-After") ?? "";
   const trimmed = rawRetryAfter.trim();
   const seconds = /^\d+$/.test(trimmed)
     ? Number(trimmed)
@@ -3057,24 +3066,13 @@ interface ApiResponse<T> {
     has_more?: boolean;
     next_cursor?: string;
   };
-  /**
-   * SDK-injected HTTP status code of the underlying response. This
-   * field is NOT part of the API's JSON envelope — it's populated
-   * by `rawRequest` after the fetch so callers can branch on the
-   * observed status without re-querying the `Response` object.
-   * Currently used by `batchCreate`'s shape-guard error to surface
-   * whether an unexpected body came back on a success-range status
-   * (e.g. 201, 207) or a passthrough status (e.g. 400).
-   *
-   * The leading underscores avoid colliding with any future API field
-   * named `http_status` — the spread `{ ...json, __http_status }` would
-   * otherwise let the SDK silently overwrite a server-supplied value.
-   */
-  __http_status?: number;
-  /** SDK-injected exact-body signal used by no-content endpoint contracts. */
-  __http_body_empty?: boolean;
-  /** SDK-injected response headers used by exact endpoint contracts. */
-  __http_headers?: Headers;
+}
+
+interface HttpResponse<T> {
+  envelope: ApiResponse<T>;
+  status: number;
+  bodyEmpty: boolean;
+  headers?: Headers;
 }
 
 interface ApiErrorEnvelope {
@@ -3273,12 +3271,11 @@ export class QURLClient {
    * issue.
    */
   private validateBatchCreateResponse(
-    envelope: ApiResponse<BatchCreateOutput>,
+    response: HttpResponse<BatchCreateOutput>,
     requestItemCount: number,
   ): BatchCreateOutput {
-    const result = envelope.data;
-    const statusSuffix =
-      envelope.__http_status !== undefined ? ` (HTTP ${envelope.__http_status})` : "";
+    const result = response.envelope.data;
+    const statusSuffix = ` (HTTP ${response.status})`;
     // Thread the server's request_id into the shape-guard error so
     // operators debugging "unexpected response" tickets have the
     // correlation handle on the error path, mirroring the success-
@@ -3288,7 +3285,7 @@ export class QURLClient {
     // .requestId property AND the message string so a stack trace
     // pasted into a support ticket carries the correlation handle
     // without a follow-up round-trip.
-    const requestId = boundedErrorIdentifier(envelope.meta?.request_id);
+    const requestId = boundedErrorIdentifier(response.envelope.meta?.request_id);
     const requestIdSuffix = requestId !== undefined ? ` [request_id=${requestId}]` : "";
 
     // `Number.isInteger` rejects NaN, Infinity, and floats. Combined
@@ -3457,9 +3454,9 @@ export class QURLClient {
     const response = await this.rawRequest<Resource>("POST", "/v1/resources", body, {
       requestOptions,
     });
-    if (response.__http_status === 204)
+    if (response.status === 204)
       throw unexpectedResponseError("protectUrl: expected a resource response body");
-    const resource = response.data;
+    const resource = response.envelope.data;
     await verifyResourceIdentity(resource, "protectUrl");
     if (
       normalized.consumerAccess &&
@@ -3467,7 +3464,7 @@ export class QURLClient {
         !sameConsumerPolicy(
           resource.consumer_access,
           normalized.consumerAccess,
-          response.meta?.found_existing === true,
+          response.envelope.meta?.found_existing === true,
         ))
     ) {
       throw unexpectedResponseError("protectUrl: private policy was not confirmed");
@@ -3521,7 +3518,7 @@ export class QURLClient {
     // validates again when building the request, which protects future callers
     // that do not have this mutation-specific outcome contract.
     validateRequestOptions(requestOptions);
-    let response: ApiResponse<Resource>;
+    let response: HttpResponse<Resource>;
     let resource: ConnectorResource;
     try {
       response = await this.rawRequest<Resource>(
@@ -3537,40 +3534,46 @@ export class QURLClient {
       );
       // The find-or-create endpoint returns 201 for both newly-created
       // and found-existing rows; meta.found_existing distinguishes the arms.
-      if (response.__http_status !== 201) {
+      if (response.status !== 201) {
         throw unexpectedResponseError(
-          `ensureConnectorResource: expected HTTP 201, got ${response.__http_status ?? "unknown"}`,
+          `ensureConnectorResource: expected HTTP 201, got ${response.status ?? "unknown"}`,
         );
       }
       if (
         consumerAccess &&
-        (response.data.private !== true ||
+        (response.envelope.data.private !== true ||
           !sameConsumerPolicy(
-            response.data.consumer_access,
+            response.envelope.data.consumer_access,
             consumerAccess,
-            response.meta?.found_existing === true,
+            response.envelope.meta?.found_existing === true,
           ))
       ) {
         throw unexpectedResponseError("ensureConnectorResource: private policy was not confirmed");
       }
-      resource = await parseConnectorResource(this, response.data, "ensureConnectorResource", {
-        slug,
-      });
+      resource = await parseConnectorResource(
+        this,
+        response.envelope.data,
+        "ensureConnectorResource",
+        {
+          slug,
+        },
+      );
     } catch (error) {
       classifyConnectorMutationFailure("ensure", error);
     }
     if (
-      response.meta !== undefined &&
-      response.meta !== null &&
-      (typeof response.meta !== "object" || Array.isArray(response.meta))
+      response.envelope.meta !== undefined &&
+      response.envelope.meta !== null &&
+      (typeof response.envelope.meta !== "object" || Array.isArray(response.envelope.meta))
     ) {
       classifyConnectorMutationFailure(
         "ensure",
         unexpectedResponseError("ensureConnectorResource: response has invalid meta"),
       );
     }
-    const foundExisting = (response.meta as { found_existing?: unknown } | null | undefined)
-      ?.found_existing;
+    const foundExisting = (
+      response.envelope.meta as { found_existing?: unknown } | null | undefined
+    )?.found_existing;
     if (foundExisting === undefined || foundExisting === null) {
       throw unexpectedResponseError(
         "ensureConnectorResource: response is missing meta.found_existing; the validated resource exists, so reconcile by slug before retrying",
@@ -3591,15 +3594,18 @@ export class QURLClient {
   async getConnectorResource(crid: string): Promise<ConnectorResource> {
     requireResourceCrid(crid, "getConnectorResource");
     requireConnectorSubtleCrypto("getConnectorResource");
-    const { data, __http_status } = await this.rawRequest<ResourceDetail>(
+    const {
+      envelope: { data },
+      status: httpStatus,
+    } = await this.rawRequest<ResourceDetail>(
       "GET",
       `/v1/resources/${encodeURIComponent(crid)}`,
       undefined,
       { retry: false },
     );
-    if (__http_status !== 200) {
+    if (httpStatus !== 200) {
       throw unexpectedResponseError(
-        `getConnectorResource: expected HTTP 200, got ${__http_status ?? "unknown"}`,
+        `getConnectorResource: expected HTTP 200, got ${httpStatus ?? "unknown"}`,
       );
     }
     return parseConnectorResource(this, data?.resource, "getConnectorResource", {
@@ -3616,15 +3622,18 @@ export class QURLClient {
     requireConnectorSubtleCrypto("getConnectorResourceBySlug");
     // The slug point lookup is intrinsically active-only. It also
     // rejects combining `slug` with `status`, so this query must stay slug-only.
-    const { data, __http_status } = await this.rawRequest<Resource[]>(
+    const {
+      envelope: { data },
+      status: httpStatus,
+    } = await this.rawRequest<Resource[]>(
       "GET",
       `/v1/resources?slug=${encodeURIComponent(slug)}`,
       undefined,
       { retry: false },
     );
-    if (__http_status !== 200) {
+    if (httpStatus !== 200) {
       throw unexpectedResponseError(
-        `getConnectorResourceBySlug: expected HTTP 200, got ${__http_status ?? "unknown"}`,
+        `getConnectorResourceBySlug: expected HTTP 200, got ${httpStatus ?? "unknown"}`,
       );
     }
     if (!Array.isArray(data)) {
@@ -3897,11 +3906,11 @@ export class QURLClient {
     // from the envelope and propagate it into the returned
     // BatchCreateOutput — consumers filing support tickets on partial
     // or total batch failures need the correlation ID.
-    const envelope = await this.rawRequest<BatchCreateOutput>("POST", "/v1/qurls/batch", input, {
+    const response = await this.rawRequest<BatchCreateOutput>("POST", "/v1/qurls/batch", input, {
       passthroughStatuses: BATCH_PASSTHROUGH_STATUSES,
       requestOptions: options,
     });
-    const result = this.validateBatchCreateResponse(envelope, input.items.length);
+    const result = this.validateBatchCreateResponse(response, input.items.length);
     // Attach the server request_id from the envelope meta without
     // mutating `result` (which is the parsed JSON body). Mirrors the
     // non-mutating style used elsewhere (e.g. `mapQurlsField`). In the
@@ -3918,7 +3927,7 @@ export class QURLClient {
     // as the source, and `meta.request_id` is the canonical envelope
     // field. The data-side variant would be a wire-format duplication
     // we don't want to silently honor.
-    const requestId = envelope.meta?.request_id;
+    const requestId = response.envelope.meta?.request_id;
     // Both-fields-present and data-only-present are both worth surfacing
     // via debug — the former because meta wins silently, the latter
     // because it suggests an envelope-shape transition. Data-side value
@@ -3957,7 +3966,7 @@ export class QURLClient {
     let dispatched = false;
     let acceptedBatchId: string | undefined;
     try {
-      const envelope = await this.rawRequest<unknown>("POST", "/v1/delegated-qurl-batches", input, {
+      const response = await this.rawRequest<unknown>("POST", "/v1/delegated-qurl-batches", input, {
         requestOptions: options,
         retry: false,
         generateIdempotencyKey: false,
@@ -3966,25 +3975,25 @@ export class QURLClient {
           dispatched = true;
         },
       });
-      const status = envelope.__http_status ?? 0;
+      const status = response.status ?? 0;
       if (status !== 202) {
         throw delegatedResponseError(status, "create returned an unexpected success status");
       }
-      const rawData = envelope.data;
+      const rawData = response.envelope.data;
       if (typeof rawData === "object" && rawData !== null && !Array.isArray(rawData)) {
         const candidate = (rawData as Record<string, unknown>).batch_id;
         if (typeof candidate === "string" && DELEGATED_BATCH_ID_PATTERN.test(candidate)) {
           acceptedBatchId = candidate;
         }
       }
-      const { data, requestId } = delegatedEnvelope(envelope, status);
+      const { data, requestId } = delegatedEnvelope(response, status);
       const base = delegatedBatchBase(data, status, requestId);
       if (data.status !== "queued" || base.itemCount !== input.grants.length) {
         throw delegatedResponseError(status, "acceptance data is inconsistent", requestId);
       }
-      const responseHeaders = delegatedResponseHeaders(envelope, status, requestId);
+      const responseHeaders = delegatedResponseHeaders(response, status, requestId);
       const location = validateDelegatedLocation(
-        requiredDelegatedHeader(envelope, "Location", status, requestId),
+        requiredDelegatedHeader(response, "Location", status, requestId),
         this.baseUrl,
         base.batchId,
         status,
@@ -4022,7 +4031,7 @@ export class QURLClient {
     }
     validateGetDelegatedQurlBatchOptions(options);
 
-    const envelope = await this.rawRequest<unknown>(
+    const response = await this.rawRequest<unknown>(
       "GET",
       `/v1/delegated-qurl-batches/${encodeURIComponent(batchId)}`,
       undefined,
@@ -4034,12 +4043,12 @@ export class QURLClient {
         captureResponseHeaders: true,
       },
     );
-    const status = envelope.__http_status ?? 0;
+    const status = response.status ?? 0;
     if (status === 304) {
-      if (envelope.__http_body_empty !== true || options?.etag === undefined) {
+      if (response.bodyEmpty !== true || options?.etag === undefined) {
         throw delegatedResponseError(status, "304 response is inconsistent");
       }
-      const responseHeaders = delegatedResponseHeaders(envelope, status);
+      const responseHeaders = delegatedResponseHeaders(response, status);
       if (responseHeaders.etag !== undefined && responseHeaders.etag !== options.etag) {
         throw delegatedResponseError(status, "304 response changed the ETag");
       }
@@ -4055,13 +4064,13 @@ export class QURLClient {
       throw delegatedResponseError(status, "read returned an unexpected success status");
     }
 
-    const { data, requestId } = delegatedEnvelope(envelope, status);
+    const { data, requestId } = delegatedEnvelope(response, status);
     const base = delegatedBatchBase(data, status, requestId, batchId);
     if (status === 202) {
       if (data.status !== "queued" && data.status !== "running") {
         throw delegatedResponseError(status, "pending data has a terminal status", requestId);
       }
-      const responseHeaders = delegatedResponseHeaders(envelope, status, requestId);
+      const responseHeaders = delegatedResponseHeaders(response, status, requestId);
       return {
         http_status: 202,
         batch_id: base.batchId,
@@ -4119,13 +4128,13 @@ export class QURLClient {
     // This is the caller's only copy of the bearer links. Do not discard a
     // valid terminal body because an intermediary removed a cache validator;
     // qurl-service owns the required no-store response policy.
-    const cacheControl = envelope.__http_headers?.get("Cache-Control") ?? null;
+    const cacheControl = response.headers?.get("Cache-Control") ?? null;
     if (!hasDelegatedNoStore(cacheControl)) {
       this.log("delegated batch terminal response is missing private, no-store", {
         batch_id: base.batchId,
       });
     }
-    const etag = envelope.__http_headers?.get("ETag") ?? undefined;
+    const etag = response.headers?.get("ETag") ?? undefined;
     const terminalEtag =
       etag !== undefined && etag.length <= MAX_DELEGATED_ETAG && STRONG_ETAG_PATTERN.test(etag)
         ? etag
@@ -4150,15 +4159,15 @@ export class QURLClient {
         "getDelegatedQurl: qurlId must match q_ plus 11 lowercase hexadecimal characters",
       );
     }
-    const envelope = await this.rawRequest<unknown>(
+    const response = await this.rawRequest<unknown>(
       "GET",
       `/v1/delegated-qurls/${encodeURIComponent(qurlId)}`,
     );
-    const status = envelope.__http_status ?? 0;
+    const status = response.status ?? 0;
     if (status !== 200) {
       throw delegatedResponseError(status, "read returned an unexpected success status");
     }
-    const { data, requestId } = delegatedEnvelope(envelope, status);
+    const { data, requestId } = delegatedEnvelope(response, status);
     return validateDelegatedQurl(data, qurlId, status, requestId);
   }
 
@@ -4211,7 +4220,9 @@ export class QURLClient {
       "list",
     );
 
-    const { data, meta } = await this.rawRequest<(QURL & { qurls?: AccessToken[] })[]>("GET", path);
+    const {
+      envelope: { data, meta },
+    } = await this.rawRequest<(QURL & { qurls?: AccessToken[] })[]>("GET", path);
     return pageFromMeta(
       {
         // Defensive: map in case API includes nested tokens on list items in the future.
@@ -4435,7 +4446,9 @@ export class QURLClient {
 
   /** List resources from the `/v1/resources` API. */
   async listResources(input: ResourceListInput = {}): Promise<ResourceListOutput> {
-    const { data, meta } = await this.rawRequest<Resource[]>(
+    const {
+      envelope: { data, meta },
+    } = await this.rawRequest<Resource[]>(
       "GET",
       appendQuery(
         "/v1/resources",
@@ -4545,7 +4558,9 @@ export class QURLClient {
     input: ConsumerListInput = {},
   ): Promise<ConsumerInvitationListOutput> {
     requireResourceCrid(id, "listConsumerInvitations");
-    const { data, meta } = await this.rawRequest<ConsumerInvitation[]>(
+    const {
+      envelope: { data, meta },
+    } = await this.rawRequest<ConsumerInvitation[]>(
       "GET",
       appendQuery(
         `/v1/resources/${encodeURIComponent(id)}/invitations`,
@@ -4562,7 +4577,9 @@ export class QURLClient {
     input: ConsumerListInput = {},
   ): Promise<ConsumerGrantListOutput> {
     requireResourceCrid(id, "listConsumerGrants");
-    const { data, meta } = await this.rawRequest<ConsumerGrant[]>(
+    const {
+      envelope: { data, meta },
+    } = await this.rawRequest<ConsumerGrant[]>(
       "GET",
       appendQuery(
         `/v1/resources/${encodeURIComponent(id)}/consumer-grants`,
@@ -4852,7 +4869,9 @@ export class QURLClient {
       "listResourceSessions",
       {},
       async ({ cursor }: { cursor?: string }) => {
-        const { data, meta } = await this.rawRequest<Session[]>(
+        const {
+          envelope: { data, meta },
+        } = await this.rawRequest<Session[]>(
           "GET",
           appendQuery(
             `/v1/resources/${encodeURIComponent(id)}/sessions`,
@@ -4891,7 +4910,10 @@ export class QURLClient {
       "terminateAllResourceSessions",
       {},
       async ({ cursor }: { cursor?: string }) => {
-        const { data, meta, __http_status } = await this.rawRequest<{ terminated?: number }>(
+        const {
+          envelope: { data, meta },
+          status: httpStatus,
+        } = await this.rawRequest<{ terminated?: number }>(
           "DELETE",
           appendQuery(
             path,
@@ -4900,7 +4922,7 @@ export class QURLClient {
             "terminateAllResourceSessions",
           ),
         );
-        if (__http_status === 204) {
+        if (httpStatus === 204) {
           throw unexpectedResponseError(
             `Unexpected 204 No Content from DELETE ${path}; expected response body`,
             { status: 204, requestId: meta?.request_id },
@@ -4943,7 +4965,9 @@ export class QURLClient {
   async listConnectorInstallations(
     input: ListConnectorInstallationsInput = {},
   ): Promise<ConnectorInstallationListOutput> {
-    const { data, meta } = await this.rawRequest<ConnectorInstallationListOutput["installations"]>(
+    const {
+      envelope: { data, meta },
+    } = await this.rawRequest<ConnectorInstallationListOutput["installations"]>(
       "GET",
       appendQuery(
         "/v1/connectors/installations",
@@ -5046,7 +5070,9 @@ export class QURLClient {
   ): Promise<BillingInvoiceListOutput> {
     // This endpoint nests the list in `data.invoices` unlike the other list
     // endpoints, which return `data` as the array directly.
-    const { data, meta } = await this.rawRequest<{ invoices?: Invoice[] }>(
+    const {
+      envelope: { data, meta },
+    } = await this.rawRequest<{ invoices?: Invoice[] }>(
       "GET",
       appendQuery(
         "/v1/billing/invoices",
@@ -5096,7 +5122,9 @@ export class QURLClient {
 
   /** List custom domains. */
   async listDomains(input: ListDomainsInput = {}): Promise<DomainListOutput> {
-    const { data, meta } = await this.rawRequest<Domain[]>(
+    const {
+      envelope: { data, meta },
+    } = await this.rawRequest<Domain[]>(
       "GET",
       appendQuery(
         "/v1/domains",
@@ -5166,7 +5194,9 @@ export class QURLClient {
 
   /** List webhooks. */
   async listWebhooks(input: ListWebhooksInput = {}): Promise<WebhookListOutput> {
-    const { data, meta } = await this.rawRequest<Webhook[]>(
+    const {
+      envelope: { data, meta },
+    } = await this.rawRequest<Webhook[]>(
       "GET",
       appendQuery(
         "/v1/webhooks",
@@ -5280,7 +5310,9 @@ export class QURLClient {
     input: ListWebhookDeliveriesInput = {},
   ): Promise<WebhookDeliveryListOutput> {
     validatePathId(id, "listWebhookDeliveries");
-    const { data, meta } = await this.rawRequest<WebhookDelivery[]>(
+    const {
+      envelope: { data, meta },
+    } = await this.rawRequest<WebhookDelivery[]>(
       "GET",
       appendQuery(
         `/v1/webhooks/${encodeURIComponent(id)}/deliveries`,
@@ -5373,13 +5405,13 @@ export class QURLClient {
       generateIdempotencyKey: false,
     });
     // This operation returns a flat document, unlike the data/meta endpoints.
-    const result = raw as unknown as CreateExternalIdentityBindingOutput;
+    const result = raw.envelope as unknown as CreateExternalIdentityBindingOutput;
     const expectedScopes =
       body.provider === "discord"
         ? ["qurl:read", "qurl:write"]
         : ["qurl:read", "qurl:write", "qurl:agent"];
     if (
-      raw.__http_status !== 201 ||
+      raw.status !== 201 ||
       typeof result.binding_id !== "string" ||
       !/^eib_[A-Za-z0-9]{11}$/.test(result.binding_id) ||
       result.provider !== body.provider ||
@@ -5468,7 +5500,9 @@ export class QURLClient {
 
   /** List API keys. */
   async listApiKeys(input: ListApiKeysInput = {}): Promise<ApiKeyListOutput> {
-    const { data, meta } = await this.rawRequest<ApiKey[]>(
+    const {
+      envelope: { data, meta },
+    } = await this.rawRequest<ApiKey[]>(
       "GET",
       appendQuery(
         "/v1/api-keys",
@@ -5580,7 +5614,9 @@ export class QURLClient {
    * this page and emits a debug log rather than pretending it fetched all pages.
    */
   async listAccessCodes(): Promise<AccessCodeListOutput> {
-    const { data, meta } = await this.rawRequest<AccessCode[]>("GET", "/v1/access-codes");
+    const {
+      envelope: { data, meta },
+    } = await this.rawRequest<AccessCode[]>("GET", "/v1/access-codes");
     if (meta?.has_more || meta?.next_cursor) {
       this.log("listAccessCodes: pagination metadata surfaced on unpaginated endpoint", {
         has_more: meta.has_more,
@@ -5611,10 +5647,13 @@ export class QURLClient {
   ): Promise<T> {
     // List methods call rawRequest directly so 204 can degrade to an empty page.
     // Body-returning endpoints declare 200 JSON today, so this path fails closed.
-    const { data, __http_status } = await this.rawRequest<T>(method, path, body, {
+    const {
+      envelope: { data },
+      status: httpStatus,
+    } = await this.rawRequest<T>(method, path, body, {
       requestOptions,
     });
-    if (__http_status === 204) {
+    if (httpStatus === 204) {
       throw unexpectedResponseError(
         `Unexpected 204 No Content from ${method} ${path}; expected response body`,
       );
@@ -5631,9 +5670,9 @@ export class QURLClient {
     const response = await this.rawRequest<never>("DELETE", path, undefined, {
       allowEmptySuccessBody: true,
     });
-    if (response.__http_status !== 204 || response.__http_body_empty !== true) {
-      const status = response.__http_status ?? 0;
-      const bodyShape = response.__http_body_empty ? "with an empty body" : "with response bytes";
+    if (response.status !== 204 || response.bodyEmpty !== true) {
+      const status = response.status ?? 0;
+      const bodyShape = response.bodyEmpty ? "with an empty body" : "with response bytes";
       throw unexpectedResponseError(
         `Unexpected response from DELETE; expected empty HTTP 204, received HTTP ${status} ${bodyShape}. ` +
           "The delete may already have been applied; reconcile resource state before retrying.",
@@ -5656,7 +5695,7 @@ export class QURLClient {
     path: string,
     body?: unknown,
     rawOptions: RawRequestOptions = {},
-  ): Promise<ApiResponse<T>> {
+  ): Promise<HttpResponse<T>> {
     const url = `${this.baseUrl}${path}`;
     const {
       passthroughStatuses = NO_PASSTHROUGH_STATUSES,
@@ -5911,10 +5950,10 @@ export class QURLClient {
             });
           }
           return {
-            data: undefined as unknown as T,
-            __http_status: response.status,
-            __http_body_empty: responseBody.length === 0,
-            __http_headers: captureResponseHeaders ? response.headers : undefined,
+            envelope: { data: undefined as unknown as T },
+            status: response.status,
+            bodyEmpty: responseBody.length === 0,
+            headers: captureResponseHeaders ? response.headers : undefined,
           };
         }
         // Exact no-content helpers must inspect both axes of the success
@@ -5926,20 +5965,20 @@ export class QURLClient {
           responseBody.length === 0
         ) {
           return {
-            data: undefined as unknown as T,
-            __http_status: response.status,
-            __http_body_empty: true,
-            __http_headers: captureResponseHeaders ? response.headers : undefined,
+            envelope: { data: undefined as unknown as T },
+            status: response.status,
+            bodyEmpty: true,
+            headers: captureResponseHeaders ? response.headers : undefined,
           };
         }
         try {
           const json = JSON.parse(responseBody) as ApiResponse<T>;
           return {
-            ...json,
-            __http_status: response.status,
+            envelope: { ...json },
+            status: response.status,
             // JSON.parse("") throws, so parsed JSON is necessarily non-empty.
-            __http_body_empty: false,
-            __http_headers: captureResponseHeaders ? response.headers : undefined,
+            bodyEmpty: false,
+            headers: captureResponseHeaders ? response.headers : undefined,
           };
         } catch {
           // Non-JSON body on a 2xx response (server contract violation)
