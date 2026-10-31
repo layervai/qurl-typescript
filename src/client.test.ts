@@ -440,25 +440,15 @@ describe("QURLClient", () => {
     );
   });
 
-  it("terminateAllResourceSessions preserves the zero fallback when count is omitted", async () => {
+  it("terminateAllResourceSessions rejects a missing count without replaying DELETE", async () => {
     const fetch = mockFetch({ status: 200, body: { data: {}, meta: { request_id: "req_x" } } });
-    const debug = vi.fn();
-    const client = new QURLClient({
-      apiKey: "test-api-key",
-      baseUrl: "https://api.test.layerv.ai",
-      debug,
-      fetch,
-      maxRetries: 0,
+    const client = createClient(fetch);
+    await expect(client.terminateAllResourceSessions(RESOURCE_CRID)).rejects.toMatchObject({
+      code: ERROR_CODE_UNEXPECTED_RESPONSE,
+      requestId: "req_x",
+      detail: expect.stringContaining("inspect sessions before retrying"),
     });
-
-    const result = await client.terminateAllResourceSessions(RESOURCE_CRID);
-
-    expect(result.terminated).toBe(0);
-    expect(result.request_id).toBe("req_x");
-    expect(debug).toHaveBeenCalledWith(
-      "terminateAllResourceSessions: missing terminated count; defaulting to zero",
-      { request_id: "req_x" },
-    );
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   it("terminateAllResourceSessions throws on unexpected 204 No Content", async () => {
