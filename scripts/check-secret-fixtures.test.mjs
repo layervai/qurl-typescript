@@ -16,6 +16,8 @@ test("rejects both literal key formats without logging values", () => {
     const script = fileURLToPath(new URL("./check-secret-fixtures.mjs", import.meta.url));
     const run = () => spawnSync(process.execPath, [script], { cwd, encoding: "utf8" });
     assert.equal(run().status, 0);
+    writeFileSync(join(cwd, file), 'api_key: `lv_live_${"a".repeat(43)}`');
+    assert.equal(run().status, 0);
     for (const mode of ["live", "test"]) {
       const value = ["lv", mode, "syntheticvalue"].join("_");
       writeFileSync(join(cwd, file), value);
