@@ -14,7 +14,12 @@ import {
   type PortalOpenerHealth,
   type PortalOpenerState,
 } from "@layervai/qurl/node";
-import { isApiKeyRequestScope, type ApiKeyRequestScope, QURLClient } from "@layervai/qurl";
+import {
+  isApiKeyRequestScope,
+  type AccessToken,
+  type ApiKeyRequestScope,
+  QURLClient,
+} from "@layervai/qurl";
 
 const options: CreatePortalOpenerOptions = {
   qurl: "https://qurl.link/#qv2t1.example",
@@ -73,3 +78,19 @@ const noCodec: PublicStateCodec | undefined = undefined;
 const noCompletion: PublicPendingCompletion | undefined = undefined;
 const noMessage: NHPMessage | undefined = undefined;
 void [publicReply, noCodec, noCompletion, noMessage];
+
+// Compile summary omission against the published declarations.
+const tokenSummary: AccessToken = {
+  qurl_id: "q_0123456789a",
+  status: "active",
+  one_time_use: false,
+  max_sessions: 1,
+  session_duration: 3600,
+  use_count: 0,
+  created_at: "2026-01-01T00:00:00Z",
+};
+const optionalExpiry: string | undefined = tokenSummary.expires_at;
+// @ts-expect-error The API does not guarantee a summary expiration field.
+const requiredExpiry: string = tokenSummary.expires_at;
+void optionalExpiry;
+void requiredExpiry;
