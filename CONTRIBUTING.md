@@ -151,6 +151,28 @@ signal to do both in lockstep.
   separate class and would warrant an `ajv`-backed schema validation
   layer against the upstream component schemas.
 
+### Published API drift
+
+The weekly `Published API drift` workflow compares every operation in
+<https://layerv.ai/docs/qurls.yaml> with `contract/upstream-operations.json`.
+This producer baseline includes endpoints the SDK does not expose. It is separate
+from the hand-maintained SDK subset in `contract/openapi.snapshot.yaml`.
+The workflow stores the fetched spec and report, and posts a bot comment on existing
+issue #50 only when the report changes, including recovery. It does not open issues,
+change either snapshot, or change SDK behavior. Operation drift is a report;
+fetch, parse, and publication failures fail the workflow.
+
+To review drift locally:
+
+```sh
+node scripts/check-upstream-api.mjs check /path/to/published-qurls.yaml
+```
+
+After reviewing upstream changes, update the producer baseline with
+`node scripts/check-upstream-api.mjs snapshot /path/to/published-qurls.yaml > contract/upstream-operations.json`.
+Update the SDK subset and method tests only when the SDK adopts an endpoint.
+This check compares method/path pairs; it does not compare request or response schemas.
+
 ## Pull Requests
 
 1. Fork the repo and create a branch from `main`
@@ -185,25 +207,3 @@ rather than invoking `npm publish` with `--dry-run`.
 ## License
 
 By contributing, you agree that your contributions will be licensed under the MIT License.
-
-### Published API drift
-
-The weekly `Published API drift` workflow compares every operation in
-<https://layerv.ai/docs/qurls.yaml> with `contract/upstream-operations.json`.
-This producer baseline includes endpoints the SDK does not expose. It is separate
-from the hand-maintained SDK subset in `contract/openapi.snapshot.yaml`.
-The workflow stores the fetched spec and report, and updates one bot comment on
-issue #50 only when the report changes, including recovery. It does not open issues,
-change either snapshot, or change SDK behavior. Operation drift is a report;
-fetch, parse, and publication failures fail the workflow.
-
-To review drift locally:
-
-```sh
-node scripts/check-upstream-api.mjs check /path/to/published-qurls.yaml
-```
-
-After reviewing upstream changes, update the producer baseline with
-`node scripts/check-upstream-api.mjs snapshot /path/to/published-qurls.yaml > contract/upstream-operations.json`.
-Update the SDK subset and method tests only when the SDK adopts an endpoint.
-This check compares method/path pairs; it does not compare request or response schemas.

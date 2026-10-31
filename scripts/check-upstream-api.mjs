@@ -39,6 +39,17 @@ export function operationsFromSpec(spec) {
 }
 
 export function renderReport(current, baseline) {
+  if (
+    !Array.isArray(baseline) ||
+    baseline.some(
+      (entry) =>
+        typeof entry !== "string" ||
+        !/^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|TRACE) \//.test(entry),
+    ) ||
+    JSON.stringify(baseline) !== JSON.stringify([...new Set(baseline)].sort())
+  ) {
+    throw new Error("Producer baseline must contain sorted, unique VERB /path entries");
+  }
   const currentSet = new Set(current);
   const baselineSet = new Set(baseline);
   const added = current.filter((operation) => !baselineSet.has(operation));
@@ -70,15 +81,15 @@ export function publishReport(report, api = github) {
   const commentsPath = `repos/${REPOSITORY}/issues/${ISSUE}/comments`;
   const existing = api("GET", commentsPath + "?per_page=100")
     .flat()
-    .find(
+    .findLast(
       (comment) =>
         comment.user?.login === "github-actions[bot]" && comment.body?.startsWith(REPORT_MARKER),
     );
-  if (existing?.body === report) return "unchanged";
-  if (existing)
-    api("PATCH", `repos/${REPOSITORY}/issues/comments/${existing.id}`, { body: report });
-  else api("POST", commentsPath, { body: report });
-  return existing ? "updated" : "created";
+  const normalize = (body) => body.replaceAll("\r\n", "\n").trimEnd();
+  if (existing && normalize(existing.body) === normalize(report)) return "unchanged";
+  // A new comment notifies subscribers even after the implementation issue closes.
+  api("POST", commentsPath, { body: report });
+  return existing ? "changed" : "created";
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
