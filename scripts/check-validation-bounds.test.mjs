@@ -5,7 +5,11 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { checkValidationBounds, validationBoundFindings } from "./check-validation-bounds.mjs";
+import {
+  checkValidationBounds,
+  readClientValidationSource,
+  validationBoundFindings,
+} from "./check-validation-bounds.mjs";
 
 const code = "const MAX_LABEL = 500; const MAX_BUDGET = 1 << 20;";
 const source = { schema: "Input", property: "label", keyword: "maxLength" };
@@ -17,7 +21,7 @@ const spec = { components: { schemas: { Input: { properties: { label: { maxLengt
 
 test("every current API-client cap has an explicit contract or safety-budget classification", () => {
   assert.deepEqual(checkValidationBounds(), []);
-  const current = readFileSync(new URL("../src/client-limits.ts", import.meta.url), "utf8");
+  const current = readClientValidationSource();
   const actualManifest = JSON.parse(
     readFileSync(new URL("../contract/validation-bounds.json", import.meta.url)),
   );
@@ -158,4 +162,11 @@ test("the standalone CLI fails with structured findings when published bounds ar
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("duplicate client bounds fail rather than override another module", () => {
+  assert.throws(
+    () => validationBoundFindings(code + "const MAX_LABEL = 600;", manifest),
+    /Duplicate SDK bound/,
+  );
 });
