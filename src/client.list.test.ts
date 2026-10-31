@@ -1367,6 +1367,32 @@ describe("session management pagination", () => {
     );
   });
 
+  it.each([undefined, 1])(
+    "rejects a missing later count or an unsafe total (%j)",
+    async (count) => {
+      const fetch = mockFetches([
+        {
+          status: 200,
+          body: {
+            data: { terminated: Number.MAX_SAFE_INTEGER },
+            meta: { has_more: true, next_cursor: "next" },
+          },
+        },
+        {
+          status: 200,
+          body: { data: { terminated: count }, meta: { has_more: false, request_id: "last-page" } },
+        },
+      ]);
+      await expect(
+        createClient(fetch).terminateAllResourceSessions(RESOURCE_CRID),
+      ).rejects.toMatchObject({
+        code: ERROR_CODE_UNEXPECTED_RESPONSE,
+        requestId: "last-page",
+      });
+      expect(fetch).toHaveBeenCalledTimes(2);
+    },
+  );
+
   it("reports a malformed later DELETE page without replaying it", async () => {
     const fetch = mockFetches([
       {
@@ -1429,7 +1455,7 @@ describe("session management pagination", () => {
       (await createClient(pages({ terminated: 1 })).terminateAllResourceSessions(RESOURCE_CRID))
         .terminated,
     ).toBe(2);
-    for (const terminated of ["3", -1, 1.5, null]) {
+    for (const terminated of ["3", -1, 1.5, null, undefined, Number.MAX_SAFE_INTEGER + 1]) {
       const fetch = mockFetch({ status: 200, body: { data: { terminated } } });
       await expect(
         createClient(fetch).terminateAllResourceSessions(RESOURCE_CRID),

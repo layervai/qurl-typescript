@@ -4976,21 +4976,25 @@ export class QURLClient {
             requestId: meta.request_id,
           });
         }
-        if (data?.terminated === undefined) {
-          this.log("terminateAllResourceSessions: missing terminated count; defaulting to zero", {
-            request_id: meta?.request_id,
-          });
-        } else if (!Number.isSafeInteger(data.terminated) || data.terminated < 0) {
-          throw unexpectedResponseError("terminateAllResourceSessions: invalid terminated count", {
-            requestId: meta?.request_id,
-          });
+        const count = data?.terminated;
+        if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0) {
+          throw unexpectedResponseError(
+            "terminateAllResourceSessions: missing or invalid terminated count; inspect sessions before retrying",
+            { requestId: meta?.request_id },
+          );
         }
         request_id = meta?.request_id;
-        return withEnvelopeMetadata({ ...meta, counts: [data?.terminated ?? 0] }, meta);
+        return withEnvelopeMetadata({ ...meta, counts: [count] }, meta);
       },
       (page) => page.counts,
     )) {
       terminated += count;
+      if (!Number.isSafeInteger(terminated)) {
+        throw unexpectedResponseError(
+          "terminateAllResourceSessions: total exceeds safe integer range; inspect sessions before retrying",
+          { requestId: request_id },
+        );
+      }
     }
     return withEnvelopeMetadata({ terminated, request_id }, { request_id });
   }
