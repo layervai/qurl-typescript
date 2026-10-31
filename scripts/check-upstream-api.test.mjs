@@ -74,8 +74,8 @@ test("posts changes and recovery, but uses only the latest bot report to suppres
   const api = (...args) => {
     calls.push(args);
     return [
-      [{ ...existing, id: 1 }],
-      [existing, { ...existing, id: 99, user: { login: "justin-layerv" } }],
+      [{ ...existing, id: 1, body: report }],
+      [existing, { id: 99, body: report, user: { login: "justin-layerv" } }],
     ];
   };
   assert.equal(publishReport(report, api), "changed");
