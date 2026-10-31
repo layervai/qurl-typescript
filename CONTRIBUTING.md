@@ -32,6 +32,20 @@ Keep that synthetic construction in those contract fixtures; do not copy a
 credential-shaped literal. This guard complements the verified-secret scanner;
 it does not detect every provider or high-entropy secret.
 
+## Client source layout
+
+`src/client.ts` keeps the public methods and shared HTTP, query, pagination,
+and retry plumbing. Resource helpers live in `client-resources.ts`,
+`client-portals.ts`, `client-connectors.ts`, `client-delegated.ts`, and
+`client-management.ts`. The existing public classes remain exported through
+`client.ts` and the package entry point.
+
+Shared input checks, field allowlists, error handling, path checks, transport
+types, and limits each have one internal module. Keep helpers beside their
+resource group and reuse these shared checks. These files do not add package
+entry points. `client-limits.ts` holds the bounds; the drift check scans every
+runtime `client*.ts` module so moving a bound cannot bypass it.
+
 ## Dual Build (ESM + CJS)
 
 The package emits two builds from one source tree:
@@ -178,7 +192,7 @@ missing or changed bounds before failing the job. Method/path-only drift remains
 a report and does not fail the job. This is not full request/response schema validation.
 
 Wire bounds stay numeric literals so the checker can inspect them without executing
-the client. Every top-level `MAX_*` constant in `src/client.ts` must be either a contract bound
+the client. Every top-level `MAX_*` constant in the runtime `src/client*.ts` modules must be either a contract bound
 or an explicitly documented local safety budget. New and stale classifications
 fail CI. Response size, diagnostic, traversal, and identifier work budgets remain
 local safeguards; a server field change does not justify raising them.

@@ -1,3 +1,4 @@
+import { copyResponseMetadata } from "./response-metadata.js";
 import {
   ERROR_CODE_CRID_MISMATCH,
   ERROR_CODE_INVALID_CRID,
@@ -84,6 +85,7 @@ export class ShareLink {
     this.#expiresAtEpochMs = Number.isFinite(expiresAtEpochMs) ? expiresAtEpochMs : undefined;
     this.expiresInSeconds = init.expiresInSeconds;
     this.singleUse = init.singleUse;
+    copyResponseMetadata(init, this);
     Object.freeze(this);
   }
 

@@ -1,84 +1,56 @@
-import { parseCrid, cridKeyMatches } from "./crid.js";
-import {
-  ConnectorResourceOutcomeUnknownError,
-  createError,
-  DelegatedBatchOutcomeUnknownError,
-  ERROR_CODE_AMBIGUOUS_RESOURCE,
-  ERROR_CODE_CLIENT_VALIDATION,
-  ERROR_CODE_RESOURCE_NOT_FOUND,
-  ERROR_CODE_CONNECTOR_RESOURCE_REVOKED,
-  ERROR_CODE_UNEXPECTED_RESPONSE,
-  ERROR_CODE_UNKNOWN,
-  NetworkError,
-  NotFoundError,
-  QURLError,
-  RuntimeError,
-  TimeoutError,
-  ValidationError,
-} from "./errors.js";
-import { stripTrailingSlashes } from "./internal.js";
-import { ShareLink } from "./share.js";
 import type {
-  TombstoneInfo,
-  ConsumerAccessPolicy,
-  ConsumerInvitation,
-  ConsumerGrant,
-  ConsumerGrantApprovalInput,
-  ConsumerListInput,
-  ConsumerInvitationListOutput,
-  ConsumerGrantListOutput,
-  AccessPolicy,
-  AccessToken,
   AccessCode,
   AccessCodeListOutput,
-  AIAgentPolicy,
+  AccessToken,
   ApiKey,
   ApiKeyListOutput,
   ApiKeyRequestScope,
-  BillingInvoiceListOutput,
   BatchCreateInput,
   BatchCreateOutput,
+  BillingInvoiceListOutput,
+  CheckoutSession,
   ClientOptions,
   ConnectorInstallation,
   ConnectorInstallationListOutput,
+  ConsumerAccessPolicy,
+  ConsumerGrant,
+  ConsumerGrantApprovalInput,
+  ConsumerGrantListOutput,
+  ConsumerInvitation,
+  ConsumerInvitationListOutput,
+  ConsumerListInput,
   CreateAccessCodeInput,
   CreateAccessCodeOutput,
   CreateApiKeyInput,
   CreateApiKeyOutput,
-  CreateExternalIdentityBindingInput,
-  CreateExternalIdentityBindingOutput,
   CreateBillingCheckoutInput,
   CreateDelegatedQurlBatchInput,
   CreateDelegatedQurlBatchOptions,
-  CreateDurableApiKeyInput,
-  CreateEnrollmentTokenInput,
+  CreateExternalIdentityBindingInput,
+  CreateExternalIdentityBindingOutput,
   CreateInput,
   CreateOutput,
   CreatePortalOptions,
   CreateQurlForResourceInput,
   CreateResourceInput,
   CreateWebhookInput,
-  CredentialClaimInput,
-  CredentialTargetInput,
   Customer,
-  CheckoutSession,
-  Domain,
-  DomainListOutput,
-  DomainVerifyResult,
   DelegatedQurl,
   DelegatedQurlBatchAccepted,
   DelegatedQurlBatchItemResult,
-  DelegatedQurlGrant,
+  Domain,
+  DomainListOutput,
+  DomainVerifyResult,
+  ExtendInput,
   GetDelegatedQurlBatchOptions,
   GetDelegatedQurlBatchOutput,
-  ExtendInput,
   Invoice,
-  ListInput,
-  ListOutput,
   ListApiKeysInput,
   ListBillingInvoicesInput,
   ListConnectorInstallationsInput,
   ListDomainsInput,
+  ListInput,
+  ListOutput,
   ListWebhookDeliveriesInput,
   ListWebhooksInput,
   MintInput,
@@ -88,19 +60,19 @@ import type {
   ProtectUrlOptions,
   QURL,
   QURLErrorData,
-  QurlSummary,
   Quota,
+  QurlSummary,
   RedeemAccessCodeInput,
   RedeemAccessCodeOutput,
   RegisterDomainInput,
+  RequestOptions,
+  ResolveInput,
+  ResolveOutput,
   Resource,
   ResourceDetail,
   ResourceHandle,
   ResourceListInput,
   ResourceListOutput,
-  RequestOptions,
-  ResolveInput,
-  ResolveOutput,
   Session,
   SessionListOutput,
   SessionTerminateOutput,
@@ -120,58 +92,179 @@ import type {
   WebhookListOutput,
   WebhookWithSecret,
 } from "./types.js";
+import {
+  ERROR_CODE_AMBIGUOUS_RESOURCE,
+  ERROR_CODE_RESOURCE_NOT_FOUND,
+  ERROR_CODE_UNEXPECTED_RESPONSE,
+  ERROR_CODE_UNKNOWN,
+  NetworkError,
+  NotFoundError,
+  QURLError,
+  RuntimeError,
+  TimeoutError,
+  ValidationError,
+  createError,
+} from "./errors.js";
+import { copyResponseMetadata, withResponseMetadata } from "./response-metadata.js";
+import { stripTrailingSlashes } from "./internal.js";
 import { VERSION } from "./version.js";
+import { ShareLink } from "./share.js";
+import {
+  MAX_AUTO_PAGINATION_PAGES,
+  MAX_BATCH_ITEMS,
+  MAX_CUSTOM_DOMAIN,
+  MAX_DELEGATED_ETAG,
+  MAX_DESCRIPTION,
+  MAX_IDEMPOTENCY_KEY,
+  MAX_LABEL,
+  MAX_RESPONSE_BODY_BYTES,
+  MAX_CONFIGURABLE_RESPONSE_BODY_BYTES,
+  RETRY_AFTER_HARD_CAP_MS,
+  RETRY_AFTER_PARSE_LIMIT_S,
+  RETRY_BASE_DELAY_MS,
+  RETRY_MAX_DELAY_MS,
+} from "./client-limits.js";
+import {
+  TEXT_DECODER,
+  TEXT_ENCODER,
+  boundedErrorIdentifier,
+  boundedErrorSnippet,
+  boundedInvalidFields,
+  boundedObjectKeys,
+  boundedTombstone,
+  clientValidationError,
+  isIndependentAbort,
+  isSdkTimeout,
+  unexpectedResponseError,
+  withErrorCause,
+} from "./client-errors.js";
+import {
+  describeShape,
+  normalizePatchFields,
+  requireAtLeastOneField,
+  requireBooleanIfPresent,
+  requireConsumerDecision,
+  requireListLimitInRange,
+  requireMaxLength,
+  requireMaxSessionsInRange,
+  requireNoUnknownFields,
+  requireNonEmptyIfPresent,
+  requireNonEmptyStringField,
+  requireObjectInput,
+  requirePortalTargetUrl,
+  requireValidAccessPolicy,
+  requireValidTags,
+} from "./client-validation.js";
+import {
+  API_KEY_LIST_PARAM_KEYS,
+  BILLING_INVOICE_LIST_PARAM_KEYS,
+  CONNECTOR_INSTALLATION_LIST_PARAM_KEYS,
+  CREATE_ACCESS_CODE_FIELD_KEYS,
+  CREATE_API_KEY_FIELD_KEYS,
+  CREATE_BILLING_CHECKOUT_FIELD_KEYS,
+  CREATE_QURL_FOR_RESOURCE_FIELD_KEYS,
+  CREATE_RESOURCE_FIELD_KEYS,
+  CREATE_WEBHOOK_FIELD_KEYS,
+  DOMAIN_LIST_PARAM_KEYS,
+  LIST_PARAM_KEYS,
+  MINT_FIELD_KEYS,
+  PROTECT_URL_OPTION_KEYS,
+  REDEEM_ACCESS_CODE_FIELD_KEYS,
+  REGISTER_DOMAIN_FIELD_KEYS,
+  REQUEST_OPTION_KEYS,
+  RESOURCE_LIST_PARAM_KEYS,
+  SHARE_RESOURCE_OPTION_KEYS,
+  UPDATE_API_KEY_FIELD_KEYS,
+  UPDATE_CUSTOMER_FIELD_KEYS,
+  UPDATE_FIELD_KEYS,
+  UPDATE_RESOURCE_FIELD_KEYS,
+  UPDATE_RESOURCE_QURL_FIELD_KEYS,
+  UPDATE_WEBHOOK_FIELD_KEYS,
+  WEBHOOK_DELIVERY_LIST_PARAM_KEYS,
+  WEBHOOK_LIST_PARAM_KEYS,
+} from "./client-input-fields.js";
+import type { ApiErrorEnvelope, ApiResponse, HttpResponse } from "./client-http-types.js";
+import {
+  batchItemResultValidationReason,
+  sameConsumerPolicy,
+  validateCreateInput,
+  validateQurlTokenOptions,
+  validateResourceQurlUpdateInput,
+  validateResourceWriteFields,
+} from "./client-resources.js";
+import {
+  ProtectedResource,
+  buildCreatePortalBody,
+  extractAccessToken,
+  parseApiDate,
+  parsePortal,
+} from "./client-portals.js";
+import {
+  ConnectorResource,
+  classifyConnectorMutationFailure,
+  parseConnectorResource,
+  requireConnectorSlug,
+  requireConnectorSubtleCrypto,
+  verifyResourceIdentity,
+} from "./client-connectors.js";
+import {
+  QURL_ID_PATH_OPTIONS,
+  RESOURCE_OR_QURL_ID_PATH_OPTIONS,
+  requireResourceCrid,
+  validatePathId,
+} from "./client-paths.js";
+import type { EnsureConnectorResourceResult } from "./client-connectors.js";
+import type { PortalWireResponse } from "./client-portals.js";
+import {
+  DELEGATED_BATCH_ID_PATTERN,
+  DELEGATED_QURL_ID_PATTERN,
+  STRONG_ETAG_PATTERN,
+  classifyDelegatedBatchCreateFailure,
+  delegatedBatchBase,
+  delegatedEnvelope,
+  delegatedResponseError,
+  delegatedResponseHeaders,
+  hasDelegatedNoStore,
+  isUtcTimestamp,
+  requiredDelegatedHeader,
+  validateCreateDelegatedQurlBatchInput,
+  validateDelegatedBatchCreateOptions,
+  validateDelegatedBatchResults,
+  validateDelegatedLocation,
+  validateDelegatedQurl,
+  validateGetDelegatedQurlBatchOptions,
+} from "./client-delegated.js";
+import {
+  validateApiKeyWriteFields,
+  validateEnrollmentTokenFields,
+  validateWebhookWriteFields,
+} from "./client-management.js";
 
 const DEFAULT_BASE_URL = "https://api.layerv.ai";
+
 const DEFAULT_MAX_RETRIES = 3;
+
 const DEFAULT_TIMEOUT = 30_000;
-// Match qurl-go c4f2f98's exact API response cap. Current qurl-service list
-// routes cap pages at 100 items. A caller can still exceed this cap with a
-// large, heavily escaped webhook-delivery page, so list callers must request a
-// smaller page if the service reports the body-limit error. This cap is fixed:
-// do not add an override or widen one SDK independently from the other.
-// The limit is enforced from Content-Length when usable and again while
-// consuming the response stream.
-const MAX_RESPONSE_BODY_BYTES = 1 << 20;
-const MAX_ERROR_SNIPPET_BYTES = 512;
-// UTF-8 uses at least one byte per UTF-16 code unit. Reading more source units
-// cannot add a byte that fits in a 512-byte retained diagnostic.
-const MAX_ERROR_SNIPPET_SOURCE_CODE_UNITS = MAX_ERROR_SNIPPET_BYTES;
-const MAX_INVALID_FIELD_ENTRIES = 100;
-const MAX_DEBUG_BODY_KEYS = 100;
-// Bound each retained diagnostic collection as well as each string. Without
-// this aggregate cap, 100 valid 512-byte keys and values could turn a small
-// server error into a large caller-visible object. This is a diagnostic budget,
-// not part of the API wire contract.
-const MAX_DIAGNOSTIC_COLLECTION_BYTES = 8 << 10;
-const TEXT_ENCODER = new TextEncoder();
-const ERROR_SNIPPET_ELLIPSIS = "...";
-const ERROR_SNIPPET_ELLIPSIS_BYTES = 3;
-// RFC 8259 JSON exchanged between systems must be valid UTF-8. A non-fatal
-// decoder would replace malformed bytes with U+FFFD before JSON.parse and hide
-// the producer's exact contract violation.
-const TEXT_DECODER = new TextDecoder("utf-8", { fatal: true });
-const RETRY_BASE_DELAY_MS = 500;
-// Bounds local exponential backoff (NOT server-asserted Retry-After —
-// see `RETRY_AFTER_HARD_CAP_MS` for that).
-const RETRY_MAX_DELAY_MS = 30_000;
-// Hard cap on server-asserted Retry-After. Guards against `Retry-After`
-// values >2^31-1 ms overflowing Node's setTimeout (silently truncated to
-// 1ms — turns a "wait a month" directive into a hot retry loop).
-const RETRY_AFTER_HARD_CAP_MS = 60 * 60 * 1000;
-const RETRY_AFTER_PARSE_LIMIT_S = RETRY_AFTER_HARD_CAP_MS / 1000;
+
 const RETRYABLE_STATUS = new Set([429, 502, 503, 504]);
+
 // Keep mutating status retries 429-only until the service-side idempotency
 // cache contract is proven across 5xx, TTL, and replay-window edge cases.
 // Fetch-level POST/PATCH retries still reuse Idempotency-Key below.
 const RETRYABLE_STATUS_MUTATING = new Set([429]);
+
 const REDIRECT_RESPONSE_STATUSES = new Set([300, 301, 302, 303, 305, 307, 308]);
+
 const NO_RETRYABLE_STATUSES: ReadonlySet<number> = new Set<number>();
+
 type HttpMethod = "GET" | "POST" | "PATCH" | "DELETE";
+
 const IDEMPOTENCY_KEY_METHODS = new Set<HttpMethod>(["POST", "PATCH"]);
+
 const MUTATING_RETRY_METHODS = new Set<HttpMethod>(["POST", "PATCH"]);
-const MAX_IDEMPOTENCY_KEY = 256;
+
 const IDEMPOTENCY_KEY_VALUE_RE = /^[\x21-\x7e](?:[\x20-\x7e]*[\x21-\x7e])?$/;
+
 const UUID_HEX = Array.from({ length: 256 }, (_, i) => i.toString(16).padStart(2, "0"));
 
 type RawRequestOptions = {
@@ -190,8 +283,8 @@ type RawRequestOptions = {
 };
 
 class ResponseBodyTooLargeError extends Error {
-  constructor() {
-    super(`Response body exceeds ${MAX_RESPONSE_BODY_BYTES}-byte limit`);
+  constructor(limit: number) {
+    super(`Response body exceeds ${limit}-byte limit`);
     this.name = "ResponseBodyTooLargeError";
   }
 }
@@ -211,487 +304,10 @@ class ResponseBodyMaterializationError extends Error {
 }
 
 const NO_PASSTHROUGH_STATUSES: readonly number[] = [];
+
 const BATCH_PASSTHROUGH_STATUSES: readonly number[] = [400];
+
 const DELEGATED_BATCH_PASSTHROUGH_STATUSES: readonly number[] = [304];
-
-/** Allowlist of known query-param keys for the `list()` endpoint. */
-const LIST_PARAM_KEYS = [
-  "limit",
-  "cursor",
-  "status",
-  "q",
-  "sort",
-  "created_after",
-  "created_before",
-  "expires_before",
-  "expires_after",
-] as const satisfies readonly (keyof ListInput)[];
-
-const REQUEST_OPTION_KEYS = ["idempotencyKey"] as const satisfies readonly (keyof RequestOptions)[];
-
-const DELEGATED_BATCH_INPUT_KEYS = [
-  "mint_capability",
-  "grants",
-] as const satisfies readonly (keyof CreateDelegatedQurlBatchInput)[];
-
-const DELEGATED_BATCH_GRANT_KEYS = [
-  "expires_in",
-  "label",
-  "one_time_use",
-  "max_sessions",
-  "session_duration",
-  "access_policy",
-] as const satisfies readonly (keyof DelegatedQurlGrant)[];
-
-const DELEGATED_BATCH_CREATE_OPTION_KEYS = [
-  "idempotencyKey",
-] as const satisfies readonly (keyof CreateDelegatedQurlBatchOptions)[];
-
-const DELEGATED_BATCH_GET_OPTION_KEYS = [
-  "etag",
-] as const satisfies readonly (keyof GetDelegatedQurlBatchOptions)[];
-
-// Compile-time witness: `Exclude<keyof X, (typeof KEYS)[number]>` is
-// `never` iff KEYS lists every key of X. Paired with the
-// `satisfies readonly (keyof X)[]` clause on the array (which catches
-// the other direction), this gives bidirectional drift detection on
-// the *_KEYS allowlists at zero runtime cost.
-function assertExhaustive<T extends true>(_: T): void {
-  /* type-only check */
-}
-assertExhaustive<
-  Exclude<keyof ListInput, (typeof LIST_PARAM_KEYS)[number]> extends never ? true : never
->(true);
-
-assertExhaustive<
-  Exclude<keyof RequestOptions, (typeof REQUEST_OPTION_KEYS)[number]> extends never ? true : never
->(true);
-
-assertExhaustive<
-  Exclude<
-    keyof CreateDelegatedQurlBatchInput,
-    (typeof DELEGATED_BATCH_INPUT_KEYS)[number]
-  > extends never
-    ? true
-    : never
->(true);
-
-assertExhaustive<
-  Exclude<keyof DelegatedQurlGrant, (typeof DELEGATED_BATCH_GRANT_KEYS)[number]> extends never
-    ? true
-    : never
->(true);
-
-assertExhaustive<
-  Exclude<
-    keyof CreateDelegatedQurlBatchOptions,
-    (typeof DELEGATED_BATCH_CREATE_OPTION_KEYS)[number]
-  > extends never
-    ? true
-    : never
->(true);
-
-assertExhaustive<
-  Exclude<
-    keyof GetDelegatedQurlBatchOptions,
-    (typeof DELEGATED_BATCH_GET_OPTION_KEYS)[number]
-  > extends never
-    ? true
-    : never
->(true);
-
-const CREATE_FIELD_KEYS = [
-  "private",
-  "type",
-  "target_url",
-  "expires_in",
-  "one_time_use",
-  "max_sessions",
-  "session_duration",
-  "label",
-  "access_policy",
-  "custom_domain",
-] as const satisfies readonly (keyof CreateInput)[];
-
-assertExhaustive<
-  Exclude<keyof CreateInput, (typeof CREATE_FIELD_KEYS)[number]> extends never ? true : never
->(true);
-
-/**
- * Fields accepted by `update()`. The empty-input pre-flight check in
- * {@link QURLClient.update} iterates this const — so adding a new field to
- * {@link UpdateInput} without listing it here will fail the
- * paired `assertExhaustive` witness at compile time rather than silently
- * sneaking through an empty-input request.
- */
-const UPDATE_FIELD_KEYS = [
-  "extend_by",
-  "expires_at",
-  "description",
-  "tags",
-] as const satisfies readonly (keyof UpdateInput)[];
-
-assertExhaustive<
-  Exclude<keyof UpdateInput, (typeof UPDATE_FIELD_KEYS)[number]> extends never ? true : never
->(true);
-
-/**
- * Fields accepted by `mintLink()`. Iterated by the null-stripping
- * normalization loop in {@link QURLClient.mintLink} so unknown keys
- * from untyped-JS callers don't leak through to the wire body.
- * Symmetric with `LIST_PARAM_KEYS` / `UPDATE_FIELD_KEYS`.
- */
-const MINT_FIELD_KEYS = [
-  "expires_in",
-  "expires_at",
-  "label",
-  "one_time_use",
-  "max_sessions",
-  "session_duration",
-  "access_policy",
-] as const satisfies readonly (keyof MintInput)[];
-
-assertExhaustive<
-  Exclude<keyof MintInput, (typeof MINT_FIELD_KEYS)[number]> extends never ? true : never
->(true);
-
-const RESOURCE_LIST_PARAM_KEYS = [
-  "cursor",
-  "limit",
-  "alias",
-  "slug",
-  "status",
-  "type",
-] as const satisfies readonly (keyof ResourceListInput)[];
-
-assertExhaustive<
-  Exclude<keyof ResourceListInput, (typeof RESOURCE_LIST_PARAM_KEYS)[number]> extends never
-    ? true
-    : never
->(true);
-
-const CREATE_RESOURCE_FIELD_KEYS = [
-  "private",
-  "consumer_access",
-  "type",
-  "target_url",
-  "description",
-  "tags",
-  "custom_domain",
-  "alias",
-  "slug",
-  "find_or_create",
-] as const satisfies readonly (keyof CreateResourceInput)[];
-
-assertExhaustive<
-  Exclude<keyof CreateResourceInput, (typeof CREATE_RESOURCE_FIELD_KEYS)[number]> extends never
-    ? true
-    : never
->(true);
-
-const UPDATE_RESOURCE_FIELD_KEYS = [
-  "allowed_device_keys_add",
-  "allowed_device_keys_remove",
-  "consumer_access",
-  "expected_consumer_access_version",
-  "description",
-  "tags",
-  "custom_domain",
-  "preserve_host",
-  "alias",
-] as const satisfies readonly (keyof UpdateResourceInput)[];
-
-assertExhaustive<
-  Exclude<keyof UpdateResourceInput, (typeof UPDATE_RESOURCE_FIELD_KEYS)[number]> extends never
-    ? true
-    : never
->(true);
-
-const CREATE_QURL_FOR_RESOURCE_FIELD_KEYS = [
-  "expires_in",
-  "one_time_use",
-  "max_sessions",
-  "session_duration",
-  "label",
-  "access_policy",
-  "target_path",
-] as const satisfies readonly (keyof CreateQurlForResourceInput)[];
-
-const SHARE_RESOURCE_OPTION_KEYS = [
-  "ttlSeconds",
-] as const satisfies readonly (keyof ShareResourceOptions)[];
-
-assertExhaustive<
-  Exclude<keyof ShareResourceOptions, (typeof SHARE_RESOURCE_OPTION_KEYS)[number]> extends never
-    ? true
-    : never
->(true);
-
-assertExhaustive<
-  Exclude<
-    keyof CreateQurlForResourceInput,
-    (typeof CREATE_QURL_FOR_RESOURCE_FIELD_KEYS)[number]
-  > extends never
-    ? true
-    : never
->(true);
-
-/**
- * Options accepted by the portal-verb `protectUrl` / `createPortal`
- * surface. These are camelCase caller-facing options (the portal verbs are
- * the idiomatic layer); the build helpers map them onto the same wire
- * fields the REST-shaped methods send.
- */
-const PROTECT_URL_OPTION_KEYS = [
-  "private",
-  "consumerAccess",
-  "description",
-  "tags",
-  "customDomain",
-  "alias",
-] as const satisfies readonly (keyof ProtectUrlOptions)[];
-
-assertExhaustive<
-  Exclude<keyof ProtectUrlOptions, (typeof PROTECT_URL_OPTION_KEYS)[number]> extends never
-    ? true
-    : never
->(true);
-
-const CREATE_PORTAL_OPTION_KEYS = [
-  "validFor",
-  "label",
-  "oneTimeUse",
-  "maxSessions",
-  "sessionDuration",
-  "targetPath",
-] as const satisfies readonly (keyof CreatePortalOptions)[];
-
-assertExhaustive<
-  Exclude<keyof CreatePortalOptions, (typeof CREATE_PORTAL_OPTION_KEYS)[number]> extends never
-    ? true
-    : never
->(true);
-
-const UPDATE_RESOURCE_QURL_FIELD_KEYS = [
-  "extend_by",
-  "expires_at",
-  "label",
-  "access_policy",
-  "max_sessions",
-  "session_duration",
-] as const satisfies readonly (keyof UpdateResourceQurlInput)[];
-
-assertExhaustive<
-  Exclude<
-    keyof UpdateResourceQurlInput,
-    (typeof UPDATE_RESOURCE_QURL_FIELD_KEYS)[number]
-  > extends never
-    ? true
-    : never
->(true);
-
-const UPDATE_CUSTOMER_FIELD_KEYS = [
-  "spending_cap_cents",
-] as const satisfies readonly (keyof UpdateCustomerInput)[];
-
-assertExhaustive<
-  Exclude<keyof UpdateCustomerInput, (typeof UPDATE_CUSTOMER_FIELD_KEYS)[number]> extends never
-    ? true
-    : never
->(true);
-
-const CREATE_BILLING_CHECKOUT_FIELD_KEYS = [
-  "plan",
-] as const satisfies readonly (keyof CreateBillingCheckoutInput)[];
-
-assertExhaustive<
-  Exclude<
-    keyof CreateBillingCheckoutInput,
-    (typeof CREATE_BILLING_CHECKOUT_FIELD_KEYS)[number]
-  > extends never
-    ? true
-    : never
->(true);
-
-const REGISTER_DOMAIN_FIELD_KEYS = [
-  "domain",
-] as const satisfies readonly (keyof RegisterDomainInput)[];
-
-assertExhaustive<
-  Exclude<keyof RegisterDomainInput, (typeof REGISTER_DOMAIN_FIELD_KEYS)[number]> extends never
-    ? true
-    : never
->(true);
-
-const CREATE_WEBHOOK_FIELD_KEYS = [
-  "url",
-  "events",
-  "description",
-] as const satisfies readonly (keyof CreateWebhookInput)[];
-
-assertExhaustive<
-  Exclude<keyof CreateWebhookInput, (typeof CREATE_WEBHOOK_FIELD_KEYS)[number]> extends never
-    ? true
-    : never
->(true);
-
-const UPDATE_WEBHOOK_FIELD_KEYS = [
-  "url",
-  "events",
-  "description",
-  "status",
-] as const satisfies readonly (keyof UpdateWebhookInput)[];
-
-assertExhaustive<
-  Exclude<keyof UpdateWebhookInput, (typeof UPDATE_WEBHOOK_FIELD_KEYS)[number]> extends never
-    ? true
-    : never
->(true);
-
-const CREATE_API_KEY_FIELD_KEYS = [
-  "kind",
-  "name",
-  "scopes",
-  "target",
-  "claims",
-  "expires_in",
-] as const satisfies readonly (keyof CreateDurableApiKeyInput | keyof CreateEnrollmentTokenInput)[];
-
-assertExhaustive<
-  Exclude<
-    keyof CreateDurableApiKeyInput | keyof CreateEnrollmentTokenInput,
-    (typeof CREATE_API_KEY_FIELD_KEYS)[number]
-  > extends never
-    ? true
-    : never
->(true);
-
-const UPDATE_API_KEY_FIELD_KEYS = [
-  "name",
-  "scopes",
-] as const satisfies readonly (keyof UpdateApiKeyInput)[];
-
-assertExhaustive<
-  Exclude<keyof UpdateApiKeyInput, (typeof UPDATE_API_KEY_FIELD_KEYS)[number]> extends never
-    ? true
-    : never
->(true);
-
-const REDEEM_ACCESS_CODE_FIELD_KEYS = [
-  "code",
-  "honeypot",
-  "elapsed_ms",
-] as const satisfies readonly (keyof RedeemAccessCodeInput)[];
-
-assertExhaustive<
-  Exclude<keyof RedeemAccessCodeInput, (typeof REDEEM_ACCESS_CODE_FIELD_KEYS)[number]> extends never
-    ? true
-    : never
->(true);
-
-const CREATE_ACCESS_CODE_FIELD_KEYS = [
-  "resource_id",
-  "name",
-  "max_uses",
-  "expires_at",
-] as const satisfies readonly (keyof CreateAccessCodeInput)[];
-
-assertExhaustive<
-  Exclude<keyof CreateAccessCodeInput, (typeof CREATE_ACCESS_CODE_FIELD_KEYS)[number]> extends never
-    ? true
-    : never
->(true);
-
-const CONNECTOR_INSTALLATION_LIST_PARAM_KEYS = [
-  "cursor",
-  "limit",
-] as const satisfies readonly (keyof ListConnectorInstallationsInput)[];
-
-assertExhaustive<
-  Exclude<
-    keyof ListConnectorInstallationsInput,
-    (typeof CONNECTOR_INSTALLATION_LIST_PARAM_KEYS)[number]
-  > extends never
-    ? true
-    : never
->(true);
-
-const BILLING_INVOICE_LIST_PARAM_KEYS = [
-  "limit",
-  "cursor",
-] as const satisfies readonly (keyof ListBillingInvoicesInput)[];
-
-assertExhaustive<
-  Exclude<
-    keyof ListBillingInvoicesInput,
-    (typeof BILLING_INVOICE_LIST_PARAM_KEYS)[number]
-  > extends never
-    ? true
-    : never
->(true);
-
-const DOMAIN_LIST_PARAM_KEYS = [
-  "limit",
-  "cursor",
-] as const satisfies readonly (keyof ListDomainsInput)[];
-
-assertExhaustive<
-  Exclude<keyof ListDomainsInput, (typeof DOMAIN_LIST_PARAM_KEYS)[number]> extends never
-    ? true
-    : never
->(true);
-
-const WEBHOOK_LIST_PARAM_KEYS = [
-  "limit",
-  "cursor",
-] as const satisfies readonly (keyof ListWebhooksInput)[];
-
-assertExhaustive<
-  Exclude<keyof ListWebhooksInput, (typeof WEBHOOK_LIST_PARAM_KEYS)[number]> extends never
-    ? true
-    : never
->(true);
-
-const WEBHOOK_DELIVERY_LIST_PARAM_KEYS = [
-  "limit",
-  "cursor",
-] as const satisfies readonly (keyof ListWebhookDeliveriesInput)[];
-
-assertExhaustive<
-  Exclude<
-    keyof ListWebhookDeliveriesInput,
-    (typeof WEBHOOK_DELIVERY_LIST_PARAM_KEYS)[number]
-  > extends never
-    ? true
-    : never
->(true);
-
-const API_KEY_LIST_PARAM_KEYS = [
-  "limit",
-  "cursor",
-  "status",
-] as const satisfies readonly (keyof ListApiKeysInput)[];
-
-assertExhaustive<
-  Exclude<keyof ListApiKeysInput, (typeof API_KEY_LIST_PARAM_KEYS)[number]> extends never
-    ? true
-    : never
->(true);
-
-/**
- * Construct a {@link ValidationError} for a client-side pre-flight check.
- * Uses `status: 0` (matching {@link NetworkError}/{@link TimeoutError}) and
- * `code: "client_validation"` so catch-by-class still works and callers can
- * tell the error originated inside the SDK rather than from the API.
- */
-function clientValidationError(detail: string): ValidationError {
-  return new ValidationError({
-    status: 0,
-    code: ERROR_CODE_CLIENT_VALIDATION,
-    title: "Invalid Argument",
-    detail,
-  });
-}
 
 function validateRequestOptions(options: unknown): asserts options is RequestOptions | undefined {
   if (options === undefined) {
@@ -786,205 +402,6 @@ function fillRandomBytes(bytes: Uint8Array<ArrayBuffer>): void {
   );
 }
 
-/**
- * Construct a {@link ValidationError} for the case where the API returned
- * a response that parsed as JSON but didn't match the expected schema
- * shape (e.g. 400 with a body that isn't a {@link BatchCreateOutput}).
- *
- * Distinct from {@link clientValidationError} so callers can `.code`-branch
- * between "I passed bad input locally" (`"client_validation"`) and "the
- * server returned a body I can't interpret" (`"unexpected_response"`).
- * Uses `status: 0` by default because a logical shape mismatch is not tied to
- * the HTTP classification. Callers that enforce an observed HTTP contract
- * pass that status explicitly.
- *
- * Threads `request_id` through to {@link QURLError.requestId} when the
- * server-side correlation ID is available — operators debugging
- * "unexpected response" tickets need it on the *error* path too, not
- * just on success/passthrough returns.
- */
-function unexpectedResponseError(
-  detail: string,
-  options: { status?: number; requestId?: string } = {},
-): ValidationError {
-  // Every detail passed here is an SDK-authored contract message whose dynamic
-  // inputs were validated by the caller-side shape guards. Do not pass raw
-  // server strings to this helper. Server diagnostics use boundedErrorSnippet.
-  const safeRequestId = boundedErrorIdentifier(options.requestId);
-  return new ValidationError({
-    status: options.status ?? 0,
-    code: ERROR_CODE_UNEXPECTED_RESPONSE,
-    title: "Unexpected Response",
-    detail,
-    request_id: safeRequestId,
-  });
-}
-
-function withErrorCause<T extends Error>(error: T, cause: unknown): T {
-  // Match the native Error `cause` descriptor. In particular, do not leak a
-  // transport object through Object.keys(), object spread, or JSON logging.
-  Object.defineProperty(error, "cause", {
-    value: cause,
-    writable: true,
-    configurable: true,
-  });
-  return error;
-}
-
-function isIndependentAbort(error: unknown, requestSignal: AbortSignal): boolean {
-  return (
-    error instanceof Error &&
-    (error.name === "AbortError" || error.name === "TimeoutError") &&
-    !requestSignal.aborted
-  );
-}
-
-function isSdkTimeout(error: unknown, requestSignal: AbortSignal): boolean {
-  return (
-    error instanceof Error &&
-    requestSignal.aborted &&
-    (error.name === "TimeoutError" || error.name === "AbortError")
-  );
-}
-
-/**
- * Normalize a server-provided problem title/detail into a single-line,
- * UTF-8-safe snippet. Error messages must stay bounded even when a proxy or
- * compromised upstream returns very large structured problem fields.
- */
-function normalizedErrorSnippet(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  // Bound source work before the Unicode regular expressions allocate
-  // normalized copies. The response body cap is much larger than one retained
-  // diagnostic, so processing the full server string would waste memory.
-  const normalized = value
-    .slice(0, MAX_ERROR_SNIPPET_SOURCE_CODE_UNITS)
-    // Strip control characters plus bidi override/isolate controls that can
-    // visually reorder diagnostics. Preserve other formatting characters
-    // such as ZWJ/ZWNJ, which are required by legitimate scripts and emoji.
-    .replace(/[\p{Cc}\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/gu, " ")
-    .trim()
-    .replace(/\s+/g, " ");
-  return normalized === "" ? undefined : normalized;
-}
-
-function boundedErrorSnippet(value: unknown): string | undefined {
-  const sourceTruncated =
-    typeof value === "string" && value.length > MAX_ERROR_SNIPPET_SOURCE_CODE_UNITS;
-  const normalized = normalizedErrorSnippet(value);
-  if (normalized === undefined) return undefined;
-  const contentLimit = sourceTruncated
-    ? MAX_ERROR_SNIPPET_BYTES - ERROR_SNIPPET_ELLIPSIS_BYTES
-    : MAX_ERROR_SNIPPET_BYTES;
-  // UTF-8 uses at most three bytes per UTF-16 code unit. Most diagnostics are
-  // short ASCII, so avoid an allocation only to prove they fit.
-  if (normalized.length * 3 <= contentLimit) {
-    return sourceTruncated ? `${normalized}${ERROR_SNIPPET_ELLIPSIS}` : normalized;
-  }
-  const encoded = TEXT_ENCODER.encode(normalized);
-  if (encoded.byteLength <= contentLimit) {
-    return sourceTruncated ? `${normalized}${ERROR_SNIPPET_ELLIPSIS}` : normalized;
-  }
-
-  let end = MAX_ERROR_SNIPPET_BYTES - ERROR_SNIPPET_ELLIPSIS_BYTES;
-  // Do not split a multi-byte UTF-8 sequence at the cap.
-  while (end > 0 && (encoded[end] & 0xc0) === 0x80) end--;
-  return `${TEXT_DECODER.decode(encoded.subarray(0, end))}${ERROR_SNIPPET_ELLIPSIS}`;
-}
-
-/** Keep server identifiers useful as exact machine-readable discriminants. */
-function boundedErrorIdentifier(value: unknown): string | undefined {
-  if (typeof value !== "string" || value.length > MAX_ERROR_SNIPPET_SOURCE_CODE_UNITS) {
-    return undefined;
-  }
-  const normalized = normalizedErrorSnippet(value);
-  if (
-    normalized === undefined ||
-    normalized !== value ||
-    TEXT_ENCODER.encode(value).byteLength > MAX_ERROR_SNIPPET_BYTES
-  ) {
-    return undefined;
-  }
-  return value;
-}
-
-/** Keep only the documented retained metadata, with bounded wire values. */
-function boundedTombstone(value: unknown): TombstoneInfo | undefined {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
-  const raw = value as Record<string, unknown>;
-  const timestamp = boundedErrorIdentifier(raw.tombstoned_at);
-  if (
-    timestamp === undefined ||
-    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(timestamp) ||
-    !Number.isFinite(Date.parse(timestamp))
-  )
-    return undefined;
-  const out: TombstoneInfo = { tombstoned_at: timestamp };
-  const count = raw.final_access_count;
-  // The API omits zero: absence means no snapshot or a redacted count.
-  if (typeof count === "number" && Number.isSafeInteger(count) && count >= 1) {
-    out.final_access_count = count;
-  }
-  return out;
-}
-
-/** Collect at most the first N enumerable own string keys without a full key-array copy. */
-function firstEnumerableOwnKeys(value: object, limit: number): string[] {
-  const keys: string[] = [];
-  for (const key in value) {
-    if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
-    keys.push(key);
-    if (keys.length === limit) break;
-  }
-  return keys;
-}
-
-/** Bound the structured per-field diagnostics exposed on ValidationError. */
-function boundedInvalidFields(value: unknown): Record<string, string> | undefined {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
-
-  const entries: [string, string][] = [];
-  const retainedKeys = new Set<string>();
-  let retainedBytes = 0;
-  // Bound inspected entries as well as retained entries. A hostile envelope
-  // whose values all have the wrong type must not make diagnostics scan every
-  // key in the response body.
-  for (const rawKey of firstEnumerableOwnKeys(value, MAX_INVALID_FIELD_ENTRIES)) {
-    const rawValue = (value as Record<string, unknown>)[rawKey];
-    const key = boundedErrorSnippet(rawKey);
-    const fieldDetail = boundedErrorSnippet(rawValue);
-    if (key !== undefined && fieldDetail !== undefined && !retainedKeys.has(key)) {
-      const entryBytes =
-        TEXT_ENCODER.encode(key).byteLength + TEXT_ENCODER.encode(fieldDetail).byteLength;
-      // A later, smaller entry can still fit even when this one cannot.
-      if (retainedBytes + entryBytes > MAX_DIAGNOSTIC_COLLECTION_BYTES) continue;
-      retainedKeys.add(key);
-      entries.push([key, fieldDetail]);
-      retainedBytes += entryBytes;
-    }
-  }
-  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
-}
-
-/** Bound server-controlled object keys before forwarding them to a debug sink. */
-function boundedObjectKeys(value: object): string[] {
-  // Stop before normalization so a hostile envelope cannot force work over
-  // every enumerable own key. Some early keys may normalize away; bounded
-  // diagnostics are more important here than filling every available slot.
-  const retained: string[] = [];
-  let retainedBytes = 0;
-  for (const rawKey of firstEnumerableOwnKeys(value, MAX_DEBUG_BODY_KEYS)) {
-    const key = boundedErrorSnippet(rawKey);
-    if (key === undefined) continue;
-    const keyBytes = TEXT_ENCODER.encode(key).byteLength;
-    // A later, smaller key can still fit even when this one cannot.
-    if (retainedBytes + keyBytes > MAX_DIAGNOSTIC_COLLECTION_BYTES) continue;
-    retained.push(key);
-    retainedBytes += keyBytes;
-  }
-  return retained;
-}
-
 async function cancelResponseBody(body: Response["body"]): Promise<void> {
   if (!body) return;
   try {
@@ -994,24 +411,24 @@ async function cancelResponseBody(body: Response["body"]): Promise<void> {
   }
 }
 
-function materializedResponseBodyExceedsLimit(value: string): boolean {
-  if (value.length > MAX_RESPONSE_BODY_BYTES) return true;
+function materializedResponseBodyExceedsLimit(value: string, limit: number): boolean {
+  if (value.length > limit) return true;
   // Encoding creates another buffer. UTF-8 uses at most three bytes per
   // UTF-16 code unit, so shorter strings are provably safe without that copy.
-  return (
-    value.length * 3 > MAX_RESPONSE_BODY_BYTES &&
-    TEXT_ENCODER.encode(value).byteLength > MAX_RESPONSE_BODY_BYTES
-  );
+  return value.length * 3 > limit && TEXT_ENCODER.encode(value).byteLength > limit;
 }
 
-function contentLengthExceedsLimit(response: Response): boolean {
+function contentLengthExceedsLimit(response: Response, limit: number): boolean {
   // 204/205 never carry content, and a 304 Content-Length describes the
   // selected representation rather than a response body. Do not reject those
   // statuses for metadata about bytes that fetch will not deliver.
   if (response.status === 204 || response.status === 205 || response.status === 304) return false;
+  // Encoded Content-Length describes wire bytes; fetch exposes decoded bytes.
+  const encoding = response.headers.get("content-encoding");
+  if (encoding && encoding.trim().toLowerCase() !== "identity") return false;
   const value = response.headers.get("content-length");
   if (value === null || !/^\d+$/.test(value.trim())) return false;
-  return Number(value) > MAX_RESPONSE_BODY_BYTES;
+  return Number(value) > limit;
 }
 
 type ResponseUrlState = "same" | "changed" | "invalid";
@@ -1040,7 +457,7 @@ function responseUrlState(responseUrl: unknown, requestUrl: string): ResponseUrl
  * optimization only; streaming byte accounting remains authoritative because
  * that header may be absent or false.
  */
-async function readBoundedResponseBody(response: Response): Promise<string> {
+async function readBoundedResponseBody(response: Response, limit: number): Promise<string> {
   // `headers.get` is part of the documented injected-fetch contract. Detect a
   // malformed local shim before it can be mistaken for a retryable body-stream
   // failure and replay an otherwise deterministic GET programming error.
@@ -1049,9 +466,9 @@ async function readBoundedResponseBody(response: Response): Promise<string> {
       "Response-like fetch must provide headers.get(name)",
     );
   }
-  if (contentLengthExceedsLimit(response)) {
+  if (contentLengthExceedsLimit(response, limit)) {
     await cancelResponseBody(response.body);
-    throw new ResponseBodyTooLargeError();
+    throw new ResponseBodyTooLargeError(limit);
   }
 
   const body = response.body;
@@ -1073,8 +490,8 @@ async function readBoundedResponseBody(response: Response): Promise<string> {
       }
     }
     const text = typeof materializedText === "string" ? materializedText : "";
-    if (materializedResponseBodyExceedsLimit(text)) {
-      throw new ResponseBodyTooLargeError();
+    if (materializedResponseBodyExceedsLimit(text, limit)) {
+      throw new ResponseBodyTooLargeError(limit);
     }
     if (
       text !== "" ||
@@ -1102,8 +519,8 @@ async function readBoundedResponseBody(response: Response): Promise<string> {
       throw new ResponseBodyMaterializationError();
     }
     if (serialized === undefined) return "";
-    if (materializedResponseBodyExceedsLimit(serialized)) {
-      throw new ResponseBodyTooLargeError();
+    if (materializedResponseBodyExceedsLimit(serialized, limit)) {
+      throw new ResponseBodyTooLargeError(limit);
     }
     return serialized;
   }
@@ -1121,13 +538,13 @@ async function readBoundedResponseBody(response: Response): Promise<string> {
         );
       }
       const nextTotal = total + value.byteLength;
-      if (nextTotal > MAX_RESPONSE_BODY_BYTES) {
+      if (nextTotal > limit) {
         try {
           await reader.cancel();
         } catch {
           // Preserve the body-limit failure even if stream cancellation fails.
         }
-        throw new ResponseBodyTooLargeError();
+        throw new ResponseBodyTooLargeError(limit);
       }
       chunks.push(value);
       total = nextTotal;
@@ -1151,165 +568,6 @@ async function readBoundedResponseBody(response: Response): Promise<string> {
     return TEXT_DECODER.decode(bytes);
   } catch {
     throw new InvalidResponseEncodingError();
-  }
-}
-
-// ---- Spec-derived validation helpers ------------------------------------
-// These mirror constraints documented on each request schema in
-// `openapi.yaml` so obvious mistakes fail fast instead of round-tripping
-// to the API and coming back as a generic 400.
-// CI checks every MAX_* constant against contract/validation-bounds.json; the
-// weekly published-spec check detects upstream changes. Local safety budgets
-// are classified separately and must not be raised to bypass a service cap.
-
-const MAX_TARGET_URL = 2048;
-const MAX_LABEL = 500;
-const MAX_BATCH_ITEMS = 100;
-const MAX_DESCRIPTION = 500;
-const MAX_CUSTOM_DOMAIN = 253;
-const MAX_MAX_SESSIONS = 1000;
-const MAX_API_KEY_NAME = 100;
-const API_KEY_REQUEST_SCOPE_VALUES = [
-  "qurl:read",
-  "qurl:write",
-  "qurl:resolve",
-  "qurl:agent",
-] as const satisfies readonly ApiKeyRequestScope[];
-assertExhaustive<
-  Exclude<ApiKeyRequestScope, (typeof API_KEY_REQUEST_SCOPE_VALUES)[number]> extends never
-    ? true
-    : never
->(true);
-const API_KEY_REQUEST_SCOPES = new Set<string>(API_KEY_REQUEST_SCOPE_VALUES);
-
-/** Narrow a response scope before reusing it in a create/update request. */
-export function isApiKeyRequestScope(scope: string): scope is ApiKeyRequestScope {
-  return API_KEY_REQUEST_SCOPES.has(scope);
-}
-
-const CREDENTIAL_TARGET_VALUES = [
-  "agent",
-  "connector",
-] as const satisfies readonly CredentialTargetInput[];
-assertExhaustive<
-  Exclude<CredentialTargetInput, (typeof CREDENTIAL_TARGET_VALUES)[number]> extends never
-    ? true
-    : never
->(true);
-const CREDENTIAL_TARGETS = new Set<string>(CREDENTIAL_TARGET_VALUES);
-
-const CREDENTIAL_CLAIM_TYPE_VALUES = [
-  "connector",
-] as const satisfies readonly CredentialClaimInput["type"][];
-assertExhaustive<
-  Exclude<CredentialClaimInput["type"], (typeof CREDENTIAL_CLAIM_TYPE_VALUES)[number]> extends never
-    ? true
-    : never
->(true);
-const CREDENTIAL_CLAIM_TYPES = new Set<string>(CREDENTIAL_CLAIM_TYPE_VALUES);
-// Mirrors CreateApiKeyRequest.expires_in in the service OpenAPI. Composite
-// durations are deliberately invalid on this endpoint. The 24h cap permits
-// 1d, but no positive whole-week duration.
-const CREDENTIAL_DURATION_PATTERN = /^([0-9]+)([smhdw])$/;
-type CredentialDurationUnit = "s" | "m" | "h" | "d" | "w";
-const CREDENTIAL_DURATION_MULTIPLIERS: Readonly<Record<CredentialDurationUnit, bigint>> = {
-  s: 1n,
-  m: 60n,
-  h: 3600n,
-  d: 86400n,
-  w: 604800n,
-};
-const MAX_ENROLLMENT_TOKEN_TTL_SECONDS = 86400n;
-const MAX_ALIAS = 64;
-const MAX_SLUG = 64;
-const MAX_TARGET_PATH = 2048;
-const MAX_TAGS = 10;
-const MAX_TAG_LENGTH = 50;
-const MAX_AUTO_PAGINATION_PAGES = 10_000;
-const MIN_DELEGATED_BATCH_IDEMPOTENCY_KEY = 32;
-const MAX_DELEGATED_MINT_CAPABILITY = 8192;
-const MAX_DELEGATED_ETAG = 96;
-const MAX_DELEGATED_BATCH_ITEMS = 100;
-const DELEGATED_BATCH_ID_PATTERN = /^dqb_[A-Za-z0-9_-]{22}$/;
-const DELEGATED_QURL_ID_PATTERN = /^q_[0-9a-f]{11}$/;
-const STRONG_ETAG_PATTERN = /^"[\x21\x23-\x7e]+"$/;
-const UTC_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
-// Keep these identity contracts aligned with qurl-go and the public API.
-const CONNECTOR_SLUG_PATTERN = /^[a-z][a-z0-9-]{1,62}[a-z0-9]$/;
-// Current service schemas intentionally share this grammar, but keep the
-// mutable alias contract separate from the immutable lookup identity.
-const CONNECTOR_ALIAS_PATTERN = /^[a-z][a-z0-9-]{1,62}[a-z0-9]$/;
-const CONNECTOR_RESOURCE_ID_PATTERN = /^[A-Za-z0-9_-]{122}$/;
-const CONNECTOR_RESOURCE_ID_DER_PREFIX = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE";
-const CONNECTOR_ROUTING_ID_PATTERN = /^c-[a-z2-7]{51}[aq]$/;
-// CreateQurlRequest.target_url pattern is loose (just a URI) but
-// UpdateQurlRequest.tags pattern is specific — enforce it here.
-const TAG_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9 _-]*$/;
-
-function requireMaxLength(value: string | undefined, field: string, max: number): void {
-  if (value === undefined) return;
-  // Untyped-JS safety: a non-string `value` would silently pass since
-  // `(42).length === undefined > max` is `false` and the bad value would
-  // sail through to the wire. Match the typeof guard pattern used by
-  // requireValidTags / requireValidTargetUrl.
-  if (typeof value !== "string") {
-    throw clientValidationError(
-      `${field}: must be a string (got ${value === null ? "null" : typeof value})`,
-    );
-  }
-  if (value.length > max) {
-    throw clientValidationError(
-      `${field}: must be ${max} characters or fewer (got ${value.length})`,
-    );
-  }
-}
-
-function requireMaxUtf8Bytes(value: string | undefined, field: string, max: number): void {
-  if (value === undefined) return;
-  if (typeof value !== "string") {
-    throw clientValidationError(
-      `${field}: must be a string (got ${value === null ? "null" : typeof value})`,
-    );
-  }
-  const bytes = TEXT_ENCODER.encode(value).byteLength;
-  if (bytes > max) {
-    throw clientValidationError(`${field}: must be ${max} UTF-8 bytes or fewer (got ${bytes})`);
-  }
-}
-
-function requireNonEmptyIfPresent(value: unknown, field: string): void {
-  // Reject `""` so uninitialized form state doesn't reach the wire.
-  if (value === "") {
-    throw clientValidationError(`${field}: must not be an empty string`);
-  }
-}
-
-function requireMaxSessionsInRange(value: number | undefined, field = "max_sessions"): void {
-  if (value === undefined) return;
-  if (!Number.isInteger(value) || value < 0 || value > MAX_MAX_SESSIONS) {
-    throw clientValidationError(
-      `${field}: must be an integer between 0 and ${MAX_MAX_SESSIONS} (got ${value})`,
-    );
-  }
-}
-
-function requireBooleanIfPresent(value: unknown, field: string): void {
-  if (value === undefined) return;
-  if (typeof value !== "boolean") {
-    throw clientValidationError(`${field}: must be a boolean (got ${describeShape(value)})`);
-  }
-}
-
-function requireListLimitInRange(value: unknown, methodName: string): void {
-  if (value === undefined || value === null) return;
-  // All current paginated OpenAPI query params share 1..100. If a future
-  // endpoint diverges, add a per-endpoint bound rather than changing this
-  // shared guard silently.
-  if (typeof value !== "number" || !Number.isInteger(value) || value < 1 || value > 100) {
-    const rendered = typeof value === "string" ? JSON.stringify(value) : String(value);
-    throw clientValidationError(
-      `${methodName}: limit: must be an integer between 1 and 100 (got ${rendered})`,
-    );
   }
 }
 
@@ -1363,1738 +621,24 @@ function validateListAllInput(
   validateQueryInput(input, keys, methodName);
 }
 
+function withEnvelopeMetadata<T>(value: T, meta: ApiResponse<unknown>["meta"]): T {
+  return withResponseMetadata(value, boundedErrorIdentifier(meta?.request_id));
+}
+
 function pageFromMeta<T extends Record<string, unknown>>(
   out: T,
   meta: ApiResponse<unknown>["meta"],
 ): T & { next_cursor?: string; has_more: boolean; request_id?: string; page_size?: number } {
-  return {
-    ...out,
-    next_cursor: meta?.next_cursor,
-    has_more: meta?.has_more ?? Boolean(meta?.next_cursor),
-    request_id: meta?.request_id,
-    page_size: meta?.page_size,
-  };
-}
-
-// Best-effort defence-in-depth against today's access-token grammar. The
-// service remains authoritative because resource IDs and credentials are both
-// opaque and future credential formats may not retain the `at_` prefix. The
-// delimiter requirement cannot collide with current base64url public keys,
-// standard-base64 keys, or base32 CRIDs.
-const PATH_EMBEDDED_ACCESS_TOKEN_RE = /[?&#=:\s]at_/i;
-const PATH_PREFIXED_ACCESS_TOKEN_RE = /\/at_/i;
-const QURL_LINK_URL_RE = /^(?:https?:\/\/)?(?:[a-z0-9-]+\.)*qurl\.link(?::\d{1,5})?(?:\/|[?#])/i;
-// ponytail: today's 22-character token suffix only improves URL-paste diagnostics;
-// other lengths are still rejected as URLs without echoing the input.
-const URL_EMBEDDED_ACCESS_TOKEN_RE = /[?&#=:/]at_[a-z0-9_-]{22}(?:$|[?&#:/])/i;
-// A host without a slash can be a legitimate domain identifier. Require the
-// path boundary so shared validation does not break the domain namespace.
-const PATH_SCHEMELESS_URL_RE = /^[a-z0-9-]+(?:\.[a-z0-9-]+)+(?::\d{1,5})?\//i;
-const QURL_DISPLAY_ID_PREFIX_RE = /^q_/i;
-const MAX_PATH_ID_DECODE_PASSES = 3;
-const MAX_PATH_ID_LENGTH = 4096;
-
-function isUrlLikePathId(value: string): boolean {
-  return /^https?:\/\//i.test(value) || PATH_SCHEMELESS_URL_RE.test(value);
-}
-
-interface PathIdValidationOptions {
-  /** Reject a bare access token in namespaces that accept resource/qURL IDs. */
-  rejectBareAccessToken?: boolean;
-  /** Safe, non-secret recovery guidance appended to an access-token error. */
-  accessTokenRecovery?: string;
-  /** Reject qURL display IDs where the operation requires a parent resource. */
-  rejectQurlDisplayId?: boolean;
-  requireCridUnlessQurlDisplayId?: boolean;
-}
-
-const REVOKE_INDIVIDUAL_QURL_RECOVERY =
-  "revoke individual tokens with revokeResourceQurl(crid, qurlId)";
-const DELETE_RESOURCE_RECOVERY =
-  "pass a CRID returned by the API; to revoke one qURL, call revokeResourceQurl(crid, qurlId)";
-
-const RESOURCE_OR_QURL_ID_PATH_OPTIONS: PathIdValidationOptions = {
-  requireCridUnlessQurlDisplayId: true,
-};
-
-const QURL_ID_PATH_OPTIONS: PathIdValidationOptions = {
-  rejectBareAccessToken: true,
-  accessTokenRecovery: "pass the qURL display ID, not its access token",
-};
-
-/**
- * Validates that a path-parameter argument is a non-empty string. Some callers
- * pass resource/qURL display IDs, while newer endpoints also pass domains,
- * session IDs, webhook IDs, and API-key IDs, so this intentionally enforces
- * only basic shape plus transport-safety rules and leaves endpoint-specific
- * identifier grammar to the service.
- */
-function validatePathId(
-  id: string,
-  method: string,
-  field = "id",
-  options: PathIdValidationOptions = {},
-): void {
-  if (options.requireCridUnlessQurlDisplayId && typeof id === "string" && !id.startsWith("q_")) {
-    requireResourceCrid(id, method, field);
-    return;
-  }
-  // `.trim()` catches whitespace-only and padded IDs before they round-trip as
-  // `%20...%20` paths that the server can only reject with a less useful 404.
-  // The pre-flight error is more actionable than the 404.
-  if (typeof id !== "string") {
-    const observedType = id === null ? "null" : typeof id;
-    throw clientValidationError(`${method}: ${field} is required (got ${observedType})`);
-  }
-  if (id.trim() === "") {
-    throw clientValidationError(`${method}: ${field} is required`);
-  }
-  if (id.trim() !== id) {
-    throw clientValidationError(
-      `${method}: ${field} must not include leading or trailing whitespace`,
-    );
-  }
-  if (id.length > MAX_PATH_ID_LENGTH) {
-    throw clientValidationError(
-      `${method}: ${field} must be ${MAX_PATH_ID_LENGTH} characters or fewer`,
-    );
-  }
-  const decodedIds = decodedPathIdForms(id);
-  // URL resolvers and intermediaries can normalize raw or pre-encoded dot
-  // segments before routing. Reject every decoded form we inspected so an
-  // item operation cannot be retargeted to a collection endpoint. Embedded
-  // `a/../b` remains an opaque single segment because the later URL builder
-  // percent-encodes its slash.
-  if (decodedIds.some((value) => value === "." || value === "..")) {
-    throw clientValidationError(`${method}: ${field} is an invalid URL path segment`);
-  }
-  // `/` is deliberately outside the general delimiter class so a URL path
-  // such as `/at_a_glance` is not misread as a credential. For non-URL input,
-  // `/at_` remains a strong pasted-path signal. Fragment, query, header, and
-  // pasted `Bearer at_...` / `token:at_...` forms are also strong signals.
-  // Bare `at_...` values are rejected only for resource/qURL identifiers:
-  // those current formats have fixed non-colliding prefixes, while domain,
-  // webhook, session, and API-key IDs are deliberately opaque/open contracts.
-  // Full URLs and delimiter/path-prefixed credentials remain rejected in
-  // every namespace.
-  const containsUrl = decodedIds.some(isUrlLikePathId);
-  const containsAccessToken = decodedIds.some((value) => {
-    const valueIsUrl = isUrlLikePathId(value);
-    return (
-      (QURL_LINK_URL_RE.test(value) &&
-        (PATH_EMBEDDED_ACCESS_TOKEN_RE.test(value) || PATH_PREFIXED_ACCESS_TOKEN_RE.test(value))) ||
-      (valueIsUrl
-        ? URL_EMBEDDED_ACCESS_TOKEN_RE.test(value)
-        : PATH_EMBEDDED_ACCESS_TOKEN_RE.test(value) || PATH_PREFIXED_ACCESS_TOKEN_RE.test(value)) ||
-      (options.rejectBareAccessToken === true && value.slice(0, 3).toLowerCase() === "at_")
-    );
-  });
-  if (containsAccessToken) {
-    const recovery = options.accessTokenRecovery ?? "pass the identifier returned by the API";
-    throw clientValidationError(
-      `${method}: ${field} must not contain an access token; ${recovery}`,
-    );
-  }
-  // A full target/qURL is a common argument mix-up, but it is distinct from
-  // passing an access-token credential. Diagnose it accurately without
-  // echoing the URL, which may itself contain sensitive query parameters.
-  if (containsUrl) {
-    throw clientValidationError(`${method}: ${field} must be an identifier, not a URL`);
-  }
-  if (
-    options.rejectQurlDisplayId === true &&
-    decodedIds.some((value) => QURL_DISPLAY_ID_PREFIX_RE.test(value))
-  ) {
-    throw clientValidationError(
-      `${method}: ${field} must not be a qURL display ID; ${REVOKE_INDIVIDUAL_QURL_RECOVERY}`,
-    );
-  }
-}
-
-function decodedPathIdForms(id: string): string[] {
-  // Probe repeatedly encoded input too. Callers sometimes pre-encode a copied
-  // link before passing it through a URL builder that encodes it again. Three
-  // passes cover the common accidental cases without allowing hostile input
-  // to create unbounded work. More deeply encoded or malformed-percent input
-  // deliberately fails open to the authoritative service after safe segment
-  // encoding; this heuristic is not an identifier parser.
-  const decodedIds = [id];
-  let decodedId = id;
-  for (let pass = 0; pass < MAX_PATH_ID_DECODE_PASSES; pass += 1) {
-    try {
-      const next = decodeURIComponent(decodedId);
-      if (next === decodedId) break;
-      decodedIds.push(next);
-      decodedId = next;
-    } catch {
-      // Malformed percent escapes remain opaque and are left to the service.
-      break;
-    }
-  }
-  return decodedIds;
-}
-
-function requireConnectorSlug(slug: string, method: string): void {
-  if (typeof slug !== "string" || !CONNECTOR_SLUG_PATTERN.test(slug)) {
-    throw clientValidationError(
-      `${method}: slug must be 3-64 lowercase alphanumeric or hyphen characters, start with a letter, and end alphanumeric`,
-    );
-  }
-}
-
-function classifyConnectorMutationFailure(operation: "ensure" | "delete", error: unknown): never {
-  if (!(error instanceof QURLError)) {
-    throw new ConnectorResourceOutcomeUnknownError(
-      new RuntimeError("Unexpected failure after Connector mutation dispatch", { cause: error }),
-    );
-  }
-  // Most authoritative 4xx responses prove that the mutation was rejected.
-  // bootstrap_key_consumed is the exception: the service returns it from the
-  // consume phase after the resource may have been bound or found.
-  // Callers perform argument/runtime preflight outside their mutation try
-  // blocks; every other surfaced failure therefore follows dispatch or a
-  // nominal success whose resource contract could not be consumed, so callers
-  // must reconcile before retrying. Ensure's exact 201 + valid resource but
-  // missing found_existing is handled after this classifier: the row proves
-  // the selected resource, while only its required metadata is unavailable.
-  if (operation === "ensure" && error.status === 409 && error.code === "bootstrap_key_consumed") {
-    throw new ConnectorResourceOutcomeUnknownError(error);
-  }
-  if (error.status >= 400 && error.status < 500) {
-    throw error;
-  }
-  throw new ConnectorResourceOutcomeUnknownError(error);
-}
-
-function decodeCanonicalBase64Url(value: string): Uint8Array | undefined {
-  if (
-    !CONNECTOR_RESOURCE_ID_PATTERN.test(value) ||
-    !value.startsWith(CONNECTOR_RESOURCE_ID_DER_PREFIX)
-  ) {
-    return undefined;
-  }
-  try {
-    const padded = value.replace(/-/g, "+").replace(/_/g, "/") + "==";
-    const binary = atob(padded);
-    const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
-    const canonical = btoa(String.fromCharCode(...bytes))
-      .replace(/\+/g, "-")
-      .replace(/\//g, "_")
-      .replace(/=+$/, "");
-    return canonical === value ? bytes : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function requireConnectorSubtleCrypto(method: string): void {
-  if (!globalThis.crypto?.subtle) {
-    throw new RuntimeError(`${method}: requires the Web Crypto SubtleCrypto API`);
-  }
-}
-
-function requireResourceCrid(crid: string, method: string, field = "id"): void {
-  if (parseCrid(crid)) return;
-  // Keep actionable paste errors without inspecting valid CRIDs twice.
-  validatePathId(crid, method, field, {
-    rejectBareAccessToken: true,
-    rejectQurlDisplayId: true,
-    accessTokenRecovery:
-      method === "delete" || method === "deleteResource"
-        ? DELETE_RESOURCE_RECOVERY
-        : "pass a CRID returned by the API",
-  });
-  throw clientValidationError(`${method}: requires a valid CRID`);
-}
-
-async function importsAsConnectorPublicKey(der: Uint8Array): Promise<boolean> {
-  try {
-    const keyData = new ArrayBuffer(der.byteLength);
-    new Uint8Array(keyData).set(der);
-    await globalThis.crypto.subtle.importKey(
-      "spki",
-      keyData,
-      { name: "ECDSA", namedCurve: "P-256" },
-      false,
-      ["verify"],
-    );
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-type ConnectorResourceExpectation = {
-  slug?: string;
-  crid?: string;
-  revokedIsLifecycleError?: boolean;
-};
-
-function containsControlCharacter(value: string): boolean {
-  return Array.from(value).some((character) => {
-    const codePoint = character.codePointAt(0) as number;
-    return codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f);
-  });
-}
-
-async function verifyResourceIdentity(
-  resource: { resource_id?: unknown; crid?: unknown } | undefined,
-  method: string,
-  expectedCrid?: string,
-): Promise<void> {
-  if (!resource || typeof resource.resource_id !== "string") {
-    throw unexpectedResponseError(`${method}: response has missing or invalid resource_id`);
-  }
-  const resourceKey = decodeCanonicalBase64Url(resource.resource_id);
-  requireConnectorSubtleCrypto(method);
-  if (!resourceKey || !(await importsAsConnectorPublicKey(resourceKey))) {
-    throw unexpectedResponseError(`${method}: response has missing or invalid resource_id`);
-  }
-  if (expectedCrid !== undefined && resource.crid !== expectedCrid) {
-    throw unexpectedResponseError(`${method}: response crid does not match the request`);
-  }
-  if (!(await cridKeyMatches(resource.crid, resourceKey))) {
-    throw unexpectedResponseError(
-      `${method}: response has missing, invalid, or public-key-mismatched crid`,
-    );
-  }
-}
-
-async function parseConnectorResource(
-  client: QURLClient,
-  value: unknown,
-  method: string,
-  expectation: ConnectorResourceExpectation = {},
-): Promise<ConnectorResource> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw unexpectedResponseError(`${method}: response is missing connector resource data`);
-  }
-  const resource = value as Resource;
-  await verifyResourceIdentity(resource, method, expectation.crid);
-  if (
-    typeof resource.connector_routing_id !== "string" ||
-    !CONNECTOR_ROUTING_ID_PATTERN.test(resource.connector_routing_id)
-  ) {
-    throw unexpectedResponseError(
-      `${method}: response has missing or invalid connector_routing_id`,
-    );
-  }
-  if (
-    typeof resource.knock_resource_id !== "string" ||
-    resource.knock_resource_id.trim() === "" ||
-    resource.knock_resource_id.trim() !== resource.knock_resource_id ||
-    containsControlCharacter(resource.knock_resource_id)
-  ) {
-    throw unexpectedResponseError(`${method}: response has missing or invalid knock_resource_id`);
-  }
-  if (
-    resource.resource_id === resource.knock_resource_id ||
-    resource.connector_routing_id === resource.knock_resource_id
-  ) {
-    throw unexpectedResponseError(
-      `${method}: response cross-wires resource identity, routing, and admission values`,
-    );
-  }
-  if (resource.type !== "tunnel") {
-    throw unexpectedResponseError(`${method}: response resource type is not tunnel`);
-  }
-  if (typeof resource.slug !== "string" || !CONNECTOR_SLUG_PATTERN.test(resource.slug)) {
-    throw unexpectedResponseError(`${method}: response has missing or invalid slug`);
-  }
-  if (expectation.slug !== undefined && resource.slug !== expectation.slug) {
-    throw unexpectedResponseError(`${method}: response slug does not match the request`);
-  }
-  if (
-    resource.alias !== undefined &&
-    resource.alias !== null &&
-    (typeof resource.alias !== "string" || !CONNECTOR_ALIAS_PATTERN.test(resource.alias))
-  ) {
-    // The public API intentionally gives mutable aliases and immutable slugs the
-    // same canonical wire grammar (domain aliasPattern/slugPattern). Keeping
-    // response validation aligned avoids accepting a row the service itself
-    // could not create or update.
-    throw unexpectedResponseError(`${method}: response has invalid alias`);
-  }
-  if (resource.status === "revoked") {
-    if (expectation.revokedIsLifecycleError !== true) {
-      throw unexpectedResponseError(
-        `${method}: active-only operation returned a revoked connector resource`,
-      );
-    }
-    throw new QURLError({
-      status: 0,
-      code: ERROR_CODE_CONNECTOR_RESOURCE_REVOKED,
-      title: "Connector Resource Revoked",
-      detail: `${method}: qURL Connector resource is revoked`,
-    });
-  }
-  if (resource.status !== "active") {
-    throw unexpectedResponseError(`${method}: response has invalid resource status`);
-  }
-  return new ConnectorResource(client, resource, CONNECTOR_RESOURCE_CONSTRUCTOR_TOKEN);
-}
-
-/** Match the API's tag grammar, which permits embedded spaces; values stay in JSON bodies. */
-function requireValidTags(tags: string[] | null | undefined): void {
-  // null tolerance for untyped-JS callers — treated as "don't touch."
-  // Duplicates pass through to the server (authoritative on dedupe policy).
-  if (tags === undefined || tags === null) return;
-  if (!Array.isArray(tags)) {
-    throw clientValidationError(`tags: must be an array of strings (got ${typeof tags})`);
-  }
-  if (tags.length > MAX_TAGS) {
-    throw clientValidationError(`tags: max ${MAX_TAGS} items allowed (got ${tags.length})`);
-  }
-  const errors: string[] = [];
-  for (let i = 0; i < tags.length; i++) {
-    const tag = tags[i];
-    // Per-element type guard for untyped-JS callers. Without this, a
-    // non-string element would silently pass (`.length` on a number is
-    // `undefined`; `TAG_PATTERN.test(42)` coerces to `"42"`) or TypeError
-    // (`null.length`).
-    if (typeof tag !== "string") {
-      errors.push(`tags[${i}]: must be a string (got ${tag === null ? "null" : typeof tag})`);
-      continue;
-    }
-    if (tag.length < 1 || tag.length > MAX_TAG_LENGTH) {
-      errors.push(`tags[${i}]: must be 1-${MAX_TAG_LENGTH} characters (got ${tag.length})`);
-      continue;
-    }
-    if (!TAG_PATTERN.test(tag)) {
-      errors.push(
-        `tags[${i}]: must start with an alphanumeric and contain only letters, numbers, spaces, underscores, or hyphens`,
-      );
-    }
-  }
-  if (errors.length > 0) {
-    throw clientValidationError(errors.join("; "));
-  }
-}
-
-function describeShape(value: unknown): string {
-  if (value === null) return "null";
-  if (Array.isArray(value)) return "array";
-  return typeof value;
-}
-
-const ACCESS_POLICY_LIST_FIELDS = [
-  "ip_allowlist",
-  "ip_denylist",
-  "geo_allowlist",
-  "geo_denylist",
-] as const satisfies readonly (keyof AccessPolicy)[];
-
-const ACCESS_POLICY_STRING_FIELDS = [
-  "user_agent_allow_regex",
-  "user_agent_deny_regex",
-] as const satisfies readonly (keyof AccessPolicy)[];
-
-const AI_AGENT_POLICY_LIST_FIELDS = [
-  "deny_categories",
-  "allow_categories",
-] as const satisfies readonly (keyof AIAgentPolicy)[];
-
-function requireValidAccessPolicy(policy: AccessPolicy | null | undefined): void {
-  // null/undefined → "don't touch". Server is authoritative on CIDR /
-  // ISO-3166 / regex grammar; this guard catches only the shape errors
-  // an untyped-JS caller is likely to make (e.g. `geo_allowlist: "US"`
-  // instead of `["US"]`) so they get a structured ValidationError
-  // instead of a server 400 they have to debug.
-  if (policy === undefined || policy === null) return;
-  if (typeof policy !== "object" || Array.isArray(policy)) {
-    throw clientValidationError(`access_policy: must be an object (got ${describeShape(policy)})`);
-  }
-  for (const field of ACCESS_POLICY_LIST_FIELDS) {
-    const value = policy[field];
-    if (value === undefined) continue;
-    if (!Array.isArray(value)) {
-      throw clientValidationError(
-        `access_policy.${field}: must be an array (got ${describeShape(value)})`,
-      );
-    }
-  }
-  for (const field of ACCESS_POLICY_STRING_FIELDS) {
-    const value = policy[field];
-    if (value === undefined) continue;
-    if (typeof value !== "string") {
-      throw clientValidationError(
-        `access_policy.${field}: must be a string (got ${describeShape(value)})`,
-      );
-    }
-  }
-  const aip = policy.ai_agent_policy;
-  if (aip !== undefined) {
-    if (aip === null || typeof aip !== "object" || Array.isArray(aip)) {
-      throw clientValidationError(
-        `access_policy.ai_agent_policy: must be an object (got ${describeShape(aip)})`,
-      );
-    }
-    if (aip.block_all !== undefined && typeof aip.block_all !== "boolean") {
-      throw clientValidationError(
-        `access_policy.ai_agent_policy.block_all: must be a boolean (got ${describeShape(aip.block_all)})`,
-      );
-    }
-    for (const field of AI_AGENT_POLICY_LIST_FIELDS) {
-      const value = aip[field];
-      if (value === undefined) continue;
-      if (!Array.isArray(value)) {
-        throw clientValidationError(
-          `access_policy.ai_agent_policy.${field}: must be an array (got ${describeShape(value)})`,
-        );
-      }
-    }
-  }
-}
-
-function validateCreateDelegatedQurlBatchInput(
-  input: unknown,
-): asserts input is CreateDelegatedQurlBatchInput {
-  if (typeof input !== "object" || input === null || Array.isArray(input)) {
-    throw clientValidationError(
-      `createDelegatedQurlBatch: input must be an object (got ${describeShape(input)})`,
-    );
-  }
-  const typed = input as CreateDelegatedQurlBatchInput;
-  requireNoUnknownFields(
-    typed as unknown as Record<string, unknown>,
-    DELEGATED_BATCH_INPUT_KEYS,
-    "createDelegatedQurlBatch",
+  return withEnvelopeMetadata(
+    {
+      ...out,
+      next_cursor: meta?.next_cursor,
+      has_more: meta?.has_more ?? Boolean(meta?.next_cursor),
+      request_id: meta?.request_id,
+      page_size: meta?.page_size,
+    },
+    meta,
   );
-  if (
-    typeof typed.mint_capability !== "string" ||
-    typed.mint_capability.length < 1 ||
-    typed.mint_capability.length > MAX_DELEGATED_MINT_CAPABILITY
-  ) {
-    throw clientValidationError(
-      `createDelegatedQurlBatch: mint_capability must be a string of 1-${MAX_DELEGATED_MINT_CAPABILITY} characters`,
-    );
-  }
-  if (
-    !Array.isArray(typed.grants) ||
-    typed.grants.length < 1 ||
-    typed.grants.length > MAX_DELEGATED_BATCH_ITEMS
-  ) {
-    throw clientValidationError(
-      `createDelegatedQurlBatch: grants must contain 1-${MAX_DELEGATED_BATCH_ITEMS} items`,
-    );
-  }
-  for (const [index, grant] of typed.grants.entries()) {
-    const field = `createDelegatedQurlBatch: grants[${index}]`;
-    if (typeof grant !== "object" || grant === null || Array.isArray(grant)) {
-      throw clientValidationError(`${field}: must be an object (got ${describeShape(grant)})`);
-    }
-    requireNoUnknownFields(
-      grant as unknown as Record<string, unknown>,
-      DELEGATED_BATCH_GRANT_KEYS,
-      field,
-    );
-    requireMaxUtf8Bytes(grant.label, `${field}.label`, MAX_LABEL);
-    requireBooleanIfPresent(grant.one_time_use, `${field}.one_time_use`);
-    requireMaxSessionsInRange(grant.max_sessions, `${field}.max_sessions`);
-    for (const durationField of ["expires_in", "session_duration"] as const) {
-      const value = grant[durationField];
-      if (value !== undefined && (typeof value !== "string" || value.length === 0)) {
-        throw clientValidationError(`${field}.${durationField}: must be a non-empty string`);
-      }
-    }
-    if (grant.access_policy !== undefined) {
-      requireValidAccessPolicy(grant.access_policy);
-    }
-  }
-}
-
-function validateDelegatedBatchCreateOptions(
-  options: unknown,
-): asserts options is CreateDelegatedQurlBatchOptions {
-  if (typeof options !== "object" || options === null || Array.isArray(options)) {
-    throw clientValidationError("createDelegatedQurlBatch: options are required");
-  }
-  requireNoUnknownFields(
-    options as Record<string, unknown>,
-    DELEGATED_BATCH_CREATE_OPTION_KEYS,
-    "createDelegatedQurlBatch options",
-  );
-  const key = (options as CreateDelegatedQurlBatchOptions).idempotencyKey;
-  if (
-    typeof key !== "string" ||
-    key.length < MIN_DELEGATED_BATCH_IDEMPOTENCY_KEY ||
-    key.length > MAX_IDEMPOTENCY_KEY ||
-    !/^[!-~]+$/.test(key)
-  ) {
-    throw clientValidationError(
-      `createDelegatedQurlBatch: idempotencyKey must contain ${MIN_DELEGATED_BATCH_IDEMPOTENCY_KEY}-${MAX_IDEMPOTENCY_KEY} visible ASCII characters`,
-    );
-  }
-}
-
-function validateGetDelegatedQurlBatchOptions(
-  options: unknown,
-): asserts options is GetDelegatedQurlBatchOptions | undefined {
-  if (options === undefined) return;
-  if (typeof options !== "object" || options === null || Array.isArray(options)) {
-    throw clientValidationError(
-      `getDelegatedQurlBatch: options must be an object (got ${describeShape(options)})`,
-    );
-  }
-  requireNoUnknownFields(
-    options as Record<string, unknown>,
-    DELEGATED_BATCH_GET_OPTION_KEYS,
-    "getDelegatedQurlBatch options",
-  );
-  const etag = (options as GetDelegatedQurlBatchOptions).etag;
-  if (
-    etag !== undefined &&
-    (typeof etag !== "string" ||
-      etag.length > MAX_DELEGATED_ETAG ||
-      !STRONG_ETAG_PATTERN.test(etag))
-  ) {
-    throw clientValidationError("getDelegatedQurlBatch: etag must be a valid strong ETag");
-  }
-}
-
-function delegatedResponseError(
-  status: number,
-  detail: string,
-  requestId?: string,
-): ValidationError {
-  return unexpectedResponseError(`Delegated qURL batch ${detail}`, { status, requestId });
-}
-
-function delegatedResponseObject(
-  value: unknown,
-  status: number,
-  label: string,
-  requestId?: string,
-): Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw delegatedResponseError(status, `${label} is not an object`, requestId);
-  }
-  return value as Record<string, unknown>;
-}
-
-function delegatedEnvelope(
-  response: HttpResponse<unknown>,
-  status: number,
-): { data: Record<string, unknown>; requestId: string } {
-  if (
-    typeof response.envelope.meta !== "object" ||
-    response.envelope.meta === null ||
-    Array.isArray(response.envelope.meta)
-  ) {
-    throw delegatedResponseError(status, "response meta is not an object");
-  }
-  const meta = response.envelope.meta as Record<string, unknown>;
-  if (typeof meta.request_id !== "string") {
-    throw delegatedResponseError(status, "response meta has invalid request_id");
-  }
-  const data = delegatedResponseObject(
-    response.envelope.data,
-    status,
-    "response data",
-    meta.request_id,
-  );
-  return { data, requestId: meta.request_id };
-}
-
-function requiredDelegatedHeader(
-  response: HttpResponse<unknown>,
-  name: string,
-  status: number,
-  requestId?: string,
-): string {
-  const headers = response.headers;
-  if (!headers || typeof headers.get !== "function") {
-    throw delegatedResponseError(status, "response headers are unavailable", requestId);
-  }
-  const value = headers.get(name);
-  if (value === null) {
-    throw delegatedResponseError(status, `response is missing ${name}`, requestId);
-  }
-  return value;
-}
-
-function hasDelegatedNoStore(value: string | null): boolean {
-  if (value === null) return false;
-  const directives = new Set(
-    value.split(",").map((directive) => directive.trim().split("=", 1)[0].toLowerCase()),
-  );
-  return directives.has("private") && directives.has("no-store");
-}
-
-function delegatedResponseHeaders(
-  response: HttpResponse<unknown>,
-  status: number,
-  requestId?: string,
-): { etag?: string; retryAfter?: number } {
-  const cacheControl = response.headers?.get("Cache-Control") ?? null;
-  if (cacheControl !== null) {
-    if (!hasDelegatedNoStore(cacheControl)) {
-      throw delegatedResponseError(status, "response has invalid Cache-Control", requestId);
-    }
-  } else if (status !== 304) {
-    requiredDelegatedHeader(response, "Cache-Control", status, requestId);
-  }
-  const etag = response.headers?.get("ETag") ?? undefined;
-  if (etag !== undefined && (etag.length > MAX_DELEGATED_ETAG || !STRONG_ETAG_PATTERN.test(etag))) {
-    throw delegatedResponseError(status, "response has invalid strong ETag", requestId);
-  }
-  const rawRetryAfter = response.headers?.get("Retry-After") ?? "";
-  const trimmed = rawRetryAfter.trim();
-  const seconds = /^\d+$/.test(trimmed)
-    ? Number(trimmed)
-    : /^[A-Z][a-z]{2}, \d{2} [A-Z][a-z]{2} \d{4} \d{2}:\d{2}:\d{2} GMT$/.test(trimmed)
-      ? Math.ceil((Date.parse(trimmed) - Date.now()) / 1000)
-      : NaN;
-  const retryAfter =
-    Number.isSafeInteger(seconds) && seconds > 0 && seconds <= RETRY_AFTER_PARSE_LIMIT_S
-      ? seconds
-      : undefined;
-  return { etag, retryAfter };
-}
-
-function isUtcTimestamp(value: unknown): value is string {
-  return (
-    typeof value === "string" &&
-    UTC_TIMESTAMP_PATTERN.test(value) &&
-    Number.isFinite(Date.parse(value))
-  );
-}
-
-function delegatedBatchBase(
-  data: Record<string, unknown>,
-  status: number,
-  requestId: string,
-  expectedBatchId?: string,
-): { batchId: string; itemCount: number; submittedAt: string } {
-  if (
-    typeof data.batch_id !== "string" ||
-    !DELEGATED_BATCH_ID_PATTERN.test(data.batch_id) ||
-    (expectedBatchId !== undefined && data.batch_id !== expectedBatchId)
-  ) {
-    throw delegatedResponseError(status, "response has invalid batch_id", requestId);
-  }
-  if (
-    !Number.isInteger(data.item_count) ||
-    Number(data.item_count) < 1 ||
-    Number(data.item_count) > MAX_DELEGATED_BATCH_ITEMS
-  ) {
-    throw delegatedResponseError(status, "response has invalid item_count", requestId);
-  }
-  if (!isUtcTimestamp(data.submitted_at)) {
-    throw delegatedResponseError(status, "response has invalid submitted_at", requestId);
-  }
-  return {
-    batchId: data.batch_id,
-    itemCount: Number(data.item_count),
-    submittedAt: data.submitted_at,
-  };
-}
-
-function validateDelegatedLocation(
-  value: string,
-  baseUrl: string,
-  batchId: string,
-  status: number,
-  requestId: string,
-): string {
-  let location: URL;
-  try {
-    const base = new URL(`${baseUrl}/`);
-    const relative = value.startsWith("/v1/delegated-qurl-batches/")
-      ? `${base.pathname.replace(/\/$/, "")}${value}`
-      : value;
-    location = new URL(relative, base);
-  } catch {
-    throw delegatedResponseError(status, "response has invalid Location", requestId);
-  }
-  const expected = new URL(`${baseUrl}/v1/delegated-qurl-batches/${batchId}`);
-  if (
-    location.username !== "" ||
-    location.password !== "" ||
-    location.search !== "" ||
-    location.hash !== "" ||
-    location.href !== expected.href
-  ) {
-    throw delegatedResponseError(status, "response has invalid Location", requestId);
-  }
-  return location.href;
-}
-
-function validateDelegatedQurlLink(value: unknown): value is string {
-  if (typeof value !== "string") return false;
-  try {
-    const link = new URL(value);
-    return (
-      link.protocol === "https:" &&
-      link.username === "" &&
-      link.password === "" &&
-      link.hash.length > 1
-    );
-  } catch {
-    return false;
-  }
-}
-
-function validateDelegatedQurl(
-  value: unknown,
-  expectedQurlId: string,
-  status: number,
-  requestId: string,
-): DelegatedQurl {
-  const data = delegatedResponseObject(value, status, "response data", requestId);
-  if (data.qurl_id !== expectedQurlId) {
-    throw delegatedResponseError(status, "response has invalid qurl_id", requestId);
-  }
-  if (
-    data.status !== "active" &&
-    data.status !== "consumed" &&
-    data.status !== "expired" &&
-    data.status !== "revoked"
-  ) {
-    throw delegatedResponseError(status, "response has invalid status", requestId);
-  }
-  if (
-    !isUtcTimestamp(data.expires_at) ||
-    typeof data.one_time_use !== "boolean" ||
-    !Number.isInteger(data.max_sessions) ||
-    Number(data.max_sessions) < 0 ||
-    !Number.isInteger(data.session_duration) ||
-    Number(data.session_duration) <= 0 ||
-    (data.label !== undefined && typeof data.label !== "string") ||
-    (data.access_policy !== undefined &&
-      (typeof data.access_policy !== "object" ||
-        data.access_policy === null ||
-        Array.isArray(data.access_policy)))
-  ) {
-    throw delegatedResponseError(status, "response has invalid qURL metadata", requestId);
-  }
-  return { ...(data as unknown as DelegatedQurl), request_id: requestId };
-}
-
-function validateDelegatedBatchResults(
-  value: unknown,
-  itemCount: number,
-  batchStatus: "succeeded" | "partially_failed" | "failed",
-  status: number,
-  requestId: string,
-): DelegatedQurlBatchItemResult[] {
-  if (!Array.isArray(value) || value.length !== itemCount) {
-    throw delegatedResponseError(status, "terminal response has invalid results", requestId);
-  }
-  let succeeded = 0;
-  const qurlIds = new Set<string>();
-  const links = new Set<string>();
-  const results = value.map((raw, index): DelegatedQurlBatchItemResult => {
-    const item = delegatedResponseObject(raw, status, `result ${index}`, requestId);
-    if (item.index !== index) {
-      throw delegatedResponseError(status, `result ${index} has invalid index`, requestId);
-    }
-    if (item.status === "succeeded") {
-      if (item.error !== undefined && item.error !== null) {
-        throw delegatedResponseError(status, `result ${index} has conflicting fields`, requestId);
-      }
-      const qurl = delegatedResponseObject(item.qurl, status, `result ${index} qurl`, requestId);
-      if (
-        typeof qurl.qurl_id !== "string" ||
-        !DELEGATED_QURL_ID_PATTERN.test(qurl.qurl_id) ||
-        !validateDelegatedQurlLink(qurl.qurl_link) ||
-        !isUtcTimestamp(qurl.expires_at) ||
-        qurlIds.has(qurl.qurl_id) ||
-        links.has(qurl.qurl_link)
-      ) {
-        throw delegatedResponseError(status, `result ${index} has invalid qurl`, requestId);
-      }
-      qurlIds.add(qurl.qurl_id);
-      links.add(qurl.qurl_link);
-      succeeded++;
-      return {
-        index,
-        status: "succeeded",
-        qurl: {
-          qurl_id: qurl.qurl_id,
-          qurl_link: qurl.qurl_link,
-          expires_at: qurl.expires_at,
-        },
-      };
-    }
-    if (item.status !== "failed" || (item.qurl !== undefined && item.qurl !== null)) {
-      throw delegatedResponseError(status, `result ${index} has invalid status`, requestId);
-    }
-    const error = delegatedResponseObject(item.error, status, `result ${index} error`, requestId);
-    if (
-      typeof error.code !== "string" ||
-      error.code.length === 0 ||
-      typeof error.message !== "string"
-    ) {
-      throw delegatedResponseError(status, `result ${index} has invalid error`, requestId);
-    }
-    return {
-      index,
-      status: "failed",
-      error: { code: error.code, message: error.message },
-    };
-  });
-  if (
-    (batchStatus === "succeeded" && succeeded !== itemCount) ||
-    (batchStatus === "failed" && succeeded !== 0) ||
-    (batchStatus === "partially_failed" && (succeeded === 0 || succeeded === itemCount))
-  ) {
-    throw delegatedResponseError(status, "terminal status does not match results", requestId);
-  }
-  return results;
-}
-
-function classifyDelegatedBatchCreateFailure(error: unknown, batchId?: string): never {
-  if (!(error instanceof QURLError)) {
-    throw new DelegatedBatchOutcomeUnknownError(
-      new RuntimeError("Unexpected failure after delegated batch dispatch", { cause: error }),
-      batchId,
-    );
-  }
-  if ((error.status >= 400 && error.status < 500 && error.status !== 408) || error.status === 501) {
-    throw error;
-  }
-  throw new DelegatedBatchOutcomeUnknownError(error, batchId);
-}
-
-// `format: uri` in the OpenAPI spec allows schemes the SDK doesn't
-// usefully support (`ftp://`, `file://`, `javascript:`, …). This is a
-// cheap client-side sanity check — the server is still the
-// authoritative validator (e.g. it rejects localhost, cloud metadata,
-// and private-range hosts; the SDK doesn't need to duplicate that).
-const ALLOWED_URL_SCHEMES = ["http://", "https://"] as const;
-
-function requireValidHttpUrl(value: unknown, field: string): void {
-  // Three checks in priority order: type guard, scheme, length.
-  // Stop at the first failure so a non-string URL doesn't
-  // produce both "must be a string" AND "must be ≤ 2048 characters"
-  // (the length check on a non-string would also typeof-fail and
-  // duplicate the type message). The collect-all loop in
-  // validateCreateInput runs each FIELD's validator independently — within
-  // a single URL field itself we want fail-fast.
-  if (typeof value !== "string") {
-    throw clientValidationError(
-      `${field}: must be a string (got ${value === null ? "null" : typeof value})`,
-    );
-  }
-  if (!ALLOWED_URL_SCHEMES.some((scheme) => value.startsWith(scheme))) {
-    // Truncate to keep the error message compact and avoid
-    // pathologically long schemes from filling logs.
-    const repr = JSON.stringify(value).slice(0, 40);
-    throw clientValidationError(`${field}: must start with http:// or https:// (got ${repr})`);
-  }
-  if (value.length > MAX_TARGET_URL) {
-    throw clientValidationError(
-      `${field}: must be ${MAX_TARGET_URL} characters or fewer (got ${value.length})`,
-    );
-  }
-}
-
-function requireValidTargetUrl(target_url: unknown): void {
-  requireValidHttpUrl(target_url, "target_url");
-}
-
-function validateCreateInput(input: CreateInput): void {
-  // Untyped-JS guard: surface as ValidationError instead of raw TypeError.
-  if (typeof input !== "object" || input === null) {
-    throw clientValidationError(
-      `create: input must be an object (got ${input === null ? "null" : typeof input})`,
-    );
-  }
-  // Collect-all: run every validator and aggregate the messages so a
-  // caller fixing multiple bad fields sees them all at once instead
-  // of fix-re-run-repeat. Matches the documented batchCreate UX
-  // ("All failures are collected into a single ValidationError")
-  // and mirrors the requireValidTags collect-all pattern.
-  const errors: string[] = [];
-  const collect = (fn: () => void): void => {
-    try {
-      fn();
-    } catch (err) {
-      if (err instanceof ValidationError) {
-        errors.push(err.detail);
-        return;
-      }
-      throw err;
-    }
-  };
-  collect(() =>
-    requireNoUnknownFields(input as Record<string, unknown>, CREATE_FIELD_KEYS, "create"),
-  );
-  const resourceType = input.type;
-  if (resourceType !== undefined && typeof resourceType !== "string") {
-    errors.push(
-      `type: must be a string (got ${resourceType === null ? "null" : typeof resourceType})`,
-    );
-  }
-  collect(() => {
-    if (input.target_url === undefined) {
-      if (resourceType === undefined || resourceType === "url") {
-        throw clientValidationError("target_url: is required for url qURLs");
-      }
-      return;
-    }
-    requireValidTargetUrl(input.target_url);
-  });
-  collect(() => requireMaxLength(input.label, "label", MAX_LABEL));
-  collect(() => requireNonEmptyIfPresent(input.label, "label"));
-  collect(() => requireMaxLength(input.custom_domain, "custom_domain", MAX_CUSTOM_DOMAIN));
-  collect(() => requireNonEmptyIfPresent(input.custom_domain, "custom_domain"));
-  collect(() => requireBooleanIfPresent(input.private, "private"));
-  collect(() => requireBooleanIfPresent(input.one_time_use, "one_time_use"));
-  collect(() => requireMaxSessionsInRange(input.max_sessions));
-  collect(() => requireNonEmptyIfPresent(input.expires_in, "expires_in"));
-  collect(() => requireNonEmptyIfPresent(input.session_duration, "session_duration"));
-  collect(() => requireValidAccessPolicy(input.access_policy));
-  if (errors.length > 0) {
-    // Inner `; ` is contractual (paired with batchCreate's outer ` | `).
-    // Future field-level validators must not aggregate via `; ` internally.
-    throw clientValidationError(errors.join("; "));
-  }
-  // Intentional omission: duration *grammar* (`expires_in`,
-  // `session_duration`) is server-authoritative. Empty strings are
-  // rejected up front (see collect() calls above) but unit/whitespace
-  // edge cases ("24hh", "1w 3d") surface as a clean server 400 — a
-  // client-side regex would just create a drift surface against the
-  // server's rego/duration parser.
-  //
-  // `access_policy` contents (CIDRs, ISO-3166 codes, regex patterns)
-  // are pass-through for the same reason. The shape-guard above only
-  // catches structural mistakes (string-instead-of-array on list fields)
-  // an untyped-JS caller is likely to make.
-}
-
-function validateQurlTokenOptions(input: CreateQurlForResourceInput | undefined): void {
-  if (input === undefined) return;
-  requireMaxLength(input.label, "label", MAX_LABEL);
-  requireNonEmptyIfPresent(input.label, "label");
-  requireNonEmptyIfPresent(input.expires_in, "expires_in");
-  requireNonEmptyIfPresent(input.session_duration, "session_duration");
-  // Mirror the service-documented size cap, but keep host-safety grammar
-  // (single leading slash, no scheme/host/backslash/etc.) and the tunnel-only
-  // gate server-authoritative (`invalid_target_path`); a client-side regex
-  // would create a drift surface. Keep max-before-empty consistent with label;
-  // empty strings pass the length check and are rejected by the next guard.
-  requireMaxUtf8Bytes(input.target_path, "target_path", MAX_TARGET_PATH);
-  requireNonEmptyIfPresent(input.target_path, "target_path");
-  requireBooleanIfPresent(input.one_time_use, "one_time_use");
-  requireMaxSessionsInRange(input.max_sessions);
-  requireValidAccessPolicy(input.access_policy);
-}
-
-function validateResourceQurlUpdateInput(input: UpdateResourceQurlInput): void {
-  requireMaxLength(input.label, "label", MAX_LABEL);
-  requireNonEmptyIfPresent(input.label, "label");
-  requireNonEmptyIfPresent(input.extend_by, "extend_by");
-  requireNonEmptyIfPresent(input.expires_at, "expires_at");
-  requireNonEmptyIfPresent(input.session_duration, "session_duration");
-  requireMaxSessionsInRange(input.max_sessions);
-  requireValidAccessPolicy(input.access_policy);
-  if (input.extend_by !== undefined && input.expires_at !== undefined) {
-    throw clientValidationError(
-      "updateResourceQurl: `extend_by` and `expires_at` are mutually exclusive — provide at most one",
-    );
-  }
-}
-
-function requireObjectInput(
-  input: unknown,
-  method: string,
-): asserts input is Record<string, unknown> {
-  if (typeof input !== "object" || input === null || Array.isArray(input)) {
-    throw clientValidationError(
-      `${method}: input must be an object (got ${input === null ? "null" : typeof input})`,
-    );
-  }
-}
-
-function requireNonEmptyStringField(
-  input: Record<string, unknown>,
-  field: string,
-  method: string,
-): void {
-  const value = input[field];
-  if (typeof value !== "string" || value.length === 0) {
-    throw clientValidationError(`${method}: ${field} must be a non-empty string`);
-  }
-}
-
-function requireNonEmptyArrayField(
-  input: Record<string, unknown>,
-  field: string,
-  method: string,
-): void {
-  const value = input[field];
-  if (!Array.isArray(value) || value.length === 0) {
-    throw clientValidationError(`${method}: ${field} must be a non-empty array`);
-  }
-}
-
-function requireStringArrayElements(
-  value: unknown,
-  field: string,
-  method: string,
-): asserts value is string[] {
-  if (!Array.isArray(value)) {
-    throw clientValidationError(`${method}: ${field} must be a non-empty array`);
-  }
-  value.forEach((entry, index) => {
-    if (typeof entry !== "string" || entry.length === 0) {
-      throw clientValidationError(`${method}: ${field}[${index}] must be a non-empty string`);
-    }
-  });
-}
-
-function requireAtLeastOneField(
-  input: Record<string, unknown>,
-  fields: readonly string[],
-  method: string,
-): void {
-  if (!fields.some((field) => input[field] !== undefined)) {
-    throw clientValidationError(
-      `${method}: at least one field (${fields.join(", ")}) must be provided`,
-    );
-  }
-}
-
-function requireNoUnknownFields(
-  input: Record<string, unknown>,
-  fields: readonly string[],
-  method: string,
-): void {
-  const unknown = Object.keys(input).filter((field) => !fields.includes(field));
-  if (unknown.length > 0) {
-    const rendered = unknown.map((field) => `"${field}"`).join(", ");
-    const label = unknown.length === 1 ? "unknown field" : "unknown fields";
-    throw clientValidationError(`${method}: ${label} ${rendered}`);
-  }
-}
-
-function normalizePatchFields(
-  input: Record<string, unknown>,
-  fields: readonly string[],
-  options: { preserveNullFields?: readonly string[] } = {},
-): Record<string, unknown> {
-  const preserveNull = new Set(options.preserveNullFields ?? []);
-  const normalized: Record<string, unknown> = {};
-  for (const key of fields) {
-    const value = input[key];
-    if (value !== undefined && (value !== null || preserveNull.has(key))) {
-      normalized[key] = value;
-    }
-  }
-  return normalized;
-}
-
-function requireConsumerDecision(id: string, version: number, allowNew = false): void {
-  if (
-    typeof id !== "string" ||
-    (!/^[a-f0-9]{64}$/.test(id) && !(allowNew && id === "new")) ||
-    !Number.isSafeInteger(version) ||
-    version < (allowNew ? 0 : 1)
-  )
-    throw clientValidationError("consumer decision: invalid id or expected version");
-}
-
-function validateResourceWriteFields(
-  input: Record<string, unknown>,
-  options: {
-    allowAliasClear?: boolean;
-    allowCustomDomainClear?: boolean;
-    requireUrlTarget?: boolean;
-    validateFindOrCreate?: boolean;
-    validatePreserveHost?: boolean;
-  } = {},
-): void {
-  const errors: string[] = [];
-  const collect = (fn: () => void): void => {
-    try {
-      fn();
-    } catch (err) {
-      if (err instanceof ValidationError) {
-        errors.push(err.detail);
-        return;
-      }
-      throw err;
-    }
-  };
-  collect(() => {
-    if (input.private !== undefined && typeof input.private !== "boolean") {
-      throw clientValidationError("private: must be a boolean");
-    }
-    if (input.consumer_access !== undefined) {
-      const policy = input.consumer_access;
-      requireObjectInput(policy, "consumer_access");
-      const p = policy as Record<string, unknown>;
-      requireNoUnknownFields(p, ["mode", "version", "contract_id"], "consumer_access");
-      if (
-        !["keys", "invite_only", "email_capture", "review", "contract"].includes(
-          p.mode as string,
-        ) ||
-        !Number.isSafeInteger(p.version) ||
-        (p.version as number) < 1
-      ) {
-        throw clientValidationError("consumer_access: invalid mode or version");
-      }
-      if (p.mode === "contract") {
-        if (
-          typeof p.contract_id !== "string" ||
-          !p.contract_id.trim() ||
-          new TextEncoder().encode(p.contract_id).length > 128
-        ) {
-          throw clientValidationError(
-            "consumer_access: contract mode requires a bounded contract_id",
-          );
-        }
-      } else if (p.contract_id !== undefined) {
-        throw clientValidationError("consumer_access: contract_id requires contract mode");
-      }
-      if (input.private === false)
-        throw clientValidationError("consumer_access: requires a private resource");
-      if (options.requireUrlTarget) {
-        if (p.version !== 1 || input.private !== true)
-          throw clientValidationError(
-            "consumer_access: creation requires private true and version one",
-          );
-      } else if (options.allowAliasClear) {
-        const expected = input.expected_consumer_access_version;
-        if (
-          !Number.isSafeInteger(expected) ||
-          (expected as number) < 0 ||
-          p.version !== (expected as number) + 1 ||
-          Object.keys(input).some(
-            (key) => key !== "consumer_access" && key !== "expected_consumer_access_version",
-          )
-        ) {
-          throw clientValidationError(
-            "consumer_access: update requires its expected version and no metadata changes",
-          );
-        }
-      }
-    } else if (input.expected_consumer_access_version !== undefined) {
-      throw clientValidationError("expected_consumer_access_version: requires consumer_access");
-    }
-  });
-  collect(() => {
-    const fields = ["allowed_device_keys_add", "allowed_device_keys_remove"] as const;
-    for (const field of fields) {
-      const keys = input[field];
-      if (keys === undefined) continue;
-      requireStringArrayElements(keys, field, "updateResource");
-      if (keys.length > 256 || new Set(keys).size !== keys.length) {
-        throw clientValidationError(`${field}: must contain at most 256 unique keys`);
-      }
-      for (const key of keys) {
-        let canonical = false;
-        try {
-          canonical = key.length === 44 && atob(key).length === 32 && btoa(atob(key)) === key;
-        } catch {
-          /* Invalid base64 is rejected below. */
-        }
-        if (!canonical) {
-          throw clientValidationError(`${field}: keys must be canonical padded base64 of 32 bytes`);
-        }
-      }
-      if (input.custom_domain !== undefined) {
-        throw clientValidationError(`${field}: update separately from custom_domain`);
-      }
-    }
-    const added = new Set(input.allowed_device_keys_add as string[] | undefined);
-    if ((input.allowed_device_keys_remove as string[] | undefined)?.some((key) => added.has(key))) {
-      throw clientValidationError("allowed device key additions and removals must not overlap");
-    }
-  });
-  const resourceType = input.type;
-  if (resourceType !== undefined && typeof resourceType !== "string") {
-    errors.push(
-      `type: must be a string (got ${resourceType === null ? "null" : typeof resourceType})`,
-    );
-  }
-  collect(() => {
-    if (input.target_url === undefined) {
-      if (options.requireUrlTarget && (resourceType === undefined || resourceType === "url")) {
-        throw clientValidationError("target_url: is required for url resources");
-      }
-      return;
-    }
-    requireValidTargetUrl(input.target_url);
-  });
-  collect(() =>
-    requireMaxLength(input.description as string | undefined, "description", MAX_DESCRIPTION),
-  );
-  collect(() =>
-    requireMaxLength(input.custom_domain as string | undefined, "custom_domain", MAX_CUSTOM_DOMAIN),
-  );
-  collect(() => {
-    if (options.allowCustomDomainClear && input.custom_domain === "") return;
-    requireNonEmptyIfPresent(input.custom_domain, "custom_domain");
-  });
-  collect(() => requireValidTags(input.tags as string[] | null | undefined));
-  collect(() => {
-    if (input.alias !== undefined) {
-      if (input.alias === null) {
-        if (!options.allowAliasClear) {
-          throw clientValidationError("alias: must be a string (got null)");
-        }
-      } else {
-        requireMaxLength(input.alias as string | undefined, "alias", MAX_ALIAS);
-        requireNonEmptyIfPresent(input.alias, "alias");
-      }
-    }
-  });
-  collect(() => {
-    if (input.slug === undefined) return;
-    requireMaxLength(input.slug as string | undefined, "slug", MAX_SLUG);
-    requireNonEmptyIfPresent(input.slug, "slug");
-  });
-  collect(() => {
-    if (
-      options.validateFindOrCreate &&
-      input.find_or_create !== undefined &&
-      typeof input.find_or_create !== "boolean"
-    ) {
-      throw clientValidationError(
-        `find_or_create: must be a boolean (got ${describeShape(input.find_or_create)})`,
-      );
-    }
-  });
-  collect(() => {
-    if (
-      options.validatePreserveHost &&
-      input.preserve_host !== undefined &&
-      typeof input.preserve_host !== "boolean"
-    ) {
-      throw clientValidationError(
-        `preserve_host: must be a boolean (got ${describeShape(input.preserve_host)})`,
-      );
-    }
-  });
-  if (errors.length > 0) {
-    throw clientValidationError(errors.join("; "));
-  }
-}
-
-function validateWebhookWriteFields(
-  input: Record<string, unknown>,
-  method: string,
-  requiredFields: { url?: boolean; events?: boolean } = {},
-): void {
-  if (requiredFields.url || input.url !== undefined) {
-    requireNonEmptyStringField(input, "url", method);
-    requireValidHttpUrl(input.url, "url");
-  }
-  if (requiredFields.events || input.events !== undefined) {
-    requireNonEmptyArrayField(input, "events", method);
-    requireStringArrayElements(input.events, "events", method);
-  }
-  requireMaxLength(input.description as string | undefined, "description", MAX_DESCRIPTION);
-  if (input.status !== undefined) {
-    requireNonEmptyStringField(input, "status", method);
-  }
-}
-
-function validateApiKeyWriteFields(
-  input: Record<string, unknown>,
-  method: string,
-  requiredFields: { name?: boolean; scopes?: boolean } = {},
-): void {
-  if (requiredFields.name || input.name !== undefined) {
-    requireNonEmptyStringField(input, "name", method);
-    requireMaxLength(input.name as string, "name", MAX_API_KEY_NAME);
-  }
-  if (requiredFields.scopes || input.scopes !== undefined) {
-    requireNonEmptyArrayField(input, "scopes", method);
-    requireStringArrayElements(input.scopes, "scopes", method);
-    const unsupported = (input.scopes as string[]).find(
-      (scope) => !API_KEY_REQUEST_SCOPES.has(scope),
-    );
-    if (unsupported !== undefined) {
-      throw clientValidationError(
-        `${method}: scopes contains an unsupported permission ${JSON.stringify(unsupported)}; this SDK accepts ${API_KEY_REQUEST_SCOPE_VALUES.join(", ")}`,
-      );
-    }
-  }
-}
-
-function validateEnrollmentTokenFields(input: Record<string, unknown>, method: string): void {
-  if (
-    input.target !== undefined &&
-    (typeof input.target !== "string" || !CREDENTIAL_TARGETS.has(input.target))
-  ) {
-    throw clientValidationError(`${method}: target must be 'agent' or 'connector'`);
-  }
-
-  let claimCount = 0;
-  if (input.claims !== undefined) {
-    if (!Array.isArray(input.claims)) {
-      throw clientValidationError(`${method}: claims must be an array`);
-    }
-    if (input.claims.length > 1) {
-      throw clientValidationError(`${method}: claims must contain at most one claim`);
-    }
-    claimCount = input.claims.length;
-    for (const [index, claim] of input.claims.entries()) {
-      if (!claim || typeof claim !== "object" || Array.isArray(claim)) {
-        throw clientValidationError(`${method}: claims[${index}] must be an object`);
-      }
-      requireNoUnknownFields(
-        claim as Record<string, unknown>,
-        ["type", "id"],
-        `${method}: claims[${index}]`,
-      );
-      const record = claim as Record<string, unknown>;
-      if (typeof record.type !== "string" || !CREDENTIAL_CLAIM_TYPES.has(record.type)) {
-        throw clientValidationError(`${method}: claims[${index}].type must be 'connector'`);
-      }
-      if (typeof record.id !== "string" || !CONNECTOR_SLUG_PATTERN.test(record.id)) {
-        throw clientValidationError(
-          `${method}: claims[${index}].id is not a valid connector slug; use 3-64 lowercase letters, digits, or hyphens, starting with a letter and ending with a letter or digit`,
-        );
-      }
-    }
-  }
-  // CreateApiKeyRequest.target permits an agent with zero or one connector claim.
-  if (input.target === "connector" && claimCount !== 1) {
-    throw clientValidationError(`${method}: target 'connector' requires exactly one claim`);
-  }
-
-  if (input.expires_in !== undefined) {
-    if (typeof input.expires_in !== "string") {
-      throw clientValidationError(`${method}: expires_in must be a duration string`);
-    }
-    const match = CREDENTIAL_DURATION_PATTERN.exec(input.expires_in);
-    if (!match) {
-      throw clientValidationError(`${method}: expires_in must match <integer><s|m|h|d|w>`);
-    }
-    const seconds =
-      BigInt(match[1]) * CREDENTIAL_DURATION_MULTIPLIERS[match[2] as CredentialDurationUnit];
-    if (seconds <= 0n || seconds > MAX_ENROLLMENT_TOKEN_TTL_SECONDS) {
-      throw clientValidationError(
-        `${method}: expires_in must be greater than zero and at most 24h`,
-      );
-    }
-  }
-}
-
-/**
- * Per-entry shape guard for {@link BatchItemResult}. Verifies every
- * non-optional field on the branch of the discriminated union selected
- * by the `success` discriminant. Protects consumers who narrow on
- * `success` and then access `resource_id` / `qurl_link` / `error` as
- * guaranteed-present — if the API ever omits one, we trip the guard
- * rather than returning `undefined` where the type says `string`.
- *
- * Returns `null` when the entry is valid, or a human-readable reason
- * string describing the *specific* field that's missing or wrong. The
- * reason never echoes the entry's values — only field names and shape
- * descriptors — so the caller can safely surface it in error messages
- * that may end up in observability pipelines. Contrast with the outer
- * guard's intentional silence about response-body content for the
- * same info-leak reason.
- */
-function batchItemResultValidationReason(entry: unknown): string | null {
-  if (!entry || typeof entry !== "object") return "not an object";
-  const e = entry as Record<string, unknown>;
-  // `Number.isInteger` rejects NaN, Infinity, and floats; combined
-  // with `>= 0`, the check rules out pathological proxy bodies that
-  // would attribute to a useless index. `index` is informational, so
-  // this isn't a correctness hazard, but tightening the constraint
-  // matches the same posture as the count integer guards above.
-  if (!Number.isInteger(e.index) || (e.index as number) < 0) {
-    return "missing/invalid 'index' (expected non-negative integer)";
-  }
-  if (e.success === true) {
-    if (typeof e.resource_id !== "string") {
-      return "success-branch missing required field 'resource_id' (expected string)";
-    }
-    if (typeof e.qurl_link !== "string") {
-      return "success-branch missing required field 'qurl_link' (expected string)";
-    }
-    if (typeof e.qurl_site !== "string") {
-      return "success-branch missing required field 'qurl_site' (expected string)";
-    }
-    return null;
-  }
-  if (e.success === false) {
-    if (!e.error || typeof e.error !== "object") {
-      return "failure-branch missing required field 'error' (expected object)";
-    }
-    const err = e.error as Record<string, unknown>;
-    if (typeof err.code !== "string") {
-      return "failure-branch missing required field 'error.code' (expected string)";
-    }
-    if (typeof err.message !== "string") {
-      return "failure-branch missing required field 'error.message' (expected string)";
-    }
-    return null;
-  }
-  return "missing/invalid 'success' discriminant (expected boolean)";
-}
-
-// ---- Portal-verb helpers (mirrors qurl-go) -------------------------------
-// Client-side guardrails for the portal flow (protectUrl → createPortal →
-// enterPortal), kept in lockstep with qurl-go's option validation and
-// qurl-python's port of it.
-
-/**
- * Client-side floor for portal lifetimes, mirroring qurl-go's `ValidFor`.
- * The LayerV API remains the source of truth for account limits; there is
- * intentionally no SDK-side maximum because an account may allow
- * longer-lived portals.
- */
-const MIN_PORTAL_VALID_FOR_SECONDS = 60;
-/**
- * Client-side floor for session durations, mirroring qurl-go's
- * `WithSessionDuration` (at least one second; zero is rejected rather than
- * treated as the server default).
- */
-const MIN_SESSION_DURATION_SECONDS = 1;
-
-/**
- * Shape of qurl-go's offline signed-fragment links: three or more
- * dot-separated base64url parts (<version>.<claims>.<secret>.<sig>).
- * Detected only to give those links a precise error in extractAccessToken.
- *
- * @internal Exported for in-package tests; not re-exported from index.ts.
- */
-export const SIGNED_FRAGMENT_RE = /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+){2,}$/;
-// Access-token grammar accepted by enterPortal (base64url charset).
-const ACCESS_TOKEN_RE = /^[A-Za-z0-9_-]+$/;
-
-/**
- * Serialize a duration option to the API's h/m/s duration grammar.
- *
- * Strings pass through unvalidated — the server is authoritative, same as
- * the REST-shaped `expires_in` fields. Numbers are milliseconds and get
- * qurl-go's client-side guardrails: whole seconds only and at least
- * `minimumSeconds` (checked in that order so e.g. 30.5s reports "at least
- * 60s" in every SDK). Serialized with hours as the largest unit so all API
- * duration fields use the same grammar across SDKs.
- */
-function serializeApiDuration(
-  value: string | number | undefined,
-  field: string,
-  minimumSeconds: number,
-): string | undefined {
-  if (value === undefined) return undefined;
-  if (typeof value === "string") {
-    if (value.trim() === "") {
-      throw clientValidationError(`${field}: must be a non-empty duration string`);
-    }
-    return value;
-  }
-  if (typeof value === "number") {
-    // NaN fails no comparison, so an explicit finite check keeps the
-    // error actionable instead of a misleading "whole seconds" report.
-    if (!Number.isFinite(value)) {
-      throw clientValidationError(`${field}: must be a finite number of milliseconds`);
-    }
-    if (value < minimumSeconds * 1000) {
-      throw clientValidationError(`${field}: must be at least ${minimumSeconds}s`);
-    }
-    if (value % 1000 !== 0) {
-      throw clientValidationError(`${field}: must be whole seconds`);
-    }
-    const seconds = value / 1000;
-    if (seconds % 3600 === 0) return `${seconds / 3600}h`;
-    if (seconds % 60 === 0) return `${seconds / 60}m`;
-    return `${seconds}s`;
-  }
-  throw clientValidationError(
-    `${field}: must be a duration string (e.g. "5m") or a number of milliseconds`,
-  );
-}
-
-/**
- * Portal-verb target URL validation (qurl-go `ProtectURL` parity). On top of
- * the shared scheme/length check, the URL must carry a host and must parse,
- * and embedded credentials (userinfo) are rejected. The added checks never
- * echo the URL — a userinfo URL contains credentials that must stay out of
- * logs and error messages. The REST-shaped compatibility layer keeps its
- * original prefix-only check so its accepted inputs don't change.
- */
-function requirePortalTargetUrl(targetUrl: unknown): void {
-  requireValidTargetUrl(targetUrl);
-  const url = targetUrl as string; // requireValidTargetUrl only returns for http(s) strings
-  // WHATWG URL normalizes away an empty authority ("https:///x" parses
-  // with host "x"), so the host-presence check runs on the raw string,
-  // mirroring qurl-go's url.Parse which rejects authority-less URLs.
-  const afterScheme = url.slice(url.indexOf("://") + 3);
-  if (afterScheme === "" || "/?#".includes(afterScheme[0])) {
-    throw clientValidationError("target_url: must include a host");
-  }
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    throw clientValidationError("target_url: malformed URL");
-  }
-  if (parsed.username !== "" || parsed.password !== "") {
-    throw clientValidationError("target_url: must not include embedded credentials (userinfo)");
-  }
-}
-
-/**
- * Extract the access token from a qURL link, or pass a bare token through.
- *
- * Platform-issued links carry the access token in the URL fragment
- * (`https://qurl.link/#at_...`). Error messages deliberately never echo the
- * input — qURL links are credentials and must stay out of logs.
- */
-function extractAccessToken(qurlLink: unknown): string {
-  if (typeof qurlLink !== "string" || qurlLink.trim() === "") {
-    throw clientValidationError("qurlLink: must be a non-empty string");
-  }
-  const hashIndex = qurlLink.indexOf("#");
-  const token = hashIndex >= 0 ? qurlLink.slice(hashIndex + 1) : qurlLink;
-  if (SIGNED_FRAGMENT_RE.test(token)) {
-    throw clientValidationError(
-      "qurlLink: this is a signed qURL link (offline fragment format), which cannot be " +
-        "opened through the API resolver — enterPortal only accepts platform links " +
-        "(https://qurl.link/#at_...) or bare access tokens",
-    );
-  }
-  if (token === "" || !ACCESS_TOKEN_RE.test(token)) {
-    throw clientValidationError(
-      "qurlLink: no access token found — pass a platform qURL link " +
-        "(https://qurl.link/#at_...) or a bare access token",
-    );
-  }
-  return token;
-}
-
-/**
- * Parse an RFC 3339 timestamp from the API into a `Date`, or `undefined`
- * when absent or unparseable. The portal surface exposes `Date` (matching
- * qurl-go's `time.Time` and qurl-python's `datetime`); the REST-shaped
- * layer keeps raw wire strings.
- */
-function parseApiDate(value: string | undefined): Date | undefined {
-  if (typeof value !== "string" || value === "") return undefined;
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? undefined : parsed;
-}
-
-/** Wire shape shared by the two portal-minting endpoints. */
-type PortalWireResponse = {
-  resource_id?: string;
-  crid?: string;
-  qurl_link?: string;
-  qurl_site?: string;
-  expires_at?: string;
-  qurl_id?: string;
-  label?: string;
-};
-
-/**
- * Parse a {@link Portal} from a create-portal API response. `resource_id`
- * and `qurl_link` are required, mirroring qurl-go's fail-closed response
- * check; everything else is optional because the two mint endpoints differ
- * in which ancillary fields they return.
- */
-async function parsePortal(
-  data: PortalWireResponse | undefined,
-  method: string,
-  expectedCrid?: string,
-): Promise<Portal> {
-  if (typeof data?.resource_id !== "string" || data.resource_id.trim() === "") {
-    throw unexpectedResponseError(`${method}: response is missing resource_id`);
-  }
-  if (typeof data.qurl_link !== "string" || data.qurl_link.trim() === "") {
-    throw unexpectedResponseError(`${method}: response is missing qurl_link`);
-  }
-  await verifyResourceIdentity(data, method, expectedCrid);
-  return {
-    crid: data.crid as string,
-    resourcePublicKey: data.resource_id,
-    link: data.qurl_link,
-    site: data.qurl_site,
-    expiresAt: parseApiDate(data.expires_at),
-    // Same empty-string → absent normalization the REST-shaped layer's
-    // consumers apply to qurl_id.
-    qurlId: data.qurl_id || undefined,
-    label: data.label,
-  };
-}
-
-/**
- * Validate portal options and build the create-portal wire body. The service
- * requires a JSON object even when every option is omitted; `{}` selects the
- * owner's plan defaults and matches qurl-go's zero-value request struct.
- */
-function buildCreatePortalBody(opts: CreatePortalOptions, method: string): Record<string, unknown> {
-  requireObjectInput(opts, method);
-  requireNoUnknownFields(opts, CREATE_PORTAL_OPTION_KEYS, method);
-  // null → omitted, via the SDK-wide normalizePatchFields convention.
-  const { validFor, label, oneTimeUse, maxSessions, sessionDuration, targetPath } =
-    normalizePatchFields(opts, CREATE_PORTAL_OPTION_KEYS) as CreatePortalOptions;
-  if (label !== undefined) {
-    requireMaxLength(label, "label", MAX_LABEL);
-    // qurl-go's WithLabel rejects blank labels; the REST-shaped mintLink
-    // keeps its permissive whitespace behavior, so the check lives here.
-    if (label.trim() === "") {
-      throw clientValidationError("label: must not be empty");
-    }
-  }
-  requireBooleanIfPresent(oneTimeUse, "oneTimeUse");
-  requireMaxSessionsInRange(maxSessions, "maxSessions");
-  requireMaxUtf8Bytes(targetPath, "targetPath", MAX_TARGET_PATH);
-  requireNonEmptyIfPresent(targetPath, "targetPath");
-  if (targetPath !== undefined && method === "createPortalForUrl") {
-    throw clientValidationError("targetPath: requires an existing resource");
-  }
-  const body: Record<string, unknown> = {};
-  const expiresIn = serializeApiDuration(validFor, "validFor", MIN_PORTAL_VALID_FOR_SECONDS);
-  if (expiresIn !== undefined) body.expires_in = expiresIn;
-  if (label !== undefined) body.label = label;
-  if (oneTimeUse !== undefined) body.one_time_use = oneTimeUse;
-  // Explicit 0 means unlimited and must survive body construction.
-  if (maxSessions !== undefined) body.max_sessions = maxSessions;
-  const wireSessionDuration = serializeApiDuration(
-    sessionDuration,
-    "sessionDuration",
-    MIN_SESSION_DURATION_SECONDS,
-  );
-  if (wireSessionDuration !== undefined) body.session_duration = wireSessionDuration;
-  if (targetPath !== undefined) body.target_path = targetPath;
-  return body;
-}
-
-interface ApiResponse<T> {
-  data: T;
-  meta?: {
-    found_existing?: unknown;
-    request_id?: string;
-    page_size?: number;
-    has_more?: boolean;
-    next_cursor?: string;
-  };
-}
-
-interface HttpResponse<T> {
-  envelope: ApiResponse<T>;
-  status: number;
-  bodyEmpty: boolean;
-  headers?: Headers;
-}
-
-interface ApiErrorEnvelope {
-  error?: {
-    type?: string;
-    title?: string;
-    status?: number;
-    detail?: string;
-    code?: string;
-    instance?: string;
-    invalid_fields?: Record<string, string>;
-    /**
-     * Legacy field from pre-RFC-7807 error shapes. Supported for backward
-     * compatibility when the API has been configured to return the older
-     * `{ error: { code, message } }` envelope.
-     */
-    message?: string;
-  };
-  meta?: { request_id?: string; tombstone?: unknown };
 }
 
 /** qURL API client. */
@@ -3103,6 +647,7 @@ export class QURLClient {
   private readonly apiKey: string;
   private readonly fetchFn: typeof globalThis.fetch;
   private readonly maxRetries: number;
+  private readonly maxResponseBodyBytes: number;
   private readonly timeout: number;
   private readonly userAgent: string;
   private readonly debugFn: ((message: string, data?: Record<string, unknown>) => void) | undefined;
@@ -3117,6 +662,20 @@ export class QURLClient {
     if (/[\r\n]/.test(options.apiKey)) {
       throw clientValidationError("apiKey: must not contain CR/LF characters");
     }
+    const responseLimit =
+      options.maxResponseBodyBytes === undefined
+        ? MAX_RESPONSE_BODY_BYTES
+        : options.maxResponseBodyBytes;
+    if (
+      !Number.isSafeInteger(responseLimit) ||
+      responseLimit < 1 ||
+      responseLimit > MAX_CONFIGURABLE_RESPONSE_BODY_BYTES
+    ) {
+      throw clientValidationError(
+        "maxResponseBodyBytes: must be an integer from 1 through 16777216 bytes",
+      );
+    }
+    this.maxResponseBodyBytes = responseLimit;
     this.apiKey = options.apiKey;
     const rawBaseUrl = stripTrailingSlashes(options.baseUrl ?? DEFAULT_BASE_URL);
     // Parse the URL so the loopback exemption matches on the hostname,
@@ -3224,21 +783,21 @@ export class QURLClient {
         branch: "non-array",
         qurls_type: typeof qurls,
       });
-      return rest;
+      return copyResponseMetadata(raw, rest);
     }
     // null is semantically "no tokens" — silent drop is fine, but surface
     // via debug so operators spot it if the API starts emitting null.
     if (qurls === null) {
       this.log("mapQurlsField: 'qurls' was null; dropping", { branch: "null" });
-      return rest;
+      return copyResponseMetadata(raw, rest);
     }
     if (qurls === undefined) {
       // Symmetric with null / non-array branches.
       this.log("mapQurlsField: 'qurls' was undefined; dropping", { branch: "undefined" });
-      return rest;
+      return copyResponseMetadata(raw, rest);
     }
     if (!rest.access_tokens) {
-      return { ...rest, access_tokens: qurls };
+      return copyResponseMetadata(raw, { ...rest, access_tokens: qurls });
     }
     // Server-side bug — drop `qurls` rather than merge. If the arrays
     // disagree, no consistent reconciliation exists; a silent merge
@@ -3248,7 +807,7 @@ export class QURLClient {
       qurls_count: qurls.length,
       access_tokens_count: rest.access_tokens.length,
     });
-    return rest;
+    return copyResponseMetadata(raw, rest);
   }
 
   /**
@@ -3387,7 +946,7 @@ export class QURLClient {
       pageCount += 1;
       const page = await loadPage({ ...input, cursor } as TInput);
       for (const item of itemsFromPage(page)) {
-        yield item;
+        yield copyResponseMetadata(page, item);
       }
       cursor = page.next_cursor;
       if (page.has_more === false) {
@@ -3459,7 +1018,7 @@ export class QURLClient {
     });
     if (response.status === 204)
       throw unexpectedResponseError("protectUrl: expected a resource response body");
-    const resource = response.envelope.data;
+    const resource = withEnvelopeMetadata(response.envelope.data, response.envelope.meta);
     await verifyResourceIdentity(resource, "protectUrl");
     if (
       normalized.consumerAccess &&
@@ -3590,7 +1149,10 @@ export class QURLClient {
         ),
       );
     }
-    return { resource, foundExisting };
+    return withEnvelopeMetadata(
+      { resource: withEnvelopeMetadata(resource, response.envelope.meta), foundExisting },
+      response.envelope.meta,
+    );
   }
 
   /** Fetch a qURL Connector resource by its CRID. */
@@ -3598,7 +1160,7 @@ export class QURLClient {
     requireResourceCrid(crid, "getConnectorResource");
     requireConnectorSubtleCrypto("getConnectorResource");
     const {
-      envelope: { data },
+      envelope: { data, meta },
       status: httpStatus,
     } = await this.rawRequest<ResourceDetail>(
       "GET",
@@ -3611,10 +1173,13 @@ export class QURLClient {
         `getConnectorResource: expected HTTP 200, got ${httpStatus ?? "unknown"}`,
       );
     }
-    return parseConnectorResource(this, data?.resource, "getConnectorResource", {
-      crid,
-      revokedIsLifecycleError: true,
-    });
+    return withEnvelopeMetadata(
+      await parseConnectorResource(this, data?.resource, "getConnectorResource", {
+        crid,
+        revokedIsLifecycleError: true,
+      }),
+      meta,
+    );
   }
 
   /** Fetch the single active qURL Connector resource for an immutable slug. */
@@ -3626,7 +1191,7 @@ export class QURLClient {
     // The slug point lookup is intrinsically active-only. It also
     // rejects combining `slug` with `status`, so this query must stay slug-only.
     const {
-      envelope: { data },
+      envelope: { data, meta },
       status: httpStatus,
     } = await this.rawRequest<Resource[]>(
       "GET",
@@ -3660,7 +1225,10 @@ export class QURLClient {
         detail: `getConnectorResourceBySlug: expected one active resource, got ${data.length}`,
       });
     }
-    return parseConnectorResource(this, data[0], "getConnectorResourceBySlug", { slug });
+    return withEnvelopeMetadata(
+      await parseConnectorResource(this, data[0], "getConnectorResourceBySlug", { slug }),
+      meta,
+    );
   }
 
   /**
@@ -3721,7 +1289,7 @@ export class QURLClient {
       body,
       requestOptions,
     );
-    return parsePortal(data, "createPortal", resourceId);
+    return parsePortal(data, "createPortal", resourceId, body.target_path as string | undefined);
   }
 
   /**
@@ -3749,10 +1317,10 @@ export class QURLClient {
     };
     const data = await this.request<PortalWireResponse>("POST", "/v1/qurls", body, requestOptions);
     const portal = await parsePortal(data, "createPortalForUrl");
-    return {
+    return copyResponseMetadata(data, {
       portal,
-      resource: new ProtectedResource(this, portal.crid, targetUrl),
-    };
+      resource: copyResponseMetadata(data, new ProtectedResource(this, portal.crid, targetUrl)),
+    });
   }
 
   /**
@@ -3785,11 +1353,11 @@ export class QURLClient {
         "enterPortal: access was granted but the API returned no resource URL",
       );
     }
-    return {
+    return copyResponseMetadata(resolved, {
       resourceUrl: resolved.target_url,
       openSeconds: resolved.access_grant?.expires_in ?? 0,
       resourcePublicKey: resolved.resource_id,
-    };
+    });
   }
 
   // --- Public API ---
@@ -3951,7 +1519,10 @@ export class QURLClient {
         });
       }
     }
-    return requestId !== undefined ? { ...result, request_id: requestId } : result;
+    return withEnvelopeMetadata(
+      requestId !== undefined ? { ...result, request_id: requestId } : result,
+      response.envelope.meta,
+    );
   }
 
   /**
@@ -4002,17 +1573,20 @@ export class QURLClient {
         status,
         requestId,
       );
-      return {
-        http_status: 202,
-        batch_id: base.batchId,
-        status: "queued",
-        item_count: base.itemCount,
-        submitted_at: base.submittedAt,
-        etag: responseHeaders.etag,
-        retry_after: responseHeaders.retryAfter,
-        location,
-        request_id: requestId,
-      };
+      return withEnvelopeMetadata(
+        {
+          http_status: 202,
+          batch_id: base.batchId,
+          status: "queued",
+          item_count: base.itemCount,
+          submitted_at: base.submittedAt,
+          etag: responseHeaders.etag,
+          retry_after: responseHeaders.retryAfter,
+          location,
+          request_id: requestId,
+        },
+        response.envelope.meta,
+      );
     } catch (error) {
       if (!dispatched) throw error;
       classifyDelegatedBatchCreateFailure(error, acceptedBatchId);
@@ -4055,13 +1629,16 @@ export class QURLClient {
       if (responseHeaders.etag !== undefined && responseHeaders.etag !== options.etag) {
         throw delegatedResponseError(status, "304 response changed the ETag");
       }
-      return {
-        http_status: 304,
-        etag: responseHeaders.etag ?? options.etag,
-        ...(responseHeaders.retryAfter === undefined
-          ? {}
-          : { retry_after: responseHeaders.retryAfter }),
-      };
+      return withEnvelopeMetadata(
+        {
+          http_status: 304,
+          etag: responseHeaders.etag ?? options.etag,
+          ...(responseHeaders.retryAfter === undefined
+            ? {}
+            : { retry_after: responseHeaders.retryAfter }),
+        },
+        response.envelope.meta,
+      );
     }
     if (status !== 200 && status !== 202) {
       throw delegatedResponseError(status, "read returned an unexpected success status");
@@ -4074,16 +1651,19 @@ export class QURLClient {
         throw delegatedResponseError(status, "pending data has a terminal status", requestId);
       }
       const responseHeaders = delegatedResponseHeaders(response, status, requestId);
-      return {
-        http_status: 202,
-        batch_id: base.batchId,
-        status: data.status,
-        item_count: base.itemCount,
-        submitted_at: base.submittedAt,
-        etag: responseHeaders.etag,
-        retry_after: responseHeaders.retryAfter,
-        request_id: requestId,
-      };
+      return withEnvelopeMetadata(
+        {
+          http_status: 202,
+          batch_id: base.batchId,
+          status: data.status,
+          item_count: base.itemCount,
+          submitted_at: base.submittedAt,
+          etag: responseHeaders.etag,
+          retry_after: responseHeaders.retryAfter,
+          request_id: requestId,
+        },
+        response.envelope.meta,
+      );
     }
 
     if (
@@ -4142,17 +1722,20 @@ export class QURLClient {
       etag !== undefined && etag.length <= MAX_DELEGATED_ETAG && STRONG_ETAG_PATTERN.test(etag)
         ? etag
         : undefined;
-    return {
-      http_status: 200,
-      batch_id: base.batchId,
-      status: data.status,
-      item_count: base.itemCount,
-      submitted_at: base.submittedAt,
-      completed_at: data.completed_at,
-      results,
-      ...(terminalEtag === undefined ? {} : { etag: terminalEtag }),
-      request_id: requestId,
-    };
+    return withEnvelopeMetadata(
+      {
+        http_status: 200,
+        batch_id: base.batchId,
+        status: data.status,
+        item_count: base.itemCount,
+        submitted_at: base.submittedAt,
+        completed_at: data.completed_at,
+        results,
+        ...(terminalEtag === undefined ? {} : { etag: terminalEtag }),
+        request_id: requestId,
+      },
+      response.envelope.meta,
+    );
   }
 
   /** Read owner-visible metadata for one delegated qURL. */
@@ -4171,7 +1754,10 @@ export class QURLClient {
       throw delegatedResponseError(status, "read returned an unexpected success status");
     }
     const { data, requestId } = delegatedEnvelope(response, status);
-    return validateDelegatedQurl(data, qurlId, status, requestId);
+    return withEnvelopeMetadata(
+      validateDelegatedQurl(data, qurlId, status, requestId),
+      response.envelope.meta,
+    );
   }
 
   /**
@@ -4810,18 +2396,20 @@ export class QURLClient {
     if (typeof wire.expires_at === "string" && expiresAt === undefined) {
       throw unexpectedResponseError("shareResource: response has invalid expires_at");
     }
-    return new ShareLink({
-      // Repair transport-only edge whitespace on the one-time credential;
-      // ancillary identifiers fail closed instead of being normalized.
-      link: data.qurl.trim(),
-      qurlId: typeof wire.qurl_id === "string" ? wire.qurl_id : undefined,
-      crid: id,
-      type: typeof wire.type === "string" ? wire.type : undefined,
-      expiresAt,
-      expiresInSeconds:
-        typeof wire.expires_in_seconds === "number" ? wire.expires_in_seconds : undefined,
-      singleUse: typeof wire.single_use === "boolean" ? wire.single_use : undefined,
-    });
+    return new ShareLink(
+      copyResponseMetadata(data, {
+        // Repair transport-only edge whitespace on the one-time credential;
+        // ancillary identifiers fail closed instead of being normalized.
+        link: data.qurl.trim(),
+        qurlId: typeof wire.qurl_id === "string" ? wire.qurl_id : undefined,
+        crid: id,
+        type: typeof wire.type === "string" ? wire.type : undefined,
+        expiresAt,
+        expiresInSeconds:
+          typeof wire.expires_in_seconds === "number" ? wire.expires_in_seconds : undefined,
+        singleUse: typeof wire.single_use === "boolean" ? wire.single_use : undefined,
+      }),
+    );
   }
 
   /** Revoke a specific qURL token on a resource. */
@@ -4890,13 +2478,16 @@ export class QURLClient {
         }
         request_id = meta?.request_id;
         page_size = meta?.page_size;
-        return { ...meta, sessions: data ?? [] };
+        return withEnvelopeMetadata({ ...meta, sessions: data ?? [] }, meta);
       },
       (page) => page.sessions,
     )) {
       sessions.push(session);
     }
-    return { sessions, request_id, has_more: false, page_size };
+    return withEnvelopeMetadata(
+      { sessions, request_id, has_more: false, page_size },
+      { request_id },
+    );
   }
 
   /**
@@ -4936,23 +2527,27 @@ export class QURLClient {
             requestId: meta.request_id,
           });
         }
-        if (data?.terminated === undefined) {
-          this.log("terminateAllResourceSessions: missing terminated count; defaulting to zero", {
-            request_id: meta?.request_id,
-          });
-        } else if (!Number.isSafeInteger(data.terminated) || data.terminated < 0) {
-          throw unexpectedResponseError("terminateAllResourceSessions: invalid terminated count", {
-            requestId: meta?.request_id,
-          });
+        const count = data?.terminated;
+        if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0) {
+          throw unexpectedResponseError(
+            "terminateAllResourceSessions: missing or invalid terminated count; inspect sessions before retrying",
+            { requestId: meta?.request_id },
+          );
         }
         request_id = meta?.request_id;
-        return { ...meta, counts: [data?.terminated ?? 0] };
+        return withEnvelopeMetadata({ ...meta, counts: [count] }, meta);
       },
       (page) => page.counts,
     )) {
       terminated += count;
+      if (!Number.isSafeInteger(terminated)) {
+        throw unexpectedResponseError(
+          "terminateAllResourceSessions: total exceeds safe integer range; inspect sessions before retrying",
+          { requestId: request_id },
+        );
+      }
     }
-    return { terminated, request_id };
+    return withEnvelopeMetadata({ terminated, request_id }, { request_id });
   }
 
   /** Terminate a specific resource session. */
@@ -5440,19 +3035,22 @@ export class QURLClient {
         `${method}: invalid binding response; reconcile with the same request key before retrying`,
       );
     }
-    return {
-      binding_id: result.binding_id,
-      provider: result.provider,
-      external_id: result.external_id,
-      ...(result.display_name !== undefined ? { display_name: result.display_name } : {}),
-      api_key: {
-        key_id: result.api_key.key_id,
-        key_prefix: result.api_key.key_prefix,
-        plaintext: result.api_key.plaintext,
+    return withEnvelopeMetadata(
+      {
+        binding_id: result.binding_id,
+        provider: result.provider,
+        external_id: result.external_id,
+        ...(result.display_name !== undefined ? { display_name: result.display_name } : {}),
+        api_key: {
+          key_id: result.api_key.key_id,
+          key_prefix: result.api_key.key_prefix,
+          plaintext: result.api_key.plaintext,
+        },
+        scopes: result.scopes,
+        created_at: result.created_at,
       },
-      scopes: result.scopes,
-      created_at: result.created_at,
-    };
+      raw.envelope.meta,
+    );
   }
 
   /** Create a new API key. */
@@ -5626,12 +3224,15 @@ export class QURLClient {
         next_cursor: meta.next_cursor,
       });
     }
-    return {
-      access_codes: data ?? [],
-      request_id: meta?.request_id,
-      has_more: false,
-      page_size: meta?.page_size,
-    };
+    return withEnvelopeMetadata(
+      {
+        access_codes: data ?? [],
+        request_id: meta?.request_id,
+        has_more: false,
+        page_size: meta?.page_size,
+      },
+      meta,
+    );
   }
 
   /** Revoke an access code. */
@@ -5651,7 +3252,7 @@ export class QURLClient {
     // List methods call rawRequest directly so 204 can degrade to an empty page.
     // Body-returning endpoints declare 200 JSON today, so this path fails closed.
     const {
-      envelope: { data },
+      envelope: { data, meta },
       status: httpStatus,
     } = await this.rawRequest<T>(method, path, body, {
       requestOptions,
@@ -5661,7 +3262,7 @@ export class QURLClient {
         `Unexpected 204 No Content from ${method} ${path}; expected response body`,
       );
     }
-    return data;
+    return withEnvelopeMetadata(data, meta);
   }
 
   /**
@@ -5825,14 +3426,14 @@ export class QURLClient {
 
       let responseBody: string;
       try {
-        responseBody = await readBoundedResponseBody(response);
+        responseBody = await readBoundedResponseBody(response, this.maxResponseBodyBytes);
       } catch (err) {
         if (err instanceof ResponseBodyTooLargeError) {
           this.log(`rejected oversized response body from ${response.status}`, {
             status: response.status,
           });
           const detail =
-            `Response body exceeds ${MAX_RESPONSE_BODY_BYTES}-byte limit on HTTP ${response.status}; ` +
+            `Response body exceeds ${this.maxResponseBodyBytes}-byte limit on HTTP ${response.status}; ` +
             "request a smaller page when listing collections";
           if (response.ok) {
             throw unexpectedResponseError(detail, { status: response.status });
@@ -6206,124 +3807,8 @@ export class QURLClient {
     );
   }
 }
-
-/**
- * A LayerV-protected resource, bound to the client that produced it.
- *
- * Obtained from {@link QURLClient.protectUrl} or {@link QURLClient.resourceByCrid} —
- * not constructed directly. Mint short-lived access links for the resource
- * with {@link createPortal} (qurl-go: `qurl.Resource`).
- */
-export class ProtectedResource {
-  // A true private field (not a module-scope WeakMap registry, which
-  // CONTRIBUTING.md's dual-build rule bars) so the binding stays on the
-  // instance and out of Object.keys/JSON.stringify output.
-  readonly #client: QURLClient;
-  /** The public resource CRID. */
-  readonly crid: string;
-  /** The private URL protected by this resource, when known. */
-  readonly targetUrl?: string;
-  /**
-   * Full server-populated {@link Resource} metadata when the handle came
-   * from an API response; `undefined` for {@link QURLClient.resourceByCrid}
-   * handles and for the one-call {@link QURLClient.createPortalForUrl} path.
-   */
-  readonly details?: Resource;
-
-  constructor(client: QURLClient, id: string, targetUrl?: string, details?: Resource) {
-    this.#client = client;
-    this.crid = id;
-    this.targetUrl = targetUrl;
-    this.details = details;
-  }
-
-  /**
-   * Whether `resource` was produced by `client`. A static because the
-   * binding lives in a private field that only this class can read; used
-   * by {@link QURLClient.createPortal} to refuse handles bound to a
-   * different client.
-   */
-  static isBoundTo(resource: ProtectedResource, client: QURLClient): boolean {
-    return resource.#client === client;
-  }
-
-  /**
-   * Mint a short-lived qURL link (a portal) for this resource. See
-   * {@link QURLClient.createPortal} for the option reference.
-   */
-  async createPortal(
-    opts: CreatePortalOptions = {},
-    requestOptions?: RequestOptions,
-  ): Promise<Portal> {
-    return this.#client.createPortal(this, opts, requestOptions);
-  }
-}
-
-/** Result of idempotently ensuring a qURL Connector resource. */
-export interface EnsureConnectorResourceResult {
-  resource: ConnectorResource;
-  foundExisting: boolean;
-}
-
-const CONNECTOR_RESOURCE_CONSTRUCTOR_TOKEN = Symbol("validated ConnectorResource");
-
-/**
- * A validated qURL Connector resource bound to the client that loaded it.
- *
- * Resource identity, reverse-routing identity, and NHP admission identity are
- * distinct server-issued values. Callers must consume each field verbatim and
- * must never derive one from another.
- */
-export class ConnectorResource {
-  readonly #client: QURLClient;
-  readonly resourcePublicKey: string;
-  /** Required public identifier, verified against the returned resource key. */
-  readonly crid: string;
-  readonly connectorRoutingId: string;
-  readonly knockResourceId: string;
-  readonly slug: string;
-  readonly alias?: string;
-
-  /** @internal Instances are returned by QURLClient after wire validation. */
-  constructor(
-    client: QURLClient,
-    details: Resource,
-    validationToken: typeof CONNECTOR_RESOURCE_CONSTRUCTOR_TOKEN,
-  ) {
-    if (validationToken !== CONNECTOR_RESOURCE_CONSTRUCTOR_TOKEN) {
-      throw clientValidationError(
-        "ConnectorResource cannot be constructed directly; load it through QURLClient",
-      );
-    }
-    this.#client = client;
-    this.resourcePublicKey = details.resource_id;
-    this.crid = details.crid!;
-    this.connectorRoutingId = details.connector_routing_id as string;
-    this.knockResourceId = details.knock_resource_id as string;
-    this.slug = details.slug as string;
-    this.alias = details.alias ?? undefined;
-  }
-
-  /** Mint a short-lived portal for this Connector resource. */
-  async createPortal(
-    opts: CreatePortalOptions = {},
-    requestOptions?: RequestOptions,
-  ): Promise<Portal> {
-    return this.#client.createPortal(this.crid, opts, requestOptions);
-  }
-}
-
-function sameConsumerPolicy(
-  actual: ConsumerAccessPolicy | undefined,
-  expected: ConsumerAccessPolicy,
-  foundExisting: boolean,
-): boolean {
-  return (
-    actual?.mode === expected.mode &&
-    (actual?.version === expected.version ||
-      (foundExisting &&
-        Number.isSafeInteger(actual?.version) &&
-        Number(actual?.version) > expected.version)) &&
-    actual?.contract_id === expected.contract_id
-  );
-}
+export { isApiKeyRequestScope } from "./client-management.js";
+export { SIGNED_FRAGMENT_RE } from "./client-portals.js";
+export { ProtectedResource } from "./client-portals.js";
+export type { EnsureConnectorResourceResult } from "./client-connectors.js";
+export { ConnectorResource } from "./client-connectors.js";

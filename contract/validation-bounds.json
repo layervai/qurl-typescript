@@ -302,10 +302,102 @@
           "expected": "Destination path and optional query for a qURL Connector link. For example,\n`/view/abc?download=1` redirects to that path on the resource's `qurl.site` host.\nOmit this field to use the host's root. Only qURL Connector resources (`type=tunnel`)\naccept it. Maximum: 2048 UTF-8 bytes.\n\n**Access scope:** The path permits itself and descendants at a segment boundary.\n`/view/abc` permits `/view/abc/thumbnail`, but not `/view/abcd`.\nThe query does not restrict access. A scoped link works only through the resource\nhost; access through a custom domain is denied. The Connector must also authorize\nthe path before using it to look up an object.\n\n**Path rules:** Start with one `/`. Use canonical, unescaped ASCII. A single trailing\nslash is allowed. Do not use `//`, percent escapes, semicolons, empty interior\nsegments, `.` or `..` segments, exclamation marks, parentheses, asterisks, apostrophes,\na scheme, host, backslash, fragment, whitespace, or control characters.\nUse opaque route keys for objects; keep user filenames in metadata.\nClients must preserve the accepted path bytes. Percent-encoded alternatives are denied.\n\n**Query rules:** Use ASCII letters, digits, `._~!$&()*+,;=:@/?-`, and well-formed\npercent escapes. Percent-encode other characters. Literal apostrophes are not\naccepted. Query bytes are preserved, including semicolons and percent escapes.\n\n**Errors:** JSON null and non-string values return `400 validation_error`.\nEmpty strings, oversized or malformed paths, and use on other resource types\nreturn `400 invalid_target_path`.\n"
         }
       ]
+    },
+    "MAX_ALLOWED_DEVICE_KEYS": {
+      "expected": 256,
+      "sources": [
+        {
+          "schema": "UpdateResourceRequest",
+          "property": "allowed_device_keys_add",
+          "keyword": "maxItems"
+        },
+        {
+          "schema": "UpdateResourceRequest",
+          "property": "allowed_device_keys_remove",
+          "keyword": "maxItems"
+        }
+      ]
+    },
+    "MAX_LIST_LIMIT": {
+      "expected": 100,
+      "sources": [
+        {
+          "operation": "listQurls",
+          "parameter": "limit",
+          "parameterIn": "query",
+          "keyword": "maximum"
+        },
+        {
+          "operation": "listResources",
+          "parameter": "limit",
+          "parameterIn": "query",
+          "keyword": "maximum"
+        },
+        {
+          "operation": "listConnectorInstallations",
+          "parameter": "limit",
+          "parameterIn": "query",
+          "keyword": "maximum"
+        },
+        {
+          "operation": "listConnectorDevices",
+          "parameter": "limit",
+          "parameterIn": "query",
+          "keyword": "maximum"
+        },
+        {
+          "operation": "listConsumerInvitations",
+          "parameter": "limit",
+          "parameterIn": "query",
+          "keyword": "maximum"
+        },
+        {
+          "operation": "listConsumerGrants",
+          "parameter": "limit",
+          "parameterIn": "query",
+          "keyword": "maximum"
+        },
+        {
+          "operation": "listResourceQurls",
+          "parameter": "limit",
+          "parameterIn": "query",
+          "keyword": "maximum"
+        },
+        {
+          "operation": "listBillingInvoices",
+          "parameter": "limit",
+          "parameterIn": "query",
+          "keyword": "maximum"
+        },
+        {
+          "operation": "listDomains",
+          "parameter": "limit",
+          "parameterIn": "query",
+          "keyword": "maximum"
+        },
+        {
+          "operation": "listWebhooks",
+          "parameter": "limit",
+          "parameterIn": "query",
+          "keyword": "maximum"
+        },
+        {
+          "operation": "listWebhookDeliveries",
+          "parameter": "limit",
+          "parameterIn": "query",
+          "keyword": "maximum"
+        },
+        {
+          "operation": "listApiKeys",
+          "parameter": "limit",
+          "parameterIn": "query",
+          "keyword": "maximum"
+        }
+      ]
     }
   },
   "local": {
-    "MAX_RESPONSE_BODY_BYTES": "Response memory budget; changing server field limits does not justify a larger response allocation.",
+    "MAX_RESPONSE_BODY_BYTES": "Default response memory budget; larger responses require an explicit cap within the shared ceiling.",
     "MAX_ERROR_SNIPPET_BYTES": "Diagnostic byte budget.",
     "MAX_ERROR_SNIPPET_SOURCE_CODE_UNITS": "Diagnostic traversal budget derived from the snippet byte cap.",
     "MAX_INVALID_FIELD_ENTRIES": "Diagnostic collection count budget.",
@@ -313,6 +405,8 @@
     "MAX_DIAGNOSTIC_COLLECTION_BYTES": "Diagnostic collection byte budget.",
     "MAX_AUTO_PAGINATION_PAGES": "Automatic traversal safety budget.",
     "MAX_PATH_ID_DECODE_PASSES": "Identifier normalization work budget.",
-    "MAX_PATH_ID_LENGTH": "Identifier pre-validation memory/work budget; exact identifiers have separate format guards."
+    "MAX_PATH_ID_LENGTH": "Identifier pre-validation memory/work budget; exact identifiers have separate format guards.",
+    "MAX_CONSUMER_CONTRACT_ID_BYTES": "Local UTF-8 byte budget for an opaque contract identifier. OpenAPI bounds characters; this keeps the existing stricter byte policy.",
+    "MAX_CONFIGURABLE_RESPONSE_BODY_BYTES": "Joint Go/TypeScript response-memory ceiling; explicit configuration stays bounded at 16 MiB. See docs/api-response-limits.md."
   }
 }

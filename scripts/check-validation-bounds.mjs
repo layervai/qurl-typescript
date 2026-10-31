@@ -1,10 +1,10 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { parse } from "yaml";
 
-// shortcut: selectors read current direct schema/header bounds; extend them if a published bound moves behind references or inheritance.
+// shortcut: selectors read current direct schema/header/query bounds; extend them if a published bound moves behind references or inheritance.
 function sourceValue(spec, source) {
   let schema;
   if (source.parameterComponent)
@@ -19,13 +19,16 @@ function sourceValue(spec, source) {
     );
     const matches = operations.filter((operation) => operation?.operationId === source.operation);
     if (matches.length === 1) {
-      const headers = matches[0].parameters?.filter(
+      const location = source.parameterIn ?? "header";
+      const parameters = matches[0].parameters?.filter(
         (parameter) =>
-          parameter.in === "header" &&
+          parameter.in === location &&
           typeof parameter.name === "string" &&
-          parameter.name.toLowerCase() === source.parameter.toLowerCase(),
+          (location === "header"
+            ? parameter.name.toLowerCase() === source.parameter.toLowerCase()
+            : parameter.name === source.parameter),
       );
-      if (headers?.length === 1) schema = headers[0].schema;
+      if (parameters?.length === 1) schema = parameters[0].schema;
     }
   } else {
     schema = spec.components?.schemas?.[source.schema];
@@ -37,7 +40,7 @@ function sourceValue(spec, source) {
 
 export function validationBoundFindings(code, manifest, spec) {
   // Inspect literals without importing or executing the runtime client.
-  const source = ts.createSourceFile("client.ts", code, ts.ScriptTarget.Latest, true);
+  const source = ts.createSourceFile("client-limits.ts", code, ts.ScriptTarget.Latest, true);
   const { diagnostics } = ts.transpileModule(code, {
     reportDiagnostics: true,
     compilerOptions: {
@@ -54,6 +57,8 @@ export function validationBoundFindings(code, manifest, spec) {
     if (!ts.isVariableStatement(statement)) continue;
     for (const declaration of statement.declarationList.declarations) {
       if (ts.isIdentifier(declaration.name) && declaration.name.text.startsWith("MAX_")) {
+        if (definitions.has(declaration.name.text))
+          throw new Error(`Duplicate SDK bound: ${declaration.name.text}`);
         definitions.set(declaration.name.text, declaration.initializer);
       }
     }
@@ -98,9 +103,20 @@ export function validationBoundFindings(code, manifest, spec) {
   return findings;
 }
 
+export function readClientValidationSource(directory = new URL("../src/", import.meta.url)) {
+  return readdirSync(directory)
+    .filter(
+      (name) =>
+        name.startsWith("client") && name.endsWith(".ts") && !/\.(?:test|spec|d)\.ts$/.test(name),
+    )
+    .sort()
+    .map((name) => readFileSync(new URL(name, directory), "utf8"))
+    .join("\n");
+}
+
 export function checkValidationBounds(spec) {
   return validationBoundFindings(
-    readFileSync(new URL("../src/client.ts", import.meta.url), "utf8"),
+    readClientValidationSource(),
     JSON.parse(readFileSync(new URL("../contract/validation-bounds.json", import.meta.url))),
     spec,
   );
