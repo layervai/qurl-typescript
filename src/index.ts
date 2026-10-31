@@ -169,3 +169,6 @@ export type {
   WebhookPayload,
   WebhookWithSecret,
 } from "./types.js";
+
+export { getResponseMetadata } from "./response-metadata.js";
+export type { ResponseMetadata } from "./response-metadata.js";

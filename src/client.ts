@@ -1,3 +1,4 @@
+import { copyResponseMetadata, withResponseMetadata } from "./response-metadata.js";
 import { parseCrid, cridKeyMatches } from "./crid.js";
 import {
   ConnectorResourceOutcomeUnknownError,
@@ -1363,17 +1364,24 @@ function validateListAllInput(
   validateQueryInput(input, keys, methodName);
 }
 
+function withEnvelopeMetadata<T>(value: T, meta: ApiResponse<unknown>["meta"]): T {
+  return withResponseMetadata(value, boundedErrorIdentifier(meta?.request_id));
+}
+
 function pageFromMeta<T extends Record<string, unknown>>(
   out: T,
   meta: ApiResponse<unknown>["meta"],
 ): T & { next_cursor?: string; has_more: boolean; request_id?: string; page_size?: number } {
-  return {
-    ...out,
-    next_cursor: meta?.next_cursor,
-    has_more: meta?.has_more ?? Boolean(meta?.next_cursor),
-    request_id: meta?.request_id,
-    page_size: meta?.page_size,
-  };
+  return withEnvelopeMetadata(
+    {
+      ...out,
+      next_cursor: meta?.next_cursor,
+      has_more: meta?.has_more ?? Boolean(meta?.next_cursor),
+      request_id: meta?.request_id,
+      page_size: meta?.page_size,
+    },
+    meta,
+  );
 }
 
 // Best-effort defence-in-depth against today's access-token grammar. The
@@ -3004,7 +3012,7 @@ async function parsePortal(
     throw unexpectedResponseError(`${method}: response is missing qurl_link`);
   }
   await verifyResourceIdentity(data, method, expectedCrid);
-  return {
+  return copyResponseMetadata(data, {
     crid: data.crid as string,
     resourcePublicKey: data.resource_id,
     link: data.qurl_link,
@@ -3014,7 +3022,7 @@ async function parsePortal(
     // consumers apply to qurl_id.
     qurlId: data.qurl_id || undefined,
     label: data.label,
-  };
+  });
 }
 
 /**
@@ -3224,21 +3232,21 @@ export class QURLClient {
         branch: "non-array",
         qurls_type: typeof qurls,
       });
-      return rest;
+      return copyResponseMetadata(raw, rest);
     }
     // null is semantically "no tokens" — silent drop is fine, but surface
     // via debug so operators spot it if the API starts emitting null.
     if (qurls === null) {
       this.log("mapQurlsField: 'qurls' was null; dropping", { branch: "null" });
-      return rest;
+      return copyResponseMetadata(raw, rest);
     }
     if (qurls === undefined) {
       // Symmetric with null / non-array branches.
       this.log("mapQurlsField: 'qurls' was undefined; dropping", { branch: "undefined" });
-      return rest;
+      return copyResponseMetadata(raw, rest);
     }
     if (!rest.access_tokens) {
-      return { ...rest, access_tokens: qurls };
+      return copyResponseMetadata(raw, { ...rest, access_tokens: qurls });
     }
     // Server-side bug — drop `qurls` rather than merge. If the arrays
     // disagree, no consistent reconciliation exists; a silent merge
@@ -3248,7 +3256,7 @@ export class QURLClient {
       qurls_count: qurls.length,
       access_tokens_count: rest.access_tokens.length,
     });
-    return rest;
+    return copyResponseMetadata(raw, rest);
   }
 
   /**
@@ -3387,7 +3395,7 @@ export class QURLClient {
       pageCount += 1;
       const page = await loadPage({ ...input, cursor } as TInput);
       for (const item of itemsFromPage(page)) {
-        yield item;
+        yield copyResponseMetadata(page, item);
       }
       cursor = page.next_cursor;
       if (page.has_more === false) {
@@ -3459,7 +3467,7 @@ export class QURLClient {
     });
     if (response.status === 204)
       throw unexpectedResponseError("protectUrl: expected a resource response body");
-    const resource = response.envelope.data;
+    const resource = withEnvelopeMetadata(response.envelope.data, response.envelope.meta);
     await verifyResourceIdentity(resource, "protectUrl");
     if (
       normalized.consumerAccess &&
@@ -3590,7 +3598,10 @@ export class QURLClient {
         ),
       );
     }
-    return { resource, foundExisting };
+    return withEnvelopeMetadata(
+      { resource: withEnvelopeMetadata(resource, response.envelope.meta), foundExisting },
+      response.envelope.meta,
+    );
   }
 
   /** Fetch a qURL Connector resource by its CRID. */
@@ -3598,7 +3609,7 @@ export class QURLClient {
     requireResourceCrid(crid, "getConnectorResource");
     requireConnectorSubtleCrypto("getConnectorResource");
     const {
-      envelope: { data },
+      envelope: { data, meta },
       status: httpStatus,
     } = await this.rawRequest<ResourceDetail>(
       "GET",
@@ -3611,10 +3622,13 @@ export class QURLClient {
         `getConnectorResource: expected HTTP 200, got ${httpStatus ?? "unknown"}`,
       );
     }
-    return parseConnectorResource(this, data?.resource, "getConnectorResource", {
-      crid,
-      revokedIsLifecycleError: true,
-    });
+    return withEnvelopeMetadata(
+      await parseConnectorResource(this, data?.resource, "getConnectorResource", {
+        crid,
+        revokedIsLifecycleError: true,
+      }),
+      meta,
+    );
   }
 
   /** Fetch the single active qURL Connector resource for an immutable slug. */
@@ -3626,7 +3640,7 @@ export class QURLClient {
     // The slug point lookup is intrinsically active-only. It also
     // rejects combining `slug` with `status`, so this query must stay slug-only.
     const {
-      envelope: { data },
+      envelope: { data, meta },
       status: httpStatus,
     } = await this.rawRequest<Resource[]>(
       "GET",
@@ -3660,7 +3674,10 @@ export class QURLClient {
         detail: `getConnectorResourceBySlug: expected one active resource, got ${data.length}`,
       });
     }
-    return parseConnectorResource(this, data[0], "getConnectorResourceBySlug", { slug });
+    return withEnvelopeMetadata(
+      await parseConnectorResource(this, data[0], "getConnectorResourceBySlug", { slug }),
+      meta,
+    );
   }
 
   /**
@@ -3749,10 +3766,10 @@ export class QURLClient {
     };
     const data = await this.request<PortalWireResponse>("POST", "/v1/qurls", body, requestOptions);
     const portal = await parsePortal(data, "createPortalForUrl");
-    return {
+    return copyResponseMetadata(data, {
       portal,
-      resource: new ProtectedResource(this, portal.crid, targetUrl),
-    };
+      resource: copyResponseMetadata(data, new ProtectedResource(this, portal.crid, targetUrl)),
+    });
   }
 
   /**
@@ -3785,11 +3802,11 @@ export class QURLClient {
         "enterPortal: access was granted but the API returned no resource URL",
       );
     }
-    return {
+    return copyResponseMetadata(resolved, {
       resourceUrl: resolved.target_url,
       openSeconds: resolved.access_grant?.expires_in ?? 0,
       resourcePublicKey: resolved.resource_id,
-    };
+    });
   }
 
   // --- Public API ---
@@ -3951,7 +3968,10 @@ export class QURLClient {
         });
       }
     }
-    return requestId !== undefined ? { ...result, request_id: requestId } : result;
+    return withEnvelopeMetadata(
+      requestId !== undefined ? { ...result, request_id: requestId } : result,
+      response.envelope.meta,
+    );
   }
 
   /**
@@ -4002,17 +4022,20 @@ export class QURLClient {
         status,
         requestId,
       );
-      return {
-        http_status: 202,
-        batch_id: base.batchId,
-        status: "queued",
-        item_count: base.itemCount,
-        submitted_at: base.submittedAt,
-        etag: responseHeaders.etag,
-        retry_after: responseHeaders.retryAfter,
-        location,
-        request_id: requestId,
-      };
+      return withEnvelopeMetadata(
+        {
+          http_status: 202,
+          batch_id: base.batchId,
+          status: "queued",
+          item_count: base.itemCount,
+          submitted_at: base.submittedAt,
+          etag: responseHeaders.etag,
+          retry_after: responseHeaders.retryAfter,
+          location,
+          request_id: requestId,
+        },
+        response.envelope.meta,
+      );
     } catch (error) {
       if (!dispatched) throw error;
       classifyDelegatedBatchCreateFailure(error, acceptedBatchId);
@@ -4055,13 +4078,16 @@ export class QURLClient {
       if (responseHeaders.etag !== undefined && responseHeaders.etag !== options.etag) {
         throw delegatedResponseError(status, "304 response changed the ETag");
       }
-      return {
-        http_status: 304,
-        etag: responseHeaders.etag ?? options.etag,
-        ...(responseHeaders.retryAfter === undefined
-          ? {}
-          : { retry_after: responseHeaders.retryAfter }),
-      };
+      return withEnvelopeMetadata(
+        {
+          http_status: 304,
+          etag: responseHeaders.etag ?? options.etag,
+          ...(responseHeaders.retryAfter === undefined
+            ? {}
+            : { retry_after: responseHeaders.retryAfter }),
+        },
+        response.envelope.meta,
+      );
     }
     if (status !== 200 && status !== 202) {
       throw delegatedResponseError(status, "read returned an unexpected success status");
@@ -4074,16 +4100,19 @@ export class QURLClient {
         throw delegatedResponseError(status, "pending data has a terminal status", requestId);
       }
       const responseHeaders = delegatedResponseHeaders(response, status, requestId);
-      return {
-        http_status: 202,
-        batch_id: base.batchId,
-        status: data.status,
-        item_count: base.itemCount,
-        submitted_at: base.submittedAt,
-        etag: responseHeaders.etag,
-        retry_after: responseHeaders.retryAfter,
-        request_id: requestId,
-      };
+      return withEnvelopeMetadata(
+        {
+          http_status: 202,
+          batch_id: base.batchId,
+          status: data.status,
+          item_count: base.itemCount,
+          submitted_at: base.submittedAt,
+          etag: responseHeaders.etag,
+          retry_after: responseHeaders.retryAfter,
+          request_id: requestId,
+        },
+        response.envelope.meta,
+      );
     }
 
     if (
@@ -4142,17 +4171,20 @@ export class QURLClient {
       etag !== undefined && etag.length <= MAX_DELEGATED_ETAG && STRONG_ETAG_PATTERN.test(etag)
         ? etag
         : undefined;
-    return {
-      http_status: 200,
-      batch_id: base.batchId,
-      status: data.status,
-      item_count: base.itemCount,
-      submitted_at: base.submittedAt,
-      completed_at: data.completed_at,
-      results,
-      ...(terminalEtag === undefined ? {} : { etag: terminalEtag }),
-      request_id: requestId,
-    };
+    return withEnvelopeMetadata(
+      {
+        http_status: 200,
+        batch_id: base.batchId,
+        status: data.status,
+        item_count: base.itemCount,
+        submitted_at: base.submittedAt,
+        completed_at: data.completed_at,
+        results,
+        ...(terminalEtag === undefined ? {} : { etag: terminalEtag }),
+        request_id: requestId,
+      },
+      response.envelope.meta,
+    );
   }
 
   /** Read owner-visible metadata for one delegated qURL. */
@@ -4171,7 +4203,10 @@ export class QURLClient {
       throw delegatedResponseError(status, "read returned an unexpected success status");
     }
     const { data, requestId } = delegatedEnvelope(response, status);
-    return validateDelegatedQurl(data, qurlId, status, requestId);
+    return withEnvelopeMetadata(
+      validateDelegatedQurl(data, qurlId, status, requestId),
+      response.envelope.meta,
+    );
   }
 
   /**
@@ -4810,18 +4845,20 @@ export class QURLClient {
     if (typeof wire.expires_at === "string" && expiresAt === undefined) {
       throw unexpectedResponseError("shareResource: response has invalid expires_at");
     }
-    return new ShareLink({
-      // Repair transport-only edge whitespace on the one-time credential;
-      // ancillary identifiers fail closed instead of being normalized.
-      link: data.qurl.trim(),
-      qurlId: typeof wire.qurl_id === "string" ? wire.qurl_id : undefined,
-      crid: id,
-      type: typeof wire.type === "string" ? wire.type : undefined,
-      expiresAt,
-      expiresInSeconds:
-        typeof wire.expires_in_seconds === "number" ? wire.expires_in_seconds : undefined,
-      singleUse: typeof wire.single_use === "boolean" ? wire.single_use : undefined,
-    });
+    return new ShareLink(
+      copyResponseMetadata(data, {
+        // Repair transport-only edge whitespace on the one-time credential;
+        // ancillary identifiers fail closed instead of being normalized.
+        link: data.qurl.trim(),
+        qurlId: typeof wire.qurl_id === "string" ? wire.qurl_id : undefined,
+        crid: id,
+        type: typeof wire.type === "string" ? wire.type : undefined,
+        expiresAt,
+        expiresInSeconds:
+          typeof wire.expires_in_seconds === "number" ? wire.expires_in_seconds : undefined,
+        singleUse: typeof wire.single_use === "boolean" ? wire.single_use : undefined,
+      }),
+    );
   }
 
   /** Revoke a specific qURL token on a resource. */
@@ -4890,13 +4927,16 @@ export class QURLClient {
         }
         request_id = meta?.request_id;
         page_size = meta?.page_size;
-        return { ...meta, sessions: data ?? [] };
+        return withEnvelopeMetadata({ ...meta, sessions: data ?? [] }, meta);
       },
       (page) => page.sessions,
     )) {
       sessions.push(session);
     }
-    return { sessions, request_id, has_more: false, page_size };
+    return withEnvelopeMetadata(
+      { sessions, request_id, has_more: false, page_size },
+      { request_id },
+    );
   }
 
   /**
@@ -4944,7 +4984,7 @@ export class QURLClient {
           );
         }
         request_id = meta?.request_id;
-        return { ...meta, counts: [count] };
+        return withEnvelopeMetadata({ ...meta, counts: [count] }, meta);
       },
       (page) => page.counts,
     )) {
@@ -4956,7 +4996,7 @@ export class QURLClient {
         );
       }
     }
-    return { terminated, request_id };
+    return withEnvelopeMetadata({ terminated, request_id }, { request_id });
   }
 
   /** Terminate a specific resource session. */
@@ -5444,19 +5484,22 @@ export class QURLClient {
         `${method}: invalid binding response; reconcile with the same request key before retrying`,
       );
     }
-    return {
-      binding_id: result.binding_id,
-      provider: result.provider,
-      external_id: result.external_id,
-      ...(result.display_name !== undefined ? { display_name: result.display_name } : {}),
-      api_key: {
-        key_id: result.api_key.key_id,
-        key_prefix: result.api_key.key_prefix,
-        plaintext: result.api_key.plaintext,
+    return withEnvelopeMetadata(
+      {
+        binding_id: result.binding_id,
+        provider: result.provider,
+        external_id: result.external_id,
+        ...(result.display_name !== undefined ? { display_name: result.display_name } : {}),
+        api_key: {
+          key_id: result.api_key.key_id,
+          key_prefix: result.api_key.key_prefix,
+          plaintext: result.api_key.plaintext,
+        },
+        scopes: result.scopes,
+        created_at: result.created_at,
       },
-      scopes: result.scopes,
-      created_at: result.created_at,
-    };
+      raw.envelope.meta,
+    );
   }
 
   /** Create a new API key. */
@@ -5630,12 +5673,15 @@ export class QURLClient {
         next_cursor: meta.next_cursor,
       });
     }
-    return {
-      access_codes: data ?? [],
-      request_id: meta?.request_id,
-      has_more: false,
-      page_size: meta?.page_size,
-    };
+    return withEnvelopeMetadata(
+      {
+        access_codes: data ?? [],
+        request_id: meta?.request_id,
+        has_more: false,
+        page_size: meta?.page_size,
+      },
+      meta,
+    );
   }
 
   /** Revoke an access code. */
@@ -5655,7 +5701,7 @@ export class QURLClient {
     // List methods call rawRequest directly so 204 can degrade to an empty page.
     // Body-returning endpoints declare 200 JSON today, so this path fails closed.
     const {
-      envelope: { data },
+      envelope: { data, meta },
       status: httpStatus,
     } = await this.rawRequest<T>(method, path, body, {
       requestOptions,
@@ -5665,7 +5711,7 @@ export class QURLClient {
         `Unexpected 204 No Content from ${method} ${path}; expected response body`,
       );
     }
-    return data;
+    return withEnvelopeMetadata(data, meta);
   }
 
   /**
@@ -6239,6 +6285,7 @@ export class ProtectedResource {
     this.crid = id;
     this.targetUrl = targetUrl;
     this.details = details;
+    copyResponseMetadata(details, this);
   }
 
   /**
