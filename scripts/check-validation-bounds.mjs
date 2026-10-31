@@ -37,7 +37,7 @@ function sourceValue(spec, source) {
 
 export function validationBoundFindings(code, manifest, spec) {
   // Inspect literals without importing or executing the runtime client.
-  const source = ts.createSourceFile("client.ts", code, ts.ScriptTarget.Latest, true);
+  const source = ts.createSourceFile("client-limits.ts", code, ts.ScriptTarget.Latest, true);
   const { diagnostics } = ts.transpileModule(code, {
     reportDiagnostics: true,
     compilerOptions: {
@@ -100,7 +100,7 @@ export function validationBoundFindings(code, manifest, spec) {
 
 export function checkValidationBounds(spec) {
   return validationBoundFindings(
-    readFileSync(new URL("../src/client.ts", import.meta.url), "utf8"),
+    readFileSync(new URL("../src/client-limits.ts", import.meta.url), "utf8"),
     JSON.parse(readFileSync(new URL("../contract/validation-bounds.json", import.meta.url))),
     spec,
   );

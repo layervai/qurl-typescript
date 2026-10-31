@@ -17,7 +17,7 @@ const spec = { components: { schemas: { Input: { properties: { label: { maxLengt
 
 test("every current API-client cap has an explicit contract or safety-budget classification", () => {
   assert.deepEqual(checkValidationBounds(), []);
-  const current = readFileSync(new URL("../src/client.ts", import.meta.url), "utf8");
+  const current = readFileSync(new URL("../src/client-limits.ts", import.meta.url), "utf8");
   const actualManifest = JSON.parse(
     readFileSync(new URL("../contract/validation-bounds.json", import.meta.url)),
   );
