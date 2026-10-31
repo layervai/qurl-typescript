@@ -23,6 +23,24 @@ const options = { idempotencyKey: "0192f7c4-3b8a-7e2f-9d01-4cf8a1b6e3d2" };
 afterEach(() => vi.useRealTimers());
 
 describe("createExternalIdentityBinding", () => {
+  it.each([200, 201])("keeps flat response fields separate from HTTP %s", async (status) => {
+    const fetch = mockFetch({
+      status,
+      body: {
+        ...EXTERNAL_BINDING_RESPONSE,
+        status: 201,
+        bodyEmpty: true,
+        headers: {},
+        __http_status: 201,
+        __http_body_empty: true,
+        __http_headers: {},
+      },
+    });
+    const result = createClient(fetch).createExternalIdentityBinding(input, options);
+    if (status === 201) await expect(result).resolves.toEqual(EXTERNAL_BINDING_RESPONSE);
+    else await expect(result).rejects.toBeInstanceOf(ValidationError);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
   it.each(["slack", "discord", "teams"] as const)(
     "binds %s with the supplied JWT and replay key",
     async (provider) => {

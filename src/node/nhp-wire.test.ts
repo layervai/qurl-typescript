@@ -11,6 +11,8 @@ import {
 } from "./nhp-wire.js";
 
 type RelayVectors = {
+  schema_version: number;
+  matched_ack?: Record<string, string>;
   knock: Record<string, string>;
   ack: Record<string, string>;
 };
@@ -46,6 +48,36 @@ describe("NHP wire", () => {
     expect(reply.counter).toBe(BigInt(`0x${v.counter_hex}`));
     expect(reply.timestampNanos).toBe(BigInt(v.timestamp_nanos));
     expect(Buffer.from(reply.body).toString("hex")).toBe(v.body_hex);
+  });
+
+  it("requires the matched request/reply counter for corpus v2", () => {
+    if (vectors.schema_version === 1) {
+      expect(vectors.matched_ack).toBeUndefined();
+      return;
+    }
+    expect(vectors.schema_version).toBe(2);
+    const v = vectors.matched_ack;
+    if (!v) throw new Error("schema v2 must provide matched_ack");
+    expect(v.server_static_pub_hex).toBe(vectors.knock.server_static_pub_hex);
+    expect(v.agent_static_priv_hex).toBe(vectors.knock.device_static_priv_hex);
+    const reply = decryptNHPReply(
+      hex(v.agent_static_priv_hex),
+      hex(v.server_static_pub_hex),
+      hex(v.packet_hex),
+    );
+    const requestCounter = hex(vectors.knock.packet_hex).readBigUInt64BE(16);
+    expect(reply.type).toBe(NHP_TYPE_ACK);
+    expect(reply.counter).toBe(requestCounter);
+    expect(reply.counter).toBe(BigInt(vectors.knock.counter));
+    expect(reply.counter).toBe(BigInt(`0x${v.counter_hex}`));
+    expect(reply.timestampNanos).toBe(BigInt(v.timestamp_nanos));
+    expect(Buffer.from(reply.body).toString("hex")).toBe(v.body_hex);
+    const legacy = decryptNHPReply(
+      hex(vectors.ack.agent_static_priv_hex),
+      hex(vectors.ack.server_static_pub_hex),
+      hex(vectors.ack.packet_hex),
+    );
+    expect(legacy.counter).not.toBe(requestCounter);
   });
 
   it("fails closed when an authenticated packet byte is changed", () => {
