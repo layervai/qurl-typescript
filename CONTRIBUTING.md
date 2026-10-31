@@ -145,7 +145,7 @@ signal to do both in lockstep.
   path like `/v1/v1/qurls` *would* fail the template match and get
   caught. A `baseUrl` bug that swapped hosts without touching the
   path would NOT be caught — host-level regressions are covered by
-  the existing unit tests in `client.test.ts`, not here.
+  the per-feature unit tests in `client*.test.ts`, not here.
 - Request body field names, response envelope parsing, and query
   parameter names are NOT validated. Body/response shape drift is a
   separate class and would warrant an `ajv`-backed schema validation
