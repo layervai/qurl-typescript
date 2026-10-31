@@ -761,6 +761,23 @@ On `QURLError`, `requestId` identifies the API request. A `410` error can also
 include `tombstone`, with the retained closure timestamp and an optional access
 count. An absent count does not imply zero accesses.
 
+Successful API results expose an optional correlation ID through
+`getResponseMetadata`. This works for result objects, page objects, SDK handles,
+and items yielded by page iterators. Each value keeps the ID of the response
+that produced it, including concurrent calls.
+
+```typescript
+import { getResponseMetadata } from '@layervai/qurl';
+
+const page = await client.list({ limit: 10 });
+console.log(getResponseMetadata(page)?.requestId);
+```
+
+Metadata is read-only and does not change enumerable fields or JSON output.
+It is lost when a result is serialized or copied with object spread. Local
+handles, no-content responses, and responses without a valid ID return
+`undefined`. Error responses continue to use `QURLError.requestId`.
+
 Client-detected failures use `status: 0` with a discriminating `code`:
 `"client_validation"` for bad input caught before a request, and — on the
 portal surface — `"resource_not_found"` / `"ambiguous_resource"` when
