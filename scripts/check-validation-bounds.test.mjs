@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { readFileSync } from "node:fs";
+import { readFileSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { checkValidationBounds, validationBoundFindings } from "./check-validation-bounds.mjs";
 
 const code = "const MAX_LABEL = 500; const MAX_BUDGET = 1 << 20;";
@@ -106,6 +110,19 @@ test("reads array item, reusable header, and operation-header constraints", () =
   assert.deepEqual(validationBoundFindings(text, { bounds: entries, local: {} }, document), []);
   document.paths["/b"].get.parameters.reverse();
   assert.deepEqual(validationBoundFindings(text, { bounds: entries, local: {} }, document), []);
+  document.paths["/b"].get.parameters.find((parameter) => parameter.name === "If-None-Match").name =
+    "if-none-match";
+  assert.deepEqual(validationBoundFindings(text, { bounds: entries, local: {} }, document), []);
+  document.paths["/b"].get.parameters.push({
+    in: "header",
+    name: "IF-NONE-MATCH",
+    schema: { maxLength: 96 },
+  });
+  assert.equal(
+    validationBoundFindings(text, { bounds: entries, local: {} }, document)[0].constant,
+    "MAX_ETAG",
+  );
+  document.paths["/b"].get.parameters.pop();
   document.paths["/duplicate"] = document.paths["/b"];
   assert.equal(
     validationBoundFindings(text, { bounds: entries, local: {} }, document)[0].constant,
@@ -121,4 +138,24 @@ test("syntax errors and nonliteral contract bounds cannot silently pass", () => 
       manifest,
     ).some((finding) => finding.constant === "MAX_LABEL" && finding.actual === null),
   );
+});
+
+test("the standalone CLI fails with structured findings when published bounds are missing", () => {
+  const dir = mkdtempSync(join(tmpdir(), "qurl-validation-bounds-"));
+  try {
+    const path = join(dir, "spec.json");
+    writeFileSync(path, JSON.stringify({ openapi: "3.0.3", paths: { "/fixture": { get: {} } } }));
+    const script = fileURLToPath(new URL("./check-validation-bounds.mjs", import.meta.url));
+    const result = spawnSync(process.execPath, [script, path], {
+      encoding: "utf8",
+      timeout: 10000,
+    });
+    assert.equal(result.status, 1);
+    const findings = JSON.parse(result.stderr);
+    assert.ok(
+      findings.some((finding) => finding.constant === "MAX_LABEL" && finding.actual === null),
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

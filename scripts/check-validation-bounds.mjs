@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { parse } from "yaml";
 
+// shortcut: selectors read current direct schema/header bounds; extend them if a published bound moves behind references or inheritance.
 function sourceValue(spec, source) {
   let schema;
   if (source.parameterComponent)
@@ -17,10 +18,15 @@ function sourceValue(spec, source) {
         : [],
     );
     const matches = operations.filter((operation) => operation?.operationId === source.operation);
-    if (matches.length === 1)
-      schema = matches[0].parameters?.find(
-        (parameter) => parameter.in === "header" && parameter.name === source.parameter,
-      )?.schema;
+    if (matches.length === 1) {
+      const headers = matches[0].parameters?.filter(
+        (parameter) =>
+          parameter.in === "header" &&
+          typeof parameter.name === "string" &&
+          parameter.name.toLowerCase() === source.parameter.toLowerCase(),
+      );
+      if (headers?.length === 1) schema = headers[0].schema;
+    }
   } else {
     schema = spec.components?.schemas?.[source.schema];
     if (source.property) schema = schema?.properties?.[source.property];
@@ -32,7 +38,17 @@ function sourceValue(spec, source) {
 export function validationBoundFindings(code, manifest, spec) {
   // Inspect literals without importing or executing the runtime client.
   const source = ts.createSourceFile("client.ts", code, ts.ScriptTarget.Latest, true);
-  if (source.parseDiagnostics.length) throw new Error("Cannot parse SDK validation source");
+  const { diagnostics } = ts.transpileModule(code, {
+    reportDiagnostics: true,
+    compilerOptions: {
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.ESNext,
+      moduleResolution: ts.ModuleResolutionKind.Bundler,
+    },
+  });
+  if (diagnostics?.some((diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error)) {
+    throw new Error("Cannot parse SDK validation source");
+  }
   const definitions = new Map();
   for (const statement of source.statements) {
     if (!ts.isVariableStatement(statement)) continue;

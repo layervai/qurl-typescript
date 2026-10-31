@@ -32,7 +32,7 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts
       - run: node --test scripts/check-upstream-api.test.mjs scripts/check-validation-bounds.test.mjs
-      - name: Compare published operations
+      - name: Compare published contract
         run: |
           set -euo pipefail
           curl --fail --silent --show-error --retry 3 --max-time 30 \

@@ -182,6 +182,9 @@ the client. Every top-level `MAX_*` constant in `src/client.ts` must be either a
 or an explicitly documented local safety budget. New and stale classifications
 fail CI. Response size, diagnostic, traversal, and identifier work budgets remain
 local safeguards; a server field change does not justify raising them.
+The source mappings cover the current direct schema fields and operation headers.
+A refactor to references, compositions, or inherited parameters can require a reviewed
+mapping update; unresolved selectors report a missing bound and fail closed.
 The enrollment-token TTL and target-path byte limit are partly documented in prose.
 Their reviewed numeric values and complete published descriptions are pinned;
 any description change requires review rather than an automatic text-to-number guess.
