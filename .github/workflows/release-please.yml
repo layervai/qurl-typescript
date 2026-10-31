@@ -139,7 +139,7 @@ jobs:
         run: npm test -- src/node/file-agent-state.test.ts src/node/agent-runtime.test.ts
       - if: matrix.variant == 'musl'
         run: bash scripts/build-musl-state.sh
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: native-${{ matrix.runner }}-${{ matrix.variant }}
           path: packages/state-fs/prebuilds/
