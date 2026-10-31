@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { QURLClient } from "./client.js";
+import { getResponseMetadata } from "./response-metadata.js";
 import {
   mockFetch,
   mockFetches,
@@ -1048,6 +1049,28 @@ describe("API contract", () => {
           `Either add a METHOD_CASES entry that asserts each, or remove the entry ` +
           `from contract/openapi.snapshot.yaml if the SDK no longer uses it.`,
       );
+    }
+  });
+
+  it.each(
+    METHOD_CASES.filter(
+      (entry) => entry.mockBody !== undefined && !entry.method.startsWith("listAll"),
+    ),
+  )("response metadata: $method", async ({ method, mockBody, mockStatus, mockHeaders, invoke }) => {
+    const body = mockBody as Record<string, unknown>;
+    const meta = (body.meta ?? {}) as Record<string, unknown>;
+    const requestId = typeof meta.request_id === "string" ? meta.request_id : "req_contract";
+    const fetch = mockOk(
+      { ...body, meta: { ...meta, request_id: requestId } },
+      mockStatus,
+      mockHeaders,
+    );
+    const result = await invoke(createClient(fetch));
+    expect(getResponseMetadata(result)).toEqual({ requestId });
+    if (method === "createPortalForUrl") {
+      const composite = result as { portal: unknown; resource: unknown };
+      expect(getResponseMetadata(composite.portal)).toEqual({ requestId });
+      expect(getResponseMetadata(composite.resource)).toEqual({ requestId });
     }
   });
 
