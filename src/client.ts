@@ -3782,6 +3782,8 @@ export class QURLClient {
    *   populated `BatchCreateOutput` body in this case; whitelisted via
    *   `passthroughStatuses` so the structured per-item errors aren't
    *   swallowed by the generic error path.
+   *   HTTP 400 is the documented all-item validation failure. HTTP 422 is
+   *   not a batch passthrough status and follows normal error handling.
    *
    * Callers that only catch thrown errors will **silently miss partial
    * failures**. Always branch on `result.failed > 0` before treating the
