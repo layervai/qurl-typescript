@@ -49,7 +49,7 @@
     "parity:go": "node scripts/check-go-parity.mjs",
     "prepare": "npm run build",
     "check:package": "npm pack --dry-run --ignore-scripts --json | node scripts/check-package.mjs",
-    "check:fixtures": "node scripts/check-secret-fixtures.mjs"
+    "check:fixtures": "node --test scripts/check-secret-fixtures.test.mjs && node scripts/check-secret-fixtures.mjs"
   },
   "keywords": [
     "qurl",
