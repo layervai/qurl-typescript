@@ -1710,6 +1710,7 @@ async function parseConnectorResource(
   return new ConnectorResource(client, resource, CONNECTOR_RESOURCE_CONSTRUCTOR_TOKEN);
 }
 
+/** Match the API's tag grammar, which permits embedded spaces; values stay in JSON bodies. */
 function requireValidTags(tags: string[] | null | undefined): void {
   // null tolerance for untyped-JS callers — treated as "don't touch."
   // Duplicates pass through to the server (authoritative on dedupe policy).
@@ -3782,6 +3783,8 @@ export class QURLClient {
    *   populated `BatchCreateOutput` body in this case; whitelisted via
    *   `passthroughStatuses` so the structured per-item errors aren't
    *   swallowed by the generic error path.
+   *   HTTP 400 is the documented all-item validation failure. HTTP 422 is
+   *   not a batch passthrough status and follows normal error handling.
    *
    * Callers that only catch thrown errors will **silently miss partial
    * failures**. Always branch on `result.failed > 0` before treating the

@@ -389,7 +389,10 @@ export interface ResolveOutput {
   access_grant?: AccessGrant;
 }
 
-/** Quota information. */
+/**
+ * Quota information. The API schema does not require rate_limits, usage, or
+ * their inner fields; minimal responses may omit them. Check presence before use.
+ */
 export interface Quota {
   plan: "free" | "growth" | "enterprise" | (string & {});
   period_start: string;
@@ -459,6 +462,7 @@ export interface BatchCreateOutput {
   succeeded: number;
   failed: number;
   results: BatchItemResult[];
+  /** Canonical meta.request_id wins; data.request_id is preserved when meta omits it. */
   request_id?: string;
 }
 
