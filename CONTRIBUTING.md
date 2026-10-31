@@ -25,7 +25,7 @@ All must pass before submitting a PR.
 
 Use `test-api-key` in fixtures and `YOUR_API_KEY` in examples. The fixture guard
 checks every tracked text file for literal qURL live/test key prefixes followed
-by a value. It prints file locations only. There are no file or line exemptions.
+by a value. It prints file names only. There are no file or line exemptions.
 The external-identity response contract requires a valid key shape; its two
 fixtures explicitly construct a repeated `a` value and matching short prefix.
 Keep that synthetic construction in those contract fixtures; do not copy a
