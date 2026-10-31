@@ -417,9 +417,8 @@ describe("QURLClient", () => {
       body: { data: { qurl_link: "https://qurl.link/#at_x" } },
     });
     const client = createClient(fetch);
-    // The cap applies to the complete UTF-8 value, including the leading
-    // slash. Use a multibyte character so this catches code-unit checks.
-    const maxLengthTargetPath = `/${"é".repeat(1023)}a`;
+    // The canonical path is ASCII; the complete value includes the leading slash.
+    const maxLengthTargetPath = `/${"a".repeat(2047)}`;
     expect(new TextEncoder().encode(maxLengthTargetPath)).toHaveLength(TARGET_PATH_MAX_LENGTH);
 
     await client.createQurlForResource(RESOURCE_CRID, { target_path: maxLengthTargetPath });

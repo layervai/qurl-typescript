@@ -1,3 +1,4 @@
+import { getResponseMetadata } from "./response-metadata.js";
 import {
   ConnectorResourceOutcomeUnknownError,
   ERROR_CODE_CONNECTOR_RESOURCE_REVOKED,
@@ -113,20 +114,31 @@ export async function verifyResourceIdentity(
   method: string,
   expectedCrid?: string,
 ): Promise<void> {
+  const errorOptions = { requestId: getResponseMetadata(resource)?.requestId };
   if (!resource || typeof resource.resource_id !== "string") {
-    throw unexpectedResponseError(`${method}: response has missing or invalid resource_id`);
+    throw unexpectedResponseError(
+      `${method}: response has missing or invalid resource_id`,
+      errorOptions,
+    );
   }
   const resourceKey = decodeCanonicalBase64Url(resource.resource_id);
   requireConnectorSubtleCrypto(method);
   if (!resourceKey || !(await importsAsConnectorPublicKey(resourceKey))) {
-    throw unexpectedResponseError(`${method}: response has missing or invalid resource_id`);
+    throw unexpectedResponseError(
+      `${method}: response has missing or invalid resource_id`,
+      errorOptions,
+    );
   }
   if (expectedCrid !== undefined && resource.crid !== expectedCrid) {
-    throw unexpectedResponseError(`${method}: response crid does not match the request`);
+    throw unexpectedResponseError(
+      `${method}: response crid does not match the request`,
+      errorOptions,
+    );
   }
   if (!(await cridKeyMatches(resource.crid, resourceKey))) {
     throw unexpectedResponseError(
       `${method}: response has missing, invalid, or public-key-mismatched crid`,
+      errorOptions,
     );
   }
 }

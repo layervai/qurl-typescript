@@ -1273,7 +1273,7 @@ export class QURLClient {
       body,
       requestOptions,
     );
-    return parsePortal(data, "createPortal", resourceId);
+    return parsePortal(data, "createPortal", resourceId, body.target_path as string | undefined);
   }
 
   /**

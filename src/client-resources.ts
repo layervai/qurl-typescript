@@ -1,3 +1,4 @@
+import { requireCanonicalTargetPath } from "./target-path.js";
 import type {
   ConsumerAccessPolicy,
   CreateInput,
@@ -11,7 +12,6 @@ import {
   requireBooleanIfPresent,
   requireMaxLength,
   requireMaxSessionsInRange,
-  requireMaxUtf8Bytes,
   requireNoUnknownFields,
   requireNonEmptyIfPresent,
   requireObjectInput,
@@ -29,7 +29,6 @@ import {
   MAX_DESCRIPTION,
   MAX_LABEL,
   MAX_SLUG,
-  MAX_TARGET_PATH,
 } from "./client-limits.js";
 
 export function validateCreateInput(input: CreateInput): void {
@@ -108,13 +107,7 @@ export function validateQurlTokenOptions(input: CreateQurlForResourceInput | und
   requireNonEmptyIfPresent(input.label, "label");
   requireNonEmptyIfPresent(input.expires_in, "expires_in");
   requireNonEmptyIfPresent(input.session_duration, "session_duration");
-  // Mirror the service-documented size cap, but keep host-safety grammar
-  // (single leading slash, no scheme/host/backslash/etc.) and the tunnel-only
-  // gate server-authoritative (`invalid_target_path`); a client-side regex
-  // would create a drift surface. Keep max-before-empty consistent with label;
-  // empty strings pass the length check and are rejected by the next guard.
-  requireMaxUtf8Bytes(input.target_path, "target_path", MAX_TARGET_PATH);
-  requireNonEmptyIfPresent(input.target_path, "target_path");
+  requireCanonicalTargetPath(input.target_path, "target_path");
   requireBooleanIfPresent(input.one_time_use, "one_time_use");
   requireMaxSessionsInRange(input.max_sessions);
   requireValidAccessPolicy(input.access_policy);

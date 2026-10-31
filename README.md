@@ -173,10 +173,27 @@ const portal = await resource.createPortal({
 });
 ```
 
-`targetPath` is available only when minting for an existing resource. The SDK
-checks the non-empty 2048-byte boundary; the API remains authoritative for the
-path grammar and the tunnel-only resource gate. `createPortalForUrl` rejects
-this option because it creates a URL resource.
+`targetPath` is available only when minting for an existing resource. It must
+be a canonical ASCII path with optional query, at most 2048 bytes. The SDK
+rejects authority changes, fragments, backslashes, controls, dot segments,
+interior empty segments, path percent escapes, and path `!()*;`. Query escapes
+stay encoded and byte-exact. The API enforces the tunnel-only resource gate;
+`createPortalForUrl` rejects this option.
+
+`portal.targetPath` reports the recorded scope. It is absent for the bare origin.
+A missing, changed, malformed, or unexpected scope in a mint response fails with
+`unexpected_response`. The mint may already have committed; do not blindly
+repeat it. The raw REST response exposes the recorded `target_path` field.
+
+Go and TypeScript test the same 119 released target-path cases. The artifact in
+this SDK's existing `@layervai/qurl-conformance` 0.15.0 dependency is byte-identical
+to Go's v0.17.2 artifact: SHA-256
+`898e5bf24c825bbd57426fe799d71893951c5735b6cd15e9b95d436981b09a97`.
+The merged producer OpenAPI baseline is qurl-service
+`376752482f42b43630b9d0d5734ff3be1048e341`, file SHA-256
+`06e1a25319d0f696de40213b7578ccb9c93440f03fad5dbf7e37a32cbc295b35`.
+The complete Sandbox Connector journey must still prove scoped-path access after
+NHP admission, sibling-path denial, and direct-origin denial.
 
 `resource.crid` is the required management identifier. Connector lookup, delete,
 and portal minting use it with no public-key or private-ID fallback. The SDK
