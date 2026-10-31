@@ -1710,6 +1710,7 @@ async function parseConnectorResource(
   return new ConnectorResource(client, resource, CONNECTOR_RESOURCE_CONSTRUCTOR_TOKEN);
 }
 
+/** Match the API's tag grammar, which permits embedded spaces; values stay in JSON bodies. */
 function requireValidTags(tags: string[] | null | undefined): void {
   // null tolerance for untyped-JS callers — treated as "don't touch."
   // Duplicates pass through to the server (authoritative on dedupe policy).
