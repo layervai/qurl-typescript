@@ -14,9 +14,9 @@ import {
 
 export const TEXT_ENCODER = new TextEncoder();
 
-export const ERROR_SNIPPET_ELLIPSIS = "...";
+const ERROR_SNIPPET_ELLIPSIS = "...";
 
-export const ERROR_SNIPPET_ELLIPSIS_BYTES = 3;
+const ERROR_SNIPPET_ELLIPSIS_BYTES = 3;
 
 // RFC 8259 JSON exchanged between systems must be valid UTF-8. A non-fatal
 // decoder would replace malformed bytes with U+FFFD before JSON.parse and hide
@@ -104,7 +104,7 @@ export function isSdkTimeout(error: unknown, requestSignal: AbortSignal): boolea
  * UTF-8-safe snippet. Error messages must stay bounded even when a proxy or
  * compromised upstream returns very large structured problem fields.
  */
-export function normalizedErrorSnippet(value: unknown): string | undefined {
+function normalizedErrorSnippet(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   // Bound source work before the Unicode regular expressions allocate
   // normalized copies. The response body cap is much larger than one retained
@@ -181,7 +181,7 @@ export function boundedTombstone(value: unknown): TombstoneInfo | undefined {
 }
 
 /** Collect at most the first N enumerable own string keys without a full key-array copy. */
-export function firstEnumerableOwnKeys(value: object, limit: number): string[] {
+function firstEnumerableOwnKeys(value: object, limit: number): string[] {
   const keys: string[] = [];
   for (const key in value) {
     if (!Object.prototype.hasOwnProperty.call(value, key)) continue;

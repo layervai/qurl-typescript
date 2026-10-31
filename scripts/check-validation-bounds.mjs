@@ -100,10 +100,12 @@ export function validationBoundFindings(code, manifest, spec) {
   return findings;
 }
 
-export function readClientValidationSource() {
-  const directory = new URL("../src/", import.meta.url);
+export function readClientValidationSource(directory = new URL("../src/", import.meta.url)) {
   return readdirSync(directory)
-    .filter((name) => /^client(?:-[a-z-]+)?\.ts$/.test(name))
+    .filter(
+      (name) =>
+        name.startsWith("client") && name.endsWith(".ts") && !/\.(?:test|spec|d)\.ts$/.test(name),
+    )
     .sort()
     .map((name) => readFileSync(new URL(name, directory), "utf8"))
     .join("\n");

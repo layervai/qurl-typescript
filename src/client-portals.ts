@@ -27,14 +27,14 @@ import type { QURLClient } from "./client.js";
  * intentionally no SDK-side maximum because an account may allow
  * longer-lived portals.
  */
-export const MIN_PORTAL_VALID_FOR_SECONDS = 60;
+const MIN_PORTAL_VALID_FOR_SECONDS = 60;
 
 /**
  * Client-side floor for session durations, mirroring qurl-go's
  * `WithSessionDuration` (at least one second; zero is rejected rather than
  * treated as the server default).
  */
-export const MIN_SESSION_DURATION_SECONDS = 1;
+const MIN_SESSION_DURATION_SECONDS = 1;
 
 /**
  * Shape of qurl-go's offline signed-fragment links: three or more
@@ -46,7 +46,7 @@ export const MIN_SESSION_DURATION_SECONDS = 1;
 export const SIGNED_FRAGMENT_RE = /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+){2,}$/;
 
 // Access-token grammar accepted by enterPortal (base64url charset).
-export const ACCESS_TOKEN_RE = /^[A-Za-z0-9_-]+$/;
+const ACCESS_TOKEN_RE = /^[A-Za-z0-9_-]+$/;
 
 /**
  * Serialize a duration option to the API's h/m/s duration grammar.
@@ -58,7 +58,7 @@ export const ACCESS_TOKEN_RE = /^[A-Za-z0-9_-]+$/;
  * 60s" in every SDK). Serialized with hours as the largest unit so all API
  * duration fields use the same grammar across SDKs.
  */
-export function serializeApiDuration(
+function serializeApiDuration(
   value: string | number | undefined,
   field: string,
   minimumSeconds: number,

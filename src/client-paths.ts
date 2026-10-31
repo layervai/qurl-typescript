@@ -7,28 +7,27 @@ import { MAX_PATH_ID_DECODE_PASSES, MAX_PATH_ID_LENGTH } from "./client-limits.j
 // opaque and future credential formats may not retain the `at_` prefix. The
 // delimiter requirement cannot collide with current base64url public keys,
 // standard-base64 keys, or base32 CRIDs.
-export const PATH_EMBEDDED_ACCESS_TOKEN_RE = /[?&#=:\s]at_/i;
+const PATH_EMBEDDED_ACCESS_TOKEN_RE = /[?&#=:\s]at_/i;
 
-export const PATH_PREFIXED_ACCESS_TOKEN_RE = /\/at_/i;
+const PATH_PREFIXED_ACCESS_TOKEN_RE = /\/at_/i;
 
-export const QURL_LINK_URL_RE =
-  /^(?:https?:\/\/)?(?:[a-z0-9-]+\.)*qurl\.link(?::\d{1,5})?(?:\/|[?#])/i;
+const QURL_LINK_URL_RE = /^(?:https?:\/\/)?(?:[a-z0-9-]+\.)*qurl\.link(?::\d{1,5})?(?:\/|[?#])/i;
 
 // ponytail: today's 22-character token suffix only improves URL-paste diagnostics;
 // other lengths are still rejected as URLs without echoing the input.
-export const URL_EMBEDDED_ACCESS_TOKEN_RE = /[?&#=:/]at_[a-z0-9_-]{22}(?:$|[?&#:/])/i;
+const URL_EMBEDDED_ACCESS_TOKEN_RE = /[?&#=:/]at_[a-z0-9_-]{22}(?:$|[?&#:/])/i;
 
 // A host without a slash can be a legitimate domain identifier. Require the
 // path boundary so shared validation does not break the domain namespace.
-export const PATH_SCHEMELESS_URL_RE = /^[a-z0-9-]+(?:\.[a-z0-9-]+)+(?::\d{1,5})?\//i;
+const PATH_SCHEMELESS_URL_RE = /^[a-z0-9-]+(?:\.[a-z0-9-]+)+(?::\d{1,5})?\//i;
 
-export const QURL_DISPLAY_ID_PREFIX_RE = /^q_/i;
+const QURL_DISPLAY_ID_PREFIX_RE = /^q_/i;
 
-export function isUrlLikePathId(value: string): boolean {
+function isUrlLikePathId(value: string): boolean {
   return /^https?:\/\//i.test(value) || PATH_SCHEMELESS_URL_RE.test(value);
 }
 
-export interface PathIdValidationOptions {
+interface PathIdValidationOptions {
   /** Reject a bare access token in namespaces that accept resource/qURL IDs. */
   rejectBareAccessToken?: boolean;
   /** Safe, non-secret recovery guidance appended to an access-token error. */
@@ -38,10 +37,10 @@ export interface PathIdValidationOptions {
   requireCridUnlessQurlDisplayId?: boolean;
 }
 
-export const REVOKE_INDIVIDUAL_QURL_RECOVERY =
+const REVOKE_INDIVIDUAL_QURL_RECOVERY =
   "revoke individual tokens with revokeResourceQurl(crid, qurlId)";
 
-export const DELETE_RESOURCE_RECOVERY =
+const DELETE_RESOURCE_RECOVERY =
   "pass a CRID returned by the API; to revoke one qURL, call revokeResourceQurl(crid, qurlId)";
 
 export const RESOURCE_OR_QURL_ID_PATH_OPTIONS: PathIdValidationOptions = {
@@ -142,7 +141,7 @@ export function validatePathId(
   }
 }
 
-export function decodedPathIdForms(id: string): string[] {
+function decodedPathIdForms(id: string): string[] {
   // Probe repeatedly encoded input too. Callers sometimes pre-encode a copied
   // link before passing it through a URL builder that encodes it again. Three
   // passes cover the common accidental cases without allowing hostile input

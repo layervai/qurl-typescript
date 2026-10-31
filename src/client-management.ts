@@ -16,7 +16,7 @@ import {
 import { clientValidationError } from "./client-errors.js";
 import { CONNECTOR_SLUG_PATTERN } from "./client-connectors.js";
 
-export const API_KEY_REQUEST_SCOPE_VALUES = [
+const API_KEY_REQUEST_SCOPE_VALUES = [
   "qurl:read",
   "qurl:write",
   "qurl:resolve",
@@ -29,14 +29,14 @@ assertExhaustive<
     : never
 >(true);
 
-export const API_KEY_REQUEST_SCOPES = new Set<string>(API_KEY_REQUEST_SCOPE_VALUES);
+const API_KEY_REQUEST_SCOPES = new Set<string>(API_KEY_REQUEST_SCOPE_VALUES);
 
 /** Narrow a response scope before reusing it in a create/update request. */
 export function isApiKeyRequestScope(scope: string): scope is ApiKeyRequestScope {
   return API_KEY_REQUEST_SCOPES.has(scope);
 }
 
-export const CREDENTIAL_TARGET_VALUES = [
+const CREDENTIAL_TARGET_VALUES = [
   "agent",
   "connector",
 ] as const satisfies readonly CredentialTargetInput[];
@@ -47,9 +47,9 @@ assertExhaustive<
     : never
 >(true);
 
-export const CREDENTIAL_TARGETS = new Set<string>(CREDENTIAL_TARGET_VALUES);
+const CREDENTIAL_TARGETS = new Set<string>(CREDENTIAL_TARGET_VALUES);
 
-export const CREDENTIAL_CLAIM_TYPE_VALUES = [
+const CREDENTIAL_CLAIM_TYPE_VALUES = [
   "connector",
 ] as const satisfies readonly CredentialClaimInput["type"][];
 
@@ -59,16 +59,16 @@ assertExhaustive<
     : never
 >(true);
 
-export const CREDENTIAL_CLAIM_TYPES = new Set<string>(CREDENTIAL_CLAIM_TYPE_VALUES);
+const CREDENTIAL_CLAIM_TYPES = new Set<string>(CREDENTIAL_CLAIM_TYPE_VALUES);
 
 // Mirrors CreateApiKeyRequest.expires_in in the service OpenAPI. Composite
 // durations are deliberately invalid on this endpoint. The 24h cap permits
 // 1d, but no positive whole-week duration.
-export const CREDENTIAL_DURATION_PATTERN = /^([0-9]+)([smhdw])$/;
+const CREDENTIAL_DURATION_PATTERN = /^([0-9]+)([smhdw])$/;
 
-export type CredentialDurationUnit = "s" | "m" | "h" | "d" | "w";
+type CredentialDurationUnit = "s" | "m" | "h" | "d" | "w";
 
-export const CREDENTIAL_DURATION_MULTIPLIERS: Readonly<Record<CredentialDurationUnit, bigint>> = {
+const CREDENTIAL_DURATION_MULTIPLIERS: Readonly<Record<CredentialDurationUnit, bigint>> = {
   s: 1n,
   m: 60n,
   h: 3600n,

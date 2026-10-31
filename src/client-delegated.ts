@@ -36,7 +36,7 @@ import {
 } from "./client-limits.js";
 import type { HttpResponse } from "./client-http-types.js";
 
-export const MIN_DELEGATED_BATCH_IDEMPOTENCY_KEY = 32;
+const MIN_DELEGATED_BATCH_IDEMPOTENCY_KEY = 32;
 
 export const DELEGATED_BATCH_ID_PATTERN = /^dqb_[A-Za-z0-9_-]{22}$/;
 
@@ -44,7 +44,7 @@ export const DELEGATED_QURL_ID_PATTERN = /^q_[0-9a-f]{11}$/;
 
 export const STRONG_ETAG_PATTERN = /^"[\x21\x23-\x7e]+"$/;
 
-export const UTC_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
+const UTC_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
 
 export function validateCreateDelegatedQurlBatchInput(
   input: unknown,
@@ -160,7 +160,7 @@ export function delegatedResponseError(
   return unexpectedResponseError(`Delegated qURL batch ${detail}`, { status, requestId });
 }
 
-export function delegatedResponseObject(
+function delegatedResponseObject(
   value: unknown,
   status: number,
   label: string,
@@ -320,7 +320,7 @@ export function validateDelegatedLocation(
   return location.href;
 }
 
-export function validateDelegatedQurlLink(value: unknown): value is string {
+function validateDelegatedQurlLink(value: unknown): value is string {
   if (typeof value !== "string") return false;
   try {
     const link = new URL(value);

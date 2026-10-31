@@ -15,13 +15,13 @@ export const CONNECTOR_SLUG_PATTERN = /^[a-z][a-z0-9-]{1,62}[a-z0-9]$/;
 
 // Current service schemas intentionally share this grammar, but keep the
 // mutable alias contract separate from the immutable lookup identity.
-export const CONNECTOR_ALIAS_PATTERN = /^[a-z][a-z0-9-]{1,62}[a-z0-9]$/;
+const CONNECTOR_ALIAS_PATTERN = /^[a-z][a-z0-9-]{1,62}[a-z0-9]$/;
 
-export const CONNECTOR_RESOURCE_ID_PATTERN = /^[A-Za-z0-9_-]{122}$/;
+const CONNECTOR_RESOURCE_ID_PATTERN = /^[A-Za-z0-9_-]{122}$/;
 
-export const CONNECTOR_RESOURCE_ID_DER_PREFIX = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE";
+const CONNECTOR_RESOURCE_ID_DER_PREFIX = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE";
 
-export const CONNECTOR_ROUTING_ID_PATTERN = /^c-[a-z2-7]{51}[aq]$/;
+const CONNECTOR_ROUTING_ID_PATTERN = /^c-[a-z2-7]{51}[aq]$/;
 
 export function requireConnectorSlug(slug: string, method: string): void {
   if (typeof slug !== "string" || !CONNECTOR_SLUG_PATTERN.test(slug)) {
@@ -58,7 +58,7 @@ export function classifyConnectorMutationFailure(
   throw new ConnectorResourceOutcomeUnknownError(error);
 }
 
-export function decodeCanonicalBase64Url(value: string): Uint8Array | undefined {
+function decodeCanonicalBase64Url(value: string): Uint8Array | undefined {
   if (
     !CONNECTOR_RESOURCE_ID_PATTERN.test(value) ||
     !value.startsWith(CONNECTOR_RESOURCE_ID_DER_PREFIX)
@@ -85,7 +85,7 @@ export function requireConnectorSubtleCrypto(method: string): void {
   }
 }
 
-export async function importsAsConnectorPublicKey(der: Uint8Array): Promise<boolean> {
+async function importsAsConnectorPublicKey(der: Uint8Array): Promise<boolean> {
   try {
     const keyData = new ArrayBuffer(der.byteLength);
     new Uint8Array(keyData).set(der);
@@ -102,7 +102,7 @@ export async function importsAsConnectorPublicKey(der: Uint8Array): Promise<bool
   }
 }
 
-export type ConnectorResourceExpectation = {
+type ConnectorResourceExpectation = {
   slug?: string;
   crid?: string;
   revokedIsLifecycleError?: boolean;
@@ -211,7 +211,7 @@ export interface EnsureConnectorResourceResult {
   foundExisting: boolean;
 }
 
-export const CONNECTOR_RESOURCE_CONSTRUCTOR_TOKEN = Symbol("validated ConnectorResource");
+const CONNECTOR_RESOURCE_CONSTRUCTOR_TOKEN = Symbol("validated ConnectorResource");
 
 /**
  * A validated qURL Connector resource bound to the client that loaded it.

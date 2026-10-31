@@ -4,7 +4,7 @@ import { MAX_MAX_SESSIONS, MAX_TAGS, MAX_TAG_LENGTH, MAX_TARGET_URL } from "./cl
 
 // CreateQurlRequest.target_url pattern is loose (just a URI) but
 // UpdateQurlRequest.tags pattern is specific — enforce it here.
-export const TAG_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9 _-]*$/;
+const TAG_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9 _-]*$/;
 
 export function requireMaxLength(value: string | undefined, field: string, max: number): void {
   if (value === undefined) return;
@@ -123,19 +123,19 @@ export function describeShape(value: unknown): string {
   return typeof value;
 }
 
-export const ACCESS_POLICY_LIST_FIELDS = [
+const ACCESS_POLICY_LIST_FIELDS = [
   "ip_allowlist",
   "ip_denylist",
   "geo_allowlist",
   "geo_denylist",
 ] as const satisfies readonly (keyof AccessPolicy)[];
 
-export const ACCESS_POLICY_STRING_FIELDS = [
+const ACCESS_POLICY_STRING_FIELDS = [
   "user_agent_allow_regex",
   "user_agent_deny_regex",
 ] as const satisfies readonly (keyof AccessPolicy)[];
 
-export const AI_AGENT_POLICY_LIST_FIELDS = [
+const AI_AGENT_POLICY_LIST_FIELDS = [
   "deny_categories",
   "allow_categories",
 ] as const satisfies readonly (keyof AIAgentPolicy)[];
@@ -197,7 +197,7 @@ export function requireValidAccessPolicy(policy: AccessPolicy | null | undefined
 // cheap client-side sanity check — the server is still the
 // authoritative validator (e.g. it rejects localhost, cloud metadata,
 // and private-range hosts; the SDK doesn't need to duplicate that).
-export const ALLOWED_URL_SCHEMES = ["http://", "https://"] as const;
+const ALLOWED_URL_SCHEMES = ["http://", "https://"] as const;
 
 export function requireValidHttpUrl(value: unknown, field: string): void {
   // Three checks in priority order: type guard, scheme, length.

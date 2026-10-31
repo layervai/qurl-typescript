@@ -4,7 +4,7 @@ import { readFileSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   checkValidationBounds,
   readClientValidationSource,
@@ -169,4 +169,28 @@ test("duplicate client bounds fail rather than override another module", () => {
     () => validationBoundFindings(code + "const MAX_LABEL = 600;", manifest),
     /Duplicate SDK bound/,
   );
+});
+
+test("client module scanning includes digits, underscores and dots but excludes tests and declarations", () => {
+  const directory = mkdtempSync(join(tmpdir(), "client-bounds-"));
+  try {
+    for (const name of [
+      "client.ts",
+      "client-v2.ts",
+      "client_admin.ts",
+      "client.extra.ts",
+      "client.test.ts",
+      "client.spec.ts",
+      "client.d.ts",
+      "other.ts",
+    ])
+      writeFileSync(join(directory, name), `// ${name}\n`);
+    const source = readClientValidationSource(pathToFileURL(`${directory}/`));
+    for (const name of ["client.ts", "client-v2.ts", "client_admin.ts", "client.extra.ts"])
+      assert.ok(source.includes(`// ${name}\n`), name);
+    for (const name of ["client.test.ts", "client.spec.ts", "client.d.ts", "other.ts"])
+      assert.ok(!source.includes(`// ${name}\n`), name);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
