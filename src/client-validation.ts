@@ -1,6 +1,12 @@
 import type { AIAgentPolicy, AccessPolicy } from "./types.js";
 import { TEXT_ENCODER, clientValidationError } from "./client-errors.js";
-import { MAX_MAX_SESSIONS, MAX_TAGS, MAX_TAG_LENGTH, MAX_TARGET_URL } from "./client-limits.js";
+import {
+  MAX_LIST_LIMIT,
+  MAX_MAX_SESSIONS,
+  MAX_TAGS,
+  MAX_TAG_LENGTH,
+  MAX_TARGET_URL,
+} from "./client-limits.js";
 
 // CreateQurlRequest.target_url pattern is loose (just a URI) but
 // UpdateQurlRequest.tags pattern is specific — enforce it here.
@@ -65,10 +71,15 @@ export function requireListLimitInRange(value: unknown, methodName: string): voi
   // All current paginated OpenAPI query params share 1..100. If a future
   // endpoint diverges, add a per-endpoint bound rather than changing this
   // shared guard silently.
-  if (typeof value !== "number" || !Number.isInteger(value) || value < 1 || value > 100) {
+  if (
+    typeof value !== "number" ||
+    !Number.isInteger(value) ||
+    value < 1 ||
+    value > MAX_LIST_LIMIT
+  ) {
     const rendered = typeof value === "string" ? JSON.stringify(value) : String(value);
     throw clientValidationError(
-      `${methodName}: limit: must be an integer between 1 and 100 (got ${rendered})`,
+      `${methodName}: limit: must be an integer between 1 and ${MAX_LIST_LIMIT} (got ${rendered})`,
     );
   }
 }

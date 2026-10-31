@@ -194,3 +194,32 @@ test("client module scanning includes digits, underscores and dots but excludes 
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("query bound selectors are case-sensitive, location-specific and fail on duplicates", () => {
+  const queryCode = "const MAX_LIST_LIMIT = 100;";
+  const queryManifest = {
+    bounds: {
+      MAX_LIST_LIMIT: {
+        expected: 100,
+        sources: [
+          { operation: "listItems", parameter: "limit", parameterIn: "query", keyword: "maximum" },
+        ],
+      },
+    },
+    local: {},
+  };
+  const query = { in: "query", name: "limit", schema: { maximum: 100 } };
+  const document = (parameters) => ({
+    paths: { "/items": { get: { operationId: "listItems", parameters } } },
+  });
+  assert.deepEqual(
+    validationBoundFindings(
+      queryCode,
+      queryManifest,
+      document([query, { in: "header", name: "limit", schema: { maximum: 5 } }]),
+    ),
+    [],
+  );
+  for (const parameters of [[{ ...query, name: "Limit" }], [query, query]])
+    assert.equal(validationBoundFindings(queryCode, queryManifest, document(parameters)).length, 1);
+});

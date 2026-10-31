@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { parse } from "yaml";
 
-// shortcut: selectors read current direct schema/header bounds; extend them if a published bound moves behind references or inheritance.
+// shortcut: selectors read current direct schema/header/query bounds; extend them if a published bound moves behind references or inheritance.
 function sourceValue(spec, source) {
   let schema;
   if (source.parameterComponent)
@@ -19,13 +19,16 @@ function sourceValue(spec, source) {
     );
     const matches = operations.filter((operation) => operation?.operationId === source.operation);
     if (matches.length === 1) {
-      const headers = matches[0].parameters?.filter(
+      const location = source.parameterIn ?? "header";
+      const parameters = matches[0].parameters?.filter(
         (parameter) =>
-          parameter.in === "header" &&
+          parameter.in === location &&
           typeof parameter.name === "string" &&
-          parameter.name.toLowerCase() === source.parameter.toLowerCase(),
+          (location === "header"
+            ? parameter.name.toLowerCase() === source.parameter.toLowerCase()
+            : parameter.name === source.parameter),
       );
-      if (headers?.length === 1) schema = headers[0].schema;
+      if (parameters?.length === 1) schema = parameters[0].schema;
     }
   } else {
     schema = spec.components?.schemas?.[source.schema];
