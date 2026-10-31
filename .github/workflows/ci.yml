@@ -20,6 +20,7 @@ jobs:
           cache: "npm"
       - run: npm run check:fixtures
       - run: npm ci
+      - run: node --test scripts/check-upstream-api.test.mjs
       - run: npm run prebuild --workspace @layervai/qurl-state-fs
       - run: npm run build
       - run: npm run check:package
