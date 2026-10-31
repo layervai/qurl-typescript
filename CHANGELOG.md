@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Breaking changes
+
+- `AccessToken.expires_at` is optional, matching the API token summary schema.
+  Check that the value is defined before parsing or formatting it. An omitted
+  value does not imply an unlimited lifetime. Runtime responses are unchanged.
+
 ## [3.1.1](https://github.com/layervai/qurl-typescript/compare/qurl-v3.1.0...qurl-v3.1.1) (2026-10-18)
 
 
