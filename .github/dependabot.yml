@@ -14,6 +14,9 @@ updates:
       codeql-action:
         patterns:
           - "github/codeql-action/*"
+      ops-routines-workflows:
+        patterns:
+          - "layervai/ops-routines-workflows/*"
       codeql-action-security:
         applies-to: security-updates
         patterns:
