@@ -15,12 +15,22 @@ npm install
 ```bash
 npm run build          # Compile TypeScript (ESM + CJS)
 npm test               # Run tests (vitest)
+npm run check:fixtures # Reject secret-shaped fixture literals
 npm run smoke:dist     # Verify the built ESM and CJS entry points load
 npm run format:check   # Check formatting (prettier)
 npx eslint src/        # Lint
 ```
 
 All must pass before submitting a PR.
+
+Use `test-api-key` in fixtures and `YOUR_API_KEY` in examples. The fixture guard
+checks every tracked text file for literal qURL live/test key prefixes followed
+by a value. It prints file locations only. There are no file or line exemptions.
+The external-identity response contract requires a valid key shape; its two
+fixtures explicitly construct a repeated `a` value and matching short prefix.
+Keep that synthetic construction in those contract fixtures; do not copy a
+credential-shaped literal. This guard complements the verified-secret scanner;
+it does not detect every provider or high-entropy secret.
 
 ## Dual Build (ESM + CJS)
 
