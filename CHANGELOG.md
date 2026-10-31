@@ -61,10 +61,14 @@
   the returned public key. Public-key arguments and CRID-less responses are
   rejected; there is no backward-compatibility fallback.
 
-- **client:** `delete()` no longer requires a legacy `r_...` resource ID. It
-  accepts current opaque public resource IDs and CRIDs, leaving identifier
-  grammar to qurl-service, while rejecting qURL display IDs before the legacy
-  whole-resource DELETE endpoint can be called accidentally.
+- **client:** resource item methods, including `delete()`, `deleteResource()`,
+  `getResource()`, `createQurlForResource()`, and `revokeResourceQurl()`, require
+  a CRID. They reject public-key resource IDs before sending a request, even
+  where qurl-service still accepts those IDs. `get()` and `extend()` accept
+  either a CRID or a `q_` display ID; `delete()` rejects display IDs because it
+  revokes the whole resource. Before upgrading, store and pass the `crid`
+  returned in API responses instead of the public-key `resource_id`. A stored
+  public key alone is not a CRID and cannot be converted into one.
 - **client:** path identifiers now reject raw or repeatedly encoded `.` / `..`
   segments, URL-shaped values, and embedded qURL
   access-token credentials before making a request. Resource/qURL identifier
