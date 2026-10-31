@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
@@ -37,7 +37,7 @@ function sourceValue(spec, source) {
 
 export function validationBoundFindings(code, manifest, spec) {
   // Inspect literals without importing or executing the runtime client.
-  const source = ts.createSourceFile("client.ts", code, ts.ScriptTarget.Latest, true);
+  const source = ts.createSourceFile("client-limits.ts", code, ts.ScriptTarget.Latest, true);
   const { diagnostics } = ts.transpileModule(code, {
     reportDiagnostics: true,
     compilerOptions: {
@@ -54,6 +54,8 @@ export function validationBoundFindings(code, manifest, spec) {
     if (!ts.isVariableStatement(statement)) continue;
     for (const declaration of statement.declarationList.declarations) {
       if (ts.isIdentifier(declaration.name) && declaration.name.text.startsWith("MAX_")) {
+        if (definitions.has(declaration.name.text))
+          throw new Error(`Duplicate SDK bound: ${declaration.name.text}`);
         definitions.set(declaration.name.text, declaration.initializer);
       }
     }
@@ -98,9 +100,20 @@ export function validationBoundFindings(code, manifest, spec) {
   return findings;
 }
 
+export function readClientValidationSource(directory = new URL("../src/", import.meta.url)) {
+  return readdirSync(directory)
+    .filter(
+      (name) =>
+        name.startsWith("client") && name.endsWith(".ts") && !/\.(?:test|spec|d)\.ts$/.test(name),
+    )
+    .sort()
+    .map((name) => readFileSync(new URL(name, directory), "utf8"))
+    .join("\n");
+}
+
 export function checkValidationBounds(spec) {
   return validationBoundFindings(
-    readFileSync(new URL("../src/client.ts", import.meta.url), "utf8"),
+    readClientValidationSource(),
     JSON.parse(readFileSync(new URL("../contract/validation-bounds.json", import.meta.url))),
     spec,
   );
