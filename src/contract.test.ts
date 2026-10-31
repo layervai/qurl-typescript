@@ -1056,7 +1056,7 @@ describe("API contract", () => {
     METHOD_CASES.filter(
       (entry) => entry.mockBody !== undefined && !entry.method.startsWith("listAll"),
     ),
-  )("response metadata: $method", async ({ mockBody, mockStatus, mockHeaders, invoke }) => {
+  )("response metadata: $method", async ({ method, mockBody, mockStatus, mockHeaders, invoke }) => {
     const body = mockBody as Record<string, unknown>;
     const meta = (body.meta ?? {}) as Record<string, unknown>;
     const requestId = typeof meta.request_id === "string" ? meta.request_id : "req_contract";
@@ -1067,6 +1067,11 @@ describe("API contract", () => {
     );
     const result = await invoke(createClient(fetch));
     expect(getResponseMetadata(result)).toEqual({ requestId });
+    if (method === "createPortalForUrl") {
+      const composite = result as { portal: unknown; resource: unknown };
+      expect(getResponseMetadata(composite.portal)).toEqual({ requestId });
+      expect(getResponseMetadata(composite.resource)).toEqual({ requestId });
+    }
   });
 
   // Table-driven case for each method in METHOD_CASES. vitest's `%s`

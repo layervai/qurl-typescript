@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { QURLClient, getResponseMetadata } from "./index.js";
 import { createClient, mockFetch, mockFetches } from "./__tests__/test-helpers.js";
+import { withResponseMetadata } from "./response-metadata.js";
 import { RESOURCE_CRID } from "./__tests__/client-fixtures.js";
 
 describe("success response metadata", () => {
@@ -32,6 +33,22 @@ describe("success response metadata", () => {
       expect(getResponseMetadata(result)).toBeUndefined();
     },
   );
+
+  it("keeps the first id and does not fail on non-extensible values", () => {
+    const result = withResponseMetadata({}, "req_first");
+    expect(withResponseMetadata(result, "req_second")).toBe(result);
+    expect(getResponseMetadata(result)?.requestId).toBe("req_first");
+    for (const value of [Object.freeze({}), Object.preventExtensions({})]) {
+      expect(withResponseMetadata(value, "req_frozen")).toBe(value);
+      expect(getResponseMetadata(value)).toBeUndefined();
+    }
+  });
+
+  it("does not invent metadata for a no-content empty page", async () => {
+    const page = await createClient(mockFetch({ status: 204 })).list();
+    expect(page.qurls).toEqual([]);
+    expect(getResponseMetadata(page)).toBeUndefined();
+  });
 
   it("keeps concurrent calls separate when responses arrive in reverse order", async () => {
     const waiting = new Map<string, (response: Response) => void>();

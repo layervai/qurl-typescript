@@ -764,7 +764,8 @@ count. An absent count does not imply zero accesses.
 Successful API results expose an optional correlation ID through
 `getResponseMetadata`. This works for result objects, page objects, SDK handles,
 and items yielded by page iterators. Each value keeps the ID of the response
-that produced it, including concurrent calls.
+that produced it, including concurrent calls. Aggregated results use the final
+page's ID. The ID is for diagnostics; it does not authenticate a result.
 
 ```typescript
 import { getResponseMetadata } from '@layervai/qurl';

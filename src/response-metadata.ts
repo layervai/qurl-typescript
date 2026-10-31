@@ -23,7 +23,9 @@ export function getResponseMetadata(value: unknown): Readonly<ResponseMetadata> 
 /** @internal Attach only an identifier already validated at the HTTP boundary. */
 export function withResponseMetadata<T>(value: T, requestId: string | undefined): T {
   if (!isObject(value) || !requestId) return value;
-  if (getResponseMetadata(value)?.requestId === requestId) return value;
+  // Diagnostic metadata must not turn a successful mutation into a failure.
+  if (Object.getOwnPropertyDescriptor(value, RESPONSE_METADATA) || !Object.isExtensible(value))
+    return value;
   Object.defineProperty(value, RESPONSE_METADATA, {
     value: Object.freeze({ requestId }),
     enumerable: false,
