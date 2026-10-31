@@ -2029,15 +2029,12 @@ describe("QURLClient", () => {
     });
     const client = createClient(fetch);
 
-    // `["__proto__"]` (computed/quoted key) creates an own property
-    // — bare `__proto__:` would set the prototype, which JSON.stringify
-    // already drops, so it wouldn't actually exercise the allowlist.
-    const widerPayload = {
-      access_token: "test-access-token",
-      apiKey: "test-extra-api-key",
-      arbitrary: "field",
-      ["__proto__"]: "should-not-leak",
-    };
+    // JSON input gives __proto__ a real own data property, not a prototype setter.
+    const widerPayload = JSON.parse(
+      '{"access_token":"test-access-token","apiKey":"test-extra-api-key","arbitrary":"field","__proto__":"should-not-leak"}',
+    );
+    expect(Object.getOwnPropertyDescriptor(widerPayload, "__proto__")?.enumerable).toBe(true);
+    expect(Object.getPrototypeOf(widerPayload)).toBe(Object.prototype);
     await client.resolve(widerPayload as unknown as Parameters<typeof client.resolve>[0]);
 
     expect(fetch).toHaveBeenCalledTimes(1);
