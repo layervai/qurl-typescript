@@ -1,0 +1,54 @@
+name: Published API drift
+
+on:
+  schedule:
+    - cron: "37 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: published-api-drift
+  cancel-in-progress: false
+
+jobs:
+  compare:
+    if: github.repository == 'layervai/qurl-typescript'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      # Even a manual run from another ref executes only the trusted main scripts.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: node --test scripts/check-upstream-api.test.mjs
+      - name: Compare published operations
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --retry 3 --max-time 30 \
+            --proto '=https' --proto-redir '=https' \
+            https://layerv.ai/docs/qurls.yaml -o "$RUNNER_TEMP/current-spec.yaml"
+          node scripts/check-upstream-api.mjs check "$RUNNER_TEMP/current-spec.yaml" \
+            > "$RUNNER_TEMP/api-drift.md"
+          cat "$RUNNER_TEMP/api-drift.md" >> "$GITHUB_STEP_SUMMARY"
+      - name: Update the existing tracking issue only when the report changes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/check-upstream-api.mjs publish "$RUNNER_TEMP/api-drift.md"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: published-api-drift
+          path: |
+            ${{ runner.temp }}/current-spec.yaml
+            ${{ runner.temp }}/api-drift.md
+          retention-days: 14
