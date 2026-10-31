@@ -1,0 +1,318 @@
+{
+  "bounds": {
+    "MAX_TARGET_URL": {
+      "expected": 2048,
+      "sources": [
+        {
+          "schema": "CreateQurlRequest",
+          "property": "target_url",
+          "keyword": "maxLength"
+        },
+        {
+          "schema": "CreateResourceRequest",
+          "property": "target_url",
+          "keyword": "maxLength"
+        },
+        {
+          "schema": "CreateWebhookRequest",
+          "property": "url",
+          "keyword": "maxLength"
+        },
+        {
+          "schema": "UpdateWebhookRequest",
+          "property": "url",
+          "keyword": "maxLength"
+        }
+      ]
+    },
+    "MAX_LABEL": {
+      "expected": 500,
+      "sources": [
+        {
+          "schema": "CreateQurlRequest",
+          "property": "label",
+          "keyword": "maxLength"
+        },
+        {
+          "schema": "CreateQurlForResourceRequest",
+          "property": "label",
+          "keyword": "maxLength"
+        },
+        {
+          "schema": "UpdateQurlTokenRequest",
+          "property": "label",
+          "keyword": "maxLength"
+        },
+        {
+          "schema": "MintLinkRequest",
+          "property": "label",
+          "keyword": "maxLength"
+        },
+        {
+          "schema": "DelegatedQurlGrant",
+          "property": "label",
+          "keyword": "maxLength"
+        }
+      ]
+    },
+    "MAX_BATCH_ITEMS": {
+      "expected": 100,
+      "sources": [
+        {
+          "schema": "BatchCreateRequest",
+          "property": "items",
+          "keyword": "maxItems"
+        }
+      ]
+    },
+    "MAX_DESCRIPTION": {
+      "expected": 500,
+      "sources": [
+        {
+          "schema": "CreateResourceRequest",
+          "property": "description",
+          "keyword": "maxLength"
+        },
+        {
+          "schema": "UpdateResourceRequest",
+          "property": "description",
+          "keyword": "maxLength"
+        },
+        {
+          "schema": "UpdateQurlRequest",
+          "property": "description",
+          "keyword": "maxLength"
+        },
+        {
+          "schema": "CreateWebhookRequest",
+          "property": "description",
+          "keyword": "maxLength"
+        },
+        {
+          "schema": "UpdateWebhookRequest",
+          "property": "description",
+          "keyword": "maxLength"
+        }
+      ]
+    },
+    "MAX_CUSTOM_DOMAIN": {
+      "expected": 253,
+      "sources": [
+        {
+          "schema": "CreateQurlRequest",
+          "property": "custom_domain",
+          "keyword": "maxLength"
+        },
+        {
+          "schema": "CreateResourceRequest",
+          "property": "custom_domain",
+          "keyword": "maxLength"
+        },
+        {
+          "schema": "UpdateResourceRequest",
+          "property": "custom_domain",
+          "keyword": "maxLength"
+        }
+      ]
+    },
+    "MAX_MAX_SESSIONS": {
+      "expected": 1000,
+      "sources": [
+        {
+          "schema": "CreateQurlRequest",
+          "property": "max_sessions",
+          "keyword": "maximum"
+        },
+        {
+          "schema": "CreateQurlForResourceRequest",
+          "property": "max_sessions",
+          "keyword": "maximum"
+        },
+        {
+          "schema": "UpdateQurlTokenRequest",
+          "property": "max_sessions",
+          "keyword": "maximum"
+        },
+        {
+          "schema": "MintLinkRequest",
+          "property": "max_sessions",
+          "keyword": "maximum"
+        },
+        {
+          "schema": "DelegatedQurlGrant",
+          "property": "max_sessions",
+          "keyword": "maximum"
+        }
+      ]
+    },
+    "MAX_API_KEY_NAME": {
+      "expected": 100,
+      "sources": [
+        {
+          "schema": "CreateApiKeyRequest",
+          "property": "name",
+          "keyword": "maxLength"
+        },
+        {
+          "schema": "UpdateApiKeyRequest",
+          "property": "name",
+          "keyword": "maxLength"
+        }
+      ]
+    },
+    "MAX_ALIAS": {
+      "expected": 64,
+      "sources": [
+        {
+          "schema": "CreateResourceRequest",
+          "property": "alias",
+          "keyword": "maxLength"
+        },
+        {
+          "schema": "UpdateResourceRequest",
+          "property": "alias",
+          "keyword": "maxLength"
+        }
+      ]
+    },
+    "MAX_SLUG": {
+      "expected": 64,
+      "sources": [
+        {
+          "schema": "CreateResourceRequest",
+          "property": "slug",
+          "keyword": "maxLength"
+        }
+      ]
+    },
+    "MAX_TAGS": {
+      "expected": 10,
+      "sources": [
+        {
+          "schema": "CreateResourceRequest",
+          "property": "tags",
+          "keyword": "maxItems"
+        },
+        {
+          "schema": "UpdateResourceRequest",
+          "property": "tags",
+          "keyword": "maxItems"
+        },
+        {
+          "schema": "UpdateQurlRequest",
+          "property": "tags",
+          "keyword": "maxItems"
+        }
+      ]
+    },
+    "MAX_TAG_LENGTH": {
+      "expected": 50,
+      "sources": [
+        {
+          "schema": "CreateResourceRequest",
+          "property": "tags",
+          "keyword": "maxLength",
+          "items": true
+        },
+        {
+          "schema": "UpdateResourceRequest",
+          "property": "tags",
+          "keyword": "maxLength",
+          "items": true
+        },
+        {
+          "schema": "UpdateQurlRequest",
+          "property": "tags",
+          "keyword": "maxLength",
+          "items": true
+        }
+      ]
+    },
+    "MAX_DELEGATED_MINT_CAPABILITY": {
+      "expected": 8192,
+      "sources": [
+        {
+          "schema": "CreateDelegatedQurlBatchRequest",
+          "property": "mint_capability",
+          "keyword": "maxLength"
+        }
+      ]
+    },
+    "MAX_DELEGATED_BATCH_ITEMS": {
+      "expected": 100,
+      "sources": [
+        {
+          "schema": "CreateDelegatedQurlBatchRequest",
+          "property": "grants",
+          "keyword": "maxItems"
+        }
+      ]
+    },
+    "MAX_IDEMPOTENCY_KEY": {
+      "expected": 256,
+      "sources": [
+        {
+          "parameterComponent": "IdempotencyKey",
+          "keyword": "maxLength"
+        }
+      ]
+    },
+    "MAX_DELEGATED_ETAG": {
+      "expected": 96,
+      "sources": [
+        {
+          "operation": "getDelegatedQurlBatch",
+          "parameter": "If-None-Match",
+          "keyword": "maxLength"
+        }
+      ]
+    },
+    "MAX_ENROLLMENT_TOKEN_TTL_SECONDS": {
+      "expected": 86400,
+      "sources": [
+        {
+          "schema": "CreateApiKeyRequest",
+          "property": "expires_in",
+          "keyword": "description",
+          "expected": "Optional lifetime for `kind=enrollment_token` credentials. Defaults to 24h and cannot exceed 24h. Invalid format or bounds return 400 `invalid_duration`. Not accepted for `kind=api_key` (400 `invalid_input`): API keys are durable."
+        }
+      ]
+    },
+    "MAX_TARGET_PATH": {
+      "expected": 2048,
+      "sources": [
+        {
+          "schema": "QurlSummary",
+          "property": "target_path",
+          "keyword": "maxLength"
+        },
+        {
+          "schema": "CreateQurlData",
+          "property": "target_path",
+          "keyword": "maxLength"
+        },
+        {
+          "schema": "MintLinkData",
+          "property": "target_path",
+          "keyword": "maxLength"
+        },
+        {
+          "schema": "QurlMintTargetPath",
+          "keyword": "description",
+          "expected": "Destination path and optional query for a qURL Connector link. For example,\n`/view/abc?download=1` redirects to that path on the resource's `qurl.site` host.\nOmit this field to use the host's root. Only qURL Connector resources (`type=tunnel`)\naccept it. Maximum: 2048 UTF-8 bytes.\n\n**Access scope:** The path permits itself and descendants at a segment boundary.\n`/view/abc` permits `/view/abc/thumbnail`, but not `/view/abcd`.\nThe query does not restrict access. A scoped link works only through the resource\nhost; access through a custom domain is denied. The Connector must also authorize\nthe path before using it to look up an object.\n\n**Path rules:** Start with one `/`. Use canonical, unescaped ASCII. A single trailing\nslash is allowed. Do not use `//`, percent escapes, semicolons, empty interior\nsegments, `.` or `..` segments, exclamation marks, parentheses, asterisks, apostrophes,\na scheme, host, backslash, fragment, whitespace, or control characters.\nUse opaque route keys for objects; keep user filenames in metadata.\nClients must preserve the accepted path bytes. Percent-encoded alternatives are denied.\n\n**Query rules:** Use ASCII letters, digits, `._~!$&()*+,;=:@/?-`, and well-formed\npercent escapes. Percent-encode other characters. Literal apostrophes are not\naccepted. Query bytes are preserved, including semicolons and percent escapes.\n\n**Errors:** JSON null and non-string values return `400 validation_error`.\nEmpty strings, oversized or malformed paths, and use on other resource types\nreturn `400 invalid_target_path`.\n"
+        }
+      ]
+    }
+  },
+  "local": {
+    "MAX_RESPONSE_BODY_BYTES": "Response memory budget; changing server field limits does not justify a larger response allocation.",
+    "MAX_ERROR_SNIPPET_BYTES": "Diagnostic byte budget.",
+    "MAX_ERROR_SNIPPET_SOURCE_CODE_UNITS": "Diagnostic traversal budget derived from the snippet byte cap.",
+    "MAX_INVALID_FIELD_ENTRIES": "Diagnostic collection count budget.",
+    "MAX_DEBUG_BODY_KEYS": "Debug output key count budget.",
+    "MAX_DIAGNOSTIC_COLLECTION_BYTES": "Diagnostic collection byte budget.",
+    "MAX_AUTO_PAGINATION_PAGES": "Automatic traversal safety budget.",
+    "MAX_PATH_ID_DECODE_PASSES": "Identifier normalization work budget.",
+    "MAX_PATH_ID_LENGTH": "Identifier pre-validation memory/work budget; exact identifiers have separate format guards."
+  }
+}

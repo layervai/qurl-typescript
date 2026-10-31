@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse } from "yaml";
+import { checkValidationBounds } from "./check-validation-bounds.mjs";
 
 const VERBS = new Set(["get", "post", "put", "patch", "delete", "head", "options", "trace"]);
 export const REPORT_MARKER = "<!-- qurl-upstream-operation-drift -->";
@@ -38,7 +39,7 @@ export function operationsFromSpec(spec) {
   return operations.sort();
 }
 
-export function renderReport(current, baseline) {
+export function renderReport(current, baseline, validationBounds = []) {
   if (
     !Array.isArray(baseline) ||
     baseline.some(
@@ -55,12 +56,12 @@ export function renderReport(current, baseline) {
   const added = current.filter((operation) => !baselineSet.has(operation));
   const removed = baseline.filter((operation) => !currentSet.has(operation));
   const detail =
-    added.length || removed.length
+    added.length || removed.length || validationBounds.length
       ? "```json\n" +
-        JSON.stringify({ added, removed }, null, 2).replaceAll("`", "\\u0060") +
+        JSON.stringify({ added, removed, validationBounds }, null, 2).replaceAll("`", "\\u0060") +
         "\n```"
-      : "No operation drift.";
-  return `${REPORT_MARKER}\n### Published API operation drift\n\nCompared [the published spec](https://layerv.ai/docs/qurls.yaml) with \`contract/upstream-operations.json\`.\nThis full producer baseline is separate from the SDK's hand-maintained endpoint subset.\n\n${detail}\n`;
+      : "No operation or validation-bound drift.";
+  return `${REPORT_MARKER}\n### Published API contract drift\n\nCompared [the published spec](https://layerv.ai/docs/qurls.yaml) with \`contract/upstream-operations.json\`.\nThis full producer baseline is separate from the SDK's hand-maintained endpoint subset.\n\n${detail}\n`;
 }
 
 function github(method, path, body) {
@@ -99,7 +100,8 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   }
   if (mode === "publish") console.log(publishReport(readFileSync(input, "utf8")));
   else {
-    const current = operationsFromSpec(parse(readFileSync(input, "utf8")));
+    const spec = parse(readFileSync(input, "utf8"), { merge: true });
+    const current = operationsFromSpec(spec);
     const output =
       mode === "snapshot"
         ? JSON.stringify(current, null, 2) + "\n"
@@ -108,6 +110,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
             JSON.parse(
               readFileSync(new URL("../contract/upstream-operations.json", import.meta.url)),
             ),
+            checkValidationBounds(spec),
           );
     process.stdout.write(output);
   }

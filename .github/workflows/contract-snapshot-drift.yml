@@ -16,6 +16,7 @@ jobs:
   compare:
     if: github.repository == 'layervai/qurl-typescript'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       issues: write
@@ -30,8 +31,8 @@ jobs:
           node-version: "22"
           cache: npm
       - run: npm ci --ignore-scripts
-      - run: node --test scripts/check-upstream-api.test.mjs
-      - name: Compare published operations
+      - run: node --test scripts/check-upstream-api.test.mjs scripts/check-validation-bounds.test.mjs
+      - name: Compare published contract
         run: |
           set -euo pipefail
           curl --fail --silent --show-error --retry 3 --max-time 30 \
@@ -44,6 +45,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/check-upstream-api.mjs publish "$RUNNER_TEMP/api-drift.md"
+      - name: Fail on validation-bound drift after publishing the report
+        run: node scripts/check-validation-bounds.mjs "$RUNNER_TEMP/current-spec.yaml"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:

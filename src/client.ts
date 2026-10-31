@@ -1158,6 +1158,9 @@ async function readBoundedResponseBody(response: Response): Promise<string> {
 // These mirror constraints documented on each request schema in
 // `openapi.yaml` so obvious mistakes fail fast instead of round-tripping
 // to the API and coming back as a generic 400.
+// CI checks every MAX_* constant against contract/validation-bounds.json; the
+// weekly published-spec check detects upstream changes. Local safety budgets
+// are classified separately and must not be raised to bypass a service cap.
 
 const MAX_TARGET_URL = 2048;
 const MAX_LABEL = 500;
