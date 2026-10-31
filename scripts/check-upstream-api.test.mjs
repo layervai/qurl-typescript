@@ -42,7 +42,7 @@ test("reports additions and removals without making unchanged reports noisy", ()
   assert.ok(report.startsWith(REPORT_MARKER));
   assert.match(report, /POST \/v1\/new/);
   assert.match(report, /DELETE \/v1\/retired/);
-  assert.match(renderReport(operations, operations), /No operation drift/);
+  assert.match(renderReport(operations, operations), /No operation or validation-bound drift/);
   assert.equal(
     renderReport([...operations], [...operations]),
     renderReport(operations, operations),
@@ -128,4 +128,11 @@ test("the real CLI generates snapshots, reports drift, and fails on invalid inpu
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("the shared report includes validation-bound drift even when operations match", () => {
+  const report = renderReport([], [], [{ constant: "MAX_LABEL", expected: 500, actual: 600 }]);
+  assert.match(report, /validationBounds/);
+  assert.match(report, /MAX_LABEL/);
+  assert.doesNotMatch(report, /No operation or validation-bound drift/);
 });

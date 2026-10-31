@@ -171,7 +171,27 @@ node scripts/check-upstream-api.mjs check /path/to/published-qurls.yaml
 After reviewing upstream changes, update the producer baseline with
 `node scripts/check-upstream-api.mjs snapshot /path/to/published-qurls.yaml > contract/upstream-operations.json`.
 Update the SDK subset and method tests only when the SDK adopts an endpoint.
-This check compares method/path pairs; it does not compare request or response schemas.
+The report also compares the API client's listed maximum bounds with
+`contract/validation-bounds.json`. Unit CI checks SDK literals against that reviewed
+baseline. Weekly CI checks the fresh published numeric constraints and reports
+missing or changed bounds before failing the job. Method/path-only drift remains
+a report and does not fail the job. This is not full request/response schema validation.
+
+Wire bounds stay numeric literals so the checker can inspect them without executing
+the client. Every top-level `MAX_*` constant in `src/client.ts` must be either a contract bound
+or an explicitly documented local safety budget. New and stale classifications
+fail CI. Response size, diagnostic, traversal, and identifier work budgets remain
+local safeguards; a server field change does not justify raising them.
+The enrollment-token TTL and target-path byte limit are partly documented in prose.
+Their reviewed numeric values and complete published descriptions are pinned;
+any description change requires review rather than an automatic text-to-number guess.
+
+When a service bound changes, review the published contract, then update the SDK,
+its bound baseline, and boundary tests together. To check the published bounds locally:
+
+```sh
+node scripts/check-validation-bounds.mjs /path/to/published-qurls.yaml
+```
 
 ## Pull Requests
 
