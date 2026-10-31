@@ -397,7 +397,7 @@
     }
   },
   "local": {
-    "MAX_RESPONSE_BODY_BYTES": "Response memory budget; changing server field limits does not justify a larger response allocation.",
+    "MAX_RESPONSE_BODY_BYTES": "Default response memory budget; larger responses require an explicit cap within the shared ceiling.",
     "MAX_ERROR_SNIPPET_BYTES": "Diagnostic byte budget.",
     "MAX_ERROR_SNIPPET_SOURCE_CODE_UNITS": "Diagnostic traversal budget derived from the snippet byte cap.",
     "MAX_INVALID_FIELD_ENTRIES": "Diagnostic collection count budget.",

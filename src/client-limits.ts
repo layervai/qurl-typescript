@@ -1,11 +1,6 @@
-// Match qurl-go c4f2f98's exact API response cap. Current qurl-service list
-// routes cap pages at 100 items. A caller can still exceed this cap with a
-// large, heavily escaped webhook-delivery page, so list callers must request a
-// smaller page if the service reports the body-limit error. This cap is fixed:
-// do not add an override or widen one SDK independently from the other.
-// The limit is enforced from Content-Length when usable and again while
-// consuming the response stream.
-// Joint Go/TypeScript policy: docs/api-response-limits.md. Keep default and ceiling aligned.
+// Joint Go/TypeScript policy: docs/api-response-limits.md.
+// Keep the 1 MiB default and bounded opt-in ceiling aligned across both SDKs.
+// Decoded streaming bytes remain authoritative when length hints are unusable.
 export const MAX_RESPONSE_BODY_BYTES = 1 << 20;
 export const MAX_CONFIGURABLE_RESPONSE_BODY_BYTES = 16 << 20;
 
