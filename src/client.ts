@@ -913,9 +913,15 @@ function boundedTombstone(value: unknown): TombstoneInfo | undefined {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
   const raw = value as Record<string, unknown>;
   const timestamp = boundedErrorIdentifier(raw.tombstoned_at);
-  if (timestamp === undefined || !Number.isFinite(Date.parse(timestamp))) return undefined;
+  if (
+    timestamp === undefined ||
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(timestamp) ||
+    !Number.isFinite(Date.parse(timestamp))
+  )
+    return undefined;
   const out: TombstoneInfo = { tombstoned_at: timestamp };
   const count = raw.final_access_count;
+  // The API omits zero: absence means no snapshot or a redacted count.
   if (typeof count === "number" && Number.isSafeInteger(count) && count >= 1) {
     out.final_access_count = count;
   }

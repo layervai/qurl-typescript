@@ -13,7 +13,7 @@ it("exposes retained tombstone metadata on a Gone error", async () => {
       },
     }),
   )
-    .getQuota()
+    .getResource("ahpviqz46qwcvx56glfatm3p3ooccwfcf2it4sdgjervwdkapykw3o3qdq2a")
     .catch((error: unknown) => error as QURLError);
   expect(error).toBeInstanceOf(QURLError);
   expect(error).toMatchObject({ status: 410, requestId: "req_gone", tombstone });
@@ -40,6 +40,9 @@ it.each([
   {},
   { tombstoned_at: 12 },
   { tombstoned_at: "invalid" },
+  { tombstoned_at: "1" },
+  { tombstoned_at: "2026" },
+  { tombstoned_at: "Jan 1 2026" },
   { tombstoned_at: "x".repeat(1000) },
 ])("drops malformed tombstone metadata: %j", async (tombstone) => {
   const error = await createClient(
@@ -91,4 +94,17 @@ it("ignores tombstone metadata on non-410 errors", async () => {
     .getQuota()
     .catch((error: unknown) => error as QURLError);
   expect(error).toHaveProperty("tombstone", undefined);
+});
+
+it("preserves RFC 3339 timezone offsets", async () => {
+  const tombstone = { tombstoned_at: "2026-01-01T01:00:00+01:00" };
+  const error = await createClient(
+    mockFetch({
+      status: 410,
+      body: { error: { title: "Gone", code: "gone" }, meta: { tombstone } },
+    }),
+  )
+    .getResource("ahpviqz46qwcvx56glfatm3p3ooccwfcf2it4sdgjervwdkapykw3o3qdq2a")
+    .catch((error: unknown) => error as QURLError);
+  expect(error).toHaveProperty("tombstone", tombstone);
 });
