@@ -1,5 +1,5 @@
 import type { CreatePortalOptions, Portal, RequestOptions, Resource } from "./types.js";
-import { copyResponseMetadata } from "./response-metadata.js";
+import { copyResponseMetadata, getResponseMetadata } from "./response-metadata.js";
 import { clientValidationError, unexpectedResponseError } from "./client-errors.js";
 import { verifyResourceIdentity } from "./client-connectors.js";
 import {
@@ -7,13 +7,12 @@ import {
   requireBooleanIfPresent,
   requireMaxLength,
   requireMaxSessionsInRange,
-  requireMaxUtf8Bytes,
   requireNoUnknownFields,
-  requireNonEmptyIfPresent,
   requireObjectInput,
 } from "./client-validation.js";
 import { CREATE_PORTAL_OPTION_KEYS } from "./client-input-fields.js";
-import { MAX_LABEL, MAX_TARGET_PATH } from "./client-limits.js";
+import { MAX_LABEL } from "./client-limits.js";
+import { isCanonicalTargetPath, requireCanonicalTargetPath } from "./target-path.js";
 import type { QURLClient } from "./client.js";
 
 // ---- Portal-verb helpers (mirrors qurl-go) -------------------------------
@@ -142,6 +141,7 @@ export type PortalWireResponse = {
   expires_at?: string;
   qurl_id?: string;
   label?: string;
+  target_path?: string;
 };
 
 /**
@@ -154,6 +154,7 @@ export async function parsePortal(
   data: PortalWireResponse | undefined,
   method: string,
   expectedCrid?: string,
+  expectedTargetPath?: string,
 ): Promise<Portal> {
   if (typeof data?.resource_id !== "string" || data.resource_id.trim() === "") {
     throw unexpectedResponseError(`${method}: response is missing resource_id`);
@@ -162,6 +163,14 @@ export async function parsePortal(
     throw unexpectedResponseError(`${method}: response is missing qurl_link`);
   }
   await verifyResourceIdentity(data, method, expectedCrid);
+  if (
+    data.target_path !== expectedTargetPath ||
+    (data.target_path !== undefined && !isCanonicalTargetPath(data.target_path))
+  ) {
+    throw unexpectedResponseError(`${method}: mint response target path differs from request`, {
+      requestId: getResponseMetadata(data)?.requestId,
+    });
+  }
   return copyResponseMetadata(data, {
     crid: data.crid as string,
     resourcePublicKey: data.resource_id,
@@ -172,6 +181,7 @@ export async function parsePortal(
     // consumers apply to qurl_id.
     qurlId: data.qurl_id || undefined,
     label: data.label,
+    targetPath: data.target_path,
   });
 }
 
@@ -199,8 +209,7 @@ export function buildCreatePortalBody(
   }
   requireBooleanIfPresent(oneTimeUse, "oneTimeUse");
   requireMaxSessionsInRange(maxSessions, "maxSessions");
-  requireMaxUtf8Bytes(targetPath, "targetPath", MAX_TARGET_PATH);
-  requireNonEmptyIfPresent(targetPath, "targetPath");
+  requireCanonicalTargetPath(targetPath, "targetPath");
   if (targetPath !== undefined && method === "createPortalForUrl") {
     throw clientValidationError("targetPath: requires an existing resource");
   }

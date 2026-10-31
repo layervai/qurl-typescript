@@ -1135,6 +1135,7 @@ describe("QURLClient", () => {
             resource_id: CONNECTOR_RESOURCE_ID,
             crid: RESOURCE_CRID,
             qurl_link: "https://qurl.link/#at_connector",
+            target_path: "/api/detect",
           },
         },
       },
@@ -1145,6 +1146,7 @@ describe("QURLClient", () => {
     const portal = await resource.createPortal({ validFor: "5m", targetPath: "/api/detect" });
 
     expect(portal.crid).toBe(RESOURCE_CRID);
+    expect(portal.targetPath).toBe("/api/detect");
     expect(fetch).toHaveBeenNthCalledWith(
       2,
       `https://api.test.layerv.ai/v1/resources/${RESOURCE_CRID}/qurls`,
