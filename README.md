@@ -937,17 +937,17 @@ SDK-generated keys require `globalThis.crypto.getRandomValues`, which is availab
   that names this shim requirement but does not reflect the invalid value. A
   non-redirecting 304 is handled as an ordinary unsuccessful API response
   rather than mislabeled as a redirect.
-- API success and error bodies are limited to **1 MiB (1,048,576 bytes)**,
-  matching qurl-go's security posture. The SDK checks `Content-Length` when
-  present and independently counts streamed bytes, so missing or inaccurate
-  headers cannot bypass the limit. Bodies exactly at the limit are accepted.
-  This fixed security limit has no override. Callers must request a smaller
-  page, and the SDKs must not independently widen the limit.
-  A maximum-size list page can exceed the cap after JSON escaping; request a
-  smaller page if a list call reports the body-limit error. For resumable list
-  reads, use the page method, save each successful `next_cursor`, and resume
-  from that cursor with a smaller `limit`. A shared configurable-cap decision
-  is tracked in [#249](https://github.com/layervai/qurl-typescript/issues/249).
+- API success and error bodies default to **1 MiB (1,048,576 bytes)**,
+  matching qurl-go. `maxResponseBodyBytes` accepts a positive integer through
+  **16 MiB**. Streamed decoded bytes are counted even with missing or false-small
+  Content-Length. A valid oversized unencoded length may reject early;
+  compressed lengths are not compared with the decoded-byte cap. Exactly the
+  configured number of bytes is accepted.
+  Large legal pages can exceed the default. Prefer a smaller page or explicitly
+  raise the cap within the shared ceiling. Save each successful `next_cursor`
+  and retry a failed read from that same cursor with unchanged filters and a
+  smaller `limit`. See the [shared Go/TypeScript response-limit decision](docs/api-response-limits.md)
+  for typed errors, the published service bounds, cursor recovery and memory cost.
   Standards-compliant fetch implementations are bounded while streaming;
   custom Response-like shims that omit `body` are validated after their
   `text()`/`json()` result has already been materialized by that shim.

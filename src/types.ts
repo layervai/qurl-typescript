@@ -1200,6 +1200,11 @@ export interface ClientOptions {
    * `headers` object with a WHATWG-compatible `headers.get(name)` method.
    */
   fetch?: typeof globalThis.fetch;
+  /**
+   * Decoded API response bytes per request. Default: 1 MiB.
+   * Integer range: 1 byte through 16 MiB.
+   */
+  maxResponseBodyBytes?: number;
   /** Maximum retry attempts for transient errors (429, 5xx). Default: 3. */
   maxRetries?: number;
   /**
