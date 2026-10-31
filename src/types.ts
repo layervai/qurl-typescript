@@ -1165,6 +1165,7 @@ export interface QURLErrorData {
   invalid_fields?: Record<string, string>;
   request_id?: string;
   retry_after?: number;
+  tombstone?: TombstoneInfo;
 }
 
 /** Per-call options accepted by mutating requests. */

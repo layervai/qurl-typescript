@@ -1,4 +1,4 @@
-import type { QURLErrorData } from "./types.js";
+import type { QURLErrorData, TombstoneInfo } from "./types.js";
 
 /**
  * Sentinel `.code` values for SDK-internal failure modes (no real HTTP
@@ -69,6 +69,8 @@ export class QURLError extends Error {
   readonly invalidFields?: Record<string, string>;
   readonly requestId?: string;
   readonly retryAfter?: number;
+  /** Retained resource metadata supplied by a 410 Gone response. */
+  readonly tombstone?: TombstoneInfo;
   /** Known minted IDs from a rejected terminal batch, for bounded cleanup. No bearer links. */
   readonly partialQurlIds?: readonly string[];
 
@@ -87,6 +89,7 @@ export class QURLError extends Error {
     this.invalidFields = data.invalid_fields;
     this.requestId = data.request_id;
     this.retryAfter = data.retry_after;
+    this.tombstone = data.tombstone;
   }
 }
 

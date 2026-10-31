@@ -19,6 +19,7 @@ import {
 import { stripTrailingSlashes } from "./internal.js";
 import { ShareLink } from "./share.js";
 import type {
+  TombstoneInfo,
   ConsumerAccessPolicy,
   ConsumerInvitation,
   ConsumerGrant,
@@ -905,6 +906,26 @@ function boundedErrorIdentifier(value: unknown): string | undefined {
     return undefined;
   }
   return value;
+}
+
+/** Keep only the documented retained metadata, with bounded wire values. */
+function boundedTombstone(value: unknown): TombstoneInfo | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  const timestamp = boundedErrorIdentifier(raw.tombstoned_at);
+  if (
+    timestamp === undefined ||
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(timestamp) ||
+    !Number.isFinite(Date.parse(timestamp))
+  )
+    return undefined;
+  const out: TombstoneInfo = { tombstoned_at: timestamp };
+  const count = raw.final_access_count;
+  // The API omits zero: absence means no snapshot or a redacted count.
+  if (typeof count === "number" && Number.isSafeInteger(count) && count >= 1) {
+    out.final_access_count = count;
+  }
+  return out;
 }
 
 /** Collect at most the first N enumerable own string keys without a full key-array copy. */
@@ -3072,7 +3093,7 @@ interface ApiErrorEnvelope {
      */
     message?: string;
   };
-  meta?: { request_id?: string };
+  meta?: { request_id?: string; tombstone?: unknown };
 }
 
 /** qURL API client. */
@@ -5995,6 +6016,7 @@ export class QURLClient {
           instance: boundedErrorIdentifier(err.instance),
           invalid_fields: boundedInvalidFields(err.invalid_fields),
           request_id: boundedErrorIdentifier(json.meta?.request_id),
+          tombstone: response.status === 410 ? boundedTombstone(json.meta?.tombstone) : undefined,
           retry_after: this.parseRetryAfter(response),
         };
       }

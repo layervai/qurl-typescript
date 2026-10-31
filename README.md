@@ -757,6 +757,10 @@ try {
 | `TimeoutError` | — | Request exceeded timeout |
 | `DelegatedBatchOutcomeUnknownError` | — | Dispatched batch create needs reconciliation |
 
+On `QURLError`, `requestId` identifies the API request. A `410` error can also
+include `tombstone`, with the retained closure timestamp and an optional access
+count. An absent count does not imply zero accesses.
+
 Client-detected failures use `status: 0` with a discriminating `code`:
 `"client_validation"` for bad input caught before a request, and — on the
 portal surface — `"resource_not_found"` / `"ambiguous_resource"` when
