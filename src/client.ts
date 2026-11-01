@@ -2129,6 +2129,39 @@ export class QURLClient {
     );
   }
 
+  /** Start Stripe Connect onboarding for this publisher. LayerV collects 3%. */
+  async connectPublisherStripe(): Promise<{ url: string }> {
+    const result = await this.request<{ url: string }>("POST", "/v1/payments/connect");
+    let target: URL;
+    try {
+      target = new URL(result.url);
+    } catch {
+      throw clientValidationError("invalid Stripe connection URL");
+    }
+    if (
+      target.protocol !== "https:" ||
+      target.host !== "connect.stripe.com" ||
+      target.username ||
+      target.password
+    )
+      throw clientValidationError("invalid Stripe connection URL");
+    return result;
+  }
+
+  /** Read this publisher's connected account and the fixed application fee. */
+  async publisherStripeAccount(): Promise<{ account_id: string; layerv_fee_percent: number }> {
+    const result = await this.request<{ account_id: string; layerv_fee_percent: number }>(
+      "GET",
+      "/v1/payments/account",
+    );
+    if (
+      (result.account_id !== "" && !/^acct_[A-Za-z0-9]{1,128}$/.test(result.account_id)) ||
+      result.layerv_fee_percent !== 3
+    )
+      throw clientValidationError("invalid Stripe account response");
+    return result;
+  }
+
   /** Send a publisher-only invitation. Mail delivery does not prove enrollment. */
   async inviteConsumer(id: string, email: string): Promise<ConsumerInvitation> {
     requireResourceCrid(id, "inviteConsumer");

@@ -144,3 +144,62 @@ it("returns email-backed grants but refuses email credential claims in publisher
   ).rejects.toBeInstanceOf(ValidationError);
   expect(rejected).not.toHaveBeenCalled();
 });
+
+it("validates payment policies and refuses a changed Stripe price in confirmation", async () => {
+  const payment = { account_id: "acct_publisher", price_id: "price_product", access_seconds: 3600 };
+  const policy = { mode: "contract" as const, version: 1, contract_id: "sale", payment };
+  const resource = {
+    resource_id:
+      "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE2cTVv5_3eeYCcLLq5ROYCqcmY50HiKZ9ATglIkPnCji1E_S63UMtXba1moR8-Q6EV7oM6zwwh9_j2CDujzXvLA",
+    crid,
+    private: true,
+    consumer_access: policy,
+    target_url: "https://example.com",
+  };
+  const fetch = mockFetch({ status: 201, body: { data: resource } });
+  await createClient(fetch).protectUrl("https://example.com", { consumerAccess: policy });
+  expect(JSON.parse(String(fetch.mock.calls[0]![1]?.body)).consumer_access.payment).toEqual(
+    payment,
+  );
+  const changed = mockFetch({
+    status: 201,
+    body: {
+      data: {
+        ...resource,
+        consumer_access: { ...policy, payment: { ...payment, price_id: "price_other" } },
+      },
+    },
+  });
+  await expect(
+    createClient(changed).protectUrl("https://example.com", { consumerAccess: policy }),
+  ).rejects.toThrow("private policy was not confirmed");
+  const never = mockFetch({ status: 201, body: { data: resource } });
+  await expect(
+    createClient(never).createResource({
+      target_url: "https://example.com",
+      private: true,
+      consumer_access: { ...policy, payment: { ...payment, access_seconds: -1 } },
+    }),
+  ).rejects.toBeInstanceOf(ValidationError);
+  expect(never).not.toHaveBeenCalled();
+});
+
+it("refuses Stripe onboarding redirects outside the approved host and changed fees", async () => {
+  for (const url of [
+    "http://connect.stripe.com/oauth",
+    "https://connect.stripe.com.attacker.test/",
+    "https://user@connect.stripe.com/oauth",
+  ]) {
+    await expect(
+      createClient(mockFetch({ status: 200, body: { data: { url } } })).connectPublisherStripe(),
+    ).rejects.toBeInstanceOf(ValidationError);
+  }
+  await expect(
+    createClient(
+      mockFetch({
+        status: 200,
+        body: { data: { account_id: "acct_publisher", layerv_fee_percent: 4 } },
+      }),
+    ).publisherStripeAccount(),
+  ).rejects.toBeInstanceOf(ValidationError);
+});

@@ -588,10 +588,17 @@ export interface DelegatedQurl {
 }
 
 /** Private resource policy. Contract fulfillment comes from the publisher backend. */
+export interface CRIDPaymentPolicy {
+  account_id: string;
+  price_id: string;
+  /** One-time access duration; zero lasts for the resource lifetime. Subscriptions require zero. */
+  access_seconds: number;
+}
 export interface ConsumerAccessPolicy {
   mode: "keys" | "invite_only" | "email_capture" | "review" | "contract";
   version: number;
   contract_id?: string;
+  payment?: CRIDPaymentPolicy;
 }
 
 /** Input for creating a resource directly. */
