@@ -164,6 +164,8 @@ export interface CreateOutput {
   expires_at?: string;
   label?: string;
   type?: ResourceType;
+  /** Recorded Connector path scope; omitted for the bare origin. */
+  target_path?: string;
 }
 
 /** Input for listing qURLs. */
@@ -321,9 +323,9 @@ export interface CreatePortalOptions {
   sessionDuration?: string | number;
   /**
    * Scope a qURL for an existing tunnel resource to one path and its
-   * descendants. The SDK rejects only empty values and values over 2048 UTF-8
-   * bytes; the API remains authoritative for the path grammar and resource
-   * type. This option is invalid with `createPortalForUrl`.
+   * descendants. Must be a canonical ASCII path with optional query, at most
+   * 2048 bytes. The API enforces the tunnel-only resource boundary.
+   * This option is invalid with `createPortalForUrl`.
    */
   targetPath?: string;
 }
@@ -352,6 +354,8 @@ export interface Portal {
   qurlId?: string;
   /** Token label, when returned by the API. */
   label?: string;
+  /** Recorded Connector path scope; absent means bare origin. */
+  targetPath?: string;
 }
 
 /**
@@ -1196,6 +1200,11 @@ export interface ClientOptions {
    * `headers` object with a WHATWG-compatible `headers.get(name)` method.
    */
   fetch?: typeof globalThis.fetch;
+  /**
+   * Decoded API response bytes per request. Default: 1 MiB.
+   * Integer range: 1 byte through 16 MiB.
+   */
+  maxResponseBodyBytes?: number;
   /** Maximum retry attempts for transient errors (429, 5xx). Default: 3. */
   maxRetries?: number;
   /**

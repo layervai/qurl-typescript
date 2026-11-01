@@ -88,7 +88,7 @@ export const EXTERNAL_BINDING_RESPONSE = {
   external_id: "synthetic-tenant",
   api_key: {
     key_id: "key_Example00001",
-    key_prefix: "lv_live_aaaa",
+    key_prefix: `lv_live_${"a".repeat(4)}`,
     plaintext: `lv_live_${"a".repeat(43)}`,
   },
   scopes: ["qurl:read", "qurl:write", "qurl:agent"],
