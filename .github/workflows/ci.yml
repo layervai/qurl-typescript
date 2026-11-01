@@ -18,7 +18,9 @@ jobs:
         with:
           node-version: "22"
           cache: "npm"
+      - run: npm run check:fixtures
       - run: npm ci
+      - run: node --test scripts/check-upstream-api.test.mjs scripts/check-validation-bounds.test.mjs
       - run: npm run prebuild --workspace @layervai/qurl-state-fs
       - run: npm run build
       - run: npm run check:package
@@ -84,7 +86,7 @@ jobs:
     needs: [unit, native, parity]
     if: always() && github.event_name != 'pull_request'
     permissions: {}
-    uses: layervai/ops-routines-workflows/.github/workflows/notify.yml@d07fa2fe3a103907ff2b1a1a71509a6dcd8e9d32 # v0.13.0
+    uses: layervai/ops-routines-workflows/.github/workflows/notify.yml@88b48c5ab3e1262018f44bbe5f4a03b94a3e39aa # v0.14.0
     with:
       header: "qURL TypeScript SDK Build"
       gates: '{"Tests": "${{ needs.unit.result }}", "Native platforms": "${{ needs.native.result }}", "Go parity": "${{ needs.parity.result }}"}'

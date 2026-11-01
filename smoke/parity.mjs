@@ -32,3 +32,24 @@ assert.deepStrictEqual(
 );
 
 console.log(`Parity ok (${cjsKeys.length} names)`);
+
+// A result can cross an ESM/CJS boundary without losing its request correlation.
+for (const [producer, consumer] of [
+  [esm, cjs],
+  [cjs, esm],
+]) {
+  const client = new producer.QURLClient({
+    apiKey: "test-api-key",
+    baseUrl: "https://api.test.layerv.ai",
+    fetch: async () =>
+      new Response(
+        JSON.stringify({
+          data: { remaining: 10 },
+          meta: { request_id: "req_dual_build" },
+        }),
+      ),
+  });
+  const result = await client.getQuota();
+  assert.deepStrictEqual(consumer.getResponseMetadata(result), { requestId: "req_dual_build" });
+  assert.equal(JSON.stringify(result), '{"remaining":10}');
+}
