@@ -19,6 +19,23 @@ function sizedJSON(prefix, suffix, size) {
 }
 
 for (const [name, sdk] of builds) {
+  const originalFetch = globalThis.fetch;
+  let receiverCalls = 0;
+  const nativeFetch = async function () {
+    assert.equal(this, globalThis, `${name} native fetch receiver`);
+    receiverCalls++;
+    return Response.json({ data: [], meta: { has_more: false } });
+  };
+  globalThis.fetch = nativeFetch;
+  try {
+    for (const fetch of [undefined, nativeFetch]) {
+      const client = new sdk.QURLClient({ apiKey: "smoke-secret-key", maxRetries: 0, fetch });
+      assert.deepEqual((await client.list()).qurls, []);
+    }
+    assert.equal(receiverCalls, 2, `${name} default and injected native fetch`);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
   for (const cap of [0, -1, 1.5, Infinity, (16 << 20) + 1]) {
     assert.throws(
       () => new sdk.QURLClient({ apiKey: "smoke-secret-key", maxResponseBodyBytes: cap }),

@@ -3401,7 +3401,8 @@ export class QURLClient {
         // request bound: roughly `timeout * (maxRetries + 1) +
         // sum(retryDelay)`.
         onDispatch?.();
-        response = await this.fetchFn(url, {
+        // Native edge fetch requires the global receiver, not this client.
+        response = await this.fetchFn.call(globalThis, url, {
           method,
           headers,
           body: serializedBody,
