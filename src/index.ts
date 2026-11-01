@@ -40,6 +40,7 @@ export {
 export { VERSION } from "./version.js";
 export type {
   ConsumerAccessPolicy,
+  CRIDPaymentPolicy,
   AccessCode,
   AccessCodeListOutput,
   AccessGrant,

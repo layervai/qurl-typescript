@@ -158,7 +158,7 @@ export function validateResourceWriteFields(
       const policy = input.consumer_access;
       requireObjectInput(policy, "consumer_access");
       const p = policy as Record<string, unknown>;
-      requireNoUnknownFields(p, ["mode", "version", "contract_id"], "consumer_access");
+      requireNoUnknownFields(p, ["mode", "version", "contract_id", "payment"], "consumer_access");
       if (
         !["keys", "invite_only", "email_capture", "review", "contract"].includes(
           p.mode as string,
@@ -180,6 +180,26 @@ export function validateResourceWriteFields(
         }
       } else if (p.contract_id !== undefined) {
         throw clientValidationError("consumer_access: contract_id requires contract mode");
+      }
+      if (p.payment !== undefined) {
+        requireObjectInput(p.payment, "consumer_access.payment");
+        const payment = p.payment as Record<string, unknown>;
+        requireNoUnknownFields(
+          payment,
+          ["account_id", "price_id", "access_seconds"],
+          "consumer_access.payment",
+        );
+        if (
+          p.mode !== "contract" ||
+          typeof payment.account_id !== "string" ||
+          !/^acct_[A-Za-z0-9]{1,128}$/.test(payment.account_id) ||
+          typeof payment.price_id !== "string" ||
+          !/^price_[A-Za-z0-9]{1,128}$/.test(payment.price_id) ||
+          !Number.isSafeInteger(payment.access_seconds) ||
+          Number(payment.access_seconds) < 0 ||
+          Number(payment.access_seconds) > 315360000
+        )
+          throw clientValidationError("consumer_access.payment: invalid Stripe contract");
       }
       if (input.private === false)
         throw clientValidationError("consumer_access: requires a private resource");
@@ -374,6 +394,9 @@ export function sameConsumerPolicy(
       (foundExisting &&
         Number.isSafeInteger(actual?.version) &&
         Number(actual?.version) > expected.version)) &&
-    actual?.contract_id === expected.contract_id
+    actual?.contract_id === expected.contract_id &&
+    actual?.payment?.account_id === expected.payment?.account_id &&
+    actual?.payment?.price_id === expected.payment?.price_id &&
+    actual?.payment?.access_seconds === expected.payment?.access_seconds
   );
 }

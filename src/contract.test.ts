@@ -188,6 +188,20 @@ const DELEGATED_BATCH_HEADERS = {
 
 const METHOD_CASES: MethodCase[] = [
   {
+    method: "connectPublisherStripe",
+    verb: "POST",
+    template: "/v1/payments/connect",
+    mockBody: { data: { url: "https://connect.stripe.com/oauth/authorize?state=fixture" } },
+    invoke: (c) => c.connectPublisherStripe(),
+  },
+  {
+    method: "publisherStripeAccount",
+    verb: "GET",
+    template: "/v1/payments/account",
+    mockBody: { data: { account_id: "acct_publisher", layerv_fee_percent: 3 } },
+    invoke: (c) => c.publisherStripeAccount(),
+  },
+  {
     method: "createExternalIdentityBinding",
     verb: "POST",
     template: "/v1/external-identity-bindings",
