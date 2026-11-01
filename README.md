@@ -173,10 +173,27 @@ const portal = await resource.createPortal({
 });
 ```
 
-`targetPath` is available only when minting for an existing resource. The SDK
-checks the non-empty 2048-byte boundary; the API remains authoritative for the
-path grammar and the tunnel-only resource gate. `createPortalForUrl` rejects
-this option because it creates a URL resource.
+`targetPath` is available only when minting for an existing resource. It must
+be a canonical ASCII path with optional query, at most 2048 bytes. The SDK
+rejects authority changes, fragments, backslashes, controls, dot segments,
+interior empty segments, path percent escapes, and path `!()*;`. Query escapes
+stay encoded and byte-exact. The API enforces the tunnel-only resource gate;
+`createPortalForUrl` rejects this option.
+
+`portal.targetPath` reports the recorded scope. It is absent for the bare origin.
+A missing, changed, malformed, or unexpected scope in a mint response fails with
+`unexpected_response`. The mint may already have committed; do not blindly
+repeat it. The raw REST response exposes the recorded `target_path` field.
+
+Go and TypeScript test the same 119 released target-path cases. The artifact in
+this SDK's existing `@layervai/qurl-conformance` 0.15.0 dependency is byte-identical
+to Go's v0.17.2 artifact: SHA-256
+`898e5bf24c825bbd57426fe799d71893951c5735b6cd15e9b95d436981b09a97`.
+The merged producer OpenAPI baseline is qurl-service
+`376752482f42b43630b9d0d5734ff3be1048e341`, file SHA-256
+`06e1a25319d0f696de40213b7578ccb9c93440f03fad5dbf7e37a32cbc295b35`.
+The complete Sandbox Connector journey must still prove scoped-path access after
+NHP admission, sibling-path denial, and direct-origin denial.
 
 `resource.crid` is the required management identifier. Connector lookup, delete,
 and portal minting use it with no public-key or private-ID fallback. The SDK
@@ -761,6 +778,24 @@ On `QURLError`, `requestId` identifies the API request. A `410` error can also
 include `tombstone`, with the retained closure timestamp and an optional access
 count. An absent count does not imply zero accesses.
 
+Successful API results expose an optional correlation ID through
+`getResponseMetadata`. This works for result objects, page objects, SDK handles,
+and items yielded by page iterators. Each value keeps the ID of the response
+that produced it, including concurrent calls. Aggregated results use the final
+page's ID. The ID is for diagnostics; it does not authenticate a result.
+
+```typescript
+import { getResponseMetadata } from '@layervai/qurl';
+
+const page = await client.list({ limit: 10 });
+console.log(getResponseMetadata(page)?.requestId);
+```
+
+Metadata is read-only and does not change enumerable fields or JSON output.
+It is lost when a result is serialized or copied with object spread. Local
+handles, no-content responses, and responses without a valid ID return
+`undefined`. Error responses continue to use `QURLError.requestId`.
+
 Client-detected failures use `status: 0` with a discriminating `code`:
 `"client_validation"` for bad input caught before a request, and — on the
 portal surface — `"resource_not_found"` / `"ambiguous_resource"` when
@@ -902,17 +937,17 @@ SDK-generated keys require `globalThis.crypto.getRandomValues`, which is availab
   that names this shim requirement but does not reflect the invalid value. A
   non-redirecting 304 is handled as an ordinary unsuccessful API response
   rather than mislabeled as a redirect.
-- API success and error bodies are limited to **1 MiB (1,048,576 bytes)**,
-  matching qurl-go's security posture. The SDK checks `Content-Length` when
-  present and independently counts streamed bytes, so missing or inaccurate
-  headers cannot bypass the limit. Bodies exactly at the limit are accepted.
-  This fixed security limit has no override. Callers must request a smaller
-  page, and the SDKs must not independently widen the limit.
-  A maximum-size list page can exceed the cap after JSON escaping; request a
-  smaller page if a list call reports the body-limit error. For resumable list
-  reads, use the page method, save each successful `next_cursor`, and resume
-  from that cursor with a smaller `limit`. A shared configurable-cap decision
-  is tracked in [#249](https://github.com/layervai/qurl-typescript/issues/249).
+- API success and error bodies default to **1 MiB (1,048,576 bytes)**,
+  matching qurl-go. `maxResponseBodyBytes` accepts a positive integer through
+  **16 MiB**. Streamed decoded bytes are counted even with missing or false-small
+  Content-Length. A valid oversized unencoded length may reject early;
+  compressed lengths are not compared with the decoded-byte cap. Exactly the
+  configured number of bytes is accepted.
+  Large legal pages can exceed the default. Prefer a smaller page or explicitly
+  raise the cap within the shared ceiling. Save each successful `next_cursor`
+  and retry a failed read from that same cursor with unchanged filters and a
+  smaller `limit`. See the [shared Go/TypeScript response-limit decision](docs/api-response-limits.md)
+  for typed errors, the published service bounds, cursor recovery and memory cost.
   Standards-compliant fetch implementations are bounded while streaming;
   custom Response-like shims that omit `body` are validated after their
   `text()`/`json()` result has already been materialized by that shim.

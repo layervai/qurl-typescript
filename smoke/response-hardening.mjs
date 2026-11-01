@@ -19,6 +19,43 @@ function sizedJSON(prefix, suffix, size) {
 }
 
 for (const [name, sdk] of builds) {
+  for (const cap of [0, -1, 1.5, Infinity, (16 << 20) + 1]) {
+    assert.throws(
+      () => new sdk.QURLClient({ apiKey: "smoke-secret-key", maxResponseBodyBytes: cap }),
+      (error) => error.code === sdk.ERROR_CODE_CLIENT_VALIDATION,
+      `${name} invalid response cap`,
+    );
+  }
+  for (const size of [128, 129]) {
+    let calls = 0;
+    const client = new sdk.QURLClient({
+      apiKey: "smoke-secret-key",
+      maxRetries: 0,
+      maxResponseBodyBytes: 128,
+      fetch: async () => {
+        calls++;
+        return new Response(sizedJSON('{"data":{"padding":"', '"}}', size), {
+          headers: { "content-length": "1" },
+        });
+      },
+    });
+    if (size === 128) assert.ok(await client.getQuota());
+    else
+      await assert.rejects(
+        client.getQuota(),
+        (error) => error.code === sdk.ERROR_CODE_UNEXPECTED_RESPONSE,
+        `${name} explicit cap+1`,
+      );
+    assert.equal(calls, 1);
+  }
+  const largerClient = new sdk.QURLClient({
+    apiKey: "smoke-secret-key",
+    maxRetries: 0,
+    maxResponseBodyBytes: 2 * RESPONSE_LIMIT,
+    fetch: async () => new Response(sizedJSON('{"data":{"padding":"', '"}}', RESPONSE_LIMIT + 1)),
+  });
+  assert.ok(await largerClient.getQuota(), `${name} bounded larger response`);
+
   let redirectCalls = 0;
   let targetCalls = 0;
   const redirectTarget = "https://redirect-target.invalid/collect";
