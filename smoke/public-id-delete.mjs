@@ -11,10 +11,11 @@ const publicId =
 const crid = "ahpviqz46qwcvx56glfatm3p3ooccwfcf2it4sdgjervwdkapykw3o3qdq2a";
 const calls = [];
 let status = 204;
+let body;
 const server = createServer((req, res) => {
   calls.push({ method: req.method, path: req.url });
-  res.writeHead(status);
-  res.end();
+  res.writeHead(status, { "content-type": "application/json" });
+  res.end(body);
 });
 server.listen(0, "127.0.0.1");
 await once(server, "listening");
@@ -29,6 +30,7 @@ try {
       maxRetries: 3,
     });
     status = 204;
+    body = undefined;
     for (const id of [crid]) {
       const before = calls.length;
       await client.delete(id);
@@ -58,6 +60,25 @@ try {
       const before = calls.length;
       await assert.rejects(client.delete(crid), { status });
       assert.equal(calls.length, before + 1, "DELETE was replayed");
+    }
+    status = 200;
+    for (const count of [undefined, null, "0", -1, Number.MAX_SAFE_INTEGER + 1, 0, 3]) {
+      body = JSON.stringify({ data: { terminated: count }, meta: { request_id: "req_count" } });
+      const before = calls.length;
+      const pending = client.terminateAllResourceSessions(crid);
+      if (count === 0 || count === 3) {
+        assert.equal((await pending).terminated, count);
+      } else {
+        await assert.rejects(pending, {
+          code: sdk.ERROR_CODE_UNEXPECTED_RESPONSE,
+          requestId: "req_count",
+        });
+      }
+      assert.equal(calls.length, before + 1, "session termination DELETE was replayed");
+      assert.deepEqual(calls.at(-1), {
+        method: "DELETE",
+        path: `/v1/resources/${crid}/sessions?paged=true`,
+      });
     }
     console.log(`${name}: CRID DELETE native HTTP smoke passed`);
   }

@@ -15,12 +15,36 @@ npm install
 ```bash
 npm run build          # Compile TypeScript (ESM + CJS)
 npm test               # Run tests (vitest)
+npm run check:fixtures # Reject secret-shaped fixture literals
 npm run smoke:dist     # Verify the built ESM and CJS entry points load
 npm run format:check   # Check formatting (prettier)
 npx eslint src/        # Lint
 ```
 
 All must pass before submitting a PR.
+
+Use `test-api-key` in fixtures and `YOUR_API_KEY` in examples. The fixture guard
+checks every tracked text file for literal qURL live/test key prefixes followed
+by a value. It prints file names only. There are no file or line exemptions.
+The external-identity response contract requires a valid key shape; its two
+fixtures explicitly construct a repeated `a` value and matching short prefix.
+Keep that synthetic construction in those contract fixtures; do not copy a
+credential-shaped literal. This guard complements the verified-secret scanner;
+it does not detect every provider or high-entropy secret.
+
+## Client source layout
+
+`src/client.ts` keeps the public methods and shared HTTP, query, pagination,
+and retry plumbing. Resource helpers live in `client-resources.ts`,
+`client-portals.ts`, `client-connectors.ts`, `client-delegated.ts`, and
+`client-management.ts`. The existing public classes remain exported through
+`client.ts` and the package entry point.
+
+Shared input checks, field allowlists, error handling, path checks, transport
+types, and limits each have one internal module. Keep helpers beside their
+resource group and reuse these shared checks. These files do not add package
+entry points. `client-limits.ts` holds the bounds; the drift check scans every
+runtime `client*.ts` module so moving a bound cannot bypass it.
 
 ## Dual Build (ESM + CJS)
 
@@ -135,11 +159,56 @@ signal to do both in lockstep.
   path like `/v1/v1/qurls` *would* fail the template match and get
   caught. A `baseUrl` bug that swapped hosts without touching the
   path would NOT be caught — host-level regressions are covered by
-  the existing unit tests in `client.test.ts`, not here.
+  the per-feature unit tests in `client*.test.ts`, not here.
 - Request body field names, response envelope parsing, and query
   parameter names are NOT validated. Body/response shape drift is a
   separate class and would warrant an `ajv`-backed schema validation
   layer against the upstream component schemas.
+
+### Published API drift
+
+The weekly `Published API drift` workflow compares every operation in
+<https://layerv.ai/docs/qurls.yaml> with `contract/upstream-operations.json`.
+This producer baseline includes endpoints the SDK does not expose. It is separate
+from the hand-maintained SDK subset in `contract/openapi.snapshot.yaml`.
+The workflow stores the fetched spec and report, and posts a bot comment on existing
+issue #50 only when the report changes, including recovery. It does not open issues,
+change either snapshot, or change SDK behavior. Operation drift is a report;
+fetch, parse, and publication failures fail the workflow.
+
+To review drift locally:
+
+```sh
+node scripts/check-upstream-api.mjs check /path/to/published-qurls.yaml
+```
+
+After reviewing upstream changes, update the producer baseline with
+`node scripts/check-upstream-api.mjs snapshot /path/to/published-qurls.yaml > contract/upstream-operations.json`.
+Update the SDK subset and method tests only when the SDK adopts an endpoint.
+The report also compares the API client's listed maximum bounds with
+`contract/validation-bounds.json`. Unit CI checks SDK literals against that reviewed
+baseline. Weekly CI checks the fresh published numeric constraints and reports
+missing or changed bounds before failing the job. Method/path-only drift remains
+a report and does not fail the job. This is not full request/response schema validation.
+
+Wire bounds stay numeric literals so the checker can inspect them without executing
+the client. Every top-level `MAX_*` constant in the runtime `src/client*.ts` modules must be either a contract bound
+or an explicitly documented local safety budget. New and stale classifications
+fail CI. Response size, diagnostic, traversal, and identifier work budgets remain
+local safeguards; a server field change does not justify raising them.
+The source mappings cover the current direct schema fields and operation headers.
+A refactor to references, compositions, or inherited parameters can require a reviewed
+mapping update; unresolved selectors report a missing bound and fail closed.
+The enrollment-token TTL and target-path byte limit are partly documented in prose.
+Their reviewed numeric values and complete published descriptions are pinned;
+any description change requires review rather than an automatic text-to-number guess.
+
+When a service bound changes, review the published contract, then update the SDK,
+its bound baseline, and boundary tests together. To check the published bounds locally:
+
+```sh
+node scripts/check-validation-bounds.mjs /path/to/published-qurls.yaml
+```
 
 ## Pull Requests
 
