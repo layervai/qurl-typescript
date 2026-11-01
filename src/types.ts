@@ -1200,7 +1200,8 @@ export interface ClientOptions {
   /** Base URL. Defaults to https://api.layerv.ai */
   baseUrl?: string;
   /**
-   * Custom fetch implementation. Redirect-safety requires it to honor
+   * Custom fetch implementation, called with globalThis as its receiver.
+   * Bind methods that need a different receiver. Redirect-safety requires it to honor
    * `redirect: "manual"`, accurately expose `Response.redirected`, and leave
    * `Response.url` empty or set it to the normalized request URL when no
    * redirect was followed. Every Response-like result must also provide a
