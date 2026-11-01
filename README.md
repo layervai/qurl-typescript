@@ -1141,16 +1141,27 @@ Publisher methods are `inviteConsumer`, `listConsumerInvitations`,
 `resendConsumerInvitation`, `revokeConsumerInvitation`, `listConsumerGrants`,
 `approveConsumerGrant`, `denyConsumerGrant` and `revokeConsumerGrant`. Decisions
 use the version read from the invitation or grant. Lists return the usual
-`nextCursor`. Contract entitlement approval requires a trusted publisher backend
-receipt and expiry; the SDK does not verify payment. Contract replies omit email
+`nextCursor`. Without a Stripe payment policy, contract entitlement approval
+requires a trusted publisher backend receipt and expiry; the SDK does not verify
+payment. Contract replies omit email
 and globally reusable credential data.
+
+For paid contracts, call `connectPublisherStripe()`, open the returned `url`,
+then read `publisherStripeAccount()`. Set `consumer_access.payment` to
+`{ account_id, price_id, access_seconds }` using the connected `account_id` and an
+active fixed Stripe price from that account. Use the policy when creating a
+resource or updating an existing CRID. The service makes paid access private
+and verifies payment; manual approval is unavailable. LayerV collects 3%, including
+renewals. For a one-time price, `access_seconds: 0` lasts for the resource lifetime.
+A recurring price requires zero and grants only the paid invoice period.
 
 A removal receipt reports `session_cleanup: pending` until connection cleanup
 is confirmed. Retry the same removal and version to confirm `complete`. These
 APIs require the matching service feature and remain off by default during
 integration. Consumer Noise enrollment and browser access are in the NHP agent.
 
-Email access is always available as a backup to passkeys. The recipient chooses
+Email access is available as a backup to passkeys, except for Stripe paid
+contracts, which require a passkey. The recipient chooses
 **Email me an access link** and verifies the mailbox. No publisher setting is
 needed or available. Invitations, approval, entitlement, expiry, and revocation
 still apply.
