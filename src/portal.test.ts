@@ -189,7 +189,7 @@ describe("createPortal", () => {
   it("mints against /v1/resources/{id}/qurls via the handle", async () => {
     const fetch = mockFetches([
       { status: 201, body: { data: RESOURCE_DATA } },
-      { status: 201, body: { data: PORTAL_DATA } },
+      { status: 201, body: { data: { ...PORTAL_DATA, target_path: "/api/detect/eib_example" } } },
     ]);
     const client = createClient(fetch);
 
@@ -332,8 +332,11 @@ describe("createPortal", () => {
   });
 
   it("uses the same 2048-byte targetPath boundary as qurl-go", async () => {
-    const fetch = mockFetch({ status: 201, body: { data: PORTAL_DATA } });
-    const targetPath = `/${"é".repeat(1023)}a`;
+    const targetPath = `/${"a".repeat(2047)}`;
+    const fetch = mockFetch({
+      status: 201,
+      body: { data: { ...PORTAL_DATA, target_path: targetPath } },
+    });
     expect(new TextEncoder().encode(targetPath)).toHaveLength(2048);
 
     await createClient(fetch).createPortal(
@@ -342,7 +345,7 @@ describe("createPortal", () => {
     );
     expect(callBody(fetch)).toEqual({ target_path: targetPath });
 
-    const overlong = `/${"é".repeat(1024)}`;
+    const overlong = `/${"a".repeat(2048)}`;
     await expect(
       createClient(fetch).createPortal(
         "ahpviqz46qwcvx56glfatm3p3ooccwfcf2it4sdgjervwdkapykw3o3qdq2a",

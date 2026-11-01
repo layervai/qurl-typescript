@@ -10,12 +10,7 @@
     // is byte-identical to the prior `Node10` output.
     "moduleResolution": "Bundler",
     "outDir": "./dist/cjs",
-    // The ESM tree already emits declaration + source maps from the same
-    // `src/` tree; emitting them again into `dist/cjs/` doubles tarball
-    // size for no additional signal. The ESM maps themselves ship but
-    // reference `src/` which `files: ["dist/"]` excludes (see #53);
-    // fixing that is a separate decision, and double-shipping broken
-    // maps on the CJS side wouldn't help either way.
+    // Sources are not published, so neither format emits maps to missing files.
     "declarationMap": false,
     "sourceMap": false
   }

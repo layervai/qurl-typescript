@@ -46,6 +46,7 @@ const expectedRuntimeExports = [
   "VERSION",
   "ValidationError",
   "createError",
+  "getResponseMetadata",
   "isApiKeyRequestScope",
 ].sort();
 

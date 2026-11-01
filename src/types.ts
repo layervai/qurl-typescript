@@ -78,7 +78,8 @@ export interface AccessToken {
   use_count: number;
   qurl_site?: string;
   created_at: string;
-  expires_at: string;
+  /** Optional in API summaries; omission does not imply an unlimited lifetime. */
+  expires_at?: string;
 }
 
 /** Per-qURL summary returned from resource-detail and token-update endpoints. */
@@ -163,6 +164,8 @@ export interface CreateOutput {
   expires_at?: string;
   label?: string;
   type?: ResourceType;
+  /** Recorded Connector path scope; omitted for the bare origin. */
+  target_path?: string;
 }
 
 /** Input for listing qURLs. */
@@ -320,9 +323,9 @@ export interface CreatePortalOptions {
   sessionDuration?: string | number;
   /**
    * Scope a qURL for an existing tunnel resource to one path and its
-   * descendants. The SDK rejects only empty values and values over 2048 UTF-8
-   * bytes; the API remains authoritative for the path grammar and resource
-   * type. This option is invalid with `createPortalForUrl`.
+   * descendants. Must be a canonical ASCII path with optional query, at most
+   * 2048 bytes. The API enforces the tunnel-only resource boundary.
+   * This option is invalid with `createPortalForUrl`.
    */
   targetPath?: string;
 }
@@ -351,6 +354,8 @@ export interface Portal {
   qurlId?: string;
   /** Token label, when returned by the API. */
   label?: string;
+  /** Recorded Connector path scope; absent means bare origin. */
+  targetPath?: string;
 }
 
 /**
@@ -389,7 +394,10 @@ export interface ResolveOutput {
   access_grant?: AccessGrant;
 }
 
-/** Quota information. */
+/**
+ * Quota information. The API schema does not require rate_limits, usage, or
+ * their inner fields; minimal responses may omit them. Check presence before use.
+ */
 export interface Quota {
   plan: "free" | "growth" | "enterprise" | (string & {});
   period_start: string;
@@ -459,6 +467,7 @@ export interface BatchCreateOutput {
   succeeded: number;
   failed: number;
   results: BatchItemResult[];
+  /** Canonical meta.request_id wins; data.request_id is preserved when meta omits it. */
   request_id?: string;
 }
 
@@ -1160,6 +1169,7 @@ export interface QURLErrorData {
   invalid_fields?: Record<string, string>;
   request_id?: string;
   retry_after?: number;
+  tombstone?: TombstoneInfo;
 }
 
 /** Per-call options accepted by mutating requests. */
@@ -1190,6 +1200,11 @@ export interface ClientOptions {
    * `headers` object with a WHATWG-compatible `headers.get(name)` method.
    */
   fetch?: typeof globalThis.fetch;
+  /**
+   * Decoded API response bytes per request. Default: 1 MiB.
+   * Integer range: 1 byte through 16 MiB.
+   */
+  maxResponseBodyBytes?: number;
   /** Maximum retry attempts for transient errors (429, 5xx). Default: 3. */
   maxRetries?: number;
   /**
@@ -1249,4 +1264,31 @@ export interface ConsumerInvitationListOutput extends PaginatedOutput {
 }
 export interface ConsumerGrantListOutput extends PaginatedOutput {
   grants: ConsumerGrant[];
+}
+
+/** Provider authenticated by its configured confidential OAuth client. */
+export type ExternalIdentityProvider = "slack" | "discord" | "teams";
+
+export interface CreateExternalIdentityBindingInput {
+  provider: ExternalIdentityProvider;
+  external_id: string;
+  display_name?: string;
+  /** Explicit reauthorization only; revokes the previous binding key. */
+  rotate_existing?: boolean;
+}
+
+/** Persist api_key.plaintext securely immediately; never log this result. */
+export interface CreateExternalIdentityBindingOutput {
+  binding_id: string;
+  provider: ExternalIdentityProvider;
+  external_id: string;
+  display_name?: string;
+  api_key: {
+    key_id: string;
+    key_prefix: string;
+    /** One-time secret, replayable only with the same request within 24 hours. */
+    plaintext: string;
+  };
+  scopes: ApiKeyRequestScope[];
+  created_at: string;
 }

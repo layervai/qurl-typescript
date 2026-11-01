@@ -72,6 +72,8 @@ export type {
   CreateAccessCodeOutput,
   CreateApiKeyInput,
   CreateApiKeyOutput,
+  CreateExternalIdentityBindingInput,
+  CreateExternalIdentityBindingOutput,
   CreateDurableApiKeyInput,
   CreateEnrollmentTokenInput,
   CreateBillingCheckoutInput,
@@ -106,6 +108,7 @@ export type {
   DelegatedQurlBatchTerminal,
   DelegatedQurlCreatedData,
   DelegatedQurlGrant,
+  ExternalIdentityProvider,
   ExtendInput,
   Invoice,
   GetDelegatedQurlBatchOptions,
@@ -166,3 +169,6 @@ export type {
   WebhookPayload,
   WebhookWithSecret,
 } from "./types.js";
+
+export { getResponseMetadata } from "./response-metadata.js";
+export type { ResponseMetadata } from "./response-metadata.js";

@@ -4,7 +4,13 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { QURLClient } from "./client.js";
-import { mockFetch, mockFetches, createClient } from "./__tests__/test-helpers.js";
+import { getResponseMetadata } from "./response-metadata.js";
+import {
+  mockFetch,
+  mockFetches,
+  createClient,
+  EXTERNAL_BINDING_RESPONSE,
+} from "./__tests__/test-helpers.js";
 
 // API-contract test: every SDK public method must call the exact
 // (verb, path) pair declared in contract/openapi.snapshot.yaml.
@@ -181,6 +187,18 @@ const DELEGATED_BATCH_HEADERS = {
 };
 
 const METHOD_CASES: MethodCase[] = [
+  {
+    method: "createExternalIdentityBinding",
+    verb: "POST",
+    template: "/v1/external-identity-bindings",
+    mockStatus: 201,
+    mockBody: EXTERNAL_BINDING_RESPONSE,
+    invoke: (c) =>
+      c.createExternalIdentityBinding(
+        { provider: "teams", external_id: "synthetic-tenant" },
+        { idempotencyKey: "0192f7c4-3b8a-7e2f-9d01-4cf8a1b6e3d2" },
+      ),
+  },
   {
     method: "inviteConsumer",
     verb: "POST",
@@ -1031,6 +1049,28 @@ describe("API contract", () => {
           `Either add a METHOD_CASES entry that asserts each, or remove the entry ` +
           `from contract/openapi.snapshot.yaml if the SDK no longer uses it.`,
       );
+    }
+  });
+
+  it.each(
+    METHOD_CASES.filter(
+      (entry) => entry.mockBody !== undefined && !entry.method.startsWith("listAll"),
+    ),
+  )("response metadata: $method", async ({ method, mockBody, mockStatus, mockHeaders, invoke }) => {
+    const body = mockBody as Record<string, unknown>;
+    const meta = (body.meta ?? {}) as Record<string, unknown>;
+    const requestId = typeof meta.request_id === "string" ? meta.request_id : "req_contract";
+    const fetch = mockOk(
+      { ...body, meta: { ...meta, request_id: requestId } },
+      mockStatus,
+      mockHeaders,
+    );
+    const result = await invoke(createClient(fetch));
+    expect(getResponseMetadata(result)).toEqual({ requestId });
+    if (method === "createPortalForUrl") {
+      const composite = result as { portal: unknown; resource: unknown };
+      expect(getResponseMetadata(composite.portal)).toEqual({ requestId });
+      expect(getResponseMetadata(composite.resource)).toEqual({ requestId });
     }
   });
 
