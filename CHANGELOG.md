@@ -8,6 +8,32 @@
   Check that the value is defined before parsing or formatting it. An omitted
   value does not imply an unlimited lifetime. Runtime responses are unchanged.
 
+## [4.0.0](https://github.com/layervai/qurl-typescript/compare/qurl-v3.1.1...qurl-v4.0.0) (2026-11-01)
+
+
+### ⚠ BREAKING CHANGES
+
+* **types:** AccessToken.expires_at is optional. Check for undefined before parsing or formatting it. Omission does not imply an unlimited lifetime. Runtime responses are unchanged.
+
+### Features
+
+* add a bounded per-client API response limit ([#337](https://github.com/layervai/qurl-typescript/issues/337)) ([8da35c5](https://github.com/layervai/qurl-typescript/commit/8da35c5575ad328bd6b67e6500461609d38b57e9))
+* create external identity bindings through the SDK ([#309](https://github.com/layervai/qurl-typescript/issues/309)) ([d2a16cc](https://github.com/layervai/qurl-typescript/commit/d2a16cc5104e89c2d76a849a0738245385a6e063))
+* expose per-result response correlation metadata ([#331](https://github.com/layervai/qurl-typescript/issues/331)) ([bf6ccdd](https://github.com/layervai/qurl-typescript/commit/bf6ccddf72042a35eccc4f2793fe2c5cdbc4f461))
+* support Stripe payments for CRID contracts ([#338](https://github.com/layervai/qurl-typescript/issues/338)) ([c0653c1](https://github.com/layervai/qurl-typescript/commit/c0653c1ece1fab3575c49a6038e59315e5c128f4))
+
+
+### Bug Fixes
+
+* **ci:** update Node setup and restore npm dependency age checks ([#302](https://github.com/layervai/qurl-typescript/issues/302)) ([d5632e1](https://github.com/layervai/qurl-typescript/commit/d5632e1b90927d132b021fa4b7f92df4e0b9d0a3))
+* honor past and capped HTTP-date retry directives ([#310](https://github.com/layervai/qurl-typescript/issues/310)) ([82153bc](https://github.com/layervai/qurl-typescript/commit/82153bc6a2f987b6d5948f22b13ccb15dd3dbccc))
+* preserve the native fetch receiver in edge runtimes ([#342](https://github.com/layervai/qurl-typescript/issues/342)) ([42db9ba](https://github.com/layervai/qurl-typescript/commit/42db9ba5c2f73441034e2cae55180c29216e3ee5))
+* preserve tombstone metadata on Gone errors ([#315](https://github.com/layervai/qurl-typescript/issues/315)) ([ca80c5c](https://github.com/layervai/qurl-typescript/commit/ca80c5c97d866d1198999b2d093f9a7794498e1c)), closes [#133](https://github.com/layervai/qurl-typescript/issues/133)
+* reject missing session termination counts ([#332](https://github.com/layervai/qurl-typescript/issues/332)) ([b5cb138](https://github.com/layervai/qurl-typescript/commit/b5cb138e2348db125693f014c29de0e749795a56))
+* **types:** allow omitted token summary expiration ([#314](https://github.com/layervai/qurl-typescript/issues/314)) ([538c587](https://github.com/layervai/qurl-typescript/commit/538c58711c46ebb92f3c64485f4a1062276559eb))
+* validate and retain recorded portal path scopes ([#335](https://github.com/layervai/qurl-typescript/issues/335)) ([bc43c38](https://github.com/layervai/qurl-typescript/commit/bc43c38a3b14822568a1c114bc805e98e6e66ec8))
+* validate package contents and lint all smoke tooling ([#311](https://github.com/layervai/qurl-typescript/issues/311)) ([15857cd](https://github.com/layervai/qurl-typescript/commit/15857cd297785b503705c9a84b103c591e71707c))
+
 ## [3.1.1](https://github.com/layervai/qurl-typescript/compare/qurl-v3.1.0...qurl-v3.1.1) (2026-10-18)
 
 
