@@ -1085,6 +1085,17 @@ export interface UpdateApiKeyInput {
   scopes?: ApiKeyRequestScope[];
 }
 
+/** Identity of the credential used for the current request. */
+export interface CallerIdentity {
+  owner_id: string;
+  auth_type: OpenString<"api_key" | "jwt">;
+  /**
+   * Available API-key metadata, which may be omitted even for an API-key caller.
+   * JWT callers omit it. Display fields are optional; no credential secret is returned.
+   */
+  api_key?: ApiKey;
+}
+
 export interface ApiKey {
   key_id?: string;
   key_prefix?: string;

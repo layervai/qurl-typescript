@@ -95,6 +95,8 @@ paths:
     delete: {}
   /v1/resources/{id}/sessions/{session_id}:
     delete: {}
+  /v1/me:
+    get: {}
   /v1/quota:
     get: {}
   /v1/usage/current-period:
