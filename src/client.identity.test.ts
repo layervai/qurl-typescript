@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { QURLClient } from "./client.js";
-import { AuthenticationError, NetworkError, QURLError, TimeoutError } from "./errors.js";
+import {
+  AuthenticationError,
+  ERROR_CODE_UNEXPECTED_RESPONSE,
+  NetworkError,
+  TimeoutError,
+} from "./errors.js";
 import type { CallerIdentity } from "./index.js";
 import { createClient, mockFetch } from "./__tests__/test-helpers.js";
 import { callHeaders } from "./__tests__/client-fixtures.js";
@@ -8,13 +13,14 @@ import { callHeaders } from "./__tests__/client-fixtures.js";
 describe("getIdentity", () => {
   it.each([
     { owner_id: "test-owner", auth_type: "jwt" },
+    { owner_id: "test-owner", auth_type: "api_key" },
     { owner_id: "test-owner", auth_type: "api_key", api_key: {} },
     {
       owner_id: "test-owner",
       auth_type: "api_key",
       api_key: {
         key_id: "key_123456789012",
-        key_prefix: "lv_test_1234",
+        key_prefix: "test-prefix",
         kind: "future_kind",
         scopes: ["qurl:read", "future:scope"],
       },
@@ -51,11 +57,19 @@ describe("getIdentity", () => {
     { data: null },
     { data: [] },
     { data: {} },
+    { data: { owner_id: "", auth_type: "jwt" } },
+    { data: { owner_id: 123, auth_type: "jwt" } },
+    { data: { owner_id: "owner", auth_type: "" } },
+    { data: { owner_id: "owner", auth_type: 123 } },
+    { data: { owner_id: "owner", auth_type: "jwt", api_key: null } },
     { data: { owner_id: "owner", auth_type: "api_key", api_key: [] } },
   ])("rejects an invalid response envelope", async (body) => {
     await expect(
       createClient(mockFetch({ status: 200, body })).getIdentity(),
-    ).rejects.toBeInstanceOf(QURLError);
+    ).rejects.toMatchObject({
+      code: ERROR_CODE_UNEXPECTED_RESPONSE,
+      detail: "getIdentity: invalid caller identity response",
+    });
   });
 
   it("uses the SDK transport error and caller's no-retry policy", async () => {

@@ -1089,7 +1089,10 @@ export interface UpdateApiKeyInput {
 export interface CallerIdentity {
   owner_id: string;
   auth_type: OpenString<"api_key" | "jwt">;
-  /** Omitted for JWT-authenticated requests. No credential secret is returned. */
+  /**
+   * Available API-key metadata, which may be omitted even for an API-key caller.
+   * JWT callers omit it. Display fields are optional; no credential secret is returned.
+   */
   api_key?: ApiKey;
 }
 
