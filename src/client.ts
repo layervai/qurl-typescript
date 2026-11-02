@@ -9,6 +9,7 @@ import type {
   BatchCreateOutput,
   BillingInvoiceListOutput,
   CheckoutSession,
+  CallerIdentity,
   ClientOptions,
   ConnectorInstallation,
   ConnectorInstallationListOutput,
@@ -2026,6 +2027,27 @@ export class QURLClient {
       );
     }
     return this.request<ResolveOutput>("POST", "/v1/resolve", body, options);
+  }
+
+  /** Get the caller's account and credential identity. */
+  async getIdentity(): Promise<CallerIdentity> {
+    const identity = await this.request<CallerIdentity>("GET", "/v1/me");
+    if (
+      !identity ||
+      typeof identity !== "object" ||
+      Array.isArray(identity) ||
+      typeof identity.owner_id !== "string" ||
+      !identity.owner_id ||
+      typeof identity.auth_type !== "string" ||
+      !identity.auth_type ||
+      (identity.api_key !== undefined &&
+        (!identity.api_key ||
+          typeof identity.api_key !== "object" ||
+          Array.isArray(identity.api_key)))
+    ) {
+      throw unexpectedResponseError("getIdentity: invalid caller identity response");
+    }
+    return identity;
   }
 
   /** Get quota and usage information. */

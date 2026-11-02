@@ -64,6 +64,7 @@ export type {
   BatchItemResult,
   BatchItemSuccess,
   BillingInvoiceListOutput,
+  CallerIdentity,
   ClientOptions,
   ConnectorInstallation,
   ConnectorInstallationCapabilities,

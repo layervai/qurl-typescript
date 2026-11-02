@@ -533,6 +533,13 @@ const METHOD_CASES: MethodCase[] = [
     invoke: (c) => c.resolve("at_y"),
   },
   {
+    method: "getIdentity",
+    verb: "GET",
+    template: "/v1/me",
+    mockBody: { data: { owner_id: "test-owner", auth_type: "jwt" } },
+    invoke: (c) => c.getIdentity(),
+  },
+  {
     method: "getQuota",
     verb: "GET",
     template: "/v1/quota",

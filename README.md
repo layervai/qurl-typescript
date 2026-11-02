@@ -679,6 +679,7 @@ console.log(`Access granted to ${access.target_url} for ${access.access_grant?.e
 | `update(id, input)` | Update qURL resource properties |
 | `mintLink(id, input?)` | Mint a new access link |
 | `resolve(input)` | Resolve token + grant network access |
+| `getIdentity()` | Get the current account and credential identity |
 | `getQuota()` | Get quota/usage info |
 | `listResources(input?)` / `listAllResources(input?)` / `createResource(input)` / `getResource(id)` | Resource management |
 | `updateResource(id, input)` / `deleteResource(id)` | Update or revoke resources |
