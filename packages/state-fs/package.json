@@ -1,6 +1,6 @@
 {
   "name": "@layervai/qurl-state-fs",
-  "version": "3.1.1",
+  "version": "4.0.0",
   "description": "Native filesystem guarantees for qURL agent state",
   "license": "MIT",
   "main": "index.cjs",
