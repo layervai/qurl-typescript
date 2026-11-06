@@ -186,6 +186,8 @@ const DELEGATED_BATCH_HEADERS = {
   ETag: DELEGATED_BATCH_ETAG,
 };
 
+const ACCESS_RULES = { account_id: "test-account", version: 0, items: [], built_ins: [] };
+
 const METHOD_CASES: MethodCase[] = [
   {
     method: "connectPublisherStripe",
@@ -538,6 +540,55 @@ const METHOD_CASES: MethodCase[] = [
     template: "/v1/me",
     mockBody: { data: { owner_id: "test-owner", auth_type: "jwt" } },
     invoke: (c) => c.getIdentity(),
+  },
+  {
+    method: "getAccessRules",
+    verb: "GET",
+    template: "/v1/me/access-rules",
+    mockBody: { data: ACCESS_RULES },
+    invoke: (c) => c.getAccessRules(),
+  },
+  {
+    method: "saveAccessRules",
+    verb: "PUT",
+    template: "/v1/me/access-rules",
+    mockBody: { data: ACCESS_RULES },
+    invoke: (c) => c.saveAccessRules({ version: 0, items: [] }),
+  },
+  {
+    method: "getInboxState",
+    verb: "GET",
+    template: "/v1/me/inbox-state",
+    mockBody: { data: { version: 0, dismissed: [] } },
+    invoke: (c) => c.getInboxState(),
+  },
+  {
+    method: "saveInboxState",
+    verb: "PUT",
+    template: "/v1/me/inbox-state",
+    mockBody: { data: { version: 1, dismissed: [] } },
+    invoke: (c) => c.saveInboxState({ version: 0, dismissed: [] }),
+  },
+  {
+    method: "getReceivedHistory",
+    verb: "GET",
+    template: "/v1/me/received-history",
+    mockBody: { data: { version: 0, items: [] } },
+    invoke: (c) => c.getReceivedHistory(),
+  },
+  {
+    method: "saveReceivedHistory",
+    verb: "PUT",
+    template: "/v1/me/received-history",
+    mockBody: { data: { version: 0, items: [] } },
+    invoke: (c) => c.saveReceivedHistory({ version: 0, items: [] }),
+  },
+  {
+    method: "clearReceivedHistory",
+    verb: "DELETE",
+    template: "/v1/me/received-history",
+    mockBody: { data: { version: 1, items: [], cleared_at: 1 } },
+    invoke: (c) => c.clearReceivedHistory(),
   },
   {
     method: "getQuota",
