@@ -156,7 +156,8 @@ service requires it whenever a call creates a resource (`protectUrl`,
 a 400 `ValidationError` whose `code` is `ERROR_CODE_NAME_REQUIRED`
 (`"name_required"`); nothing is written. It is ignored when the call reuses an
 existing resource. `createPortal` rejects it because its resource already
-exists.
+exists. The SDK sends `name` only when you pass it, and it needs a qURL API
+version that accepts the field.
 
 That is the core flow:
 
