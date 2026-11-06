@@ -595,10 +595,20 @@ export interface CRIDPaymentPolicy {
   access_seconds: number;
 }
 export interface ConsumerAccessPolicy {
-  mode: "keys" | "invite_only" | "email_capture" | "review" | "contract";
+  mode: "keys" | "invite_only" | "email_capture" | "email_domain" | "review" | "contract";
   version: number;
   contract_id?: string;
   payment?: CRIDPaymentPolicy;
+  /** Required only for `email_domain`: one lowercase DNS domain, matched exactly. */
+  email_domain?: string;
+  /** Optional exact mailbox exceptions for `email_domain`. */
+  allowed_emails?: string[];
+  /**
+   * Only for `review` and `keys`: how long each approval or key opt-in lasts,
+   * from `1h` to `365d` in whole minutes. The service stores one form for equal
+   * durations (`1w` and `168h` read back as `7d`). Omit for approvals that never expire.
+   */
+  approval_expires_in?: string;
 }
 
 /** Input for creating a resource directly. */
@@ -630,6 +640,33 @@ export interface UpdateResourceInput {
   preserve_host?: boolean;
   /** Use `null` to clear the alias. */
   alias?: string | null;
+  /**
+   * Replace the saved link defaults whole, or send `null` to remove them. Update
+   * separately from `custom_domain`.
+   */
+  link_defaults?: LinkDefaultsInput | null;
+}
+
+/**
+ * Limits a client applies when it creates a new link for a resource, saved with
+ * the resource so every device reads the same values. The service stores them
+ * but never applies them: send them with each link-create request. Durations
+ * keep the form they were saved in (`1h` and `60m` differ). `rule_name` is
+ * display text; escape it before showing it.
+ */
+export interface LinkDefaults {
+  expires_in: string;
+  one_time_use: boolean;
+  session_duration?: string;
+  rule_name?: string;
+}
+
+/** Link defaults to save. An omitted `one_time_use` means `false`. */
+export interface LinkDefaultsInput {
+  expires_in: string;
+  one_time_use?: boolean;
+  session_duration?: string;
+  rule_name?: string;
 }
 
 /** Resource data returned by the `/v1/resources` surface. */
@@ -657,6 +694,8 @@ export interface Resource {
   slug?: string;
   preserve_host?: boolean;
   session_duration_cap?: number;
+  /** Saved limits for new links; omitted when none are saved. */
+  link_defaults?: LinkDefaults;
   qurl_count?: number;
   created_at?: string;
   expires_at?: string;
@@ -1094,6 +1133,109 @@ export interface CallerIdentity {
    * JWT callers omit it. Display fields are optional; no credential secret is returned.
    */
   api_key?: ApiKey;
+}
+
+/** A saved rule's Stripe price and access duration: a `CRIDPaymentPolicy` without its account. */
+export interface AccessRulePayment {
+  price_id: string;
+  /** Access after a one-time payment; zero lasts for the resource lifetime. */
+  access_seconds: number;
+}
+
+/** Limits for each temporary link a public rule shares. An omitted `one_time_use` means `false`. */
+export interface AccessRuleLinkLimits {
+  expires_in: string;
+  one_time_use?: boolean;
+  session_duration?: string;
+}
+
+/**
+ * A saved access-rule preset: the admission policy and link settings a client
+ * applies when it shares with the rule. Saving or editing a rule grants no
+ * access and never changes an existing resource or link. `name` is display
+ * text; escape it before showing it. The service validates every field.
+ */
+export interface AccessRule {
+  /** A client-generated lowercase UUID, or a fixed `builtin.*` identifier. */
+  id: string;
+  name: string;
+  mode: OpenString<"public" | ConsumerAccessPolicy["mode"]>;
+  /** `email_domain` only. */
+  email_domain?: string;
+  /** `email_domain` only. */
+  allowed_emails?: string[];
+  /** `contract` only. */
+  contract_id?: string;
+  /** `public` only: share a new temporary link with these limits. */
+  link_limits?: AccessRuleLinkLimits;
+  /** `review` and `keys` only; copy it into `consumer_access.approval_expires_in`. */
+  approval_expires_in?: string;
+  /** `contract` only; apply it with the connected account from `publisherStripeAccount()`. */
+  payment?: AccessRulePayment;
+}
+
+/** The account's saved access-rule library and the service's read-only built-ins. */
+export interface AccessRules {
+  /** The authenticated account, for partitioning a private sync cache. */
+  account_id: string;
+  version: number;
+  items: AccessRule[];
+  built_ins: AccessRule[];
+  /** qURL Desktop's Quick share choice. Other clients ignore it; a save keeps it unless it removes that rule. */
+  quick_share_rule_id?: string;
+}
+
+/** Replace the whole custom library at the version last read (zero for a new library). */
+export interface SaveAccessRulesInput {
+  version: number;
+  items: AccessRule[];
+}
+
+/** What the account has seen and cleared in its approvals inbox, synced across devices. */
+export interface InboxState {
+  version: number;
+  /** RFC 3339 time; requests made at or before it are seen. Absent until first set. */
+  seen_through?: string;
+  /** Opaque keys of cleared items, oldest first. The service keeps the newest 500. */
+  dismissed: string[];
+}
+
+/**
+ * Replace the inbox state at the version last read. `seen_through` never moves
+ * backwards, and omitting it keeps the stored value. Keys are printable ASCII
+ * without spaces, at most 200 characters, and never personal data.
+ */
+export interface SaveInboxStateInput {
+  version: number;
+  seen_through?: string;
+  dismissed: string[];
+}
+
+/** One link the account opened. Times are Unix milliseconds. History never grants access. */
+export interface ReceivedLink {
+  crid: string;
+  opened_at: number;
+  /** Display name the recipient saw; escape it before showing it. */
+  name?: string;
+  /** When the link first entered history; not after `opened_at`. */
+  added_at?: number;
+}
+
+/** The account's received links, newest `opened_at` first. */
+export interface ReceivedHistory {
+  version: number;
+  /**
+   * When the account last cleared its history (Unix milliseconds, service clock).
+   * Drop local entries opened at or before it before merging. Read-only.
+   */
+  cleared_at?: number;
+  items: ReceivedLink[];
+}
+
+/** Replace the history at the version last read. `cleared_at` is not accepted. */
+export interface SaveReceivedHistoryInput {
+  version: number;
+  items: ReceivedLink[];
 }
 
 export interface ApiKey {
