@@ -157,7 +157,8 @@ a 400 `ValidationError` whose `code` is `ERROR_CODE_NAME_REQUIRED`
 (`"name_required"`); nothing is written. It is ignored when the call reuses an
 existing resource. `createPortal` rejects it because its resource already
 exists. The SDK sends `name` only when you pass it, and it needs a qURL API
-version that accepts the field.
+version that accepts the field. Names follow the service rule: at most 100
+characters, one line, no surrounding whitespace or hidden characters.
 
 That is the core flow:
 
