@@ -452,6 +452,8 @@ export function sameConsumerPolicy(
     actual?.payment?.account_id === expected.payment?.account_id &&
     actual?.payment?.price_id === expected.payment?.price_id &&
     actual?.payment?.access_seconds === expected.payment?.access_seconds &&
+    // The service stores both as sent (the domain must already be lowercase) and
+    // compares mailbox exceptions in order, so confirm them exactly.
     actual?.email_domain === expected.email_domain &&
     JSON.stringify(actual?.allowed_emails ?? []) ===
       JSON.stringify(expected.allowed_emails ?? []) &&
@@ -470,5 +472,5 @@ function approvalSeconds(value: string | undefined): string | number | undefined
   for (const [, amount, unit] of value.matchAll(/(\d+(?:\.\d+)?)([wdhms])/g)) {
     seconds += Number(amount) * DURATION_SECONDS[unit];
   }
-  return seconds;
+  return Math.round(seconds);
 }

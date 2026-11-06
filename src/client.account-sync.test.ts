@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
-import { ERROR_CODE_UNEXPECTED_RESPONSE, QURLError, ValidationError } from "./errors.js";
+import {
+  ERROR_CODE_UNEXPECTED_RESPONSE,
+  NetworkError,
+  QURLError,
+  ValidationError,
+} from "./errors.js";
+import { QURLClient } from "./client.js";
 import type { AccessRules, ReceivedHistory } from "./index.js";
 import { createClient, mockFetch } from "./__tests__/test-helpers.js";
 import { callHeaders, PUBLIC_RESOURCE_ID, RESOURCE_CRID } from "./__tests__/client-fixtures.js";
@@ -13,6 +19,10 @@ const call = (fetch: typeof globalThis.fetch, index = 0) => {
     idempotencyKey: callHeaders(fetch, index)["Idempotency-Key"],
   };
 };
+
+// The shared helper disables retries; these tests need the default policy to prove PUT opts out.
+const retryingClient = (fetch: typeof globalThis.fetch) =>
+  new QURLClient({ apiKey: "test-api-key", baseUrl: "https://api.test.layerv.ai", fetch });
 
 const rules: AccessRules = {
   account_id: "test-account",
@@ -70,6 +80,42 @@ describe("access rules", () => {
       createClient(fetch).saveAccessRules({ version: 1, items: [] }),
     ).rejects.toMatchObject({ status: 409 });
     expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { status: 429, body: { error: { code: "rate_limited", title: "Too Many", status: 429 } } },
+    { status: 503, body: { error: { code: "unavailable", title: "Unavailable", status: 503 } } },
+  ])("does not replay a save answered $status", async (response) => {
+    const fetch = mockFetch(response);
+    await expect(
+      retryingClient(fetch).saveAccessRules({ version: 1, items: [] }),
+    ).rejects.toMatchObject({ status: response.status });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["saveAccessRules", "clearReceivedHistory"] as const)(
+    "does not replay %s after a transport failure",
+    async (method) => {
+      const fetch = vi.fn().mockRejectedValue(new TypeError("network failure"));
+      const client = retryingClient(fetch);
+      await expect(
+        method === "saveAccessRules"
+          ? client.saveAccessRules({ version: 1, items: [] })
+          : client.clearReceivedHistory(),
+      ).rejects.toBeInstanceOf(NetworkError);
+      expect(fetch).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("refuses link_defaults on resource creation", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: {} } });
+    await expect(
+      createClient(fetch).createResource({
+        target_url: "https://example.com",
+        link_defaults: { expires_in: "1h" },
+      } as never),
+    ).rejects.toBeInstanceOf(ValidationError);
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it.each([

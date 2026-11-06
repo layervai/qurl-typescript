@@ -70,7 +70,7 @@ export function validateSaveInboxStateInput(input: SaveInboxStateInput): void {
     throw clientValidationError("saveInboxState: dismissed must be an array of non-empty strings");
   }
   if (!isOptionalString(input.seen_through)) {
-    throw clientValidationError("saveInboxState: seen_through must be an RFC 3339 time");
+    throw clientValidationError("saveInboxState: seen_through must be a string");
   }
 }
 
