@@ -43,6 +43,14 @@ export function requireMaxUtf8Bytes(value: string | undefined, field: string, ma
   }
 }
 
+/** Shape-check a resource name; its length and grammar are server-authoritative. */
+export function requireResourceNameIfPresent(value: unknown, field = "name"): void {
+  if (value === undefined) return;
+  if (typeof value !== "string" || value.trim() === "") {
+    throw clientValidationError(`${field}: must be a non-empty string`);
+  }
+}
+
 export function requireNonEmptyIfPresent(value: unknown, field: string): void {
   // Reject `""` so uninitialized form state doesn't reach the wire.
   if (value === "") {

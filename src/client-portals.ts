@@ -6,6 +6,7 @@ import {
   normalizePatchFields,
   requireBooleanIfPresent,
   requireMaxLength,
+  requireResourceNameIfPresent,
   requireMaxSessionsInRange,
   requireNoUnknownFields,
   requireObjectInput,
@@ -199,7 +200,7 @@ export function buildCreatePortalBody(
   requireObjectInput(opts, method);
   requireNoUnknownFields(opts, CREATE_PORTAL_OPTION_KEYS, method);
   // null → omitted, via the SDK-wide normalizePatchFields convention.
-  const { validFor, label, oneTimeUse, maxSessions, sessionDuration, targetPath } =
+  const { validFor, label, oneTimeUse, maxSessions, sessionDuration, targetPath, name } =
     normalizePatchFields(opts, CREATE_PORTAL_OPTION_KEYS) as CreatePortalOptions;
   if (label !== undefined) {
     requireMaxLength(label, "label", MAX_LABEL);
@@ -215,6 +216,10 @@ export function buildCreatePortalBody(
   if (targetPath !== undefined && method === "createPortalForUrl") {
     throw clientValidationError("targetPath: requires an existing resource");
   }
+  requireResourceNameIfPresent(name);
+  if (name !== undefined && method !== "createPortalForUrl") {
+    throw clientValidationError("name: is set when a resource is created; this resource exists");
+  }
   const body: Record<string, unknown> = {};
   const expiresIn = serializeApiDuration(validFor, "validFor", MIN_PORTAL_VALID_FOR_SECONDS);
   if (expiresIn !== undefined) body.expires_in = expiresIn;
@@ -229,6 +234,7 @@ export function buildCreatePortalBody(
   );
   if (wireSessionDuration !== undefined) body.session_duration = wireSessionDuration;
   if (targetPath !== undefined) body.target_path = targetPath;
+  if (name !== undefined) body.name = name;
   return body;
 }
 

@@ -140,11 +140,23 @@ import { QURLClient } from '@layervai/qurl';
 
 const client = new QURLClient({ apiKey: 'YOUR_API_KEY' });
 
-const resource = await client.protectUrl('https://internal.example.com/dashboard');
+const resource = await client.protectUrl('https://internal.example.com/dashboard', {
+  name: 'Team dashboard', // public name recipients see; required to create a resource
+});
 const portal = await resource.createPortal({ validFor: '5m' });
 
 console.log(portal.link); // Share this link — recipients need no credentials
 ```
+
+`name` is the public name recipients see on the qURL page, in link previews,
+and on the passkey they save; `description` stays a private owner note. The
+service requires it whenever a call creates a resource (`protectUrl`,
+`createResource`, `createPortalForUrl`, `create`, each `batchCreate` item, and
+`ensureConnectorResource` for a new slug) and refuses a create without it with
+a 400 `ValidationError` whose `code` is `ERROR_CODE_NAME_REQUIRED`
+(`"name_required"`); nothing is written. It is ignored when the call reuses an
+existing resource. `createPortal` rejects it because its resource already
+exists.
 
 That is the core flow:
 
@@ -165,6 +177,8 @@ by immutable slug instead of calling `protectUrl`:
 const { resource, foundExisting } = await client.ensureConnectorResource(
   'prod-dashboard',
   { idempotencyKey: 'connector-bootstrap-prod-dashboard' },
+  undefined, // consumer access policy
+  'Prod dashboard', // public name; required when the slug is new
 );
 console.log(foundExisting ? 'Using existing connector resource' : 'Created connector resource');
 const portal = await resource.createPortal({
@@ -251,7 +265,7 @@ server-populated resource metadata:
 ```typescript
 const { portal, resource } = await client.createPortalForUrl(
   'https://internal.example.com/dashboard',
-  { validFor: '5m' },
+  { name: 'Team dashboard', validFor: '5m' },
 );
 ```
 
@@ -628,6 +642,7 @@ if you already build on them:
 // Create a protected link (portal equivalent: createPortalForUrl)
 const result = await client.create({
   target_url: 'https://api.example.com/data',
+  name: 'Agent data API',
   expires_in: '24h',
   label: 'API access for agent',
 });
@@ -659,7 +674,7 @@ console.log(`Access granted to ${access.target_url} for ${access.access_grant?.e
 | `protectUrl(targetUrl, opts?)` | Protect a private URL → portal-minting `ProtectedResource` handle |
 | `resource.createPortal(opts?)` / `createPortal(resourceOrId, opts?)` | Mint a short-lived portal link; existing resources can set `targetPath` |
 | `createPortalForUrl(targetUrl, opts?)` | Protect + mint a URL resource; rejects `targetPath` |
-| `ensureConnectorResource(slug, requestOptions?)` | Find or create an active Connector resource by immutable slug |
+| `ensureConnectorResource(slug, requestOptions?, consumerAccess?, name?)` | Find or create an active Connector resource by immutable slug |
 | `getConnectorResource(crid)` / `getConnectorResourceBySlug(slug)` | Load a validated Connector resource by immutable identity |
 | `deleteConnectorResource(crid)` | Revoke a Connector resource by CRID |
 | `resourceByCrid(crid)` | Handle from a stored CRID (no API call) |
@@ -711,8 +726,8 @@ Create up to 100 qURLs in a single request. **Does not throw on partial or total
 ```typescript
 const result = await client.batchCreate({
   items: [
-    { target_url: 'https://api.example.com/data', expires_in: '24h' },
-    { target_url: 'https://api.example.com/admin', expires_in: '1h' },
+    { target_url: 'https://api.example.com/data', name: 'Data API', expires_in: '24h' },
+    { target_url: 'https://api.example.com/admin', name: 'Admin API', expires_in: '1h' },
   ],
 });
 

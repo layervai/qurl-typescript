@@ -139,6 +139,14 @@ export interface QURL {
  * the resource and must be set through {@link UpdateInput} after creation.
  */
 export interface CreateInput {
+  /**
+   * Public name recipients see: the qURL page, link previews, and the passkey
+   * they save. Not `description`, which stays a private owner note. The
+   * service requires it when this call creates a resource (`400
+   * name_required` otherwise) and ignores it when an existing resource is
+   * reused. Rename later with the resource preview endpoint.
+   */
+  name?: string;
   /** Omit to keep an existing resource's privacy; a new URL or Connector resource defaults to private. */
   private?: boolean;
   type?: ResourceType;
@@ -277,6 +285,14 @@ export interface MintOutput {
 
 /** Options for `QURLClient.protectUrl`. */
 export interface ProtectUrlOptions {
+  /**
+   * Public name recipients see: the qURL page, link previews, and the passkey
+   * they save. Not `description`, which stays a private owner note. The
+   * service requires it when this call creates a resource (`400
+   * name_required` otherwise) and ignores it when an existing resource is
+   * reused. Rename later with the resource preview endpoint.
+   */
+  name?: string;
   private?: boolean;
   consumerAccess?: ConsumerAccessPolicy;
   /** Optional resource-level metadata. Max 500 chars. */
@@ -328,6 +344,12 @@ export interface CreatePortalOptions {
    * This option is invalid with `createPortalForUrl`.
    */
   targetPath?: string;
+  /**
+   * Public name of the resource `createPortalForUrl` creates; see
+   * {@link CreateInput.name}. Required by the service when that call creates a
+   * resource. `createPortal` rejects it: the resource already exists.
+   */
+  name?: string;
 }
 
 /**
@@ -603,6 +625,14 @@ export interface ConsumerAccessPolicy {
 
 /** Input for creating a resource directly. */
 export interface CreateResourceInput {
+  /**
+   * Public name recipients see: the qURL page, link previews, and the passkey
+   * they save. Not `description`, which stays a private owner note. The
+   * service requires it when this call creates a resource (`400
+   * name_required` otherwise) and ignores it when an existing resource is
+   * reused. Rename later with the resource preview endpoint.
+   */
+  name?: string;
   private?: boolean;
   consumer_access?: ConsumerAccessPolicy;
   type?: ResourceType;
@@ -695,7 +725,7 @@ export interface ShareResourceOptions {
 /** Input for minting a qURL against an existing resource. */
 export type CreateQurlForResourceInput = Omit<
   CreateInput,
-  "target_url" | "custom_domain" | "type" | "private"
+  "target_url" | "custom_domain" | "type" | "private" | "name"
 > & {
   /**
    * Path this resource qURL resolves to (e.g. "/api/detect").

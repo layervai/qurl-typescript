@@ -147,6 +147,7 @@ import {
   requireConsumerDecision,
   requireListLimitInRange,
   requireMaxLength,
+  requireResourceNameIfPresent,
   requireMaxSessionsInRange,
   requireNoUnknownFields,
   requireNonEmptyIfPresent,
@@ -1004,6 +1005,7 @@ export class QURLClient {
     // SDK-wide normalizePatchFields convention.
     const normalized = normalizePatchFields(opts, PROTECT_URL_OPTION_KEYS) as ProtectUrlOptions;
     const body: Record<string, unknown> = { target_url: targetUrl };
+    if (normalized.name !== undefined) body.name = normalized.name;
     if (normalized.private !== undefined) body.private = normalized.private;
     if (normalized.consumerAccess !== undefined) {
       body.private = normalized.private ?? true;
@@ -1062,13 +1064,20 @@ export class QURLClient {
     return new ProtectedResource(this, id);
   }
 
-  /** Find or create the active qURL Connector resource for an immutable slug. */
+  /**
+   * Find or create the active qURL Connector resource for an immutable slug.
+   *
+   * `name` is the public name recipients see. The service requires it when the
+   * slug is new (`400 name_required` otherwise) and ignores it on reuse.
+   */
   async ensureConnectorResource(
     slug: string,
     requestOptions?: RequestOptions,
     consumerAccess?: ConsumerAccessPolicy,
+    name?: string,
   ): Promise<EnsureConnectorResourceResult> {
     requireConnectorSlug(slug, "ensureConnectorResource");
+    requireResourceNameIfPresent(name);
     if (consumerAccess !== undefined) {
       validateResourceWriteFields({ consumer_access: consumerAccess, private: true });
       if (consumerAccess.version !== 1)
@@ -1091,6 +1100,7 @@ export class QURLClient {
           type: "tunnel",
           slug,
           find_or_create: true,
+          ...(name !== undefined ? { name } : {}),
           ...(consumerAccess ? { private: true, consumer_access: consumerAccess } : {}),
         },
         { requestOptions, retry: false, generateIdempotencyKey: false },

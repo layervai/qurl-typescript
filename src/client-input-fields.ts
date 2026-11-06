@@ -124,6 +124,7 @@ assertExhaustive<
 >(true);
 
 export const CREATE_FIELD_KEYS = [
+  "name",
   "private",
   "type",
   "target_url",
@@ -194,6 +195,7 @@ assertExhaustive<
 >(true);
 
 export const CREATE_RESOURCE_FIELD_KEYS = [
+  "name",
   "private",
   "consumer_access",
   "type",
@@ -266,6 +268,7 @@ assertExhaustive<
  * fields the REST-shaped methods send.
  */
 export const PROTECT_URL_OPTION_KEYS = [
+  "name",
   "private",
   "consumerAccess",
   "description",
@@ -287,6 +290,7 @@ export const CREATE_PORTAL_OPTION_KEYS = [
   "maxSessions",
   "sessionDuration",
   "targetPath",
+  "name",
 ] as const satisfies readonly (keyof CreatePortalOptions)[];
 
 assertExhaustive<

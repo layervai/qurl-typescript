@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Features
+
+- Calls that can create a resource accept the public resource `name`:
+  `protectUrl`, `createResource`, `createPortalForUrl`, `create`, each
+  `batchCreate` item, and `ensureConnectorResource` (new fourth argument).
+  The qURL service now refuses a create without it (400, code
+  `name_required`, exported as `ERROR_CODE_NAME_REQUIRED`), so pass a name the
+  publisher chose. It is ignored when an existing resource is reused, and
+  `createPortal` rejects it.
+
 ### Breaking changes
 
 - `AccessToken.expires_at` is optional, matching the API token summary schema.

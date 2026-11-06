@@ -11,6 +11,7 @@ import {
   describeShape,
   requireBooleanIfPresent,
   requireMaxLength,
+  requireResourceNameIfPresent,
   requireMaxSessionsInRange,
   requireNoUnknownFields,
   requireNonEmptyIfPresent,
@@ -73,6 +74,7 @@ export function validateCreateInput(input: CreateInput): void {
     }
     requireValidTargetUrl(input.target_url);
   });
+  collect(() => requireResourceNameIfPresent(input.name));
   collect(() => requireMaxLength(input.label, "label", MAX_LABEL));
   collect(() => requireNonEmptyIfPresent(input.label, "label"));
   collect(() => requireMaxLength(input.custom_domain, "custom_domain", MAX_CUSTOM_DOMAIN));
@@ -150,6 +152,7 @@ export function validateResourceWriteFields(
       throw err;
     }
   };
+  collect(() => requireResourceNameIfPresent(input.name));
   collect(() => {
     if (input.private !== undefined && typeof input.private !== "boolean") {
       throw clientValidationError("private: must be a boolean");
