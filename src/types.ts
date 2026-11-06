@@ -144,7 +144,7 @@ export interface CreateInput {
    * they save. Not `description`, which stays a private owner note. The
    * service requires it when this call creates a resource (`400
    * name_required` otherwise) and ignores it when an existing resource is
-   * reused. Rename later with the resource preview endpoint.
+   * reused. Rename later with `PATCH /v1/resources/{id}/preview`.
    */
   name?: string;
   /** Omit to keep an existing resource's privacy; a new URL or Connector resource defaults to private. */
@@ -290,7 +290,7 @@ export interface ProtectUrlOptions {
    * they save. Not `description`, which stays a private owner note. The
    * service requires it when this call creates a resource (`400
    * name_required` otherwise) and ignores it when an existing resource is
-   * reused. Rename later with the resource preview endpoint.
+   * reused. Rename later with `PATCH /v1/resources/{id}/preview`.
    */
   name?: string;
   private?: boolean;
@@ -630,7 +630,7 @@ export interface CreateResourceInput {
    * they save. Not `description`, which stays a private owner note. The
    * service requires it when this call creates a resource (`400
    * name_required` otherwise) and ignores it when an existing resource is
-   * reused. Rename later with the resource preview endpoint.
+   * reused. Rename later with `PATCH /v1/resources/{id}/preview`.
    */
   name?: string;
   private?: boolean;

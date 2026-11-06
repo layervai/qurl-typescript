@@ -922,7 +922,7 @@ For POST/PATCH requests, the SDK generates a UUIDv7 `Idempotency-Key` once per l
 
 ```typescript
 await client.create(
-  { target_url: 'https://api.example.com/data' },
+  { target_url: 'https://api.example.com/data', name: 'Data API' },
   { idempotencyKey: 'job_12345_create_qurl' },
 );
 ```
@@ -1147,9 +1147,10 @@ OTP, and completion packet construction and reply decryption.
 `updateResource` changes the policy with `expected_consumer_access_version` and
 the next version. Send policy changes separately from metadata updates.
 
-For a URL, `protectUrl(url, { consumerAccess: { mode: "invite_only", version: 1 } })`
+For a URL, `protectUrl(url, { name, consumerAccess: { mode: "invite_only", version: 1 } })`
 creates the private resource and checks the returned policy. For a local
-Connector, pass the policy as the third argument to `ensureConnectorResource`.
+Connector, pass the policy as the third argument to `ensureConnectorResource`
+and the name as the fourth.
 A private policy cannot be combined with public access. A service that ignores
 the requested policy is refused.
 

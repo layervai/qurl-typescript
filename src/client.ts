@@ -983,7 +983,9 @@ export class QURLClient {
    * {@link ProtectedResource.createPortal}:
    *
    * ```ts
-   * const resource = await client.protectUrl("https://internal.example.com/dashboard");
+   * const resource = await client.protectUrl("https://internal.example.com/dashboard", {
+   *   name: "Team dashboard",
+   * });
    * const portal = await resource.createPortal({ validFor: "5m" });
    * share(portal.link);
    * ```

@@ -24,7 +24,7 @@ function sentBody(fetch: typeof globalThis.fetch): Record<string, unknown> {
 }
 
 describe("resource name", () => {
-  it("is sent by protectUrl, createResource, createPortalForUrl, create, and batchCreate", async () => {
+  it("is sent by protectUrl, createResource, createPortalForUrl, and create", async () => {
     const calls: [unknown, (c: ReturnType<typeof createClient>) => Promise<unknown>][] = [
       [{ data: RESOURCE }, (c) => c.protectUrl(TARGET, { name: "Team dashboard" })],
       [{ data: RESOURCE }, (c) => c.createResource({ target_url: TARGET, name: "Team dashboard" })],
@@ -36,6 +36,19 @@ describe("resource name", () => {
       await call(createClient(fetch));
       expect(sentBody(fetch)).toMatchObject({ name: "Team dashboard" });
     }
+  });
+
+  it("is sent by each batchCreate item", async () => {
+    const fetch = mockFetch({
+      status: 201,
+      body: {
+        data: { succeeded: 1, failed: 0, results: [{ index: 0, success: true, ...PORTAL }] },
+      },
+    });
+    await createClient(fetch).batchCreate({
+      items: [{ target_url: TARGET, name: "Team dashboard" }],
+    });
+    expect(sentBody(fetch)).toMatchObject({ items: [{ name: "Team dashboard" }] });
   });
 
   it("is sent by ensureConnectorResource", async () => {
@@ -62,6 +75,8 @@ describe("resource name", () => {
     const client = createClient(fetch);
     const attempts = [
       client.protectUrl(TARGET, { name: " " }),
+      client.protectUrl(TARGET, { name: " Team" }),
+      client.protectUrl(TARGET, { name: "Team\ndashboard" }),
       client.createResource({ target_url: TARGET, name: "" }),
       client.createPortalForUrl(TARGET, { name: "" }),
       client.create({ target_url: TARGET, name: " " }),

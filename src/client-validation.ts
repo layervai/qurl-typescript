@@ -43,11 +43,16 @@ export function requireMaxUtf8Bytes(value: string | undefined, field: string, ma
   }
 }
 
-/** Shape-check a resource name; its length and grammar are server-authoritative. */
+/** Mirror the service's resource-name shape rules; its length stays server-authoritative. */
 export function requireResourceNameIfPresent(value: unknown, field = "name"): void {
   if (value === undefined) return;
   if (typeof value !== "string" || value.trim() === "") {
     throw clientValidationError(`${field}: must be a non-empty string`);
+  }
+  if (value.trim() !== value || /\p{Cc}/u.test(value)) {
+    throw clientValidationError(
+      `${field}: must be one line without control characters or surrounding whitespace`,
+    );
   }
 }
 
