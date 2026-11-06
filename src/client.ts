@@ -1,7 +1,7 @@
 import type {
-  AccessRules,
   AccessCode,
   AccessCodeListOutput,
+  AccessRules,
   AccessToken,
   ApiKey,
   ApiKeyListOutput,
@@ -10,11 +10,6 @@ import type {
   BatchCreateOutput,
   BillingInvoiceListOutput,
   CallerIdentity,
-  InboxState,
-  ReceivedHistory,
-  SaveAccessRulesInput,
-  SaveInboxStateInput,
-  SaveReceivedHistoryInput,
   CheckoutSession,
   ClientOptions,
   ConnectorInstallation,
@@ -51,6 +46,7 @@ import type {
   ExtendInput,
   GetDelegatedQurlBatchOptions,
   GetDelegatedQurlBatchOutput,
+  InboxState,
   Invoice,
   ListApiKeysInput,
   ListBillingInvoicesInput,
@@ -69,6 +65,7 @@ import type {
   QURLErrorData,
   Quota,
   QurlSummary,
+  ReceivedHistory,
   RedeemAccessCodeInput,
   RedeemAccessCodeOutput,
   RegisterDomainInput,
@@ -80,6 +77,9 @@ import type {
   ResourceHandle,
   ResourceListInput,
   ResourceListOutput,
+  SaveAccessRulesInput,
+  SaveInboxStateInput,
+  SaveReceivedHistoryInput,
   Session,
   SessionListOutput,
   SessionTerminateOutput,
@@ -2129,8 +2129,9 @@ export class QURLClient {
 
   /**
    * Remove every received link regardless of version and set `cleared_at`.
-   * Safe to repeat: the SDK never replays a DELETE, so retry a 409 or an
-   * uncertain result yourself. Requires an account access token.
+   * Safe to repeat: the SDK never replays a DELETE, so retry an uncertain
+   * result yourself. A 409 is rare (concurrent clears racing, or an exhausted
+   * version) and a retry is meaningful. Requires an account access token.
    */
   async clearReceivedHistory(): Promise<ReceivedHistory> {
     return requireReceivedHistory(

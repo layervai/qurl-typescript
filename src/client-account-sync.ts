@@ -7,11 +7,7 @@ import type {
   SaveReceivedHistoryInput,
 } from "./types.js";
 import { clientValidationError, unexpectedResponseError } from "./client-errors.js";
-import {
-  requireNoUnknownFields,
-  requireObjectInput,
-  requireStringArrayElements,
-} from "./client-validation.js";
+import { requireNoUnknownFields, requireObjectInput } from "./client-validation.js";
 
 // Versioned account documents: the SDK checks structure and leaves field rules
 // to the service, which answers 400 for an invalid document and 409 for a stale
@@ -67,7 +63,12 @@ export function validateSaveInboxStateInput(input: SaveInboxStateInput): void {
     "seen_through",
     "dismissed",
   ] satisfies (keyof SaveInboxStateInput)[]);
-  requireStringArrayElements(input.dismissed, "dismissed", "saveInboxState");
+  if (
+    !Array.isArray(input.dismissed) ||
+    !input.dismissed.every((key) => typeof key === "string" && key)
+  ) {
+    throw clientValidationError("saveInboxState: dismissed must be an array of non-empty strings");
+  }
   if (!isOptionalString(input.seen_through)) {
     throw clientValidationError("saveInboxState: seen_through must be an RFC 3339 time");
   }

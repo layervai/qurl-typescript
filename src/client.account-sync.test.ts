@@ -87,6 +87,13 @@ describe("access rules", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("accepts a rule mode added after this SDK", async () => {
+    const data = { ...rules, items: [{ id: "x", name: "Future", mode: "future_mode" }] };
+    await expect(
+      createClient(mockFetch({ status: 200, body: { data } })).getAccessRules(),
+    ).resolves.toEqual(data);
+  });
+
   it.each([
     { ...rules, account_id: "" },
     { ...rules, version: undefined },
@@ -211,6 +218,13 @@ describe("resource link defaults", () => {
     { link_defaults: { expires_in: "" } },
     { link_defaults: { expires_in: "1h", one_time_use: "yes" } },
     { link_defaults: { expires_in: "1h", extra: 1 } },
+    { link_defaults: { expires_in: "1h" }, custom_domain: "links.example.com" },
+    { link_defaults: null, custom_domain: "" },
+    {
+      link_defaults: { expires_in: "1h" },
+      consumer_access: { mode: "review", version: 2 },
+      expected_consumer_access_version: 1,
+    },
   ])("refuses invalid link defaults before HTTP: %j", async (input) => {
     const fetch = mockFetch({ status: 200, body: { data: resource } });
     await expect(
@@ -259,6 +273,7 @@ describe("rule-backed consumer policies", () => {
     ["1w", "7d"],
     ["168h", "7d"],
     ["90m", "1h30m0s"],
+    ["1.5h", "1h30m0s"],
   ])("confirms approval lifetime %s stored as %s", async (sent, stored) => {
     const policy = { mode: "review" as const, version: 1, approval_expires_in: sent };
     await createClient(created({ ...policy, approval_expires_in: stored })).protectUrl(target, {
@@ -266,10 +281,10 @@ describe("rule-backed consumer policies", () => {
     });
   });
 
-  it("refuses a dropped approval lifetime", async () => {
+  it.each([undefined, "8d", "1h"])("refuses a changed approval lifetime %s", async (stored) => {
     const policy = { mode: "keys" as const, version: 1, approval_expires_in: "7d" };
     await expect(
-      createClient(created({ ...policy, approval_expires_in: undefined })).protectUrl(target, {
+      createClient(created({ ...policy, approval_expires_in: stored })).protectUrl(target, {
         consumerAccess: policy,
       }),
     ).rejects.toThrow("private policy was not confirmed");

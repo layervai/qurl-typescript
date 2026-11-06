@@ -354,7 +354,11 @@ export function validateResourceWriteFields(
   });
   collect(() => {
     const defaults = input.link_defaults;
-    if (defaults === undefined || defaults === null) return;
+    if (defaults === undefined) return;
+    if (input.custom_domain !== undefined) {
+      throw clientValidationError("link_defaults: update separately from custom_domain");
+    }
+    if (defaults === null) return;
     requireObjectInput(defaults, "link_defaults");
     requireNoUnknownFields(
       defaults,
@@ -451,7 +455,20 @@ export function sameConsumerPolicy(
     actual?.email_domain === expected.email_domain &&
     JSON.stringify(actual?.allowed_emails ?? []) ===
       JSON.stringify(expected.allowed_emails ?? []) &&
-    // The service rewrites equal durations ("168h" reads back as "7d"), so check presence only.
-    !actual?.approval_expires_in === !expected.approval_expires_in
+    approvalSeconds(actual?.approval_expires_in) === approvalSeconds(expected.approval_expires_in)
   );
+}
+
+const DURATION_SECONDS: Record<string, number> = { w: 604800, d: 86400, h: 3600, m: 60, s: 1 };
+
+// The service stores equal approval durations in one form ("1w" and "168h" read
+// back as "7d", "90m" as "1h30m0s"), so compare them in seconds. A form this
+// does not parse compares as written.
+function approvalSeconds(value: string | undefined): string | number | undefined {
+  if (!value || !/^(\d+(\.\d+)?[wdhms])+$/.test(value)) return value;
+  let seconds = 0;
+  for (const [, amount, unit] of value.matchAll(/(\d+(?:\.\d+)?)([wdhms])/g)) {
+    seconds += Number(amount) * DURATION_SECONDS[unit];
+  }
+  return seconds;
 }
