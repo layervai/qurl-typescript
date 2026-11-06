@@ -6,10 +6,10 @@ import {
   normalizePatchFields,
   requireBooleanIfPresent,
   requireMaxLength,
-  requireResourceNameIfPresent,
   requireMaxSessionsInRange,
   requireNoUnknownFields,
   requireObjectInput,
+  requireResourceNameIfPresent,
 } from "./client-validation.js";
 import { CREATE_PORTAL_OPTION_KEYS } from "./client-input-fields.js";
 import { MAX_LABEL } from "./client-limits.js";
@@ -216,10 +216,10 @@ export function buildCreatePortalBody(
   if (targetPath !== undefined && method === "createPortalForUrl") {
     throw clientValidationError("targetPath: requires an existing resource");
   }
-  requireResourceNameIfPresent(name);
   if (name !== undefined && method !== "createPortalForUrl") {
     throw clientValidationError("name: is set when a resource is created; this resource exists");
   }
+  requireResourceNameIfPresent(name);
   const body: Record<string, unknown> = {};
   const expiresIn = serializeApiDuration(validFor, "validFor", MIN_PORTAL_VALID_FOR_SECONDS);
   if (expiresIn !== undefined) body.expires_in = expiresIn;

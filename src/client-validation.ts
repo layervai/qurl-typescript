@@ -49,9 +49,9 @@ export function requireResourceNameIfPresent(value: unknown, field = "name"): vo
   if (typeof value !== "string" || value.trim() === "") {
     throw clientValidationError(`${field}: must be a non-empty string`);
   }
-  if (value.trim() !== value || /\p{Cc}/u.test(value)) {
+  if (value.trim() !== value || /[\p{Cc}\p{Cf}\u2028\u2029]/u.test(value)) {
     throw clientValidationError(
-      `${field}: must be one line without control characters or surrounding whitespace`,
+      `${field}: must be one line without hidden characters or surrounding whitespace`,
     );
   }
 }

@@ -77,6 +77,8 @@ describe("resource name", () => {
       client.protectUrl(TARGET, { name: " " }),
       client.protectUrl(TARGET, { name: " Team" }),
       client.protectUrl(TARGET, { name: "Team\ndashboard" }),
+      client.protectUrl(TARGET, { name: "Team\u2028dashboard" }),
+      client.protectUrl(TARGET, { name: "Team\u202edashboard" }),
       client.createResource({ target_url: TARGET, name: "" }),
       client.createPortalForUrl(TARGET, { name: "" }),
       client.create({ target_url: TARGET, name: " " }),
@@ -92,11 +94,29 @@ describe("resource name", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("is rejected by createPortal, whose resource already exists", async () => {
+  it("is left out when not set", async () => {
+    for (const [body, call] of [
+      [{ data: RESOURCE }, (c: ReturnType<typeof createClient>) => c.protectUrl(TARGET)],
+      [{ data: PORTAL }, (c: ReturnType<typeof createClient>) => c.create({ target_url: TARGET })],
+    ] as const) {
+      const fetch = mockFetch({ status: 201, body });
+      await call(createClient(fetch));
+      expect(sentBody(fetch)).not.toHaveProperty("name");
+    }
+  });
+
+  it("is rejected on calls whose resource already exists", async () => {
     const fetch = mockFetch({ status: 201, body: { data: PORTAL } });
+    const client = createClient(fetch);
+    for (const name of ["Team dashboard", ""]) {
+      await expect(client.resourceByCrid(CRID).createPortal({ name })).rejects.toMatchObject({
+        code: "client_validation",
+        detail: expect.stringContaining("this resource exists"),
+      });
+    }
     await expect(
-      createClient(fetch).resourceByCrid(CRID).createPortal({ name: "Team dashboard" }),
-    ).rejects.toMatchObject({ code: "client_validation" });
+      client.createQurlForResource(CRID, { name: "Team dashboard" } as never),
+    ).rejects.toMatchObject({ code: "client_validation", detail: expect.stringContaining("name") });
     expect(fetch).not.toHaveBeenCalled();
   });
 
