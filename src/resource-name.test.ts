@@ -70,6 +70,23 @@ describe("resource name", () => {
     });
   });
 
+  it("is sent with a consumer policy by ensureConnectorResource", async () => {
+    const policy = { mode: "invite_only", version: 1 } as const;
+    const fetch = mockFetch({
+      status: 201,
+      body: {
+        data: connectorResourceData({ private: true, consumer_access: policy }),
+        meta: { found_existing: false },
+      },
+    });
+    await createClient(fetch).ensureConnectorResource("prod-dashboard", undefined, policy, "Prod");
+    expect(sentBody(fetch)).toMatchObject({
+      name: "Prod",
+      private: true,
+      consumer_access: policy,
+    });
+  });
+
   it("rejects an empty name before sending", async () => {
     const fetch = mockFetch({ status: 201, body: { data: RESOURCE } });
     const client = createClient(fetch);
@@ -81,6 +98,7 @@ describe("resource name", () => {
       client.protectUrl(TARGET, { name: "Team\u202edashboard" }),
       client.createResource({ target_url: TARGET, name: "" }),
       client.createPortalForUrl(TARGET, { name: "" }),
+      client.createPortalForUrl(TARGET, { name: "Team\ndashboard" }),
       client.create({ target_url: TARGET, name: " " }),
       client.batchCreate({ items: [{ target_url: TARGET, name: "" }] }),
       client.ensureConnectorResource("prod-dashboard", undefined, undefined, ""),

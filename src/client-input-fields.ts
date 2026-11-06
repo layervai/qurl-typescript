@@ -284,13 +284,13 @@ assertExhaustive<
 >(true);
 
 export const CREATE_PORTAL_OPTION_KEYS = [
+  "name",
   "validFor",
   "label",
   "oneTimeUse",
   "maxSessions",
   "sessionDuration",
   "targetPath",
-  "name",
 ] as const satisfies readonly (keyof CreatePortalOptions)[];
 
 assertExhaustive<

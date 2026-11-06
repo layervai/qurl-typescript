@@ -43,7 +43,7 @@ export function requireMaxUtf8Bytes(value: string | undefined, field: string, ma
   }
 }
 
-/** Mirror the service's resource-name shape rules; its length stays server-authoritative. */
+/** Mirror qurl-service ValidatePreviewName (Cc, Cf, U+2028/9, padding); length stays server-side. */
 export function requireResourceNameIfPresent(value: unknown, field = "name"): void {
   if (value === undefined) return;
   if (typeof value !== "string" || value.trim() === "") {

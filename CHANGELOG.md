@@ -15,6 +15,9 @@
 
 ### Breaking changes
 
+- Once the qURL service enforces it, a create without `name` fails with 400
+  `name_required`. Pass `name` on every create; the SDK API change itself is
+  additive.
 - `AccessToken.expires_at` is optional, matching the API token summary schema.
   Check that the value is defined before parsing or formatting it. An omitted
   value does not imply an unlimited lifetime. Runtime responses are unchanged.
