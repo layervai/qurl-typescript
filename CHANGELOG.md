@@ -7,9 +7,10 @@
 - Calls that can create a resource accept the public resource `name`:
   `protectUrl`, `createResource`, `createPortalForUrl`, `create`, each
   `batchCreate` item, and `ensureConnectorResource` (new fourth argument).
-  The qURL service now refuses a create without it (400, code
-  `name_required`, exported as `ERROR_CODE_NAME_REQUIRED`), so pass a name the
-  publisher chose. It is ignored when an existing resource is reused, and
+  Once the qURL service enforces it, a create without it is refused (400,
+  code `name_required`, exported as `ERROR_CODE_NAME_REQUIRED`), so pass a name
+  the publisher chose. `name` is sent only when set and needs a service
+  version that accepts it. It is ignored when an existing resource is reused, and
   `createPortal` rejects it.
 
 ### Breaking changes
