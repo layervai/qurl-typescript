@@ -70,6 +70,20 @@ describe("resource name", () => {
     });
   });
 
+  it("accepts non-ASCII names and refuses ZWJ like the service", async () => {
+    for (const name of ["Café ダッシュボード", "Ünïcode — dashboard ✓"]) {
+      const fetch = mockFetch({ status: 201, body: { data: RESOURCE } });
+      await createClient(fetch).protectUrl(TARGET, { name });
+      expect(sentBody(fetch)).toMatchObject({ name });
+    }
+    // qurl-service ValidatePreviewName refuses all of Cf, including U+200D.
+    const fetch = mockFetch({ status: 201, body: { data: RESOURCE } });
+    await expect(
+      createClient(fetch).protectUrl(TARGET, { name: "\u{1F469}\u200D\u{1F4BB} Dev portal" }),
+    ).rejects.toMatchObject({ code: "client_validation" });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("is sent with a consumer policy by ensureConnectorResource", async () => {
     const policy = { mode: "invite_only", version: 1 } as const;
     const fetch = mockFetch({
@@ -91,20 +105,20 @@ describe("resource name", () => {
     const fetch = mockFetch({ status: 201, body: { data: RESOURCE } });
     const client = createClient(fetch);
     const attempts = [
-      client.protectUrl(TARGET, { name: " " }),
-      client.protectUrl(TARGET, { name: " Team" }),
-      client.protectUrl(TARGET, { name: "Team\ndashboard" }),
-      client.protectUrl(TARGET, { name: "Team\u2028dashboard" }),
-      client.protectUrl(TARGET, { name: "Team\u202edashboard" }),
-      client.createResource({ target_url: TARGET, name: "" }),
-      client.createPortalForUrl(TARGET, { name: "" }),
-      client.createPortalForUrl(TARGET, { name: "Team\ndashboard" }),
-      client.create({ target_url: TARGET, name: " " }),
-      client.batchCreate({ items: [{ target_url: TARGET, name: "" }] }),
-      client.ensureConnectorResource("prod-dashboard", undefined, undefined, ""),
+      () => client.protectUrl(TARGET, { name: " " }),
+      () => client.protectUrl(TARGET, { name: " Team" }),
+      () => client.protectUrl(TARGET, { name: "Team\ndashboard" }),
+      () => client.protectUrl(TARGET, { name: "Team\u2028dashboard" }),
+      () => client.protectUrl(TARGET, { name: "Team\u202edashboard" }),
+      () => client.createResource({ target_url: TARGET, name: "" }),
+      () => client.createPortalForUrl(TARGET, { name: "" }),
+      () => client.createPortalForUrl(TARGET, { name: "Team\ndashboard" }),
+      () => client.create({ target_url: TARGET, name: " " }),
+      () => client.batchCreate({ items: [{ target_url: TARGET, name: "" }] }),
+      () => client.ensureConnectorResource("prod-dashboard", undefined, undefined, ""),
     ];
     for (const attempt of attempts) {
-      await expect(attempt).rejects.toMatchObject({
+      await expect(attempt()).rejects.toMatchObject({
         code: "client_validation",
         detail: expect.stringContaining("name"),
       });
@@ -113,9 +127,15 @@ describe("resource name", () => {
   });
 
   it("is left out when not set", async () => {
+    type Client = ReturnType<typeof createClient>;
+    const connector = { data: connectorResourceData(), meta: { found_existing: true } };
     for (const [body, call] of [
-      [{ data: RESOURCE }, (c: ReturnType<typeof createClient>) => c.protectUrl(TARGET)],
-      [{ data: PORTAL }, (c: ReturnType<typeof createClient>) => c.create({ target_url: TARGET })],
+      [{ data: RESOURCE }, (c: Client) => c.protectUrl(TARGET)],
+      [{ data: RESOURCE }, (c: Client) => c.createResource({ target_url: TARGET })],
+      [{ data: PORTAL }, (c: Client) => c.createPortalForUrl(TARGET)],
+      [{ data: PORTAL }, (c: Client) => c.createPortalForUrl(TARGET, { name: null as never })],
+      [{ data: PORTAL }, (c: Client) => c.create({ target_url: TARGET })],
+      [connector, (c: Client) => c.ensureConnectorResource("prod-dashboard")],
     ] as const) {
       const fetch = mockFetch({ status: 201, body });
       await call(createClient(fetch));

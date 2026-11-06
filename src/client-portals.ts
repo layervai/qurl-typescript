@@ -217,7 +217,9 @@ export function buildCreatePortalBody(
     throw clientValidationError("targetPath: requires an existing resource");
   }
   if (name !== undefined && method !== "createPortalForUrl") {
-    throw clientValidationError("name: is set when a resource is created; this resource exists");
+    throw clientValidationError(
+      "name: only applies when creating a resource (use createPortalForUrl or protectUrl); this resource exists",
+    );
   }
   requireResourceNameIfPresent(name);
   const body: Record<string, unknown> = {};
