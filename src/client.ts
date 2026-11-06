@@ -1071,6 +1071,11 @@ export class QURLClient {
    *
    * `name` is the public name recipients see. The service requires it when the
    * slug is new (`400 name_required` otherwise) and ignores it on reuse.
+   *
+   * @param slug - Immutable owner-scoped Connector slug.
+   * @param requestOptions - Per-call request options.
+   * @param consumerAccess - Private consumer policy for a new resource.
+   * @param name - Public resource name; required when the slug is new.
    */
   async ensureConnectorResource(
     slug: string,

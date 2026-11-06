@@ -71,7 +71,12 @@ describe("resource name", () => {
   });
 
   it("accepts non-ASCII names and refuses ZWJ like the service", async () => {
-    for (const name of ["Café ダッシュボード", "Ünïcode — dashboard ✓", "😀".repeat(100)]) {
+    for (const name of [
+      "Café ダッシュボード",
+      "Ünïcode — dashboard ✓",
+      "😀".repeat(100),
+      "x".repeat(100),
+    ]) {
       const fetch = mockFetch({ status: 201, body: { data: RESOURCE } });
       await createClient(fetch).protectUrl(TARGET, { name });
       expect(sentBody(fetch)).toMatchObject({ name });
@@ -101,7 +106,7 @@ describe("resource name", () => {
     });
   });
 
-  it("rejects an empty name before sending", async () => {
+  it("rejects an invalid name before sending", async () => {
     const fetch = mockFetch({ status: 201, body: { data: RESOURCE } });
     const client = createClient(fetch);
     const attempts = [
@@ -111,6 +116,7 @@ describe("resource name", () => {
       () => client.protectUrl(TARGET, { name: "Team\u2028dashboard" }),
       () => client.protectUrl(TARGET, { name: "Team\u202edashboard" }),
       () => client.protectUrl(TARGET, { name: "x".repeat(101) }),
+      () => client.create({ target_url: TARGET, name: 123 as never }),
       () => client.createResource({ target_url: TARGET, name: "" }),
       () => client.createPortalForUrl(TARGET, { name: "" }),
       () => client.createPortalForUrl(TARGET, { name: "Team\ndashboard" }),
