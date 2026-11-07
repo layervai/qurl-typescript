@@ -394,6 +394,16 @@
           "keyword": "maximum"
         }
       ]
+    },
+    "MAX_ORIGIN_HEADER_VALUE_BYTES": {
+      "expected": 4096,
+      "sources": [
+        {
+          "schema": "OriginHeader",
+          "property": "value",
+          "keyword": "maxLength"
+        }
+      ]
     }
   },
   "local": {
