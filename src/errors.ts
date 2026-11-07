@@ -33,6 +33,12 @@ export const ERROR_CODE_CONNECTOR_RESOURCE_REVOKED = "connector_resource_revoked
 export const ERROR_CODE_RESOURCE_NOT_FOUND = "resource_not_found";
 /** A Connector slug lookup matched more than one active resource (client-detected, `status: 0`). */
 export const ERROR_CODE_AMBIGUOUS_RESOURCE = "ambiguous_resource";
+/**
+ * Server `.code` (on a 400 `ValidationError`) when a create that makes a new
+ * resource has no `name`, or `PATCH /v1/resources/{id}/preview` sets an empty
+ * one. Nothing was written; add the public name and retry.
+ */
+export const ERROR_CODE_NAME_REQUIRED = "name_required";
 /** Fallback `.code` when the server returns a non-RFC-7807 response (HTML proxy page, plaintext gateway error, JSON without `error` envelope). */
 export const ERROR_CODE_UNKNOWN = "unknown";
 

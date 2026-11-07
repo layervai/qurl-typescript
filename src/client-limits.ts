@@ -51,6 +51,9 @@ export const MAX_BATCH_ITEMS = 100;
 
 export const MAX_DESCRIPTION = 500;
 
+/** Code points, matching qurl-service ValidatePreviewName. */
+export const MAX_RESOURCE_NAME = 100;
+
 export const MAX_CUSTOM_DOMAIN = 253;
 
 export const MAX_MAX_SESSIONS = 1000;

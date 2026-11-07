@@ -9,6 +9,7 @@ import {
   requireMaxSessionsInRange,
   requireNoUnknownFields,
   requireObjectInput,
+  requireResourceNameIfPresent,
 } from "./client-validation.js";
 import { CREATE_PORTAL_OPTION_KEYS } from "./client-input-fields.js";
 import { MAX_LABEL } from "./client-limits.js";
@@ -199,7 +200,7 @@ export function buildCreatePortalBody(
   requireObjectInput(opts, method);
   requireNoUnknownFields(opts, CREATE_PORTAL_OPTION_KEYS, method);
   // null → omitted, via the SDK-wide normalizePatchFields convention.
-  const { validFor, label, oneTimeUse, maxSessions, sessionDuration, targetPath } =
+  const { validFor, label, oneTimeUse, maxSessions, sessionDuration, targetPath, name } =
     normalizePatchFields(opts, CREATE_PORTAL_OPTION_KEYS) as CreatePortalOptions;
   if (label !== undefined) {
     requireMaxLength(label, "label", MAX_LABEL);
@@ -215,6 +216,12 @@ export function buildCreatePortalBody(
   if (targetPath !== undefined && method === "createPortalForUrl") {
     throw clientValidationError("targetPath: requires an existing resource");
   }
+  if (name !== undefined && method !== "createPortalForUrl") {
+    throw clientValidationError(
+      "name: only applies when creating a resource (use createPortalForUrl or protectUrl); this resource exists",
+    );
+  }
+  requireResourceNameIfPresent(name);
   const body: Record<string, unknown> = {};
   const expiresIn = serializeApiDuration(validFor, "validFor", MIN_PORTAL_VALID_FOR_SECONDS);
   if (expiresIn !== undefined) body.expires_in = expiresIn;
@@ -229,6 +236,7 @@ export function buildCreatePortalBody(
   );
   if (wireSessionDuration !== undefined) body.session_duration = wireSessionDuration;
   if (targetPath !== undefined) body.target_path = targetPath;
+  if (name !== undefined) body.name = name;
   return body;
 }
 

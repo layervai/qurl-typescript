@@ -3,6 +3,7 @@ import { TEXT_ENCODER, clientValidationError } from "./client-errors.js";
 import {
   MAX_LIST_LIMIT,
   MAX_MAX_SESSIONS,
+  MAX_RESOURCE_NAME,
   MAX_TAGS,
   MAX_TAG_LENGTH,
   MAX_TARGET_URL,
@@ -40,6 +41,22 @@ export function requireMaxUtf8Bytes(value: string | undefined, field: string, ma
   const bytes = TEXT_ENCODER.encode(value).byteLength;
   if (bytes > max) {
     throw clientValidationError(`${field}: must be ${max} UTF-8 bytes or fewer (got ${bytes})`);
+  }
+}
+
+/** Mirror qurl-service ValidatePreviewName: 100 code points; no Cc, Cf, U+2028/9 or padding. */
+export function requireResourceNameIfPresent(value: unknown, field = "name"): void {
+  if (value === undefined) return;
+  if (typeof value !== "string" || value.trim() === "") {
+    throw clientValidationError(`${field}: must be a non-empty string`);
+  }
+  if ([...value].length > MAX_RESOURCE_NAME) {
+    throw clientValidationError(`${field}: must be ${MAX_RESOURCE_NAME} characters or fewer`);
+  }
+  if (value.trim() !== value || /[\p{Cc}\p{Cf}\u2028\u2029]/u.test(value)) {
+    throw clientValidationError(
+      `${field}: must be one line without hidden characters or surrounding whitespace`,
+    );
   }
 }
 
