@@ -1017,6 +1017,7 @@ export class QURLClient {
     if (normalized.tags !== undefined) body.tags = normalized.tags;
     if (normalized.customDomain !== undefined) body.custom_domain = normalized.customDomain;
     if (normalized.alias !== undefined) body.alias = normalized.alias;
+    if (normalized.originHeader !== undefined) body.origin_header = normalized.originHeader;
     validateResourceWriteFields(body, { requireUrlTarget: true });
     const response = await this.rawRequest<Resource>("POST", "/v1/resources", body, {
       requestOptions,
@@ -2148,7 +2149,7 @@ export class QURLClient {
     const validationInput = normalizePatchFields(
       input as Record<string, unknown>,
       UPDATE_RESOURCE_FIELD_KEYS,
-      { preserveNullFields: ["alias"] },
+      { preserveNullFields: ["alias", "origin_header"] },
     ) as UpdateResourceInput;
     requireAtLeastOneField(
       validationInput as Record<string, unknown>,
@@ -2158,6 +2159,7 @@ export class QURLClient {
     validateResourceWriteFields(validationInput as Record<string, unknown>, {
       allowAliasClear: true,
       allowCustomDomainClear: true,
+      allowOriginHeaderClear: true,
       validatePreserveHost: true,
     });
     return this.request<Resource>(

@@ -206,6 +206,7 @@ export const CREATE_RESOURCE_FIELD_KEYS = [
   "alias",
   "slug",
   "find_or_create",
+  "origin_header",
 ] as const satisfies readonly (keyof CreateResourceInput)[];
 
 assertExhaustive<
@@ -224,6 +225,7 @@ export const UPDATE_RESOURCE_FIELD_KEYS = [
   "custom_domain",
   "preserve_host",
   "alias",
+  "origin_header",
 ] as const satisfies readonly (keyof UpdateResourceInput)[];
 
 assertExhaustive<
@@ -275,6 +277,7 @@ export const PROTECT_URL_OPTION_KEYS = [
   "tags",
   "customDomain",
   "alias",
+  "originHeader",
 ] as const satisfies readonly (keyof ProtectUrlOptions)[];
 
 assertExhaustive<

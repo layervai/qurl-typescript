@@ -391,6 +391,35 @@ await client.updateApiKey(keyId, { scopes });
 This credential surface requires the kind-first qurl-service contract at or
 after commit `047cf31e1cdf545e3060e0f9294d738a19fb997b`.
 
+## Protect a Vercel app
+
+Turn on [Vercel Deployment Protection](https://vercel.com/docs/deployment-protection)
+for the project and copy its *Protection Bypass for Automation* secret. Then
+give qURL that secret as an origin header:
+
+```typescript
+const resource = await client.protectUrl('https://my-app.vercel.app', {
+  name: 'Preview app',
+  originHeader: {
+    name: 'x-vercel-protection-bypass',
+    value: process.env.VERCEL_AUTOMATION_BYPASS_SECRET!,
+  },
+});
+const portal = await resource.createPortal({ validFor: '15m' });
+```
+
+qURL adds the header to every request it forwards to the app, and replaces any
+copy a visitor sends. Vercel refuses direct requests that lack it, so the app is
+reachable only through qURL links. This works on every Vercel plan.
+
+The value is write-only: reads show `origin_header_name`, never the secret.
+Rotate it with `updateResource(crid, { origin_header: { name, value } })`, or
+remove it with `{ origin_header: null }`. Any URL origin that admits requests by
+a secret header works the same way.
+
+Vercel's edge still answers on the public hostname. To hide a private backend
+completely, publish it through qURL Connector instead.
+
 ## Delegated qURL batches
 
 Services with a delegated mint capability can create up to 100 ordered grants

@@ -130,6 +130,7 @@ export type {
   PaginatedOutput,
   Portal,
   PortalSession,
+  OriginHeader,
   ProtectUrlOptions,
   QURL,
   QURLErrorData,

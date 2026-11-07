@@ -135,6 +135,7 @@ export function validateResourceWriteFields(
   options: {
     allowAliasClear?: boolean;
     allowCustomDomainClear?: boolean;
+    allowOriginHeaderClear?: boolean;
     requireUrlTarget?: boolean;
     validateFindOrCreate?: boolean;
     validatePreserveHost?: boolean;
@@ -326,6 +327,7 @@ export function validateResourceWriteFields(
       );
     }
   });
+  collect(() => requireOriginHeaderIfPresent(input.origin_header, options.allowOriginHeaderClear));
   if (errors.length > 0) {
     throw clientValidationError(errors.join("; "));
   }
@@ -402,4 +404,67 @@ export function sameConsumerPolicy(
     actual?.payment?.price_id === expected.payment?.price_id &&
     actual?.payment?.access_seconds === expected.payment?.access_seconds
   );
+}
+
+// Headers qURL owns or that change request framing; the service rejects them
+// too. Kept in sync with the service's origin header rules.
+const RESERVED_ORIGIN_HEADER_NAMES = new Set([
+  "host",
+  "connection",
+  "keep-alive",
+  "te",
+  "trailer",
+  "transfer-encoding",
+  "upgrade",
+  "content-length",
+  "cookie",
+  "forwarded",
+  "x-forwarded-for",
+  "x-forwarded-host",
+  "x-forwarded-proto",
+  "x-real-ip",
+  "x-request-id",
+  "x-qurl-visitor-session",
+]);
+const HEADER_TOKEN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]{1,256}$/;
+// eslint-disable-next-line no-control-regex
+const HEADER_VALUE_FORBIDDEN = /[\x00-\x08\x0a-\x1f\x7f]/;
+const MAX_ORIGIN_HEADER_VALUE_BYTES = 4096;
+
+/**
+ * Client-side check for an origin header. The error never echoes the value,
+ * which is a credential for the customer's origin.
+ */
+function requireOriginHeaderIfPresent(header: unknown, allowClear?: boolean): void {
+  if (header === undefined) return;
+  if (header === null) {
+    if (allowClear) return;
+    throw clientValidationError("origin_header: null is only accepted by updateResource");
+  }
+  requireObjectInput(header, "origin_header");
+  const h = header as Record<string, unknown>;
+  requireNoUnknownFields(h, ["name", "value"], "origin_header");
+  const name = h.name;
+  if (
+    typeof name !== "string" ||
+    !HEADER_TOKEN.test(name) ||
+    RESERVED_ORIGIN_HEADER_NAMES.has(name.toLowerCase()) ||
+    name.toLowerCase().startsWith("proxy-")
+  ) {
+    throw clientValidationError(
+      "origin_header.name: must be a header token that qURL does not control",
+    );
+  }
+  const value = h.value;
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value.trim() !== value ||
+    HEADER_VALUE_FORBIDDEN.test(value) ||
+    TEXT_ENCODER.encode(value).length > MAX_ORIGIN_HEADER_VALUE_BYTES
+  ) {
+    throw clientValidationError(
+      "origin_header.value: must be 1-4096 bytes with no control characters or surrounding whitespace",
+    );
+  }
 }
