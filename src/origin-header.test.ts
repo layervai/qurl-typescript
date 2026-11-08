@@ -74,6 +74,15 @@ describe("origin header", () => {
     ["reserved X-Qurl- prefix", { name: "x-qurl-anything", value: "x" }],
     ["reserved Content-Type", { name: "Content-Type", value: "x" }],
     ["reserved Via", { name: "via", value: "x" }],
+    ["reserved Connection", { name: "Connection", value: "x" }],
+    ["reserved Transfer-Encoding", { name: "Transfer-Encoding", value: "x" }],
+    ["reserved Content-Length", { name: "content-length", value: "x" }],
+    ["lowercase x-forwarded- prefix", { name: "x-forwarded-proto", value: "x" }],
+    ["lowercase proxy- prefix", { name: "proxy-connection", value: "x" }],
+    ["non-string name", { name: 1, value: "x" }],
+    ["non-string value", { name: "X-Ok", value: 1 }],
+    ["trailing tab", { name: "X-Ok", value: "a\t" }],
+    ["multi-byte value over 4096 bytes", { name: "X-Ok", value: "\u00e9".repeat(2049) }],
     ["name over 256 chars", { name: "a".repeat(257), value: "x" }],
     ["proxy- prefix", { name: "Proxy-Authorization", value: "x" }],
     ["non-token name", { name: "bad name", value: "x" }],
@@ -105,6 +114,7 @@ describe("origin header", () => {
     expect(JSON.stringify(err)).not.toContain(secret);
     expect(String((err as Error).message)).not.toContain(secret);
   });
+
   it("allows Authorization for basic-auth or bearer origins", async () => {
     const fetch = mockFetch({ status: 201, body: { data: resource } });
     await createClient(fetch).protectUrl("https://my-app.vercel.app", {
@@ -137,6 +147,19 @@ describe("origin header", () => {
       originHeader: null as never,
     });
     expect(sentBody(fetch)).not.toHaveProperty("origin_header");
+  });
+
+  const goodHeaders: [string, { name: string; value: string }][] = [
+    ["a value of exactly 4096 bytes", { name: "X-Ok", value: "v".repeat(4096) }],
+    ["a name of exactly 256 characters", { name: "a".repeat(256), value: "x" }],
+    ["an inner tab and space", { name: "X-Ok", value: "a\tb c" }],
+    // The service trims only space and tab, so other Unicode spaces are kept.
+    ["a surrounding no-break space", { name: "X-Ok", value: "\u00a0a\u00a0" }],
+  ];
+  it.each(goodHeaders)("accepts %s", async (_label, header) => {
+    const fetch = mockFetch({ status: 201, body: { data: resource } });
+    await createClient(fetch).protectUrl("https://my-app.vercel.app", { originHeader: header });
+    expect(sentBody(fetch).origin_header).toEqual(header);
   });
 
   it("clears the header alongside another field", async () => {

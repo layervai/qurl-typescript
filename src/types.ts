@@ -306,13 +306,6 @@ export interface OriginHeader {
 
 /** Options for `QURLClient.protectUrl`. */
 export interface ProtectUrlOptions {
-  /**
-   * Header qURL sends to the target on every granted request; see
-   * {@link OriginHeader}. If the URL is already protected with a different
-   * header the call fails with `origin_header_mismatch`; rotate it with
-   * `updateResource`.
-   */
-  originHeader?: OriginHeader;
   /** Public resource name; see {@link CreateInput.name}. */
   name?: string;
   private?: boolean;
@@ -325,6 +318,14 @@ export interface ProtectUrlOptions {
   customDomain?: string;
   /** Owner-scoped handle for the resource. */
   alias?: string;
+  /**
+   * Header qURL sends to the target on every granted request; see
+   * {@link OriginHeader}. If the URL is already protected and its resource
+   * has a different header, or none, the call fails with
+   * `origin_header_mismatch` and writes nothing; set or rotate it with
+   * `updateResource`. Omit it to reuse the resource with the header it has.
+   */
+  originHeader?: OriginHeader;
 }
 
 /**
