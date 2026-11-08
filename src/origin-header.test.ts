@@ -70,6 +70,11 @@ describe("origin header", () => {
     ["reserved Host", { name: "Host", value: "x" }],
     ["reserved Cookie", { name: "cookie", value: "x" }],
     ["reserved X-Forwarded-For", { name: "X-Forwarded-For", value: "x" }],
+    ["reserved X-Forwarded- prefix", { name: "X-Forwarded-Port", value: "x" }],
+    ["reserved X-Qurl- prefix", { name: "x-qurl-anything", value: "x" }],
+    ["reserved Content-Type", { name: "Content-Type", value: "x" }],
+    ["reserved Via", { name: "via", value: "x" }],
+    ["name over 256 chars", { name: "a".repeat(257), value: "x" }],
     ["proxy- prefix", { name: "Proxy-Authorization", value: "x" }],
     ["non-token name", { name: "bad name", value: "x" }],
     ["empty value", { name: "X-Ok", value: "" }],
@@ -94,6 +99,57 @@ describe("origin header", () => {
     const err = await createClient(fetch)
       .protectUrl("https://my-app.vercel.app", {
         originHeader: { name: "Host", value: secret },
+      })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ValidationError);
+    expect(JSON.stringify(err)).not.toContain(secret);
+    expect(String((err as Error).message)).not.toContain(secret);
+  });
+  it("allows Authorization for basic-auth or bearer origins", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: resource } });
+    await createClient(fetch).protectUrl("https://my-app.vercel.app", {
+      originHeader: { name: "Authorization", value: "Basic dXNlcjpwdw==" },
+    });
+    expect(sentBody(fetch).origin_header).toEqual({
+      name: "Authorization",
+      value: "Basic dXNlcjpwdw==",
+    });
+  });
+
+  it("rejects invalid headers on createResource and updateResource too", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: resource } });
+    const client = createClient(fetch);
+    await expect(
+      client.createResource({
+        target_url: "https://my-app.vercel.app",
+        origin_header: { name: "Host", value: "x" },
+      }),
+    ).rejects.toBeInstanceOf(ValidationError);
+    await expect(
+      client.updateResource(crid, { origin_header: { name: "X-Ok", value: "a\nb" } }),
+    ).rejects.toBeInstanceOf(ValidationError);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("drops a null originHeader on protectUrl, like other create fields", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: resource } });
+    await createClient(fetch).protectUrl("https://my-app.vercel.app", {
+      originHeader: null as never,
+    });
+    expect(sentBody(fetch)).not.toHaveProperty("origin_header");
+  });
+
+  it("clears the header alongside another field", async () => {
+    const fetch = mockFetch({ status: 200, body: { data: resource } });
+    await createClient(fetch).updateResource(crid, { origin_header: null, description: "x" });
+    expect(sentBody(fetch)).toEqual({ origin_header: null, description: "x" });
+  });
+
+  it("never echoes the value when the value is what fails", async () => {
+    const fetch = mockFetch({ status: 201, body: { data: resource } });
+    const err = await createClient(fetch)
+      .protectUrl("https://my-app.vercel.app", {
+        originHeader: { name: "X-Ok", value: secret + "\r\n" },
       })
       .catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ValidationError);

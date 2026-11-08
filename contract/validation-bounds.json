@@ -394,16 +394,6 @@
           "keyword": "maximum"
         }
       ]
-    },
-    "MAX_ORIGIN_HEADER_VALUE_BYTES": {
-      "expected": 4096,
-      "sources": [
-        {
-          "schema": "OriginHeader",
-          "property": "value",
-          "keyword": "maxLength"
-        }
-      ]
     }
   },
   "local": {
@@ -418,6 +408,7 @@
     "MAX_PATH_ID_LENGTH": "Identifier pre-validation memory/work budget; exact identifiers have separate format guards.",
     "MAX_RESOURCE_NAME": "Mirrors qurl-service ValidatePreviewName (100 code points) for the public resource name; move to bounds once the published spec carries a name maxLength.",
     "MAX_CONSUMER_CONTRACT_ID_BYTES": "Local UTF-8 byte budget for an opaque contract identifier. OpenAPI bounds characters; this keeps the existing stricter byte policy.",
-    "MAX_CONFIGURABLE_RESPONSE_BODY_BYTES": "Joint Go/TypeScript response-memory ceiling; explicit configuration stays bounded at 16 MiB. See docs/api-response-limits.md."
+    "MAX_CONFIGURABLE_RESPONSE_BODY_BYTES": "Joint Go/TypeScript response-memory ceiling; explicit configuration stays bounded at 16 MiB. See docs/api-response-limits.md.",
+    "MAX_ORIGIN_HEADER_VALUE_BYTES": "Local UTF-8 byte budget for an origin header value, matching the service's byte check. OpenAPI bounds characters."
   }
 }

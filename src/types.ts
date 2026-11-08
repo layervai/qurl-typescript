@@ -291,9 +291,13 @@ export interface MintOutput {
  *
  * Write-only: the API never returns `value`; reads show `origin_header_name`.
  * Only URL resources accept it. `name` must be a header token and may not be a
- * header qURL itself controls (`Host`, `Cookie`, `X-Forwarded-*`,
- * `X-Request-ID`, `Proxy-*`, hop-by-hop headers). `value` is 1–4096 bytes with
- * no control characters or surrounding whitespace.
+ * header qURL controls or one that changes how the request is framed: `Host`,
+ * `Cookie`, `Content-Type`, `Content-Encoding`, `Via`, `Expect`,
+ * `X-Request-ID`, `X-Real-IP`, `Forwarded`, hop-by-hop headers, and any name
+ * starting with `X-Forwarded-`, `X-Qurl-` or `Proxy-`. `Authorization` is
+ * allowed (for basic-auth or bearer-protected origins) and replaces the
+ * visitor's own. `value` is 1–4096 bytes with no control characters or
+ * surrounding whitespace.
  */
 export interface OriginHeader {
   name: string;

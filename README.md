@@ -410,10 +410,13 @@ const portal = await resource.createPortal({ validFor: '15m' });
 
 qURL adds the header to every request it forwards to the app, and replaces any
 copy a visitor sends. Vercel refuses direct requests that lack it, so the app is
-reachable only through qURL links. This works on every Vercel plan.
+reachable only through qURL links. See Vercel's
+[Protection Bypass for Automation](https://vercel.com/docs/deployment-protection/methods-to-bypass-deployment-protection/protection-bypass-automation)
+for setup.
 
 The value is write-only: reads show `origin_header_name`, never the secret.
-Rotate it with `updateResource(crid, { origin_header: { name, value } })`, or
+To rotate, add the new secret in Vercel before removing the old one, then call
+`updateResource(crid, { origin_header: { name, value } })`, or
 remove it with `{ origin_header: null }`. Any URL origin that admits requests by
 a secret header works the same way.
 

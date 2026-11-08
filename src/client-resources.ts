@@ -7,6 +7,7 @@ import type {
 } from "./types.js";
 import { ValidationError } from "./errors.js";
 import { TEXT_ENCODER, clientValidationError } from "./client-errors.js";
+import { MAX_ORIGIN_HEADER_VALUE_BYTES } from "./client-limits.js";
 import {
   describeShape,
   requireBooleanIfPresent,
@@ -406,8 +407,9 @@ export function sameConsumerPolicy(
   );
 }
 
-// Headers qURL owns or that change request framing; the service rejects them
-// too. Kept in sync with the service's origin header rules.
+// Headers qURL owns or that change how a request is framed, routed or
+// decoded; the service and the gateway reject the same names and prefixes.
+// `Authorization` is allowed on purpose (basic-auth or bearer origins).
 const RESERVED_ORIGIN_HEADER_NAMES = new Set([
   "host",
   "connection",
@@ -417,19 +419,19 @@ const RESERVED_ORIGIN_HEADER_NAMES = new Set([
   "transfer-encoding",
   "upgrade",
   "content-length",
+  "content-type",
+  "content-encoding",
   "cookie",
   "forwarded",
-  "x-forwarded-for",
-  "x-forwarded-host",
-  "x-forwarded-proto",
+  "via",
+  "expect",
   "x-real-ip",
   "x-request-id",
-  "x-qurl-visitor-session",
 ]);
+const RESERVED_ORIGIN_HEADER_PREFIXES = ["x-forwarded-", "x-qurl-", "proxy-"];
 const HEADER_TOKEN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]{1,256}$/;
 // eslint-disable-next-line no-control-regex
 const HEADER_VALUE_FORBIDDEN = /[\x00-\x08\x0a-\x1f\x7f]/;
-const MAX_ORIGIN_HEADER_VALUE_BYTES = 4096;
 
 /**
  * Client-side check for an origin header. The error never echoes the value,
@@ -449,7 +451,7 @@ function requireOriginHeaderIfPresent(header: unknown, allowClear?: boolean): vo
     typeof name !== "string" ||
     !HEADER_TOKEN.test(name) ||
     RESERVED_ORIGIN_HEADER_NAMES.has(name.toLowerCase()) ||
-    name.toLowerCase().startsWith("proxy-")
+    RESERVED_ORIGIN_HEADER_PREFIXES.some((prefix) => name.toLowerCase().startsWith(prefix))
   ) {
     throw clientValidationError(
       "origin_header.name: must be a header token that qURL does not control",
