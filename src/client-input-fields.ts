@@ -224,6 +224,7 @@ export const UPDATE_RESOURCE_FIELD_KEYS = [
   "custom_domain",
   "preserve_host",
   "alias",
+  "link_defaults",
 ] as const satisfies readonly (keyof UpdateResourceInput)[];
 
 assertExhaustive<

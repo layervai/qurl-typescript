@@ -14,6 +14,7 @@ import {
   requireMaxSessionsInRange,
   requireNoUnknownFields,
   requireNonEmptyIfPresent,
+  requireNonEmptyStringField,
   requireObjectInput,
   requireResourceNameIfPresent,
   requireStringArrayElements,
@@ -161,9 +162,21 @@ export function validateResourceWriteFields(
       const policy = input.consumer_access;
       requireObjectInput(policy, "consumer_access");
       const p = policy as Record<string, unknown>;
-      requireNoUnknownFields(p, ["mode", "version", "contract_id", "payment"], "consumer_access");
+      requireNoUnknownFields(
+        p,
+        [
+          "mode",
+          "version",
+          "contract_id",
+          "payment",
+          "email_domain",
+          "allowed_emails",
+          "approval_expires_in",
+        ],
+        "consumer_access",
+      );
       if (
-        !["keys", "invite_only", "email_capture", "review", "contract"].includes(
+        !["keys", "invite_only", "email_capture", "email_domain", "review", "contract"].includes(
           p.mode as string,
         ) ||
         !Number.isSafeInteger(p.version) ||
@@ -183,6 +196,22 @@ export function validateResourceWriteFields(
         }
       } else if (p.contract_id !== undefined) {
         throw clientValidationError("consumer_access: contract_id requires contract mode");
+      }
+      if (p.mode === "email_domain") {
+        requireNonEmptyStringField(p, "email_domain", "consumer_access");
+        if (p.allowed_emails !== undefined) {
+          requireStringArrayElements(p.allowed_emails, "allowed_emails", "consumer_access");
+        }
+      } else if (p.email_domain !== undefined || p.allowed_emails !== undefined) {
+        throw clientValidationError("consumer_access: email fields require email_domain mode");
+      }
+      if (p.approval_expires_in !== undefined) {
+        if (p.mode !== "review" && p.mode !== "keys") {
+          throw clientValidationError(
+            "consumer_access: approval_expires_in requires review or keys mode",
+          );
+        }
+        requireNonEmptyStringField(p, "approval_expires_in", "consumer_access");
       }
       if (p.payment !== undefined) {
         requireObjectInput(p.payment, "consumer_access.payment");
@@ -326,6 +355,31 @@ export function validateResourceWriteFields(
       );
     }
   });
+  collect(() => {
+    const defaults = input.link_defaults;
+    if (defaults === undefined) return;
+    if (input.custom_domain !== undefined) {
+      throw clientValidationError("link_defaults: update separately from custom_domain");
+    }
+    if (defaults === null) return;
+    requireObjectInput(defaults, "link_defaults");
+    requireNoUnknownFields(
+      defaults,
+      ["expires_in", "one_time_use", "session_duration", "rule_name"],
+      "link_defaults",
+    );
+    // `{}` never clears them: the service answers 400. Send null to remove.
+    if (typeof defaults.expires_in !== "string" || !defaults.expires_in) {
+      throw clientValidationError("link_defaults: expires_in is required; send null to remove");
+    }
+    requireBooleanIfPresent(defaults.one_time_use, "link_defaults.one_time_use");
+    for (const field of ["session_duration", "rule_name"] as const) {
+      const value = defaults[field];
+      if (value !== undefined && (typeof value !== "string" || !value)) {
+        throw clientValidationError(`link_defaults.${field}: must be a non-empty string`);
+      }
+    }
+  });
   if (errors.length > 0) {
     throw clientValidationError(errors.join("; "));
   }
@@ -400,6 +454,26 @@ export function sameConsumerPolicy(
     actual?.contract_id === expected.contract_id &&
     actual?.payment?.account_id === expected.payment?.account_id &&
     actual?.payment?.price_id === expected.payment?.price_id &&
-    actual?.payment?.access_seconds === expected.payment?.access_seconds
+    actual?.payment?.access_seconds === expected.payment?.access_seconds &&
+    // The service stores both as sent (the domain must already be lowercase) and
+    // compares mailbox exceptions in order, so confirm them exactly.
+    actual?.email_domain === expected.email_domain &&
+    JSON.stringify(actual?.allowed_emails ?? []) ===
+      JSON.stringify(expected.allowed_emails ?? []) &&
+    approvalSeconds(actual?.approval_expires_in) === approvalSeconds(expected.approval_expires_in)
   );
+}
+
+const DURATION_SECONDS: Record<string, number> = { w: 604800, d: 86400, h: 3600, m: 60, s: 1 };
+
+// The service stores equal approval durations in one form ("1w" and "168h" read
+// back as "7d", "90m" as "1h30m0s"), so compare them in seconds. A form this
+// does not parse compares as written.
+function approvalSeconds(value: string | undefined): string | number | undefined {
+  if (!value || !/^(\d+(\.\d+)?[wdhms])+$/.test(value)) return value;
+  let seconds = 0;
+  for (const [, amount, unit] of value.matchAll(/(\d+(?:\.\d+)?)([wdhms])/g)) {
+    seconds += Number(amount) * DURATION_SECONDS[unit];
+  }
+  return Math.round(seconds);
 }

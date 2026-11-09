@@ -97,6 +97,16 @@ paths:
     delete: {}
   /v1/me:
     get: {}
+  /v1/me/access-rules:
+    get: {}
+    put: {}
+  /v1/me/inbox-state:
+    get: {}
+    put: {}
+  /v1/me/received-history:
+    get: {}
+    put: {}
+    delete: {}
   /v1/quota:
     get: {}
   /v1/usage/current-period:

@@ -697,6 +697,9 @@ console.log(`Access granted to ${access.target_url} for ${access.access_grant?.e
 | `mintLink(id, input?)` | Mint a new access link |
 | `resolve(input)` | Resolve token + grant network access |
 | `getIdentity()` | Get the current account and credential identity |
+| `getAccessRules()` / `saveAccessRules({ version, items })` | Read or replace the account's saved access rules |
+| `getInboxState()` / `saveInboxState({ version, seen_through?, dismissed })` | Read or replace the synced approvals inbox state |
+| `getReceivedHistory()` / `saveReceivedHistory({ version, items })` / `clearReceivedHistory()` | Read, replace or clear the synced received-link history |
 | `getQuota()` | Get quota/usage info |
 | `listResources(input?)` / `listAllResources(input?)` / `createResource(input)` / `getResource(id)` | Resource management |
 | `updateResource(id, input)` / `deleteResource(id)` | Update or revoke resources |
@@ -714,6 +717,17 @@ console.log(`Access granted to ${access.target_url} for ${access.access_grant?.e
 | `listWebhookEventTypes()` / `listWebhookDeliveries(id, input?)` / `listAllWebhookDeliveries(id, input?)` | Webhook metadata and delivery history |
 | `createApiKey(input)` / `listApiKeys(input?)` / `listAllApiKeys(input?)` / `updateApiKey(id, input)` / `revokeApiKey(id)` | API key management |
 | `createAccessCode(input)` / `listAccessCodes()` / `redeemAccessCode(input)` / `revokeAccessCode(id)` | Access code management |
+
+The account documents are versioned: send the `version` you last read. A
+concurrent change returns a `QURLError` with `status` 409; read again, merge and
+retry. Saves and `clearReceivedHistory()` are never replayed automatically.
+Inbox state and received history require an account access token, not an API
+key. `saveAccessRules` never sends qURL Desktop's `quick_share_rule_id`; the
+service keeps the saved choice unless the save removes the rule it names.
+
+`updateResource(id, { link_defaults })` replaces a resource's saved link
+defaults; `link_defaults: null` removes them. The service stores them but never
+applies them, so send the values with each link you create.
 
 `listResourceSessions(id)` opts in to bounded pages with `paged=true` and collects every service page, including empty intermediate pages, and returns `has_more: false`. Its `request_id` and `page_size` describe the last page. `terminateAllResourceSessions(id)` follows every page and sums closed sessions. Termination is not atomic: an error can occur after some sessions close. List sessions to reconcile before retrying; a retry can also close newly admitted sessions and counts only its own changes. A successful call returns the last page’s `request_id`.
 
@@ -883,6 +897,8 @@ The client retries only requests whose replay contract is explicit:
   may have applied.
 - **POST/PATCH fetch failures**: Retried with the `Idempotency-Key` generated on
   the first attempt when no response is available
+- **PUT**: Never replayed automatically. Versioned saves answer a stale
+  version with 409; read again, merge and retry.
 - **DELETE**: Never replayed automatically, including on 429. A transport
   failure after dispatch makes the mutation outcome unknown, and the HTTP verb
   alone cannot prove a replay safe. Reconcile resource state before you issue
@@ -1145,7 +1161,12 @@ OTP, and completion packet construction and reply decryption.
 ### Private consumer policies
 
 `createResource` accepts `private: true` and `consumer_access` with mode
-`keys`, `invite_only`, `email_capture`, `review` or `contract`, and version `1`.
+`keys`, `invite_only`, `email_capture`, `email_domain`, `review` or `contract`,
+and version `1`. `email_domain` requires `email_domain` and accepts
+`allowed_emails` exceptions. `review` and `keys` accept `approval_expires_in`
+(for example `7d`), which the service enforces on every approval. To share with
+a saved access rule, copy its policy fields into `consumer_access`; for a paid
+rule add the connected `account_id` to its `payment`.
 `updateResource` changes the policy with `expected_consumer_access_version` and
 the next version. Send policy changes separately from metadata updates.
 

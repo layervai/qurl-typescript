@@ -1,6 +1,7 @@
 import type {
   AccessCode,
   AccessCodeListOutput,
+  AccessRules,
   AccessToken,
   ApiKey,
   ApiKeyListOutput,
@@ -45,6 +46,7 @@ import type {
   ExtendInput,
   GetDelegatedQurlBatchOptions,
   GetDelegatedQurlBatchOutput,
+  InboxState,
   Invoice,
   ListApiKeysInput,
   ListBillingInvoicesInput,
@@ -63,6 +65,7 @@ import type {
   QURLErrorData,
   Quota,
   QurlSummary,
+  ReceivedHistory,
   RedeemAccessCodeInput,
   RedeemAccessCodeOutput,
   RegisterDomainInput,
@@ -74,6 +77,9 @@ import type {
   ResourceHandle,
   ResourceListInput,
   ResourceListOutput,
+  SaveAccessRulesInput,
+  SaveInboxStateInput,
+  SaveReceivedHistoryInput,
   Session,
   SessionListOutput,
   SessionTerminateOutput,
@@ -241,8 +247,20 @@ import {
   validateEnrollmentTokenFields,
   validateWebhookWriteFields,
 } from "./client-management.js";
+import {
+  requireAccessRules,
+  requireInboxState,
+  requireReceivedHistory,
+  validateSaveAccessRulesInput,
+  validateSaveInboxStateInput,
+  validateSaveReceivedHistoryInput,
+} from "./client-account-sync.js";
 
 const DEFAULT_BASE_URL = "https://api.layerv.ai";
+
+const ACCESS_RULES_PATH = "/v1/me/access-rules";
+const INBOX_STATE_PATH = "/v1/me/inbox-state";
+const RECEIVED_HISTORY_PATH = "/v1/me/received-history";
 
 const DEFAULT_MAX_RETRIES = 3;
 
@@ -259,7 +277,7 @@ const REDIRECT_RESPONSE_STATUSES = new Set([300, 301, 302, 303, 305, 307, 308]);
 
 const NO_RETRYABLE_STATUSES: ReadonlySet<number> = new Set<number>();
 
-type HttpMethod = "GET" | "POST" | "PATCH" | "DELETE";
+type HttpMethod = "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
 
 const IDEMPOTENCY_KEY_METHODS = new Set<HttpMethod>(["POST", "PATCH"]);
 
@@ -2067,6 +2085,78 @@ export class QURLClient {
     return identity;
   }
 
+  /**
+   * Read the account's saved access rules and the service's built-in choices.
+   * An account access token, account API key or linked registered device may read them.
+   */
+  async getAccessRules(): Promise<AccessRules> {
+    return requireAccessRules(await this.request("GET", ACCESS_RULES_PATH), "getAccessRules");
+  }
+
+  /**
+   * Replace the account's custom rules if `version` matches the last read, and
+   * return the saved library with its new version. A stale version throws a
+   * `QURLError` with status 409: read again, merge and retry. Saving grants no
+   * access and changes no existing resource or link. The saved Quick share
+   * choice is never sent and is kept. Not retried automatically.
+   */
+  async saveAccessRules(input: SaveAccessRulesInput): Promise<AccessRules> {
+    validateSaveAccessRulesInput(input);
+    return requireAccessRules(
+      await this.request("PUT", ACCESS_RULES_PATH, input),
+      "saveAccessRules",
+    );
+  }
+
+  /** Read the account's approvals inbox state. Requires an account access token. */
+  async getInboxState(): Promise<InboxState> {
+    return requireInboxState(await this.request("GET", INBOX_STATE_PATH), "getInboxState");
+  }
+
+  /**
+   * Replace the inbox state at the version last read. A stale version throws a
+   * `QURLError` with status 409: read again, merge and retry. Requires an
+   * account access token. Not retried automatically.
+   */
+  async saveInboxState(input: SaveInboxStateInput): Promise<InboxState> {
+    validateSaveInboxStateInput(input);
+    return requireInboxState(await this.request("PUT", INBOX_STATE_PATH, input), "saveInboxState");
+  }
+
+  /** Read the links this account opened, newest first. Requires an account access token. */
+  async getReceivedHistory(): Promise<ReceivedHistory> {
+    return requireReceivedHistory(
+      await this.request("GET", RECEIVED_HISTORY_PATH),
+      "getReceivedHistory",
+    );
+  }
+
+  /**
+   * Replace the received history at the version last read. A stale version
+   * throws a `QURLError` with status 409; a replacement that changes nothing
+   * keeps the version. Requires an account access token. Not retried automatically.
+   */
+  async saveReceivedHistory(input: SaveReceivedHistoryInput): Promise<ReceivedHistory> {
+    validateSaveReceivedHistoryInput(input);
+    return requireReceivedHistory(
+      await this.request("PUT", RECEIVED_HISTORY_PATH, input),
+      "saveReceivedHistory",
+    );
+  }
+
+  /**
+   * Remove every received link regardless of version and set `cleared_at`.
+   * Safe to repeat: the SDK never replays a DELETE, so retry an uncertain
+   * result yourself. A 409 is rare (concurrent clears racing, or an exhausted
+   * version) and a retry is meaningful. Requires an account access token.
+   */
+  async clearReceivedHistory(): Promise<ReceivedHistory> {
+    return requireReceivedHistory(
+      await this.request("DELETE", RECEIVED_HISTORY_PATH),
+      "clearReceivedHistory",
+    );
+  }
+
   /** Get quota and usage information. */
   async getQuota(): Promise<Quota> {
     return this.request<Quota>("GET", "/v1/quota");
@@ -2148,7 +2238,7 @@ export class QURLClient {
     const validationInput = normalizePatchFields(
       input as Record<string, unknown>,
       UPDATE_RESOURCE_FIELD_KEYS,
-      { preserveNullFields: ["alias"] },
+      { preserveNullFields: ["alias", "link_defaults"] },
     ) as UpdateResourceInput;
     requireAtLeastOneField(
       validationInput as Record<string, unknown>,
@@ -3407,6 +3497,8 @@ export class QURLClient {
     // retry rule and avoids SDK pacing on an application request path. The
     // caller receives retryAfter when supplied and must reconcile resource
     // state before it chooses to issue another delete.
+    // PUT is likewise never replayed: the account documents it writes are
+    // versioned, so the caller rereads and merges after a 409.
     const idempotencyKeyBackedRetry = retry && MUTATING_RETRY_METHODS.has(method);
     const retryFetchFailure = retry && (method === "GET" || idempotencyKeyBackedRetry);
     const retryable = !retry
