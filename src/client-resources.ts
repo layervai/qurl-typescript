@@ -7,7 +7,6 @@ import type {
 } from "./types.js";
 import { ValidationError } from "./errors.js";
 import { TEXT_ENCODER, clientValidationError } from "./client-errors.js";
-import { MAX_ORIGIN_HEADER_VALUE_BYTES } from "./client-limits.js";
 import {
   describeShape,
   requireBooleanIfPresent,
@@ -30,6 +29,7 @@ import {
   MAX_CUSTOM_DOMAIN,
   MAX_DESCRIPTION,
   MAX_LABEL,
+  MAX_ORIGIN_HEADER_VALUE_BYTES,
   MAX_SLUG,
 } from "./client-limits.js";
 
@@ -462,7 +462,7 @@ function requireOriginHeaderIfPresent(header: unknown, allowClear?: boolean): vo
     RESERVED_ORIGIN_HEADER_PREFIXES.some((prefix) => lower.startsWith(prefix))
   ) {
     throw clientValidationError(
-      "origin_header.name: must be a header token that qURL does not control",
+      "origin_header.name: must be a header token of 1-256 characters that qURL does not control",
     );
   }
   const value = h.value;
