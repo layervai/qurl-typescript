@@ -22,6 +22,13 @@
   Check that the value is defined before parsing or formatting it. An omitted
   value does not imply an unlimited lifetime. Runtime responses are unchanged.
 
+## [4.1.0](https://github.com/layervai/qurl-typescript/compare/qurl-v4.0.0...qurl-v4.1.0) (2026-11-10)
+
+
+### Features
+
+* add an origin header option for URL resources ([#356](https://github.com/layervai/qurl-typescript/issues/356)) ([e6d04ce](https://github.com/layervai/qurl-typescript/commit/e6d04ce8af4501a36df5284b643099a752482692))
+
 ## [4.0.0](https://github.com/layervai/qurl-typescript/compare/qurl-v3.1.1...qurl-v4.0.0) (2026-11-07)
 
 

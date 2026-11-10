@@ -1,6 +1,6 @@
 {
   "name": "@layervai/qurl-aws",
-  "version": "4.0.0",
+  "version": "4.1.0",
   "type": "module",
   "description": "AWS state adapters for qURL agent lifecycle",
   "license": "MIT",
