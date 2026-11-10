@@ -284,6 +284,26 @@ export interface MintOutput {
 
 // ---- Portal verbs (mirrors qurl-go) --------------------------------------
 
+/**
+ * A request header qURL adds to every request it forwards to a URL resource's
+ * target, for example Vercel's `x-vercel-protection-bypass` secret. The origin
+ * can then refuse every request that did not come through qURL.
+ *
+ * Write-only: the API never returns `value`; reads show `origin_header_name`.
+ * Only URL resources accept it. `name` must be a header token and may not be a
+ * header qURL controls or one that changes how the request is framed: `Host`,
+ * `Cookie`, `Content-Type`, `Content-Encoding`, `Via`, `Expect`,
+ * `X-Request-ID`, `X-Real-IP`, `Forwarded`, hop-by-hop headers, and any name
+ * starting with `X-Forwarded-`, `X-Qurl-` or `Proxy-`. `Authorization` is
+ * allowed (for basic-auth or bearer-protected origins) and replaces the
+ * visitor's own. `value` is 1–4096 bytes with no control characters or
+ * surrounding whitespace.
+ */
+export interface OriginHeader {
+  name: string;
+  value: string;
+}
+
 /** Options for `QURLClient.protectUrl`. */
 export interface ProtectUrlOptions {
   /** Public resource name; see {@link CreateInput.name}. */
@@ -298,6 +318,14 @@ export interface ProtectUrlOptions {
   customDomain?: string;
   /** Owner-scoped handle for the resource. */
   alias?: string;
+  /**
+   * Header qURL sends to the target on every granted request; see
+   * {@link OriginHeader}. If the URL is already protected and its resource
+   * has a different header, or none, the call fails with
+   * `origin_header_mismatch` and writes nothing; set or rotate it with
+   * `updateResource`. Omit it to reuse the resource with the header it has.
+   */
+  originHeader?: OriginHeader;
 }
 
 /**
@@ -632,6 +660,8 @@ export interface CreateResourceInput {
   alias?: string;
   slug?: string;
   find_or_create?: boolean;
+  /** See {@link OriginHeader}. URL resources only. */
+  origin_header?: OriginHeader;
 }
 
 /** Input for updating resource metadata. */
@@ -649,6 +679,8 @@ export interface UpdateResourceInput {
   preserve_host?: boolean;
   /** Use `null` to clear the alias. */
   alias?: string | null;
+  /** Set or rotate the {@link OriginHeader}; `null` removes it. URL resources only. */
+  origin_header?: OriginHeader | null;
 }
 
 /** Resource data returned by the `/v1/resources` surface. */
@@ -675,6 +707,8 @@ export interface Resource {
   alias?: string | null;
   slug?: string;
   preserve_host?: boolean;
+  /** Name of the configured {@link OriginHeader}; the value is never returned. */
+  origin_header_name?: string;
   session_duration_cap?: number;
   qurl_count?: number;
   created_at?: string;

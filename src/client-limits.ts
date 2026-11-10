@@ -90,3 +90,5 @@ export const MAX_LIST_LIMIT = 100;
 
 // Local UTF-8 budget; OpenAPI maxLength counts characters, not bytes.
 export const MAX_CONSUMER_CONTRACT_ID_BYTES = 128;
+/** UTF-8 byte budget for an origin header value; the spec bounds characters (4096). */
+export const MAX_ORIGIN_HEADER_VALUE_BYTES = 4096;

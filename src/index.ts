@@ -127,6 +127,7 @@ export type {
   Meta,
   MintInput,
   MintOutput,
+  OriginHeader,
   PaginatedOutput,
   Portal,
   PortalSession,
