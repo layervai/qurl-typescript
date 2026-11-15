@@ -2387,6 +2387,9 @@ export class QURLClient {
       ) as CreateQurlForResourceInput;
       normalized = Object.keys(stripped).length > 0 ? stripped : undefined;
     }
+    if (normalized?.expires_at !== undefined && normalized.expires_in !== undefined) {
+      throw clientValidationError("expires_at cannot be combined with expires_in");
+    }
     validateQurlTokenOptions(normalized);
     return this.request<CreateOutput>(
       "POST",

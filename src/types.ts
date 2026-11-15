@@ -339,6 +339,10 @@ export interface ProtectUrlOptions {
  * hours as the largest unit.
  */
 export interface CreatePortalOptions {
+  /** RFC 3339 start time for an existing resource. Early opens do not consume the link. */
+  notBefore?: string;
+  /** RFC 3339 end time. With notBefore, this also caps active sessions. */
+  expiresAt?: string;
   /**
    * How long the qURL link stays valid. Omit to use the API default
    * lifetime; prefer short lifetimes such as `"5m"`. The LayerV API remains
@@ -750,6 +754,10 @@ export type CreateQurlForResourceInput = Omit<
   CreateInput,
   "target_url" | "custom_domain" | "type" | "private" | "name"
 > & {
+  /** RFC 3339 start time for the link. */
+  not_before?: string;
+  /** RFC 3339 absolute expiry. Mutually exclusive with expires_in. */
+  expires_at?: string;
   /**
    * Path this resource qURL resolves to (e.g. "/api/detect").
    *
