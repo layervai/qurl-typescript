@@ -22,6 +22,13 @@
   Check that the value is defined before parsing or formatting it. An omitted
   value does not imply an unlimited lifetime. Runtime responses are unchanged.
 
+## [4.2.0](https://github.com/layervai/qurl-typescript/compare/qurl-v4.1.0...qurl-v4.2.0) (2026-11-15)
+
+
+### Features
+
+* support scheduled invitations ([#362](https://github.com/layervai/qurl-typescript/issues/362)) ([3ccf558](https://github.com/layervai/qurl-typescript/commit/3ccf558882241634f950b2fe454b3528aff131bf))
+
 ## [4.1.0](https://github.com/layervai/qurl-typescript/compare/qurl-v4.0.0...qurl-v4.1.0) (2026-11-10)
 
 
