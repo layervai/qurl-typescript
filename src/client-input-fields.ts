@@ -235,6 +235,8 @@ assertExhaustive<
 >(true);
 
 export const CREATE_QURL_FOR_RESOURCE_FIELD_KEYS = [
+  "not_before",
+  "expires_at",
   "expires_in",
   "one_time_use",
   "max_sessions",
@@ -287,6 +289,8 @@ assertExhaustive<
 >(true);
 
 export const CREATE_PORTAL_OPTION_KEYS = [
+  "notBefore",
+  "expiresAt",
   "name",
   "validFor",
   "label",

@@ -200,8 +200,17 @@ export function buildCreatePortalBody(
   requireObjectInput(opts, method);
   requireNoUnknownFields(opts, CREATE_PORTAL_OPTION_KEYS, method);
   // null → omitted, via the SDK-wide normalizePatchFields convention.
-  const { validFor, label, oneTimeUse, maxSessions, sessionDuration, targetPath, name } =
-    normalizePatchFields(opts, CREATE_PORTAL_OPTION_KEYS) as CreatePortalOptions;
+  const {
+    validFor,
+    label,
+    oneTimeUse,
+    maxSessions,
+    sessionDuration,
+    targetPath,
+    name,
+    notBefore,
+    expiresAt,
+  } = normalizePatchFields(opts, CREATE_PORTAL_OPTION_KEYS) as CreatePortalOptions;
   if (label !== undefined) {
     requireMaxLength(label, "label", MAX_LABEL);
     // qurl-go's WithLabel rejects blank labels; the REST-shaped mintLink
@@ -224,6 +233,14 @@ export function buildCreatePortalBody(
   requireResourceNameIfPresent(name);
   const body: Record<string, unknown> = {};
   const expiresIn = serializeApiDuration(validFor, "validFor", MIN_PORTAL_VALID_FOR_SECONDS);
+  if ((notBefore !== undefined || expiresAt !== undefined) && method === "createPortalForUrl") {
+    throw clientValidationError("notBefore and expiresAt require an existing resource");
+  }
+  if (expiresAt !== undefined && expiresIn !== undefined) {
+    throw clientValidationError("expiresAt cannot be combined with validFor");
+  }
+  if (notBefore !== undefined) body.not_before = notBefore;
+  if (expiresAt !== undefined) body.expires_at = expiresAt;
   if (expiresIn !== undefined) body.expires_in = expiresIn;
   if (label !== undefined) body.label = label;
   if (oneTimeUse !== undefined) body.one_time_use = oneTimeUse;
