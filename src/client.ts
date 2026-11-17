@@ -2905,7 +2905,7 @@ export class QURLClient {
     );
   }
 
-  /** Create a webhook. */
+  /** Create a webhook. Check the result before retrying a failed request. */
   async createWebhook(
     input: CreateWebhookInput,
     options?: RequestOptions,
@@ -2921,7 +2921,7 @@ export class QURLClient {
       url: true,
       events: true,
     });
-    return this.request<WebhookWithSecret>("POST", "/v1/webhooks", normalized, options);
+    return this.request<WebhookWithSecret>("POST", "/v1/webhooks", normalized, options, false);
   }
 
   /** List available webhook event types. */
@@ -2935,7 +2935,7 @@ export class QURLClient {
     return this.request<Webhook>("GET", `/v1/webhooks/${encodeURIComponent(id)}`);
   }
 
-  /** Update a webhook. */
+  /** Update a webhook. Check the result before retrying a failed request. */
   async updateWebhook(
     id: string,
     input: UpdateWebhookInput,
@@ -2959,6 +2959,7 @@ export class QURLClient {
       `/v1/webhooks/${encodeURIComponent(id)}`,
       normalized,
       options,
+      false,
     );
   }
 
@@ -2968,7 +2969,7 @@ export class QURLClient {
     await this.requestNoContent(`/v1/webhooks/${encodeURIComponent(id)}`);
   }
 
-  /** Regenerate a webhook signing secret. */
+  /** Regenerate a webhook signing secret. Check the result before retrying a failed request. */
   async regenerateWebhookSecret(id: string, options?: RequestOptions): Promise<WebhookWithSecret> {
     validatePathId(id, "regenerateWebhookSecret");
     return this.request<WebhookWithSecret>(
@@ -2976,6 +2977,7 @@ export class QURLClient {
       `/v1/webhooks/${encodeURIComponent(id)}/secret`,
       undefined,
       options,
+      false,
     );
   }
 
@@ -3268,7 +3270,7 @@ export class QURLClient {
     );
   }
 
-  /** Create an access code. */
+  /** Create an access code. Check the result before retrying a failed request. */
   async createAccessCode(
     input: CreateAccessCodeInput,
     options?: RequestOptions,
@@ -3281,7 +3283,13 @@ export class QURLClient {
     );
     const normalized = normalizedRecord as unknown as CreateAccessCodeInput;
     requireResourceCrid(normalizedRecord.resource_id as string, "createAccessCode", "resource_id");
-    return this.request<CreateAccessCodeOutput>("POST", "/v1/access-codes", normalized, options);
+    return this.request<CreateAccessCodeOutput>(
+      "POST",
+      "/v1/access-codes",
+      normalized,
+      options,
+      false,
+    );
   }
 
   /**
@@ -3325,6 +3333,7 @@ export class QURLClient {
     path: string,
     body?: unknown,
     requestOptions?: RequestOptions,
+    retry = true,
   ): Promise<T> {
     // List methods call rawRequest directly so 204 can degrade to an empty page.
     // Body-returning endpoints declare 200 JSON today, so this path fails closed.
@@ -3333,6 +3342,7 @@ export class QURLClient {
       status: httpStatus,
     } = await this.rawRequest<T>(method, path, body, {
       requestOptions,
+      retry,
     });
     if (httpStatus === 204) {
       throw unexpectedResponseError(
