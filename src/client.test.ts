@@ -493,6 +493,25 @@ describe("QURLClient", () => {
     expect(customerBody).toEqual({ spending_cap_cents: 5000 });
   });
 
+  it.each<(client: QURLClient) => Promise<unknown>>(
+    [
+      (client) =>
+        client.createWebhook({ url: "https://example.com/hook", events: ["qurl.created"] }),
+      (client) => client.updateWebhook("wh_abcdefghijklmnop", { description: "updated" }),
+      (client) => client.regenerateWebhookSecret("wh_abcdefghijklmnop"),
+      (client) => client.createAccessCode({ resource_id: RESOURCE_CRID }),
+    ].map((operation) => [operation]),
+  )("dispatches a write without replay protection only once", async (operation) => {
+    const fetch = mockFetch({ status: 429, headers: { "Retry-After": "0" }, body: {} });
+    const client = new QURLClient({ apiKey: "test-api-key", fetch, maxRetries: 1 });
+    await expect(operation(client)).rejects.toMatchObject({ status: 429 });
+    expect(fetch).toHaveBeenCalledTimes(1);
+
+    vi.mocked(fetch).mockClear().mockRejectedValue(new TypeError("connection reset"));
+    await expect(operation(client)).rejects.toBeInstanceOf(NetworkError);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
   it("POST write methods normalize optional null fields before serialization", async () => {
     const fetch = mockFetch({ status: 200, body: { data: {} } });
     const client = createClient(fetch);
