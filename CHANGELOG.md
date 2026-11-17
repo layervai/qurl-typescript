@@ -22,6 +22,13 @@
   Check that the value is defined before parsing or formatting it. An omitted
   value does not imply an unlimited lifetime. Runtime responses are unchanged.
 
+## [4.2.1](https://github.com/layervai/qurl-typescript/compare/qurl-v4.2.0...qurl-v4.2.1) (2026-11-17)
+
+
+### Bug Fixes
+
+* stop retries for writes without replay protection ([#364](https://github.com/layervai/qurl-typescript/issues/364)) ([96b9797](https://github.com/layervai/qurl-typescript/commit/96b979795f2f372a6df3749ed4fa7a3cbe3f105d))
+
 ## [4.2.0](https://github.com/layervai/qurl-typescript/compare/qurl-v4.1.0...qurl-v4.2.0) (2026-11-15)
 
 
