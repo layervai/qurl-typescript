@@ -16,6 +16,7 @@ import {
 } from "@layervai/qurl/node";
 import {
   isApiKeyRequestScope,
+  verifyResourceIdentity,
   type AccessToken,
   type ApiKeyRequestScope,
   QURLClient,
@@ -94,3 +95,6 @@ const optionalExpiry: string | undefined = tokenSummary.expires_at;
 const requiredExpiry: string = tokenSummary.expires_at;
 void optionalExpiry;
 void requiredExpiry;
+
+// The standalone verifier is available through the emitted public declarations.
+void verifyResourceIdentity;

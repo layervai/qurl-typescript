@@ -1,5 +1,6 @@
 // Native HTTP consumer journey through both published package entry points.
 import assert from "node:assert/strict";
+import { generateKeyPairSync } from "node:crypto";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { createRequire } from "node:module";
@@ -47,6 +48,30 @@ try {
     ["CJS", require("@layervai/qurl")],
   ]) {
     calls.length = 0;
+    await sdk.verifyResourceIdentity(resource, "receipt validation");
+    await assert.rejects(
+      sdk.verifyResourceIdentity(
+        { ...resource, resource_id: "not-a-public-key" },
+        "receipt validation",
+      ),
+      { code: "unexpected_response" },
+    );
+    await assert.rejects(
+      sdk.verifyResourceIdentity(resource, "receipt validation", "another-crid"),
+      { code: "unexpected_response" },
+    );
+    const { publicKey } = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+    await assert.rejects(
+      sdk.verifyResourceIdentity(
+        {
+          ...resource,
+          resource_id: publicKey.export({ type: "spki", format: "der" }).toString("base64url"),
+        },
+        "receipt validation",
+      ),
+      { code: "unexpected_response" },
+    );
+    assert.equal(calls.length, 0, "receipt identity validation must make no HTTP request");
     const client = new sdk.QURLClient({
       apiKey: "local-smoke-only",
       baseUrl: `http://127.0.0.1:${server.address().port}`,
