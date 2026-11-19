@@ -109,6 +109,11 @@ type ConnectorResourceExpectation = {
   revokedIsLifecycleError?: boolean;
 };
 
+/**
+ * Check a canonical P-256 resource key and its CRID locally, with an optional
+ * held CRID for continuity. The method label supplies error context.
+ * Check receipt provenance, authorization and lifecycle separately before use.
+ */
 export async function verifyResourceIdentity(
   resource: { resource_id?: unknown; crid?: unknown } | undefined,
   method: string,

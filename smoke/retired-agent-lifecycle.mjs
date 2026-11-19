@@ -49,6 +49,7 @@ const expectedRuntimeExports = [
   "createError",
   "getResponseMetadata",
   "isApiKeyRequestScope",
+  "verifyResourceIdentity",
 ].sort();
 
 for (const [format, namespace] of [

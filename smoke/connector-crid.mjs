@@ -47,6 +47,19 @@ try {
     ["CJS", require("@layervai/qurl")],
   ]) {
     calls.length = 0;
+    await sdk.verifyResourceIdentity(resource, "receipt validation");
+    await assert.rejects(
+      sdk.verifyResourceIdentity(
+        { ...resource, resource_id: "not-a-public-key" },
+        "receipt validation",
+      ),
+      { code: "unexpected_response" },
+    );
+    await assert.rejects(
+      sdk.verifyResourceIdentity(resource, "receipt validation", "another-crid"),
+      { code: "unexpected_response" },
+    );
+    assert.equal(calls.length, 0, "receipt identity validation must make no HTTP request");
     const client = new sdk.QURLClient({
       apiKey: "local-smoke-only",
       baseUrl: `http://127.0.0.1:${server.address().port}`,

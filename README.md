@@ -215,6 +215,20 @@ NHP admission, sibling-path denial, and direct-origin denial.
 and portal minting use it with no public-key or private-ID fallback. The SDK
 checks that the returned public key matches the CRID.
 
+For a resource receipt held by your integration, use the same identity check
+without making an HTTP request:
+
+```ts
+import { verifyResourceIdentity } from "@layervai/qurl";
+
+await verifyResourceIdentity(receipt, "publish recovery");
+// If you already hold the expected CRID, pass it as the third argument.
+```
+
+The check validates canonical P-256 SPKI and the key/CRID binding. Check the
+receipt's provenance, ownership and lifecycle fields separately before recovery
+or cleanup.
+
 `resource.resourcePublicKey`, `resource.connectorRoutingId`, and
 `resource.knockResourceId` are three distinct server-issued values for verification, reverse routing, and NHP admission. Consume each verbatim; never
 derive or substitute one for another. Use `getConnectorResource(crid)`

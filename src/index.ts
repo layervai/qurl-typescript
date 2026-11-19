@@ -5,6 +5,7 @@ export {
   QURLClient,
 } from "./client.js";
 export type { EnsureConnectorResourceResult } from "./client.js";
+export { verifyResourceIdentity } from "./client-connectors.js";
 export { CRIDVerificationError, ShareLink } from "./share.js";
 export type { CRIDVerificationErrorCode, ShareLinkInit, ShareLinkJSON } from "./share.js";
 export {
