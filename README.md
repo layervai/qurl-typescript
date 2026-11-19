@@ -221,13 +221,17 @@ without making an HTTP request:
 ```ts
 import { verifyResourceIdentity } from "@layervai/qurl";
 
-await verifyResourceIdentity(receipt, "publish recovery");
+await verifyResourceIdentity(
+  { resource_id: receipt.resource_id, crid: receipt.crid },
+  "publish recovery",
+);
 // If you already hold the expected CRID, pass it as the third argument.
 ```
 
 The check validates canonical P-256 SPKI and the key/CRID binding. Check the
 receipt's provenance, ownership and lifecycle fields separately before recovery
-or cleanup.
+or cleanup. Invalid identity fields or binding throw `QURLError` with code
+`unexpected_response`; unavailable Web Crypto throws `RuntimeError`.
 
 `resource.resourcePublicKey`, `resource.connectorRoutingId`, and
 `resource.knockResourceId` are three distinct server-issued values for verification, reverse routing, and NHP admission. Consume each verbatim; never

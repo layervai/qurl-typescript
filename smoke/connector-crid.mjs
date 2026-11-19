@@ -1,5 +1,6 @@
 // Native HTTP consumer journey through both published package entry points.
 import assert from "node:assert/strict";
+import { generateKeyPairSync } from "node:crypto";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { createRequire } from "node:module";
@@ -57,6 +58,17 @@ try {
     );
     await assert.rejects(
       sdk.verifyResourceIdentity(resource, "receipt validation", "another-crid"),
+      { code: "unexpected_response" },
+    );
+    const { publicKey } = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+    await assert.rejects(
+      sdk.verifyResourceIdentity(
+        {
+          ...resource,
+          resource_id: publicKey.export({ type: "spki", format: "der" }).toString("base64url"),
+        },
+        "receipt validation",
+      ),
       { code: "unexpected_response" },
     );
     assert.equal(calls.length, 0, "receipt identity validation must make no HTTP request");
