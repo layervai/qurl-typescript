@@ -22,6 +22,13 @@
   Check that the value is defined before parsing or formatting it. An omitted
   value does not imply an unlimited lifetime. Runtime responses are unchanged.
 
+## [4.3.0](https://github.com/layervai/qurl-typescript/compare/qurl-v4.2.1...qurl-v4.3.0) (2026-11-19)
+
+
+### Features
+
+* expose local resource identity verification ([#376](https://github.com/layervai/qurl-typescript/issues/376)) ([f54ed71](https://github.com/layervai/qurl-typescript/commit/f54ed7164e3104a5757b731770a01bc372a9e479))
+
 ## [4.2.1](https://github.com/layervai/qurl-typescript/compare/qurl-v4.2.0...qurl-v4.2.1) (2026-11-17)
 
 
