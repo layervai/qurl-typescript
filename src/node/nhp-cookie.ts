@@ -1,4 +1,4 @@
-import { canonicalKey, exactObject } from "./agent-state.js";
+import { AgentStateError, canonicalKey, exactObject } from "./agent-state.js";
 import { parseStrictJson } from "./strict-json.js";
 
 // COK's outer counter is not correlated; its authenticated body.trxId is.
@@ -10,13 +10,11 @@ export function consumeCookieChallenge(body: Uint8Array, requestCounter: bigint)
       }),
       "trxId cookie",
     );
-    const transaction =
-      typeof challenge.trxId === "number" && Number.isSafeInteger(challenge.trxId)
-        ? BigInt(challenge.trxId)
-        : challenge.trxId;
-    if (transaction !== requestCounter)
+    if (challenge.trxId !== requestCounter)
       throw new Error("NHP cookie transaction does not match the request");
     return canonicalKey(challenge.cookie);
+  } catch (cause) {
+    throw new AgentStateError("INVALID_COOKIE", { cause });
   } finally {
     body.fill(0);
   }

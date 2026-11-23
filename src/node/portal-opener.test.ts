@@ -1,3 +1,4 @@
+import { NativeReplyError } from "./native-udp.js";
 import { describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -466,6 +467,29 @@ describe("native portal opener", () => {
       });
       expect(observed!.reknockBody).toEqual({ ...observed!.body, headerType: 8 });
       expect(opener.health()).toMatchObject({ state: "ready", ready: true });
+    } finally {
+      await opener.close();
+    }
+  });
+
+  it("keeps native proof rejection typed for portal callers", async () => {
+    const opener = createPortalOpenerWithRuntime(
+      { qurl: matched.qurl, deployment: deployment() },
+      {
+        knock: vi.fn(async () => {
+          throw new NativeReplyError("invalid cookie");
+        }),
+        fetch,
+        nowNanos: () => 1_000_000_000n,
+        nowEpochMs: () => 1_000,
+        setTimer: setTimeout,
+        clearTimer: clearTimeout,
+        setDeadlineTimer: setTimeout,
+        clearDeadlineTimer: clearTimeout,
+      },
+    );
+    try {
+      await expect(opener.start()).rejects.toBeInstanceOf(PortalInvalidReplyError);
     } finally {
       await opener.close();
     }

@@ -326,6 +326,26 @@ describe("native knock address policy", () => {
     },
   );
 
+  it("does not send proof after cancellation at the challenge boundary", async () => {
+    const item = fixture();
+    const controller = new AbortController();
+    const reason = new Error("cancelled");
+    const challenge = Buffer.from(
+      JSON.stringify({ trxId: 7, cookie: Buffer.alloc(32, 11).toString("base64") }),
+    );
+    item.decryptReply.mockImplementationOnce(() => {
+      controller.abort(reason);
+      return { type: NHP_TYPE_COOKIE, flags: 0, counter: 99n, timestampNanos: 1n, body: challenge };
+    });
+    await expect(
+      item.open({ signal: controller.signal, reknockBody: Buffer.from("reknock") }),
+    ).rejects.toBe(reason);
+    expect(item.exchange).toHaveBeenCalledTimes(1);
+    expect(item.buildMessage).toHaveBeenCalledTimes(1);
+    expect(challenge.every((value) => value === 0)).toBe(true);
+    expect(item.packet.every((value) => value === 0)).toBe(true);
+  });
+
   it("returns a COOKIE without applying the ACK counter rule", async () => {
     const item = fixture();
     item.decryptReply.mockReturnValueOnce({

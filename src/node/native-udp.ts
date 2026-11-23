@@ -101,6 +101,13 @@ for (const [network, prefix] of [
   ipv6Denied.addSubnet(network, prefix, "ipv6");
 }
 
+export class NativeReplyError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "NativeReplyError";
+  }
+}
+
 export interface NativeExchangeOptions {
   /** Same verified identity and session, with the RKN application header. */
   readonly reknockBody?: Uint8Array;
@@ -176,7 +183,7 @@ async function nativeKnockWithRuntime(
         if (allowCookie && reply.type === NHP_TYPE_COOKIE) return reply;
         if (reply.type !== NHP_TYPE_ACK || reply.counter !== request.counter) {
           reply.body.fill(0);
-          throw new Error("NHP reply type or counter does not match the request");
+          throw new NativeReplyError("NHP reply type or counter does not match the request");
         }
         return reply;
       } catch (error) {
@@ -191,7 +198,12 @@ async function nativeKnockWithRuntime(
   try {
     const reply = await send(built, true);
     if (reply.type !== NHP_TYPE_COOKIE || options.reknockBody === undefined) return reply;
-    const cookie = consumeCookieChallenge(reply.body, built.counter);
+    let cookie: Buffer;
+    try {
+      cookie = consumeCookieChallenge(reply.body, built.counter);
+    } catch (cause) {
+      throw new NativeReplyError("NHP cookie challenge rejected", { cause });
+    }
     try {
       options.signal?.throwIfAborted();
       const current = BigInt(Date.now()) * 1_000_000n;
@@ -208,7 +220,7 @@ async function nativeKnockWithRuntime(
           proof.counter === built.counter ||
           Buffer.from(proof.packet.subarray(24, 56)).equals(built.packet.subarray(24, 56))
         ) {
-          throw new Error("NHP cookie proof reused request randomness");
+          throw new NativeReplyError("NHP cookie proof reused request randomness");
         }
         return await send(proof, false);
       } finally {

@@ -11,6 +11,8 @@ it.each([7n, 18446744073709551615n])(
   },
 );
 it.each([
+  `{"trxId":7.0,"cookie":"${cookie}"}`,
+  `{"trxId":7e0,"cookie":"${cookie}"}`,
   `{"trxId":8,"cookie":"${cookie}"}`,
   `{"trxId":"7","cookie":"${cookie}"}`,
   `{"trxId":7,"cookie":"${cookie}","cookie":"${cookie}"}`,
@@ -24,4 +26,10 @@ it.each([
   const body = Buffer.from(input);
   expect(() => consumeCookieChallenge(body, 7n)).toThrow();
   expect(body.every((value) => value === 0)).toBe(true);
+});
+
+it("rejects negative zero even for counter zero", () => {
+  expect(() =>
+    consumeCookieChallenge(Buffer.from(`{"trxId":-0,"cookie":"${cookie}"}`), 0n),
+  ).toThrowError(expect.objectContaining({ code: "INVALID_COOKIE" }));
 });

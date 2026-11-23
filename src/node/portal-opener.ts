@@ -11,7 +11,7 @@ import {
   type ValidatedCell,
   type ValidatedDeployment,
 } from "./deployment.js";
-import { nativeKnock, type NativeExchangeOptions } from "./native-udp.js";
+import { NativeReplyError, nativeKnock, type NativeExchangeOptions } from "./native-udp.js";
 import { isStrictJsonObject, parseStrictJson, type StrictJsonValue } from "./strict-json.js";
 import { verifyQv2Link, type VerifiedQv2Link } from "./qv2.js";
 import { parseCrid } from "../crid.js";
@@ -646,16 +646,23 @@ class NativePortalOpener implements PortalOpener {
       const startedAtNanos = this.#runtime.nowNanos();
       const startedAtEpochMs = this.#runtime.nowEpochMs();
       try {
-        const reply = cell
-          ? await this.#runtime.knock(cell, link.devicePrivateKey, body, { signal, reknockBody })
-          : await relayKnock(
-              link.claims.relayUrl,
-              deployment.relayAllowlist,
-              link.claims.cellPublicKey,
-              link.devicePrivateKey,
-              body,
-              { signal, fetch: this.#relayFetch },
-            );
+        let reply: NHPMessage;
+        try {
+          reply = cell
+            ? await this.#runtime.knock(cell, link.devicePrivateKey, body, { signal, reknockBody })
+            : await relayKnock(
+                link.claims.relayUrl,
+                deployment.relayAllowlist,
+                link.claims.cellPublicKey,
+                link.devicePrivateKey,
+                body,
+                { signal, fetch: this.#relayFetch },
+              );
+        } catch (cause) {
+          if (cause instanceof NativeReplyError)
+            throw new PortalInvalidReplyError("native NHP cookie proof failed", { cause });
+          throw cause;
+        }
         try {
           this.#requireOpen();
           if (reply.type === NHP_TYPE_COOKIE) throw new PortalBusyError();
