@@ -24,6 +24,10 @@
 
 ## [4.3.1](https://github.com/layervai/qurl-typescript/compare/qurl-v4.3.0...qurl-v4.3.1) (2026-11-23)
 
+Native portal opening now completes the existing NHP cookie proof within its
+original deadline. Invalid challenges and a second challenge fail closed; no
+relay fallback or server protocol change is added.
+
 
 ### Bug Fixes
 
