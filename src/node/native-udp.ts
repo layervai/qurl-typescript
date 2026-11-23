@@ -8,8 +8,11 @@ import {
   NHP_PACKET_SIZE,
   NHP_TYPE_COOKIE,
   NHP_TYPE_KNOCK,
+  NHP_TYPE_ACK,
+  NHP_TYPE_REKNOCK,
   type NHPMessage,
 } from "./nhp-wire.js";
+import { consumeCookieChallenge } from "./nhp-cookie.js";
 import type { ValidatedCell } from "./deployment.js";
 
 // These are internal per-address exchange bounds. PortalOpener applies its own
@@ -98,7 +101,16 @@ for (const [network, prefix] of [
   ipv6Denied.addSubnet(network, prefix, "ipv6");
 }
 
+export class NativeReplyError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "NativeReplyError";
+  }
+}
+
 export interface NativeExchangeOptions {
+  /** Same verified identity and session, with the RKN application header. */
+  readonly reknockBody?: Uint8Array;
   readonly signal?: AbortSignal;
   /** Internal per-address timeout. PortalOpener does not expose this setting. */
   readonly timeoutMs?: number;
@@ -137,13 +149,15 @@ async function nativeKnockWithRuntime(
   runtime: NativeKnockRuntime,
 ): Promise<NHPMessage> {
   if (options.signal?.aborted) throw options.signal.reason;
+  const timestamp = BigInt(Date.now()) * 1_000_000n;
   const built = runtime.buildMessage({
     type: NHP_TYPE_KNOCK,
     devicePrivateKey,
     serverPublicKey: cell.serverPublicKey,
     body,
+    timestampNanos: timestamp,
   });
-  try {
+  const send = async (request: typeof built, allowCookie: boolean): Promise<NHPMessage> => {
     const addresses = await runtime.resolveAddresses(
       cell.host,
       options.maxAddresses ?? NATIVE_DEFAULT_MAX_ADDRESSES,
@@ -156,29 +170,65 @@ async function nativeKnockWithRuntime(
           address.address,
           address.family,
           cell.port,
-          built.packet,
+          request.packet,
           options.timeoutMs ?? NATIVE_DEFAULT_TIMEOUT_MS,
           options.signal,
         );
-        const reply = runtime.decryptReply(devicePrivateKey, cell.serverPublicKey, packet);
-        // NHP COOKIE is a stateless busy response. Go intentionally does
-        // not bind its counter to the request; only an ACK must match it.
-        if (reply.type === NHP_TYPE_COOKIE) return reply;
-        if (reply.counter !== built.counter) {
+        let reply: NHPMessage;
+        try {
+          reply = runtime.decryptReply(devicePrivateKey, cell.serverPublicKey, packet);
+        } finally {
+          packet.fill(0);
+        }
+        if (allowCookie && reply.type === NHP_TYPE_COOKIE) return reply;
+        if (reply.type !== NHP_TYPE_ACK || reply.counter !== request.counter) {
           reply.body.fill(0);
-          throw new Error("NHP reply counter does not match the request");
+          throw new NativeReplyError("NHP reply type or counter does not match the request");
         }
         return reply;
       } catch (error) {
         if (options.signal?.aborted) throw options.signal.reason;
-        // Authentication and reply-policy failures happen after a datagram was
-        // received. They are terminal and must not fall through to another DNS
-        // address. Only local socket failures carry this private marker.
+        // A received authentication/policy failure never permits address fallback.
         if (!isSocketExchangeError(error)) throw error;
         lastError = error.cause;
       }
     }
     throw new Error("native NHP exchange failed", { cause: lastError });
+  };
+  try {
+    const reply = await send(built, true);
+    if (reply.type !== NHP_TYPE_COOKIE || options.reknockBody === undefined) return reply;
+    let cookie: Buffer;
+    try {
+      cookie = consumeCookieChallenge(reply.body, built.counter);
+    } catch (cause) {
+      throw new NativeReplyError("NHP cookie challenge rejected", { cause });
+    }
+    try {
+      options.signal?.throwIfAborted();
+      const current = BigInt(Date.now()) * 1_000_000n;
+      const proof = runtime.buildMessage({
+        type: NHP_TYPE_REKNOCK,
+        devicePrivateKey,
+        serverPublicKey: cell.serverPublicKey,
+        body: options.reknockBody,
+        cookie,
+        timestampNanos: current > timestamp ? current : timestamp + 1n,
+      });
+      try {
+        if (
+          proof.counter === built.counter ||
+          Buffer.from(proof.packet.subarray(24, 56)).equals(built.packet.subarray(24, 56))
+        ) {
+          throw new NativeReplyError("NHP cookie proof reused request randomness");
+        }
+        return await send(proof, false);
+      } finally {
+        proof.packet.fill(0);
+      }
+    } finally {
+      cookie.fill(0);
+    }
   } finally {
     built.packet.fill(0);
   }

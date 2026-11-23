@@ -11,7 +11,7 @@ import {
   type ValidatedCell,
   type ValidatedDeployment,
 } from "./deployment.js";
-import { nativeKnock, type NativeExchangeOptions } from "./native-udp.js";
+import { NativeReplyError, nativeKnock, type NativeExchangeOptions } from "./native-udp.js";
 import { isStrictJsonObject, parseStrictJson, type StrictJsonValue } from "./strict-json.js";
 import { verifyQv2Link, type VerifiedQv2Link } from "./qv2.js";
 import { parseCrid } from "../crid.js";
@@ -640,21 +640,29 @@ class NativePortalOpener implements PortalOpener {
         this.#transport === "native" ? validatedCellForLink(link, deployment) : undefined;
       this.#sessionSecret ??= randomBytes(32);
       const body = this.#knockBody(link);
+      const reknockBody = cell ? this.#knockBody(link, 8) : undefined;
       // Start the local validity bound before DNS and UDP I/O. The cell starts
       // its grant no earlier than this, so this client never assumes extra RTT.
       const startedAtNanos = this.#runtime.nowNanos();
       const startedAtEpochMs = this.#runtime.nowEpochMs();
       try {
-        const reply = cell
-          ? await this.#runtime.knock(cell, link.devicePrivateKey, body, { signal })
-          : await relayKnock(
-              link.claims.relayUrl,
-              deployment.relayAllowlist,
-              link.claims.cellPublicKey,
-              link.devicePrivateKey,
-              body,
-              { signal, fetch: this.#relayFetch },
-            );
+        let reply: NHPMessage;
+        try {
+          reply = cell
+            ? await this.#runtime.knock(cell, link.devicePrivateKey, body, { signal, reknockBody })
+            : await relayKnock(
+                link.claims.relayUrl,
+                deployment.relayAllowlist,
+                link.claims.cellPublicKey,
+                link.devicePrivateKey,
+                body,
+                { signal, fetch: this.#relayFetch },
+              );
+        } catch (cause) {
+          if (cause instanceof NativeReplyError)
+            throw new PortalInvalidReplyError("native NHP cookie proof failed", { cause });
+          throw cause;
+        }
         try {
           this.#requireOpen();
           if (reply.type === NHP_TYPE_COOKIE) throw new PortalBusyError();
@@ -691,6 +699,7 @@ class NativePortalOpener implements PortalOpener {
         }
       } finally {
         body.fill(0);
+        reknockBody?.fill(0);
       }
     } finally {
       link.devicePrivateKey.fill(0);
@@ -849,14 +858,14 @@ class NativePortalOpener implements PortalOpener {
     }
   }
 
-  #knockBody(link: VerifiedQv2Link): Uint8Array {
+  #knockBody(link: VerifiedQv2Link, headerType: 1 | 8 = 1): Uint8Array {
     const sessionSecret = this.#sessionSecret;
     if (!sessionSecret) throw new PortalStateError("portal opener session is not initialized");
     // Immutable JS strings cannot be zeroized. Keep their lifetime to this one
     // serialization and retain private capability material only in mutable
     // buffers between opens.
     const encoded = JSON.stringify({
-      headerType: 1,
+      headerType,
       aspId: "qurl",
       resId: link.claims.resourcePublicKeyB64,
       usrData: {

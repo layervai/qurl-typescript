@@ -1,7 +1,7 @@
 import { createSocket, type Socket } from "node:dgram";
 import type { lookup } from "node:dns/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { nativeUdpTesting } from "./native-udp.js";
+import { nativeUdpTesting, type NativeExchangeOptions } from "./native-udp.js";
 import { NHP_PACKET_SIZE, NHP_TYPE_ACK, NHP_TYPE_COOKIE } from "./nhp-wire.js";
 
 const servers: Array<ReturnType<typeof createSocket>> = [];
@@ -200,12 +200,12 @@ describe("native knock address policy", () => {
       port: 443 as const,
       serverPublicKey: Buffer.alloc(32, 2),
     };
-    const open = () =>
+    const open = (options: NativeExchangeOptions = {}) =>
       nativeUdpTesting.nativeKnockWithRuntime(
         cell,
         Buffer.alloc(32, 1),
         Buffer.from("knock"),
-        {},
+        options,
         { buildMessage, resolveAddresses, exchange, decryptReply },
       );
     return { packet, replyBody, buildMessage, resolveAddresses, exchange, decryptReply, open };
@@ -243,6 +243,107 @@ describe("native knock address policy", () => {
     await expect(item.open()).rejects.toThrow("counter");
     expect(item.exchange).toHaveBeenCalledTimes(1);
     expect([...item.replyBody]).toEqual(new Array(item.replyBody.byteLength).fill(0));
+  });
+
+  it("answers one authenticated cookie with a fresh RKN and re-resolves its cell", async () => {
+    const item = fixture();
+    const proof = Buffer.alloc(56, 4);
+    const challenge = Buffer.from(
+      JSON.stringify({ trxId: 7, cookie: Buffer.alloc(32, 11).toString("base64") }),
+    );
+    item.buildMessage
+      .mockReturnValueOnce({ packet: item.packet, counter: 7n })
+      .mockReturnValueOnce({ packet: proof, counter: 9n });
+    item.decryptReply
+      .mockReturnValueOnce({
+        type: NHP_TYPE_COOKIE,
+        flags: 0,
+        counter: 99n,
+        timestampNanos: 1n,
+        body: challenge,
+      })
+      .mockReturnValueOnce({
+        type: NHP_TYPE_ACK,
+        flags: 0,
+        counter: 9n,
+        timestampNanos: 2n,
+        body: item.replyBody,
+      });
+    const reknockBody = Buffer.from("reknock");
+    await expect(item.open({ reknockBody })).resolves.toMatchObject({
+      type: NHP_TYPE_ACK,
+      counter: 9n,
+    });
+    expect(item.resolveAddresses).toHaveBeenCalledTimes(2);
+    expect(item.exchange).toHaveBeenCalledTimes(2);
+    const initial = item.buildMessage.mock.calls[0]![0];
+    const retry = item.buildMessage.mock.calls[1]![0];
+    expect(retry.type).toBe(8);
+    expect(retry.body).toBe(reknockBody);
+    expect(retry.timestampNanos).toBeGreaterThan(initial.timestampNanos!);
+    expect(retry.cookie?.every((value) => value === 0)).toBe(true);
+    expect(challenge.every((value) => value === 0)).toBe(true);
+    expect(proof.every((value) => value === 0)).toBe(true);
+  });
+
+  it.each(["malformed", "second cookie", "wrong ACK", "reused randomness"])(
+    "stops cookie proof on %s",
+    async (mode) => {
+      const item = fixture();
+      const challenge = Buffer.from(
+        mode === "malformed"
+          ? "{}"
+          : JSON.stringify({ trxId: 7, cookie: Buffer.alloc(32, 11).toString("base64") }),
+      );
+      const proof = Buffer.alloc(56, 4);
+      item.buildMessage
+        .mockReturnValueOnce({ packet: item.packet, counter: 7n })
+        .mockReturnValueOnce({ packet: proof, counter: mode === "reused randomness" ? 7n : 9n });
+      const rejected = Buffer.from("rejected");
+      item.decryptReply
+        .mockReturnValueOnce({
+          type: NHP_TYPE_COOKIE,
+          flags: 0,
+          counter: 99n,
+          timestampNanos: 1n,
+          body: challenge,
+        })
+        .mockReturnValueOnce({
+          type: mode === "second cookie" ? NHP_TYPE_COOKIE : NHP_TYPE_ACK,
+          flags: 0,
+          counter: 8n,
+          timestampNanos: 2n,
+          body: rejected,
+        });
+      await expect(item.open({ reknockBody: Buffer.from("reknock") })).rejects.toThrow();
+      expect(item.exchange).toHaveBeenCalledTimes(
+        mode === "malformed" || mode === "reused randomness" ? 1 : 2,
+      );
+      expect(challenge.every((value) => value === 0)).toBe(true);
+      if (mode !== "malformed") expect(proof.every((value) => value === 0)).toBe(true);
+      if (mode === "second cookie" || mode === "wrong ACK")
+        expect(rejected.every((value) => value === 0)).toBe(true);
+    },
+  );
+
+  it("does not send proof after cancellation at the challenge boundary", async () => {
+    const item = fixture();
+    const controller = new AbortController();
+    const reason = new Error("cancelled");
+    const challenge = Buffer.from(
+      JSON.stringify({ trxId: 7, cookie: Buffer.alloc(32, 11).toString("base64") }),
+    );
+    item.decryptReply.mockImplementationOnce(() => {
+      controller.abort(reason);
+      return { type: NHP_TYPE_COOKIE, flags: 0, counter: 99n, timestampNanos: 1n, body: challenge };
+    });
+    await expect(
+      item.open({ signal: controller.signal, reknockBody: Buffer.from("reknock") }),
+    ).rejects.toBe(reason);
+    expect(item.exchange).toHaveBeenCalledTimes(1);
+    expect(item.buildMessage).toHaveBeenCalledTimes(1);
+    expect(challenge.every((value) => value === 0)).toBe(true);
+    expect(item.packet.every((value) => value === 0)).toBe(true);
   });
 
   it("returns a COOKIE without applying the ACK counter rule", async () => {
