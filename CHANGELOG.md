@@ -22,6 +22,17 @@
   Check that the value is defined before parsing or formatting it. An omitted
   value does not imply an unlimited lifetime. Runtime responses are unchanged.
 
+## [4.3.1](https://github.com/layervai/qurl-typescript/compare/qurl-v4.3.0...qurl-v4.3.1) (2026-11-23)
+
+Native portal opening now completes the existing NHP cookie proof within its
+original deadline. Invalid challenges and a second challenge fail closed; no
+relay fallback or server protocol change is added.
+
+
+### Bug Fixes
+
+* complete native portal cookie proof before opening ([#378](https://github.com/layervai/qurl-typescript/issues/378)) ([819d2cd](https://github.com/layervai/qurl-typescript/commit/819d2cda78157fead0abaac7e0cb35a73e55f996))
+
 ## [4.3.0](https://github.com/layervai/qurl-typescript/compare/qurl-v4.2.1...qurl-v4.3.0) (2026-11-19)
 
 
