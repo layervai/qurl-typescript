@@ -404,12 +404,17 @@ describe("native portal opener", () => {
           cellKey: Buffer;
           deviceKey: Buffer;
           body: Record<string, unknown>;
+          reknockBody: Record<string, unknown>;
         }
       | undefined;
-    const knock = vi.fn(async (cell, deviceKey: Uint8Array, body: Uint8Array) => {
+    const knock = vi.fn(async (cell, deviceKey: Uint8Array, body: Uint8Array, options) => {
       observed = {
         cellKey: Buffer.from(cell.serverPublicKey),
         deviceKey: Buffer.from(deviceKey),
+        reknockBody: JSON.parse(Buffer.from(options.reknockBody).toString("utf8")) as Record<
+          string,
+          unknown
+        >,
         body: JSON.parse(Buffer.from(body).toString("utf8")) as Record<string, unknown>,
       };
       return ack();
@@ -459,6 +464,7 @@ describe("native portal opener", () => {
           qurl_issuer_sig_b64: signatureB64,
         },
       });
+      expect(observed!.reknockBody).toEqual({ ...observed!.body, headerType: 8 });
       expect(opener.health()).toMatchObject({ state: "ready", ready: true });
     } finally {
       await opener.close();

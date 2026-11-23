@@ -671,7 +671,7 @@ verify each renewal. Never log the qURL, ACK body, request cookies, or request
 headers.
 
 A cold `start()` failure leaves health at `degraded`. Catch `PortalBusyError`
-for an authenticated COOKIE busy response and `PortalInvalidReplyError` for a
+for an authenticated COOKIE busy response on the explicit relay transport and `PortalInvalidReplyError` for a
 malformed authenticated reply. An open deadline throws `PortalOpenTimeoutError`.
 The thrown typed error is the cold-start
 diagnostic; health does not expose its message or secret values.
@@ -679,9 +679,15 @@ diagnostic; health does not expose its message or secret values.
 Local qv2 verification checks the signed bytes, trust, and clock-free claim
 ordering. As in the Go SDK, it does not compare `nbf` or `exp` with the local
 clock. The authenticated NHP open is the authoritative live validity check.
-The opener also follows the Go NHP COOKIE rule: an authenticated COOKIE is
-a busy result and does not use ACK counter correlation or local clock skew
-checks. Replaying it can only force another busy result; it cannot grant access.
+Native opening completes one authenticated COOKIE challenge with a fresh RKN.
+The strict challenge body must contain only `trxId` and a canonical 32-byte
+base64 cookie; `trxId` must match the original KNK counter. The RKN keeps the
+same verified resource, claims and session secret, uses application header 8,
+and has fresh message randomness and timestamp. It re-resolves the pinned cell
+within the original opening deadline. Only a matching-counter ACK completes
+proof; a second COOKIE or invalid reply fails closed without another flight.
+The COOKIE outer counter is not used for correlation. Relay COOKIE responses
+retain the existing busy result.
 
 ## REST-Shaped API (Compatibility)
 

@@ -168,8 +168,10 @@ export function canonicalTime(value: unknown, allowFraction = false): number {
 export function canonicalKey(value: unknown, encoding: "base64" | "base64url" = "base64"): Buffer {
   if (typeof value !== "string") throw new AgentStateError("INVALID_KEY");
   const key = Buffer.from(value, encoding);
-  if (key.length !== 32 || key.toString(encoding) !== value)
+  if (key.length !== 32 || key.toString(encoding) !== value) {
+    key.fill(0);
     throw new AgentStateError("INVALID_KEY");
+  }
   return key;
 }
 

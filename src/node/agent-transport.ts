@@ -1,7 +1,7 @@
 import { buildNHPMessage, decryptNHPReply, type NHPMessage } from "./nhp-wire.js";
 import { exchangeDatagram, resolvePublicAddresses, isSocketExchangeError } from "./native-udp.js";
-import { canonicalKey, exactObject, AgentStateError, type NHPUDPEndpoint } from "./agent-state.js";
-import { parseStrictJson } from "./strict-json.js";
+import { canonicalKey, AgentStateError, type NHPUDPEndpoint } from "./agent-state.js";
+import { consumeCookieChallenge } from "./nhp-cookie.js";
 
 export interface AgentExchange {
   endpoint: NHPUDPEndpoint;
@@ -88,20 +88,7 @@ export const nativeAgentTransport: AgentTransport = async (input) => {
       throw new AgentStateError("ASSIGNMENT_REQUIRES_SOURCE_PROOF");
     }
     if (reply?.type !== 7 || (!input.assignment && input.reknockBody === undefined)) return reply;
-    let cookie: Buffer;
-    try {
-      const challenge = exactObject(parseStrictJson(reply.body, 4096), "trxId cookie");
-      if (
-        challenge.trxId !== first.counter ||
-        /"cookie"\s*:\s*"[^"\n]*\\/.test(
-          Buffer.from(reply.body.buffer, reply.body.byteOffset, reply.body.byteLength).toString(),
-        )
-      )
-        throw new AgentStateError("INVALID_COOKIE");
-      cookie = canonicalKey(challenge.cookie);
-    } finally {
-      reply.body.fill(0);
-    }
+    const cookie = consumeCookieChallenge(reply.body, first.counter);
     try {
       input.signal.throwIfAborted();
       const current = BigInt(Date.now()) * 1_000_000n;
