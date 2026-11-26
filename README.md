@@ -1,32 +1,57 @@
-# qURL TypeScript and Node.js SDK
+# qURL TypeScript SDK
 
 [![npm](https://img.shields.io/npm/v/@layervai/qurl)](https://www.npmjs.com/package/@layervai/qurl)
 [![CI](https://github.com/layervai/qurl-typescript/actions/workflows/ci.yml/badge.svg)](https://github.com/layervai/qurl-typescript/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/layervai/qurl-typescript)](LICENSE)
 
-Use [qURL™ by LayerV](https://layerv.ai/qurl/) to share localhost web apps,
-private APIs, and files through expiring access links. This
-[TypeScript and Node.js SDK](https://layerv.ai/sdk/) creates and manages access
-from JavaScript or TypeScript. Use the
-`@layervai/qurl` package in a service or automation script to register
-resources, choose a link lifetime, and manage resource access.
+**Give someone (or an AI agent) a link to something private, from your TypeScript or Node.js code.**
+[qURL by LayerV](https://layerv.ai/qurl/) turns a private URL (a dashboard, an
+internal API, a preview running on your laptop) into a link you control. You
+choose how long it lasts and how many times it can be used, and you can revoke
+it at any time. The person you send it to just clicks. They need no account
+and no install.
 
-For a local app, [publish it with the CLI](https://github.com/layervai/qurl-integrations/tree/main/apps/cli)
-or configure a connector before issuing links. Creating an access link does
-not start the app or close any separate public route to it. Your app's own
-sign-in still applies.
+## What you can do in two minutes
 
-Portal recipients do not need LayerV credentials, API keys, or SDK state. They
-open the qURL link. Credentials are only for software that protects URLs or
-creates portals.
+| You want to… | Call |
+| --- | --- |
+| Share a private URL for 5 minutes | `client.createPortalForUrl(url, { name, validFor: '5m' })` |
+| Make a link that works once | `resource.createPortal({ validFor: '1h', oneTimeUse: true })` |
+| Cut off one link and keep the rest | `client.revokeResourceQurl(resourceId, qurlId)` |
+| Make links for up to 100 URLs in one request | `client.batchCreate({ items })` |
+| Let only qURL links reach a Vercel preview | `client.protectUrl(url, { name, originHeader })` |
 
-[Installation](#installation) · [Quickstart](#quickstart) ·
-[Opening received links](#opening-portals) · [API reference](#api) ·
-[Resource and token management](#rest-shaped-api-compatibility)
+```bash
+npm install @layervai/qurl
+```
 
-[Local preview workflow](#share-a-localhost-preview-from-nodejs) ·
-[File-sharing workflows](#share-files-from-a-nodejs-workflow) ·
-[Sharing questions](#typescript-and-nodejs-sharing-questions) · [Private links](https://qurl.link/)
+```typescript
+import { QURLClient } from '@layervai/qurl';
+
+const client = new QURLClient({ apiKey: process.env.QURL_API_KEY! }); // key: https://layerv.ai/qurl/dashboard/keys/
+
+const { portal } = await client.createPortalForUrl('https://internal.example.com/dashboard', {
+  name: 'Team dashboard', // the name your recipient sees
+  validFor: '5m',
+});
+console.log(portal.link); // send this link
+```
+
+**App on your laptop?** Publish it first with the
+[qURL CLI](https://github.com/layervai/qurl-integrations/tree/main/apps/cli)
+(`qurl publish http://127.0.0.1:3000`, with no account needed). Then issue links here.
+
+### For AI agents and tools
+
+- Package: `@layervai/qurl` · import: `import { QURLClient } from '@layervai/qurl'` (ESM and CJS) · Node.js 22.12+, no runtime dependencies
+- Auth: `new QURLClient({ apiKey })` (env convention `QURL_API_KEY`)
+- Core flow: `protectUrl(url, { name })` → `resource.createPortal({ validFor })` → `portal.link`
+- `protectUrl` is idempotent per account + URL, so it is safe to call again
+- `name` is required whenever a call creates a resource
+- `batchCreate` reports item failures in its result: check `result.failed`, then `result.results`
+- Open a received link from code with `client.enterPortal(link)` (see [Opening Portals](#opening-portals))
+- Other languages: [Python](https://github.com/layervai/qurl-python) ·
+  [Go](https://github.com/layervai/qurl-go) · [MCP server](https://github.com/layervai/qurl-mcp)
 
 ## Share a localhost preview from Node.js
 
